@@ -205,6 +205,26 @@ def attention_block(x: np.ndarray, weights: dict, layer: int, cfg: Qwen3Config,
     return x + out @ weights[f"{p}.o_proj.weight"].T      # residual add
 
 
+def silu(z: np.ndarray) -> np.ndarray:
+    """silu(z) = z * sigmoid(z): a smooth ReLU (config's hidden_act)."""
+    return z / (1.0 + np.exp(-z))
+
+
+def mlp_block(x: np.ndarray, weights: dict, layer: int, cfg: Qwen3Config) -> np.ndarray:
+    """SwiGLU MLP sub-block, residual included: x + down(silu(gate) * up).
+
+    Per-token, no cross-token flow: attention moves information between
+    positions, the MLP digests it in place. `up` carries content, silu(gate)
+    is a learned per-channel valve deciding how much of it passes.
+    """
+    p = f"model.layers.{layer}.mlp"
+    h = rms_norm(x, weights[f"model.layers.{layer}.post_attention_layernorm.weight"],
+                 cfg.rms_norm_eps)
+    gate = h @ weights[f"{p}.gate_proj.weight"].T   # (seq, 3072)
+    up = h @ weights[f"{p}.up_proj.weight"].T       # (seq, 3072)
+    return x + (silu(gate) * up) @ weights[f"{p}.down_proj.weight"].T
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
@@ -289,6 +309,16 @@ def main() -> None:
     print(f"all finite            : {np.isfinite(x1).all()}")
     print(f"residual delta RMS    : {np.sqrt(np.mean(delta ** 2)):.4f} "
           f"(nonzero and modest: the block added something, sanely)")
+
+    # Full layer 0 = attention block + MLP block. Also demonstrate that the
+    # MLP is strictly per-token: run it on just the first 2 rows and check
+    # they come out identical to the 4-row run (no cross-token flow).
+    print("\n=== full layer 0 (attention + MLP) ===")
+    x2 = mlp_block(x1, weights, 0, cfg)
+    print(f"output shape          : {x2.shape}, all finite: {np.isfinite(x2).all()}")
+    print(f"layer delta RMS       : {np.sqrt(np.mean((x2 - x) ** 2)):.4f}")
+    print(f"MLP per-token check   : {np.max(np.abs(mlp_block(x1[:2], weights, 0, cfg) - x2[:2])):.1f} "
+          f"(must be exactly 0: token i's MLP ignores every other token)")
 
 
 if __name__ == "__main__":
