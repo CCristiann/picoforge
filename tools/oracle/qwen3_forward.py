@@ -164,6 +164,47 @@ def attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, scale: float) -> np.n
     return softmax(scores) @ v                            # (heads, seq, head_dim)
 
 
+def attention_block(x: np.ndarray, weights: dict, layer: int, cfg: Qwen3Config,
+                    cos: np.ndarray, sin: np.ndarray) -> np.ndarray:
+    """One full Qwen3 attention sub-block, residual included.
+
+    Order matters and is easy to get wrong: project -> split heads ->
+    QK-norm (Qwen3's per-head RMSNorm on Q and K; skip it and logits are
+    silently wrong) -> RoPE -> GQA share -> causal attention -> merge ->
+    output projection -> add back to the residual stream.
+    """
+    p = f"model.layers.{layer}.self_attn"
+    seq = x.shape[0]
+    h = rms_norm(x, weights[f"model.layers.{layer}.input_layernorm.weight"],
+                 cfg.rms_norm_eps)
+
+    # PyTorch Linear stores (out_features, in_features), hence the .T
+    q = h @ weights[f"{p}.q_proj.weight"].T   # (seq, 2048)
+    k = h @ weights[f"{p}.k_proj.weight"].T   # (seq, 1024)
+    v = h @ weights[f"{p}.v_proj.weight"].T   # (seq, 1024)
+
+    # (seq, n_heads * head_dim) -> (n_heads, seq, head_dim)
+    q = q.reshape(seq, cfg.num_attention_heads, cfg.head_dim).transpose(1, 0, 2)
+    k = k.reshape(seq, cfg.num_key_value_heads, cfg.head_dim).transpose(1, 0, 2)
+    v = v.reshape(seq, cfg.num_key_value_heads, cfg.head_dim).transpose(1, 0, 2)
+
+    # QK-norm, then RoPE — never the other way around, and never on V.
+    q = rms_norm(q, weights[f"{p}.q_norm.weight"], cfg.rms_norm_eps)
+    k = rms_norm(k, weights[f"{p}.k_norm.weight"], cfg.rms_norm_eps)
+    q = apply_rope(q, cos, sin)
+    k = apply_rope(k, cos, sin)
+
+    # GQA: each KV head serves num_heads/num_kv_heads consecutive Q heads.
+    # The oracle duplicates for clarity; the C engine will index instead.
+    group = cfg.num_attention_heads // cfg.num_key_value_heads
+    k = np.repeat(k, group, axis=0)
+    v = np.repeat(v, group, axis=0)
+
+    out = attention(q, k, v, 1.0 / np.sqrt(cfg.head_dim))
+    out = out.transpose(1, 0, 2).reshape(seq, -1)         # merge heads
+    return x + out @ weights[f"{p}.o_proj.weight"].T      # residual add
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
@@ -235,6 +276,19 @@ def main() -> None:
     print(f"positions 5-7 drift   : {future_drift:.1f} (large: they DO see token 5)")
     print(f"pos 0 sees only itself: {np.allclose(out[0, 0], vs[0, 0])} "
           f"(row 0 of the weights is forced to [1, 0, 0, ...])")
+
+    # Layer-0 attention block on real tokens: shapes and sanity only.
+    # Numerical truth against transformers comes with verify.py.
+    print("\n=== attention block (layer 0) ===")
+    tokens = [cfg.bos_token_id, 9707, 11, 1879]           # arbitrary real ids
+    x = embed_tokens(weights, tokens)
+    cos, sin = rope_tables(np.arange(len(tokens)), cfg.head_dim, cfg.rope_theta)
+    x1 = attention_block(x, weights, 0, cfg, cos, sin)
+    delta = x1 - x                                        # the block's contribution
+    print(f"output shape          : {x1.shape} (must equal input {x.shape})")
+    print(f"all finite            : {np.isfinite(x1).all()}")
+    print(f"residual delta RMS    : {np.sqrt(np.mean(delta ** 2)):.4f} "
+          f"(nonzero and modest: the block added something, sanely)")
 
 
 if __name__ == "__main__":
