@@ -12,6 +12,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+from safetensors import safe_open
+
 
 @dataclass(frozen=True)
 class Qwen3Config:
@@ -74,10 +77,48 @@ def print_summary(cfg: Qwen3Config) -> None:
     print(f"bos / eos             : {cfg.bos_token_id} / {cfg.eos_token_id}")
 
 
+def load_weights(model_dir: Path) -> dict[str, np.ndarray]:
+    """Load every tensor from model.safetensors as an fp32 numpy array.
+
+    The weights are stored in bfloat16, which numpy cannot represent, so
+    torch does the bf16 -> fp32 upcast. This is the ONLY place torch is
+    allowed to touch the data: bf16 is the top half of fp32, so this
+    conversion is exact (16 zero bits appended, nothing rounded).
+    """
+    import torch  # deliberately local: keeps torch out of the forward path
+
+    weights = {}
+    with safe_open(model_dir / "model.safetensors", framework="pt") as f:
+        for name in f.keys():
+            weights[name] = f.get_tensor(name).to(torch.float32).numpy()
+    return weights
+
+
+def embed_tokens(weights: dict[str, np.ndarray], token_ids: list[int]) -> np.ndarray:
+    """Token embedding is a row lookup, nothing more: matrix[token_id].
+
+    Returns (seq_len, hidden_size) fp32 — the initial residual stream.
+    """
+    return weights["model.embed_tokens.weight"][token_ids]
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
     print_summary(cfg)
+
+    weights = load_weights(model_dir)
+    n_params = sum(w.size for w in weights.values())
+    print("\n=== weights ===")
+    print(f"tensors               : {len(weights)}")
+    print(f"parameters            : {n_params / 1e9:.3f} B")
+    # Empirical proof of tie_word_embeddings: no lm_head tensor exists.
+    has_lm_head = any("lm_head" in name for name in weights)
+    print(f"lm_head tensor        : {'present' if has_lm_head else 'absent (tied, as the config promised)'}")
+
+    emb = embed_tokens(weights, [cfg.bos_token_id])
+    print(f"embed(bos) shape      : {emb.shape}, dtype {emb.dtype}, "
+          f"first values {np.round(emb[0, :3], 4)}")
 
 
 if __name__ == "__main__":
