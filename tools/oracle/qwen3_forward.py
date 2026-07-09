@@ -119,13 +119,19 @@ def main() -> None:
     print_summary(cfg)
 
     weights = load_weights(model_dir)
-    n_params = sum(w.size for w in weights.values())
+    # The checkpoint ships lm_head.weight even though the config says
+    # tie_word_embeddings — measured: it is a byte-identical copy of the
+    # embedding matrix. The forward pass will use embed_tokens for the head
+    # (the config's contract); the copy may vanish in future checkpoints.
+    dup = "lm_head.weight" in weights and np.array_equal(
+        weights["lm_head.weight"], weights["model.embed_tokens.weight"])
+    n_total = sum(w.size for w in weights.values())
+    n_unique = n_total - (weights["lm_head.weight"].size if dup else 0)
     print("\n=== weights ===")
     print(f"tensors               : {len(weights)}")
-    print(f"parameters            : {n_params / 1e9:.3f} B")
-    # Empirical proof of tie_word_embeddings: no lm_head tensor exists.
-    has_lm_head = any("lm_head" in name for name in weights)
-    print(f"lm_head tensor        : {'present' if has_lm_head else 'absent (tied, as the config promised)'}")
+    print(f"parameters            : {n_unique / 1e9:.3f} B unique"
+          + (f" ({n_total / 1e9:.3f} B on disk: lm_head duplicates embed_tokens)"
+             if dup else ""))
 
     emb = embed_tokens(weights, [cfg.bos_token_id])
     print(f"embed(bos) shape      : {emb.shape}, dtype {emb.dtype}, "
