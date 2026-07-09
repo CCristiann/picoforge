@@ -113,6 +113,31 @@ def rms_norm(x: np.ndarray, w: np.ndarray, eps: float) -> np.ndarray:
     return (x / rms) * w
 
 
+def rope_tables(positions: np.ndarray, head_dim: int, theta: float):
+    """Precompute cos/sin for RoPE at the given positions.
+
+    Pair i rotates with frequency theta**(-2i/head_dim): pair 0 spins ~1
+    radian per token, the last pairs are nearly static — each pair watches
+    the sequence at a different zoom level. Returns (seq, head_dim/2) each.
+    """
+    inv_freq = theta ** (-np.arange(0, head_dim, 2, dtype=np.float32) / head_dim)
+    angles = np.outer(positions.astype(np.float32), inv_freq)
+    return np.cos(angles), np.sin(angles)
+
+
+def apply_rope(x: np.ndarray, cos: np.ndarray, sin: np.ndarray) -> np.ndarray:
+    """Rotate Q or K pairs. x: (..., seq, head_dim); applied to Q and K, never V.
+
+    Convention gotcha: HF/Qwen pair dimension i with i + head_dim/2
+    ("rotate_half"), NOT adjacent dims (i, i+1). The wrong pairing produces
+    garbage logits with no error message — verify.py is what would catch it.
+    """
+    half = x.shape[-1] // 2
+    x1, x2 = x[..., :half], x[..., half:]
+    return np.concatenate([x1 * cos - x2 * sin,
+                           x2 * cos + x1 * sin], axis=-1)
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
@@ -148,6 +173,23 @@ def main() -> None:
     #    own magnitude is divided out. Only the *direction* of x survives.
     drift = np.max(np.abs(rms_norm(emb * 10.0, w0, cfg.rms_norm_eps) - y))
     print(f"scale invariance drift: {drift:.2e} (expected ~0)")
+
+    # RoPE self-check: the defining property. Attention scores between
+    # rotated q at position m and rotated k at position n must depend only
+    # on m - n, so shifting both positions by 100 must not change the score.
+    print("\n=== rope checks ===")
+    rng = np.random.default_rng(0)
+    q = rng.standard_normal(cfg.head_dim).astype(np.float32)
+    k = rng.standard_normal(cfg.head_dim).astype(np.float32)
+
+    def score(m: int, n: int) -> float:
+        cos, sin = rope_tables(np.array([m, n]), cfg.head_dim, cfg.rope_theta)
+        return float(apply_rope(q, cos[0], sin[0]) @ apply_rope(k, cos[1], sin[1]))
+
+    s_near, s_far = score(3, 7), score(103, 107)
+    print(f"score(3,7)            : {s_near:.6f}")
+    print(f"score(103,107)        : {s_far:.6f} (must match: only m-n matters)")
+    print(f"score(7,3)            : {score(7, 3):.6f} (need not match: order matters)")
 
 
 if __name__ == "__main__":
