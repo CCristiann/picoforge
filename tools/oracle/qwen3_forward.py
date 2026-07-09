@@ -138,6 +138,32 @@ def apply_rope(x: np.ndarray, cos: np.ndarray, sin: np.ndarray) -> np.ndarray:
                            x2 * cos + x1 * sin], axis=-1)
 
 
+def softmax(x: np.ndarray) -> np.ndarray:
+    """Row-wise softmax, numerically stable.
+
+    Subtracting the row max first is free mathematically (numerator and
+    denominator share the factor) but keeps every exponent <= 0, so exp()
+    can never overflow fp32.
+    """
+    e = np.exp(x - np.max(x, axis=-1, keepdims=True))
+    return e / np.sum(e, axis=-1, keepdims=True)
+
+
+def attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, scale: float) -> np.ndarray:
+    """Causal scaled-dot-product attention. q,k,v: (heads, seq, head_dim).
+
+    The three moves: scores = scaled q.k, softmax into weights, weighted
+    sum of values. Future positions get -inf BEFORE the softmax, which
+    turns into exactly zero weight after it: each token sees only itself
+    and its past — the property generation depends on.
+    """
+    scores = (q @ k.transpose(0, 2, 1)) * scale          # (heads, seq, seq)
+    seq = scores.shape[-1]
+    future = np.triu(np.ones((seq, seq), dtype=bool), k=1)
+    scores = np.where(future, -np.inf, scores)
+    return softmax(scores) @ v                            # (heads, seq, head_dim)
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
@@ -190,6 +216,25 @@ def main() -> None:
     print(f"score(3,7)            : {s_near:.6f}")
     print(f"score(103,107)        : {s_far:.6f} (must match: only m-n matters)")
     print(f"score(7,3)            : {score(7, 3):.6f} (need not match: order matters)")
+
+    # Attention self-check: causality, the defining property. Change what
+    # token 5 offers (its K and V): outputs at positions 0..4 must not move
+    # by a single bit, because the mask forbids them from ever seeing it.
+    print("\n=== attention checks ===")
+    seq, scale = 8, 1.0 / np.sqrt(cfg.head_dim)
+    qs = rng.standard_normal((1, seq, cfg.head_dim)).astype(np.float32)
+    ks = rng.standard_normal((1, seq, cfg.head_dim)).astype(np.float32)
+    vs = rng.standard_normal((1, seq, cfg.head_dim)).astype(np.float32)
+    out = attention(qs, ks, vs, scale)
+    ks2, vs2 = ks.copy(), vs.copy()
+    ks2[0, 5], vs2[0, 5] = 999.0, -999.0   # token 5 now offers garbage
+    out2 = attention(qs, ks2, vs2, scale)
+    past_drift = np.max(np.abs(out2[0, :5] - out[0, :5]))
+    future_drift = np.max(np.abs(out2[0, 5:] - out[0, 5:]))
+    print(f"positions 0-4 drift   : {past_drift:.1f} (must be exactly 0)")
+    print(f"positions 5-7 drift   : {future_drift:.1f} (large: they DO see token 5)")
+    print(f"pos 0 sees only itself: {np.allclose(out[0, 0], vs[0, 0])} "
+          f"(row 0 of the weights is forced to [1, 0, 0, ...])")
 
 
 if __name__ == "__main__":
