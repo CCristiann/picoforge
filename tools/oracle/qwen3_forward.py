@@ -102,6 +102,17 @@ def embed_tokens(weights: dict[str, np.ndarray], token_ids: list[int]) -> np.nda
     return weights["model.embed_tokens.weight"][token_ids]
 
 
+def rms_norm(x: np.ndarray, w: np.ndarray, eps: float) -> np.ndarray:
+    """RMSNorm: rescale each row to unit RMS, then apply the learned gain.
+
+    LayerNorm minus mean-centering and bias — recentering turned out to be
+    unnecessary, rescaling is what matters. eps lives INSIDE the sqrt; putting
+    it outside changes low digits and breaks parity with the reference.
+    """
+    rms = np.sqrt(np.mean(x.astype(np.float32) ** 2, axis=-1, keepdims=True) + eps)
+    return (x / rms) * w
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
@@ -119,6 +130,18 @@ def main() -> None:
     emb = embed_tokens(weights, [cfg.bos_token_id])
     print(f"embed(bos) shape      : {emb.shape}, dtype {emb.dtype}, "
           f"first values {np.round(emb[0, :3], 4)}")
+
+    # RMSNorm self-checks against its two defining properties.
+    print("\n=== rms_norm checks ===")
+    w0 = weights["model.layers.0.input_layernorm.weight"]
+    y = rms_norm(emb, w0, cfg.rms_norm_eps)
+    # 1. Unit RMS: before the gain w, every row must have RMS ~= 1.
+    pre_gain_rms = np.sqrt(np.mean((y / w0) ** 2))
+    print(f"pre-gain RMS          : {pre_gain_rms:.6f} (expected ~1)")
+    # 2. Scale invariance: rms_norm(10x) == rms_norm(x), because the input's
+    #    own magnitude is divided out. Only the *direction* of x survives.
+    drift = np.max(np.abs(rms_norm(emb * 10.0, w0, cfg.rms_norm_eps) - y))
+    print(f"scale invariance drift: {drift:.2e} (expected ~0)")
 
 
 if __name__ == "__main__":
