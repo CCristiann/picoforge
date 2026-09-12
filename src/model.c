@@ -82,6 +82,13 @@ static float round_to_bf16(float v) {
     return bf16_to_f32(hi);
 }
 
+/* Bytes a Linear occupies, which is also what one decoded token reads of it. */
+static double linear_bytes(const Linear *l, long n_out, long n_in) {
+    if (l->w) return 2.0 * (double)n_out * (double)n_in;
+    return (double)n_out * (double)n_in * l->q.bits / 8.0
+         + 2.0 * (double)n_out * (double)(n_in / l->q.group);
+}
+
 void linear(float *out, const float *x, const Linear *l, int n_in, int n_out) {
     if (l->w) { matmul(out, x, l->w, n_in, n_out); return; }
     if (l->q.bits == 4 && narrow_q4_inputs) {
@@ -105,6 +112,8 @@ void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
     const long q_dim = (long)cfg->num_attention_heads * cfg->head_dim;
     const long kv_dim = (long)cfg->num_key_value_heads * cfg->head_dim;
     w->embed      = bind_linear(st, "model.embed_tokens", cfg->vocab_size, H);
+    /* The embedding is read in full per token: it is also the LM head. */
+    w->bytes      = linear_bytes(&w->embed, cfg->vocab_size, H) + 2.0 * (double)H;
     w->final_norm = bind(st, "model.norm.weight");
 
     w->layers = calloc((size_t)cfg->num_hidden_layers, sizeof *w->layers);
@@ -127,6 +136,11 @@ void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
         LIN(up_proj,   "model.layers.%d.mlp.up_proj", I, H);
         LIN(down_proj, "model.layers.%d.mlp.down_proj", H, I);
 #undef LIN
+        w->bytes += linear_bytes(&L->q_proj, q_dim, H) + linear_bytes(&L->k_proj, kv_dim, H)
+                  + linear_bytes(&L->v_proj, kv_dim, H) + linear_bytes(&L->o_proj, H, q_dim)
+                  + linear_bytes(&L->gate_proj, I, H) + linear_bytes(&L->up_proj, I, H)
+                  + linear_bytes(&L->down_proj, H, I)
+                  + 2.0 * (double)(2 * H + 2 * cfg->head_dim);          /* four norms */
     }
 }
 

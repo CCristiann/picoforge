@@ -160,6 +160,7 @@ typedef struct {
 } LayerWeights;
 
 typedef struct {
+    double          bytes;        /* weight bytes one decoded token reads     */
     Linear          embed;        /* [vocab, hidden]; tied, so also the LM head */
     const uint16_t *final_norm;
     LayerWeights   *layers;

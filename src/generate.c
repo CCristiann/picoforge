@@ -183,9 +183,13 @@ int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
             double per_tok = t_decode / generated;
             /* The ceiling every decode optimisation is measured against: one
              * pass over the unique weights per token, at the machine's
-             * bandwidth. 1.19 GB is Qwen3-0.6B's unique weights in bf16. */
+             * bandwidth. The byte count comes from what weights_bind found in
+             * the file -- it used to be a constant, 1.19 GB, which quietly
+             * reported a Q8 model as moving twice the bytes it does. (K/V
+             * cache reads are not included; at these context lengths they
+             * are a few MB.) */
             printf("decode  : %.3f s  (%.1f tok/s, %.1f GB/s of the 307 available)\n",
-                   t_decode, 1.0 / per_tok, 1.19 / per_tok);
+                   t_decode, 1.0 / per_tok, w->bytes / 1e9 / per_tok);
         }
     }
     free(tokens);
