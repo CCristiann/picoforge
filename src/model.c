@@ -60,9 +60,38 @@ static Linear bind_linear(const SafeTensors *st, const char *base, long n_out, l
     return l;
 }
 
+/* Off by default: the CPU computes the IDEAL quantised model, fp32 activations
+ * times exact dequantised weights. On, 4-bit projections see their input
+ * narrowed to bf16 first, exactly as the GPU must (no float x int4 overload).
+ * The switch exists to split one GPU-vs-oracle difference into two measured
+ * ones: GPU vs narrowed CPU (the kernels) and narrowed vs exact CPU (the cost
+ * of narrowing itself). */
+static bool narrow_q4_inputs = false;
+void set_q4_bf16_activations(bool on) { narrow_q4_inputs = on; }
+
+/* fp32 -> bf16 -> fp32, rounding to nearest with ties to even, as IEEE and the
+ * Metal conversion do. bf16 is the top 16 bits of the fp32, so rounding is on
+ * the low 16: past half, or exactly half with an odd top, round up. A carry
+ * out of the mantissa lands in the exponent, which is the right answer. */
+static float round_to_bf16(float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    uint16_t hi = (uint16_t)(bits >> 16);
+    uint32_t lo = bits & 0xFFFFu;
+    if (lo > 0x8000u || (lo == 0x8000u && (hi & 1u))) hi++;
+    return bf16_to_f32(hi);
+}
+
 void linear(float *out, const float *x, const Linear *l, int n_in, int n_out) {
-    if (l->w) matmul(out, x, l->w, n_in, n_out);
-    else      matmul_q(out, x, &l->q, n_in, n_out);
+    if (l->w) { matmul(out, x, l->w, n_in, n_out); return; }
+    if (l->q.bits == 4 && narrow_q4_inputs) {
+        float xn[16384];
+        if (n_in > (int)(sizeof xn / sizeof xn[0])) die("linear: %d inputs exceed the narrowing buffer", n_in);
+        for (int i = 0; i < n_in; i++) xn[i] = round_to_bf16(x[i]);
+        matmul_q(out, xn, &l->q, n_in, n_out);
+        return;
+    }
+    matmul_q(out, x, &l->q, n_in, n_out);
 }
 
 void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {

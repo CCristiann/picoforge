@@ -403,6 +403,7 @@ int main(int argc, char **argv) {
      * step 1.6; until then the ids come from the command line. */
     if (argc > 4 && (strcmp(argv[2], "--forward") == 0
                   || strcmp(argv[2], "--forward-incr") == 0
+                  || strcmp(argv[2], "--forward-narrow") == 0
                   || strcmp(argv[2], "--gpu-forward") == 0
                   || strcmp(argv[2], "--gpu-forward-incr") == 0)) {
         /* --forward-incr feeds the prompt ONE TOKEN AT A TIME, which is the
@@ -412,6 +413,9 @@ int main(int argc, char **argv) {
          * cache's real failure mode untested — a RoPE rotation by t instead
          * of pos + t is invisible until the second call. */
         bool incremental = strstr(argv[2], "-incr") != NULL;
+        /* --forward-narrow: the CPU batch path with Q4 inputs narrowed to
+         * bf16, the GPU's arithmetic without the GPU (see model.c). */
+        set_q4_bf16_activations(strcmp(argv[2], "--forward-narrow") == 0);
         bool use_gpu = strncmp(argv[2], "--gpu-", 6) == 0;
         const char *out_path = argv[3];
         int seq = argc - 4;

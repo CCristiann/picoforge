@@ -534,3 +534,39 @@ kernel void add_residual(device float       *x     [[buffer(0)]],
     if (i >= d.count) return;
     x[i] += delta[i];
 }
+
+/* Q4's price of admission: TensorOps has bfloat x int4b but no float x int4b,
+ * so a Q4 matmul's input is narrowed to bf16 first. This is a real loss of
+ * precision -- 7 fraction bits where fp32 has 23 -- and it is measured on its
+ * own (tests/test_forward_quant.py) rather than hidden inside "quantisation".
+ * Rounding is the language's float -> bfloat conversion, to nearest. */
+kernel void narrow_bf16(device bfloat      *out [[buffer(0)]],
+                        device const float *in  [[buffer(1)]],
+                        constant ElemDims  &d   [[buffer(2)]],
+                        uint i [[thread_position_in_grid]]) {
+    if (i >= d.count) return;
+    out[i] = bfloat(in[i]);
+}
+
+/* Embedding lookup from a quantised table: one row, d * q, exactly what
+ * dequant_row does on the CPU. bits and group come in with the dimensions. */
+struct QEmbedDims { uint n, hidden, bits, group; };
+
+kernel void embed_lookup_q(device float        *x      [[buffer(0)]],
+                           device const uchar  *q      [[buffer(1)]],
+                           device const bfloat *scales [[buffer(2)]],
+                           device const int    *tokens [[buffer(3)]],
+                           constant QEmbedDims &d      [[buffer(4)]],
+                           uint gid [[thread_position_in_grid]]) {
+    const uint t = gid / d.hidden, i = gid % d.hidden;
+    if (t >= d.n) return;
+    const uint row = uint(tokens[t]);
+    int code;
+    if (d.bits == 8) {
+        code = int(as_type<char>(q[row * d.hidden + i]));
+    } else {
+        const uint nib = (q[row * (d.hidden / 2) + i / 2] >> ((i & 1) * 4)) & 0xF;
+        code = int(nib) - ((nib & 0x8) ? 16 : 0);
+    }
+    x[gid] = float(scales[row * (d.hidden / d.group) + i / d.group]) * float(code);
+}

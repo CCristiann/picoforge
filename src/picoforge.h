@@ -152,6 +152,7 @@ typedef struct {
 
 /* out = W x, in whichever form W is stored. */
 void linear(float *out, const float *x, const Linear *l, int n_in, int n_out);
+void set_q4_bf16_activations(bool on);   /* CPU mimics the GPU's Q4 narrowing */
 
 typedef struct {
     const uint16_t *input_ln, *q_norm, *k_norm, *post_attn_ln;

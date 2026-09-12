@@ -56,7 +56,9 @@ test-quant-formats:
 
 # Quantised checkpoints, rebuilt when the quantiser changes. Weights stay out
 # of git like the originals; these are derived from them in seconds.
-QMODELS := models/Qwen3-0.6B-q8_row models/Qwen3-0.6B-q4_g32
+QMODELS := models/Qwen3-0.6B-q8_row-embed models/Qwen3-0.6B-q4_g32 models/Qwen3-0.6B-q4_g32-embed
+models/Qwen3-0.6B-%-embed: tools/quant/quantize.py tools/quant/formats.py
+	@./tools/venv/bin/python tools/quant/quantize.py models/Qwen3-0.6B $* --embed
 models/Qwen3-0.6B-%: tools/quant/quantize.py tools/quant/formats.py
 	@./tools/venv/bin/python tools/quant/quantize.py models/Qwen3-0.6B $*
 quant-models: $(QMODELS)
