@@ -2,6 +2,37 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-12 (evening) — Phase 2: one kernel, three implementations
+
+All three matmul kernels written and all three bit-exact against the CPU
+oracle. Peak on a 2048 cube: naive 0.72, simdgroup 4.23, TensorOps 7.78
+TFLOP/s -- 10.8x end to end. Raw CSV and plot in bench/, protocol in
+docs/BENCHMARKS.md.
+
+TensorOps cost four probes. The one that mattered: element types must not be
+const, or every is_same<T, float> in the dispatch chain fails and the terminal
+static_assert reports "Unsupported type" while naming the DESTINATION type --
+the error blames the wrong parameter. Also found: tensor_inline (not the
+default tensor_handle) wraps a device pointer; float x bfloat -> float is
+supported; and the same chain accepts bfloat x int4b_format and bfloat x
+int8_t with fp32 accumulation, which is Phase 3 arriving early and should
+shape the quantisation format before one is picked.
+
+Three measured findings:
+- Batching is free to M=32. 33 us whether M is 1 or 32, because the kernel is
+  reading the same 6 MB of weights either way. 188 -> 6017 GFLOP/s at no cost.
+- At M=1 with N=8192 the NAIVE kernel beats TensorOps, 276 vs 213 GB/s, which
+  is 90% of the machine's 307. Bandwidth-bound work does not want matrix units.
+- Decode is short of parallelism, not bandwidth: throughput climbs with N.
+
+The protocol earns its keep: the same kernel and shape reads 8.0 GB/s
+single-shot and 36.2 GB/s warmed with reused buffers.
+
+**Next:** move the forward pass itself onto the GPU, keeping the CPU path as
+the oracle. The batching result says the decode loop should be built so a
+batch dimension can exist later -- speculative decoding gets 32 tokens for
+the price of one.
+
 ## 2026-09-12 (later still) — Phase 1 complete: the C engine generates
 
 Steps 1.6-1.9. Byte-level BPE tokenizer (30/30 adversarial prompts identical to
