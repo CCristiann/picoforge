@@ -214,3 +214,210 @@ kernel void matmul_tensorops(device float        *C [[buffer(0)]],
 
     op.run(mA, mB, mC);
 }
+
+/* =======================================================================
+ * The rest of the forward pass.
+ *
+ * These are the obvious versions, written to be judged by the CPU oracle
+ * before anything clever happens to them. Together with the matmul they let
+ * a whole layer run without the result ever leaving the GPU, which is the
+ * point: 28 layers x 7 matmuls is 196 dispatches per token, and at 6 us of
+ * command-buffer latency each that would be 1.2 ms of pure waiting. They all
+ * go into ONE command buffer instead.
+ * ======================================================================= */
+
+struct NormDims  { uint rows, n; float eps; };
+struct RopeDims  { uint n, heads, head_dim, dim, pos; float theta, eps; };
+struct AttnDims  { uint n, heads, kv_heads, head_dim, q_dim, kv_dim, pos, max_seq; float scale; };
+struct ElemDims  { uint count; };
+struct EmbedDims { uint n, hidden; };
+
+/* Embedding: a row lookup, widened to fp32. One thread per element. */
+kernel void embed_lookup(device float        *x      [[buffer(0)]],
+                         device const bfloat *table  [[buffer(1)]],
+                         device const int    *tokens [[buffer(2)]],
+                         constant EmbedDims  &d      [[buffer(3)]],
+                         uint gid [[thread_position_in_grid]]) {
+    const uint t = gid / d.hidden, i = gid % d.hidden;
+    if (t >= d.n) return;
+    x[gid] = float(table[uint(tokens[t]) * d.hidden + i]);
+}
+
+/* RMSNorm, one threadgroup per row.
+ *
+ * The sum of squares is a reduction over 1024 elements, so it is done as a
+ * tree in threadgroup memory rather than by one thread looping. eps stays
+ * INSIDE the sqrt, as on the CPU and in the reference: outside it would
+ * still prevent the division by zero, still look correct, and still shift
+ * the low digits of every activation in the model. */
+#define NORM_THREADS 256
+
+kernel void rmsnorm_rows(device float        *out [[buffer(0)]],
+                         device const float  *in  [[buffer(1)]],
+                         device const bfloat *w   [[buffer(2)]],
+                         constant NormDims   &d   [[buffer(3)]],
+                         uint row [[threadgroup_position_in_grid]],
+                         uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float part[NORM_THREADS];
+
+    const uint base = row * d.n;
+    float acc = 0.0f;
+    for (uint i = tid; i < d.n; i += NORM_THREADS) {
+        float v = in[base + i];
+        acc += v * v;
+    }
+    part[tid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint s = NORM_THREADS / 2; s > 0; s >>= 1) {
+        if (tid < s) part[tid] += part[tid + s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    const float rms = sqrt(part[0] / float(d.n) + d.eps);
+    for (uint i = tid; i < d.n; i += NORM_THREADS)
+        out[base + i] = (in[base + i] / rms) * float(w[i]);
+}
+
+/* Qwen3's per-head QK-norm followed by RoPE, in place.
+ *
+ * One threadgroup per (token, head), head_dim threads. The two must happen in
+ * this order and never touch V.
+ *
+ * The rotation uses the ABSOLUTE position pos + t. This is where a K/V cache
+ * goes wrong most easily: rotating by t alone is invisible during prefill,
+ * because the whole prompt starts at zero, and only breaks once generation
+ * begins and every new token believes it is at the start of the sequence. */
+kernel void qk_norm_rope(device float        *x [[buffer(0)]],
+                         device const bfloat *w [[buffer(1)]],
+                         constant RopeDims   &d [[buffer(2)]],
+                         uint2 tgid [[threadgroup_position_in_grid]],
+                         uint  tid  [[thread_index_in_threadgroup]]) {
+    threadgroup float part[128];
+    threadgroup float rms_shared;
+
+    const uint t = tgid.y, h = tgid.x;
+    if (t >= d.n || h >= d.heads) return;
+
+    device float *v = x + t * d.dim + h * d.head_dim;
+
+    float s = (tid < d.head_dim) ? v[tid] * v[tid] : 0.0f;
+    part[tid] = s;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint k = 64; k > 0; k >>= 1) {
+        if (tid < k) part[tid] += part[tid + k];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) rms_shared = sqrt(part[0] / float(d.head_dim) + d.eps);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float normed = 0.0f;
+    if (tid < d.head_dim) normed = (v[tid] / rms_shared) * float(w[tid]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < d.head_dim) v[tid] = normed;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    /* rotate_half: dimension i pairs with i + head_dim/2, NOT with i + 1.
+     * The wrong pairing produces no error and wrong logits. */
+    const uint half_d = d.head_dim / 2;
+    if (tid < half_d) {
+        const float inv_freq = pow(d.theta, -float(2 * tid) / float(d.head_dim));
+        const float angle = float(d.pos + t) * inv_freq;
+        const float c = cos(angle), sn = sin(angle);
+        const float x1 = normed, x2 = v[tid + half_d];
+        v[tid]          = x1 * c - x2 * sn;
+        v[tid + half_d] = x2 * c + x1 * sn;
+    }
+}
+
+/* Causal attention over the K/V cache. One threadgroup per (token, head).
+ *
+ * Causality is structural: the key loop stops at the query's own absolute
+ * position. There is no mask to build and therefore none to build wrong.
+ *
+ * GQA is an index, not a copy: query head h reads KV head h / group. */
+#define ATTN_THREADS 128
+#define ATTN_MAX_CTX 2048
+
+kernel void attention(device float        *out [[buffer(0)]],
+                      device const float  *q   [[buffer(1)]],
+                      device const float  *kc  [[buffer(2)]],
+                      device const float  *vc  [[buffer(3)]],
+                      constant AttnDims   &d   [[buffer(4)]],
+                      uint2 tgid [[threadgroup_position_in_grid]],
+                      uint  tid  [[thread_index_in_threadgroup]]) {
+    threadgroup float score[ATTN_MAX_CTX];
+    threadgroup float part[ATTN_THREADS];
+    threadgroup float shared_max, shared_sum;
+
+    const uint t = tgid.y, h = tgid.x;
+    if (t >= d.n || h >= d.heads) return;
+
+    const uint abs_t = d.pos + t;
+    const uint len   = abs_t + 1;
+    const uint kvh   = h / (d.heads / d.kv_heads);
+    device const float *qh = q + t * d.q_dim + h * d.head_dim;
+
+    for (uint j = tid; j < len; j += ATTN_THREADS) {
+        device const float *kh = kc + j * d.kv_dim + kvh * d.head_dim;
+        float dot = 0.0f;
+        for (uint i = 0; i < d.head_dim; i++) dot += qh[i] * kh[i];
+        score[j] = dot * d.scale;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    /* Stable softmax: subtract the row max first. Free mathematically, and
+     * it keeps every exponent <= 0 so exp can never overflow. */
+    float m = -INFINITY;
+    for (uint j = tid; j < len; j += ATTN_THREADS) m = max(m, score[j]);
+    part[tid] = m;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = ATTN_THREADS / 2; s > 0; s >>= 1) {
+        if (tid < s) part[tid] = max(part[tid], part[tid + s]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) shared_max = part[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float sum = 0.0f;
+    for (uint j = tid; j < len; j += ATTN_THREADS) {
+        score[j] = exp(score[j] - shared_max);
+        sum += score[j];
+    }
+    part[tid] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = ATTN_THREADS / 2; s > 0; s >>= 1) {
+        if (tid < s) part[tid] += part[tid + s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) shared_sum = part[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    /* Weighted sum of values: one thread per output dimension, each walking
+     * the whole context. */
+    for (uint i = tid; i < d.head_dim; i += ATTN_THREADS) {
+        float acc = 0.0f;
+        for (uint j = 0; j < len; j++)
+            acc += score[j] * vc[j * d.kv_dim + kvh * d.head_dim + i];
+        out[t * d.q_dim + h * d.head_dim + i] = acc / shared_sum;
+    }
+}
+
+/* SwiGLU's elementwise half: gate <- silu(gate) * up. */
+kernel void swiglu(device float       *gate [[buffer(0)]],
+                   device const float *up   [[buffer(1)]],
+                   constant ElemDims  &d    [[buffer(2)]],
+                   uint i [[thread_position_in_grid]]) {
+    if (i >= d.count) return;
+    const float z = gate[i];
+    gate[i] = (z / (1.0f + exp(-z))) * up[i];
+}
+
+/* The residual add: x <- x + delta. */
+kernel void add_residual(device float       *x     [[buffer(0)]],
+                         device const float *delta [[buffer(1)]],
+                         constant ElemDims  &d     [[buffer(2)]],
+                         uint i [[thread_position_in_grid]]) {
+    if (i >= d.count) return;
+    x[i] += delta[i];
+}

@@ -119,7 +119,7 @@ static double now(void) {
 }
 
 int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
-             RunState *s, const char *prompt, int max_new,
+             RunState *s, GpuModel *gpu, const char *prompt, int max_new,
              float temperature, float top_p, int top_k, uint64_t seed,
              int *out_ids, bool quiet) {
     int cap = s->max_seq;
@@ -129,11 +129,23 @@ int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
     int n = tokenizer_encode(tok, prompt, (int)strlen(prompt), tokens, cap);
     if (n >= cap) die("prompt fills the whole %d-position context", cap);
 
+    /* One row of logits is all generation ever reads. On the GPU path it has
+     * to be copied out of device memory; on the CPU path it is already in
+     * RunState, so the pointer just aliases it. */
+    float *logits = s->logits;
+    float *gpu_logits = NULL;
+    if (gpu) {
+        gpu_logits = malloc((size_t)cfg->vocab_size * sizeof *gpu_logits);
+        if (!gpu_logits) die("out of memory for the logits row");
+        logits = gpu_logits;
+    }
+
     /* Prefill: the whole prompt in one call, logits for the last row only.
      * Compute-bound — every token is processed against the same weights, so
      * the weights are read once and used n times. */
     double t0 = now();
-    forward(tokens, n, 0, n - 1, w, cfg, s);
+    if (gpu) gpu_forward(gpu, tokens, n, 0, n - 1, logits);
+    else     forward(tokens, n, 0, n - 1, w, cfg, s);
     double t_prefill = now() - t0;
 
     uint64_t rng = seed;
@@ -142,7 +154,7 @@ int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
     double t_decode = 0.0;
 
     for (int pos = n; generated < max_new && pos < cap; pos++) {
-        int next = sample(s->logits, cfg->vocab_size, temperature, top_p, top_k, &rng);
+        int next = sample(logits, cfg->vocab_size, temperature, top_p, top_k, &rng);
         if (is_eos(cfg, next)) break;
         if (out_ids) out_ids[generated] = next;
 
@@ -159,7 +171,8 @@ int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
          * produce a single token, so this is bound by memory bandwidth and
          * nothing else. */
         double t1 = now();
-        forward(&next, 1, pos, 0, w, cfg, s);
+        if (gpu) gpu_forward(gpu, &next, 1, pos, 0, logits);
+        else     forward(&next, 1, pos, 0, w, cfg, s);
         t_decode += now() - t1;
     }
 
@@ -176,5 +189,6 @@ int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
         }
     }
     free(tokens);
+    free(gpu_logits);
     return generated;
 }

@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
 
         int *ids = malloc((size_t)max_new * sizeof *ids);
         if (!ids) die("out of memory for %d generated ids", max_new);
-        int got = generate(&tok, &w, &cfg, &state, argv[3], max_new,
+        int got = generate(&tok, &w, &cfg, &state, NULL, argv[3], max_new,
                            0.0f, 1.0f, 0, 0, ids, true);
 
         FILE *f = fopen(argv[5], "wb");
@@ -225,8 +225,10 @@ int main(int argc, char **argv) {
      * compared, and a benchmark whose output changes every invocation is not
      * a benchmark. Pass a seed explicitly to vary it. */
     if (argc > 3 && (strcmp(argv[2], "--chat") == 0
-                  || strcmp(argv[2], "--complete") == 0)) {
-        bool templated = strcmp(argv[2], "--chat") == 0;
+                  || strcmp(argv[2], "--complete") == 0
+                  || strcmp(argv[2], "--gpu-chat") == 0)) {
+        bool templated = strcmp(argv[2], "--complete") != 0;
+        bool on_gpu = strncmp(argv[2], "--gpu-", 6) == 0;
         int max_new = (argc > 4) ? atoi(argv[4]) : 128;
         uint64_t seed = (argc > 5) ? strtoull(argv[5], NULL, 10) : 20260912ULL;
 
@@ -243,7 +245,19 @@ int main(int argc, char **argv) {
          * of the 311 MB a full prompt's worth would cost. */
         state_alloc(&state, &cfg, 1024, 1);
 
+        MetalContext *mtl = NULL;
+        GpuModel *gpu = NULL;
+        if (on_gpu) {
+            mtl = metal_init("picoforge.metallib");
+            gpu = gpu_model_create(mtl, &st, &cfg, 1024, 1);
+            /* Optional 6th argument picks the matmul kernel: 0 naive,
+             * 1 simdgroup, 2 TensorOps. The benchmark says the answer is not
+             * obvious at M=1, so it is a knob and not a constant. */
+            if (argc > 6) gpu_set_matmul_kernel(gpu, atoi(argv[6]));
+        }
+
         printf("\n=== generating ===\n");
+        printf("device                : %s\n", on_gpu ? "GPU (Metal)" : "CPU (scalar, 1 thread)");
         printf("sampling              : temperature %.2f, top_p %.2f, top_k %d, seed %llu\n",
                (double)cfg.gen_temperature, (double)cfg.gen_top_p, cfg.gen_top_k,
                (unsigned long long)seed);
@@ -252,9 +266,11 @@ int main(int argc, char **argv) {
                (double)(cfg.num_key_value_heads * cfg.head_dim) * 8.0 / 1e6);
         printf("---\n");
 
-        generate(&tok, &w, &cfg, &state, prompt, max_new, cfg.gen_temperature,
+        generate(&tok, &w, &cfg, &state, gpu, prompt, max_new, cfg.gen_temperature,
                  cfg.gen_top_p, cfg.gen_top_k, seed, NULL, false);
 
+        if (gpu) gpu_model_free(gpu);
+        if (mtl) metal_shutdown(mtl);
         state_free(&state);
         weights_free(&w);
     }
@@ -341,14 +357,17 @@ int main(int argc, char **argv) {
      * the raw fp32 logits for tests/test_forward.py to judge. Tokenisation is
      * step 1.6; until then the ids come from the command line. */
     if (argc > 4 && (strcmp(argv[2], "--forward") == 0
-                  || strcmp(argv[2], "--forward-incr") == 0)) {
+                  || strcmp(argv[2], "--forward-incr") == 0
+                  || strcmp(argv[2], "--gpu-forward") == 0
+                  || strcmp(argv[2], "--gpu-forward-incr") == 0)) {
         /* --forward-incr feeds the prompt ONE TOKEN AT A TIME, which is the
          * path generation actually uses. It must produce bit-comparable
          * logits to the batch path: same weights, same positions, only the
          * scheduling differs. Testing only the batch path would leave the
          * cache's real failure mode untested — a RoPE rotation by t instead
          * of pos + t is invisible until the second call. */
-        bool incremental = strcmp(argv[2], "--forward-incr") == 0;
+        bool incremental = strstr(argv[2], "-incr") != NULL;
+        bool use_gpu = strncmp(argv[2], "--gpu-", 6) == 0;
         const char *out_path = argv[3];
         int seq = argc - 4;
 
@@ -372,13 +391,25 @@ int main(int argc, char **argv) {
         float *all = malloc((size_t)seq * vocab * sizeof *all);
         if (!all) die("out of memory for %d rows of logits", seq);
 
+        MetalContext *mtl = NULL;
+        GpuModel *gpu = NULL;
+        if (use_gpu) {
+            mtl = metal_init("picoforge.metallib");
+            gpu = gpu_model_create(mtl, &st, &cfg, seq, seq);
+        }
+
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         if (incremental) {
             for (int i = 0; i < seq; i++) {
-                forward(&tokens[i], 1, i, 0, &w, &cfg, &state);
-                memcpy(all + (size_t)i * vocab, state.logits, vocab * sizeof *all);
+                if (use_gpu) gpu_forward(gpu, &tokens[i], 1, i, 0, all + (size_t)i * vocab);
+                else {
+                    forward(&tokens[i], 1, i, 0, &w, &cfg, &state);
+                    memcpy(all + (size_t)i * vocab, state.logits, vocab * sizeof *all);
+                }
             }
+        } else if (use_gpu) {
+            gpu_forward(gpu, tokens, seq, 0, 0, all);
         } else {
             forward(tokens, seq, 0, 0, &w, &cfg, &state);
             memcpy(all, state.logits, (size_t)seq * vocab * sizeof *all);
@@ -388,11 +419,11 @@ int main(int argc, char **argv) {
                     + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
 
         printf("\n=== forward ===\n");
-        printf("mode                  : %s\n", incremental ? "incremental (1 token per call)"
-                                                            : "batch (all tokens at once)");
+        printf("mode                  : %s, %s\n",
+               use_gpu ? "GPU" : "CPU (scalar, 1 thread)",
+               incremental ? "incremental (1 token per call)" : "batch (all at once)");
         printf("tokens                : %d\n", seq);
-        printf("prefill               : %.3f s  (%.1f tok/s, scalar CPU, 1 thread)\n",
-               secs, (double)seq / secs);
+        printf("prefill               : %.3f s  (%.1f tok/s)\n", secs, (double)seq / secs);
 
         /* Top-5 of the last row: what the model thinks comes next. softmax is
          * in place and destructive, so it runs on a copy of that one row —
@@ -420,6 +451,8 @@ int main(int argc, char **argv) {
         fclose(f);
         printf("logits                : %zu floats -> %s\n", n, out_path);
 
+        if (gpu) gpu_model_free(gpu);
+        if (mtl) metal_shutdown(mtl);
         free(all);
         state_free(&state);
         weights_free(&w);

@@ -20,6 +20,12 @@ struct MetalContext {
     void *queue;         /* id<MTLCommandQueue> */
     void *pipelines[3];  /* id<MTLComputePipelineState>, one per kernel */
     void *empty;         /* the do-nothing kernel, for the dispatch floor */
+    void *library;       /* id<MTLLibrary>, so pipelines can be built by name */
+
+    /* Pipelines built on demand and kept. Building one costs a compile, and
+     * the forward pass asks for the same nine every call. */
+    struct { char name[48]; void *pso; } cache[32];
+    int cached;
 };
 
 static const char *kernel_names[3] = {
@@ -40,6 +46,7 @@ MetalContext *metal_init(const char *metallib_path) {
     id<MTLLibrary> lib = [dev newLibraryWithURL:url error:&err];
     if (!lib) die("cannot load %s: %s", metallib_path, err.localizedDescription.UTF8String);
 
+    ctx->library = (__bridge_retained void *)lib;
     ctx->device = (__bridge_retained void *)dev;
     ctx->queue  = (__bridge_retained void *)[dev newCommandQueue];
 
@@ -71,6 +78,8 @@ void metal_shutdown(MetalContext *ctx) {
     for (int i = 0; i < 3; i++)
         if (ctx->pipelines[i]) CFRelease(ctx->pipelines[i]);
     if (ctx->empty) CFRelease(ctx->empty);
+    for (int i = 0; i < ctx->cached; i++) CFRelease(ctx->cache[i].pso);
+    if (ctx->library) CFRelease(ctx->library);
     if (ctx->queue)  CFRelease(ctx->queue);
     if (ctx->device) CFRelease(ctx->device);
     free(ctx);
@@ -232,4 +241,32 @@ double metal_dispatch_floor(MetalContext *ctx) {
         if (rep >= 5 && t < best) best = t;    /* best of 45, after warmup */
     }
     return best;
+}
+
+/* --------------------------------------------------------- accessors
+ * gpu_forward.m needs the raw objects. They leave this file as void* so
+ * that nothing else in the engine has to include Metal headers. */
+void *metal_device(MetalContext *ctx) { return ctx->device; }
+void *metal_queue(MetalContext *ctx)  { return ctx->queue; }
+
+void *metal_pipeline(MetalContext *ctx, const char *name) {
+    for (int i = 0; i < ctx->cached; i++)
+        if (strcmp(ctx->cache[i].name, name) == 0) return ctx->cache[i].pso;
+
+    if (ctx->cached >= (int)(sizeof ctx->cache / sizeof ctx->cache[0]))
+        die("more than %zu pipelines requested", sizeof ctx->cache / sizeof ctx->cache[0]);
+
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)ctx->device;
+    id<MTLLibrary> lib = (__bridge id<MTLLibrary>)ctx->library;
+    id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:name]];
+    if (!fn) die("kernel %s is not in the library", name);
+
+    NSError *err = nil;
+    id<MTLComputePipelineState> pso = [dev newComputePipelineStateWithFunction:fn error:&err];
+    if (!pso) die("cannot build pipeline %s: %s", name,
+                  err.localizedDescription.UTF8String);
+
+    snprintf(ctx->cache[ctx->cached].name, sizeof ctx->cache[0].name, "%s", name);
+    ctx->cache[ctx->cached].pso = (__bridge_retained void *)pso;
+    return ctx->cache[ctx->cached++].pso;
 }

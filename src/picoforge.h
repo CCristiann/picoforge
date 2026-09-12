@@ -258,6 +258,24 @@ void   metal_matmul_free(MetalMatmul *mm);
 
 /* The measurement harness. Writes one CSV row per (kernel, shape). */
 void   bench_matmul(MetalContext *ctx, const char *csv_path);
+
+/* Raw Metal objects, as void* so nothing else has to include Metal headers. */
+void  *metal_device(MetalContext *ctx);
+void  *metal_queue(MetalContext *ctx);
+void  *metal_pipeline(MetalContext *ctx, const char *name);
+
+/* --------------------------------------------------------- GPU forward
+ * The whole model resident on the GPU. The weights are not uploaded: the
+ * mmapped checkpoint is bound with no copy, so the GPU reads the same
+ * physical pages the CPU does and "moving the model to the GPU" costs one
+ * pointer. Every forward pass is a single command buffer. */
+typedef struct GpuModel GpuModel;
+GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
+                           const Qwen3Config *cfg, int max_seq, int max_rows);
+void gpu_model_free(GpuModel *g);
+void gpu_set_matmul_kernel(GpuModel *g, int which);
+void gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                 float *logits_out);
 double metal_matmul(MetalContext *ctx, int which,
                     float *C, const float *A, const uint16_t *B,
                     int M, int N, int K);
@@ -270,7 +288,7 @@ void chat_format(char *out, int cap, const char *user, bool thinking);
  * only setting under which two implementations can be compared token for
  * token. If out_ids is non-NULL the generated ids are written there too. */
 int  generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
-              RunState *s, const char *prompt, int max_new,
+              RunState *s, GpuModel *gpu, const char *prompt, int max_new,
               float temperature, float top_p, int top_k, uint64_t seed,
               int *out_ids, bool quiet);
 
