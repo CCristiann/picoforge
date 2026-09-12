@@ -14,6 +14,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -103,6 +104,41 @@ void config_load(const char *model_dir, Qwen3Config *cfg) {
             cfg->num_attention_heads, cfg->num_key_value_heads);
 
     free(json);
+
+    /* generation_config.json is optional in general but present here. Its
+     * eos_token_id is a LIST: Qwen3 stops on <|im_end|> during chat and on
+     * <|endoftext|> otherwise, and honouring only the first would leave the
+     * model generating past the end of its turn. */
+    snprintf(path, sizeof path, "%s/generation_config.json", model_dir);
+    cfg->n_eos = 0;
+    cfg->gen_temperature = 1.0f;
+    cfg->gen_top_p = 1.0f;
+    cfg->gen_top_k = 0;
+
+    FILE *probe = fopen(path, "rb");
+    if (probe) {
+        fclose(probe);
+        char *gen = slurp(path, NULL);
+        const char *p = strstr(gen, "\"eos_token_id\"");
+        if (p) {
+            p = json_expect(p + strlen("\"eos_token_id\""), ':');
+            while (isspace((unsigned char)*p)) p++;
+            if (*p == '[') {
+                long ids[8];
+                json_ints(p, ids, 8, &cfg->n_eos);
+                for (int i = 0; i < cfg->n_eos; i++) cfg->eos_ids[i] = (int)ids[i];
+            } else {
+                cfg->eos_ids[0] = (int)strtol(p, NULL, 10);
+                cfg->n_eos = 1;
+            }
+        }
+        if (strstr(gen, "\"temperature\""))
+            cfg->gen_temperature = (float)json_num(gen, "temperature");
+        if (strstr(gen, "\"top_p\"")) cfg->gen_top_p = (float)json_num(gen, "top_p");
+        if (strstr(gen, "\"top_k\"")) cfg->gen_top_k = (int)json_int(gen, "top_k");
+        free(gen);
+    }
+    if (cfg->n_eos == 0) { cfg->eos_ids[0] = cfg->eos_token_id; cfg->n_eos = 1; }
 }
 
 void config_print(const Qwen3Config *cfg) {
@@ -135,4 +171,9 @@ void config_print(const Qwen3Config *cfg) {
            cfg->tie_word_embeddings ? "True" : "False");
     printf("weights dtype         : %s (oracle computes in fp32)\n", cfg->torch_dtype);
     printf("bos / eos             : %d / %d\n", cfg->bos_token_id, cfg->eos_token_id);
+    printf("stop tokens           :");
+    for (int i = 0; i < cfg->n_eos; i++) printf(" %d", cfg->eos_ids[i]);
+    printf("  (from generation_config.json)\n");
+    printf("sampling defaults     : temperature %g, top_p %g, top_k %d\n",
+           (double)cfg->gen_temperature, (double)cfg->gen_top_p, cfg->gen_top_k);
 }

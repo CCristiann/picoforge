@@ -101,6 +101,77 @@ int main(int argc, char **argv) {
         printf("dumped %d merge rules -> %s\n", tok.n_merges, argv[3]);
     }
 
+    /* --greedy TEXT MAX_NEW OUT.txt : greedy generation, ids written to OUT.
+     * Greedy because it is the only setting under which two implementations
+     * can be compared token for token — with sampling on, matching output
+     * would only prove the two RNGs agree. */
+    if (argc > 5 && strcmp(argv[2], "--greedy") == 0) {
+        int max_new = atoi(argv[4]);
+        Weights w;
+        weights_bind(&st, &cfg, &w);
+        RunState state;
+        state_alloc(&state, &cfg, 1024, 1);
+
+        int *ids = malloc((size_t)max_new * sizeof *ids);
+        if (!ids) die("out of memory for %d generated ids", max_new);
+        int got = generate(&tok, &w, &cfg, &state, argv[3], max_new,
+                           0.0f, 1.0f, 0, 0, ids, true);
+
+        FILE *f = fopen(argv[5], "wb");
+        if (!f) die("cannot write %s", argv[5]);
+        for (int i = 0; i < got; i++) fprintf(f, i ? " %d" : "%d", ids[i]);
+        fputc('\n', f);
+        fclose(f);
+        printf("greedy: %d tokens -> %s\n", got, argv[5]);
+
+        free(ids);
+        state_free(&state);
+        weights_free(&w);
+    }
+
+    /* --chat TEXT [MAX_NEW] [SEED] : wrap TEXT in the chat template and
+     * generate. --complete TEXT continues raw text with no template at all,
+     * which is what the base model actually does.
+     *
+     * The seed defaults to a constant rather than to the clock. This is a
+     * measurement instrument: a run that cannot be repeated cannot be
+     * compared, and a benchmark whose output changes every invocation is not
+     * a benchmark. Pass a seed explicitly to vary it. */
+    if (argc > 3 && (strcmp(argv[2], "--chat") == 0
+                  || strcmp(argv[2], "--complete") == 0)) {
+        bool templated = strcmp(argv[2], "--chat") == 0;
+        int max_new = (argc > 4) ? atoi(argv[4]) : 128;
+        uint64_t seed = (argc > 5) ? strtoull(argv[5], NULL, 10) : 20260912ULL;
+
+        char prompt[16384];
+        if (templated)
+            chat_format(prompt, (int)sizeof prompt, argv[3], /*thinking=*/false);
+        else
+            snprintf(prompt, sizeof prompt, "%s", argv[3]);
+
+        Weights w;
+        weights_bind(&st, &cfg, &w);
+        RunState state;
+        /* One row of logits is all generation ever looks at: 0.6 MB instead
+         * of the 311 MB a full prompt's worth would cost. */
+        state_alloc(&state, &cfg, 1024, 1);
+
+        printf("\n=== generating ===\n");
+        printf("sampling              : temperature %.2f, top_p %.2f, top_k %d, seed %llu\n",
+               (double)cfg.gen_temperature, (double)cfg.gen_top_p, cfg.gen_top_k,
+               (unsigned long long)seed);
+        printf("context               : 1024 positions (%.0f MB of K/V cache)\n",
+               (double)cfg.num_hidden_layers * 1024.0 *
+               (double)(cfg.num_key_value_heads * cfg.head_dim) * 8.0 / 1e6);
+        printf("---\n");
+
+        generate(&tok, &w, &cfg, &state, prompt, max_new, cfg.gen_temperature,
+                 cfg.gen_top_p, cfg.gen_top_k, seed, NULL, false);
+
+        state_free(&state);
+        weights_free(&w);
+    }
+
     /* --nfc-file IN.bin OUT.bin : normalise each NUL-separated text. Exists so
      * tests/test_nfc.py can fuzz nfc_normalize against Python's unicodedata
      * directly. The 30 hand-picked prompts in test_encode.py show NFC works
@@ -182,7 +253,15 @@ int main(int argc, char **argv) {
     /* --forward OUT.bin ID ID ... : run the model on those token ids, dump
      * the raw fp32 logits for tests/test_forward.py to judge. Tokenisation is
      * step 1.6; until then the ids come from the command line. */
-    if (argc > 4 && strcmp(argv[2], "--forward") == 0) {
+    if (argc > 4 && (strcmp(argv[2], "--forward") == 0
+                  || strcmp(argv[2], "--forward-incr") == 0)) {
+        /* --forward-incr feeds the prompt ONE TOKEN AT A TIME, which is the
+         * path generation actually uses. It must produce bit-comparable
+         * logits to the batch path: same weights, same positions, only the
+         * scheduling differs. Testing only the batch path would leave the
+         * cache's real failure mode untested — a RoPE rotation by t instead
+         * of pos + t is invisible until the second call. */
+        bool incremental = strcmp(argv[2], "--forward-incr") == 0;
         const char *out_path = argv[3];
         int seq = argc - 4;
 
@@ -200,16 +279,30 @@ int main(int argc, char **argv) {
         Weights w;
         weights_bind(&st, &cfg, &w);
         RunState state;
-        state_alloc(&state, &cfg, seq);
+        state_alloc(&state, &cfg, seq, seq);
+
+        size_t vocab = (size_t)cfg.vocab_size;
+        float *all = malloc((size_t)seq * vocab * sizeof *all);
+        if (!all) die("out of memory for %d rows of logits", seq);
 
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        forward(tokens, seq, &w, &cfg, &state);
+        if (incremental) {
+            for (int i = 0; i < seq; i++) {
+                forward(&tokens[i], 1, i, 0, &w, &cfg, &state);
+                memcpy(all + (size_t)i * vocab, state.logits, vocab * sizeof *all);
+            }
+        } else {
+            forward(tokens, seq, 0, 0, &w, &cfg, &state);
+            memcpy(all, state.logits, (size_t)seq * vocab * sizeof *all);
+        }
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double secs = (double)(t1.tv_sec - t0.tv_sec)
                     + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
 
         printf("\n=== forward ===\n");
+        printf("mode                  : %s\n", incremental ? "incremental (1 token per call)"
+                                                            : "batch (all tokens at once)");
         printf("tokens                : %d\n", seq);
         printf("prefill               : %.3f s  (%.1f tok/s, scalar CPU, 1 thread)\n",
                secs, (double)seq / secs);
@@ -217,10 +310,9 @@ int main(int argc, char **argv) {
         /* Top-5 of the last row: what the model thinks comes next. softmax is
          * in place and destructive, so it runs on a copy of that one row —
          * 600 KB, against the 2 seconds a second forward pass would cost. */
-        size_t vocab = (size_t)cfg.vocab_size;
         float *probs = malloc(vocab * sizeof *probs);
         if (!probs) die("out of memory for the probability row");
-        memcpy(probs, state.logits + (size_t)(seq - 1) * vocab, vocab * sizeof *probs);
+        memcpy(probs, all + (size_t)(seq - 1) * vocab, vocab * sizeof *probs);
         softmax(probs, cfg.vocab_size);
 
         printf("top-5 next tokens     :");
@@ -235,12 +327,13 @@ int main(int argc, char **argv) {
 
         FILE *f = fopen(out_path, "wb");
         if (!f) die("cannot write %s", out_path);
-        size_t n = (size_t)seq * (size_t)cfg.vocab_size;
-        if (fwrite(state.logits, sizeof(float), n, f) != n)
+        size_t n = (size_t)seq * vocab;
+        if (fwrite(all, sizeof(float), n, f) != n)
             die("short write to %s", out_path);
         fclose(f);
         printf("logits                : %zu floats -> %s\n", n, out_path);
 
+        free(all);
         state_free(&state);
         weights_free(&w);
         free(tokens);

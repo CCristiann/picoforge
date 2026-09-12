@@ -2,6 +2,31 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-12 (later still) — Phase 1 complete: the C engine generates
+
+Steps 1.6-1.9. Byte-level BPE tokenizer (30/30 adversarial prompts identical to
+HuggingFace, all round-tripping), full NFC normalisation (fuzzed against Python's
+unicodedata on 4017 strings), K/V cache, sampling with temperature/top-k/top-p,
+and Qwen3's chat template. Token-level parity reached: three prompts generate
+the identical 16-token greedy continuation as transformers, code and multi-byte
+characters included.
+
+Three bugs worth remembering, all found by counting rather than by reading:
+96 merge rules silently dropped because merges.txt uses '#' for both comments
+and data; added tokens matched only at pre-token boundaries, by which point the
+regex had already eaten " <|"; and NFC missing entirely, which would have made
+every accented prompt copied out of Finder diverge.
+
+Measured baseline, scalar and single-threaded: prefill 4.9 tok/s, decode
+3.7 tok/s. Decode moves 4.4 GB/s of the machine's 307 -- 1.4%. That number is
+Phase 2's entire subject. Theoretical decode ceiling is 307 / 1.19 GB = 258
+tok/s, so there is 70x on the table before physics intervenes.
+
+**Next:** Phase 2 -- Metal. Re-run tools/probe/metal4_probe first (the tensor
+API tightened since macOS 26.2: K must be a multiple of 32 in matmul2d_descriptor
+or it silently truncates). Then one matmul kernel in three versions: naive,
+simdgroup, TensorOps on the Neural Accelerators.
+
 ## 2026-09-12 (later) — Phase 1 reaches logit parity
 
 The C engine now runs Qwen3-0.6B end to end. Steps 1.1-1.5: dependency-free

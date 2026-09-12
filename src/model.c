@@ -64,33 +64,36 @@ static float *xalloc(size_t n, const char *what) {
     return p;
 }
 
-void state_alloc(RunState *s, const Qwen3Config *cfg, int seq) {
-    size_t t      = (size_t)seq;
+void state_alloc(RunState *s, const Qwen3Config *cfg, int max_seq, int max_rows) {
+    size_t t      = (size_t)max_seq;
     size_t H      = (size_t)cfg->hidden_size;
     size_t q_dim  = (size_t)(cfg->num_attention_heads * cfg->head_dim);
     size_t kv_dim = (size_t)(cfg->num_key_value_heads * cfg->head_dim);
     size_t I      = (size_t)cfg->intermediate_size;
+    size_t L      = (size_t)cfg->num_hidden_layers;
 
-    s->seq    = seq;
-    s->x      = xalloc(t * H, "residual stream");
-    s->xb     = xalloc(t * H, "scratch");
-    s->q      = xalloc(t * q_dim, "queries");
-    s->k      = xalloc(t * kv_dim, "keys");
-    s->v      = xalloc(t * kv_dim, "values");
-    s->att    = xalloc(t, "attention scores");
-    s->attout = xalloc(t * q_dim, "attention output");
-    s->hb     = xalloc(t * I, "mlp gate");
-    s->hb2    = xalloc(t * I, "mlp up");
-    s->logits = xalloc(t * (size_t)cfg->vocab_size, "logits");
+    s->max_seq  = max_seq;
+    s->max_rows = max_rows;
+    s->x        = xalloc(t * H, "residual stream");
+    s->xb       = xalloc(t * H, "scratch");
+    s->q        = xalloc(t * q_dim, "queries");
+    s->kcache   = xalloc(L * t * kv_dim, "key cache");
+    s->vcache   = xalloc(L * t * kv_dim, "value cache");
+    s->att      = xalloc(t, "attention scores");
+    s->attout   = xalloc(t * q_dim, "attention output");
+    s->hb       = xalloc(t * I, "mlp gate");
+    s->hb2      = xalloc(t * I, "mlp up");
+    s->logits   = xalloc((size_t)max_rows * (size_t)cfg->vocab_size, "logits");
 }
 
 void state_free(RunState *s) {
-    free(s->x);   free(s->xb);  free(s->q);   free(s->k);  free(s->v);
+    free(s->x);   free(s->xb);     free(s->q);
+    free(s->kcache); free(s->vcache);
     free(s->att); free(s->attout); free(s->hb); free(s->hb2); free(s->logits);
 }
 
-void forward(const int *tokens, int seq, const Weights *w,
-             const Qwen3Config *cfg, RunState *s) {
+void forward(const int *tokens, int n, int pos, int logits_from,
+             const Weights *w, const Qwen3Config *cfg, RunState *s) {
     const int H      = cfg->hidden_size;
     const int hd     = cfg->head_dim;
     const int n_head = cfg->num_attention_heads;
@@ -102,109 +105,120 @@ void forward(const int *tokens, int seq, const Weights *w,
     const float eps  = cfg->rms_norm_eps;
 
     /* 1/sqrt(head_dim). Without it the dot products grow like head_dim, the
-     * softmax saturates, and gradients — and here, attention itself —
-     * collapse onto a single position. */
+     * softmax saturates, and attention collapses onto a single position. */
     const float scale = 1.0f / sqrtf((float)hd);
 
-    /* Embedding is a row lookup, nothing more. */
-    for (int t = 0; t < seq; t++) {
+    if (pos + n > s->max_seq)
+        die("context overflow: %d tokens at position %d exceeds the %d-position cache",
+            n, pos, s->max_seq);
+
+    for (int t = 0; t < n; t++) {
         const uint16_t *row = w->embed + (size_t)tokens[t] * (size_t)H;
         for (int i = 0; i < H; i++) s->x[t * H + i] = bf16_to_f32(row[i]);
     }
 
     for (int l = 0; l < cfg->num_hidden_layers; l++) {
         const LayerWeights *L = &w->layers[l];
+        float *kc = s->kcache + (size_t)l * (size_t)s->max_seq * (size_t)kv_dim;
+        float *vc = s->vcache + (size_t)l * (size_t)s->max_seq * (size_t)kv_dim;
 
         /* ---- attention sub-block ---- */
-        for (int t = 0; t < seq; t++)
+        for (int t = 0; t < n; t++)
             rmsnorm(s->xb + t * H, s->x + t * H, L->input_ln, H, eps);
 
-        for (int t = 0; t < seq; t++) {
-            matmul(s->q + t * q_dim,  s->xb + t * H, L->q_proj, H, q_dim);
-            matmul(s->k + t * kv_dim, s->xb + t * H, L->k_proj, H, kv_dim);
-            matmul(s->v + t * kv_dim, s->xb + t * H, L->v_proj, H, kv_dim);
+        /* K and V are projected straight into the cache at their absolute
+         * positions. They are never recomputed again. */
+        for (int t = 0; t < n; t++) {
+            matmul(s->q + t * q_dim, s->xb + t * H, L->q_proj, H, q_dim);
+            matmul(kc + (size_t)(pos + t) * (size_t)kv_dim, s->xb + t * H,
+                   L->k_proj, H, kv_dim);
+            matmul(vc + (size_t)(pos + t) * (size_t)kv_dim, s->xb + t * H,
+                   L->v_proj, H, kv_dim);
         }
 
-        /* Qwen3's per-head QK-norm, then RoPE. That order is not negotiable,
-         * and neither ever touches V.
+        /* Qwen3's per-head QK-norm, then RoPE, at the ABSOLUTE position. This
+         * is where a KV cache goes wrong most easily: rotate by t instead of
+         * pos + t and every generated token believes it is at the start of
+         * the sequence. The cached keys already carry their own rotation, so
+         * the error is invisible during prefill and appears only once
+         * generation begins.
          *
-         * rmsnorm runs in place here. That is safe only because it sums all
-         * of x before writing any of out: fusing those two loops — the
-         * obvious "optimisation" — would corrupt the vector silently. */
-        for (int t = 0; t < seq; t++) {
+         * rmsnorm runs in place, which is safe only because it sums all of x
+         * before writing any of out. */
+        for (int t = 0; t < n; t++) {
             for (int h = 0; h < n_head; h++) {
                 float *qh = s->q + t * q_dim + h * hd;
                 rmsnorm(qh, qh, L->q_norm, hd, eps);
-                rope_apply(qh, hd, t, cfg->rope_theta);
+                rope_apply(qh, hd, pos + t, cfg->rope_theta);
             }
             for (int h = 0; h < n_kv; h++) {
-                float *kh = s->k + t * kv_dim + h * hd;
+                float *kh = kc + (size_t)(pos + t) * (size_t)kv_dim + h * hd;
                 rmsnorm(kh, kh, L->k_norm, hd, eps);
-                rope_apply(kh, hd, t, cfg->rope_theta);
+                rope_apply(kh, hd, pos + t, cfg->rope_theta);
             }
         }
 
-        /* Causal attention. The oracle builds a seq x seq mask of -inf above
-         * the diagonal and lets softmax turn those into exact zeros. Here the
-         * key loop simply stops at t: same arithmetic, half the work, and no
-         * mask that can be built wrong.
+        /* Causal attention over the cache. Causality is structural: the key
+         * loop stops at the query's own absolute position, so there is no
+         * mask to build and none to get wrong.
          *
-         * GQA is an index, not a copy: Q head h reads KV head h / group. The
-         * oracle np.repeat's K and V for readability; duplicating 8 heads into
-         * 16 would be pure waste here. */
+         * GQA is an index, not a copy: Q head h reads KV head h / group. */
         for (int h = 0; h < n_head; h++) {
             const int kvh = h / group;
-            for (int t = 0; t < seq; t++) {
+            for (int t = 0; t < n; t++) {
+                const int abs_t = pos + t;
                 const float *qh = s->q + t * q_dim + h * hd;
 
-                for (int j = 0; j <= t; j++) {
-                    const float *kh = s->k + j * kv_dim + kvh * hd;
+                for (int j = 0; j <= abs_t; j++) {
+                    const float *kh = kc + (size_t)j * (size_t)kv_dim + kvh * hd;
                     float dot = 0.0f;
                     for (int d = 0; d < hd; d++) dot += qh[d] * kh[d];
                     s->att[j] = dot * scale;
                 }
-                softmax(s->att, t + 1);
+                softmax(s->att, abs_t + 1);
 
                 float *out = s->attout + t * q_dim + h * hd;
                 for (int d = 0; d < hd; d++) out[d] = 0.0f;
-                for (int j = 0; j <= t; j++) {
-                    const float *vh = s->v + j * kv_dim + kvh * hd;
+                for (int j = 0; j <= abs_t; j++) {
+                    const float *vh = vc + (size_t)j * (size_t)kv_dim + kvh * hd;
                     const float a = s->att[j];
                     for (int d = 0; d < hd; d++) out[d] += a * vh[d];
                 }
             }
         }
 
-        for (int t = 0; t < seq; t++) {
+        for (int t = 0; t < n; t++) {
             matmul(s->xb + t * H, s->attout + t * q_dim, L->o_proj, q_dim, H);
             for (int i = 0; i < H; i++) s->x[t * H + i] += s->xb[t * H + i];
         }
 
         /* ---- SwiGLU MLP sub-block ----
          * Strictly per-token: attention moves information between positions,
-         * the MLP digests it in place. `up` carries content and silu(gate) is
-         * a learned per-channel valve deciding how much of it passes. */
-        for (int t = 0; t < seq; t++)
+         * the MLP digests it in place. */
+        for (int t = 0; t < n; t++)
             rmsnorm(s->xb + t * H, s->x + t * H, L->post_attn_ln, H, eps);
 
-        for (int t = 0; t < seq; t++) {
+        for (int t = 0; t < n; t++) {
             matmul(s->hb  + t * I, s->xb + t * H, L->gate_proj, H, I);
             matmul(s->hb2 + t * I, s->xb + t * H, L->up_proj,   H, I);
             for (int i = 0; i < I; i++)
                 s->hb[t * I + i] = silu(s->hb[t * I + i]) * s->hb2[t * I + i];
 
-            /* xb is free again: it was the input to gate and up, both done. */
             matmul(s->xb + t * H, s->hb + t * I, L->down_proj, I, H);
             for (int i = 0; i < H; i++) s->x[t * H + i] += s->xb[t * H + i];
         }
     }
 
-    /* Final norm, then the LM head — which is the embedding matrix read the
-     * other way round. Row i of the logits is the model's belief about token
-     * i+1, computed from tokens 0..i only. */
-    for (int t = 0; t < seq; t++) {
+    /* Final norm, then the LM head — the embedding matrix read the other way
+     * round. Only the requested rows: during generation the caller wants the
+     * last one, and this matmul is 13% of a prompt-length forward pass. */
+    if (logits_from < 0 || logits_from >= n) die("forward: logits_from out of range");
+    if (n - logits_from > s->max_rows)
+        die("forward: %d logit rows requested, %d allocated", n - logits_from, s->max_rows);
+
+    for (int t = logits_from; t < n; t++) {
         rmsnorm(s->xb + t * H, s->x + t * H, w->final_norm, H, eps);
-        matmul(s->logits + (size_t)t * (size_t)cfg->vocab_size,
+        matmul(s->logits + (size_t)(t - logits_from) * (size_t)cfg->vocab_size,
                s->xb + t * H, w->embed, H, cfg->vocab_size);
     }
 }

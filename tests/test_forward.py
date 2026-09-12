@@ -42,16 +42,16 @@ MAX_KL_NATS = 1e-7
 PROMPTS = ["Hello", "The capital of France is", "Roses are red and violets are"]
 
 
-def c_logits(model_dir: Path, ids: list[int], vocab: int) -> np.ndarray:
+def c_logits(model_dir: Path, ids: list[int], vocab: int, mode: str) -> np.ndarray:
     """Run the C engine on these ids and read back its raw fp32 logits."""
     with tempfile.NamedTemporaryFile(suffix=".bin") as tmp:
-        cmd = [str(ROOT / "picoforge"), str(model_dir), "--forward", tmp.name]
+        cmd = [str(ROOT / "picoforge"), str(model_dir), mode, tmp.name]
         cmd += [str(i) for i in ids]
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT)
         if proc.returncode != 0:
             sys.exit(f"picoforge failed:\n{proc.stdout}\n{proc.stderr}")
         for line in proc.stdout.splitlines():
-            if line.startswith(("prefill", "top-5")):
+            if line.startswith(("prefill", "mode")):
                 print("  " + line.strip())
         return np.fromfile(tmp.name, dtype=np.float32).reshape(len(ids), vocab)
 
@@ -93,9 +93,10 @@ def main() -> None:
     for prompt in PROMPTS:
         ids = tok(prompt)["input_ids"]
         print(f"\n=== {len(ids)} tokens: {prompt!r} ===")
-        ours = c_logits(model_dir, ids, cfg.vocab_size)
         ref = forward(ids, weights, cfg)
-        all_ok &= compare(ours, ref, f"{len(ids)} tokens")
+        for mode, label in (("--forward", "batch"), ("--forward-incr", "incremental")):
+            ours = c_logits(model_dir, ids, cfg.vocab_size, mode)
+            all_ok &= compare(ours, ref, f"{len(ids)} tokens, {label}")
         print(f"  oracle's next token   : {tok.decode([int(ref[-1].argmax())])!r}")
 
     print("\n" + ("C engine matches the oracle — chain of oracles intact"

@@ -28,6 +28,16 @@ typedef struct {
     int   bos_token_id;
     int   eos_token_id;
     char  torch_dtype[16];         /* storage dtype; we compute in fp32   */
+
+    /* Sampling defaults and stop tokens, from generation_config.json. They
+     * are the model's, not ours: Qwen3 ships 0.6 / 0.95 / 20 because that is
+     * what it was tuned for, and inventing our own would mean benchmarking a
+     * different model than the one that was released. */
+    int   eos_ids[8];
+    int   n_eos;
+    float gen_temperature;
+    float gen_top_p;
+    int   gen_top_k;
 } Qwen3Config;
 
 /* Fail loudly and immediately. Printf-style, prefixed, exit(1).
@@ -121,22 +131,41 @@ typedef struct {
     LayerWeights   *layers;
 } Weights;
 
-/* Every activation buffer the forward pass needs, allocated once. */
+/* Every activation buffer the forward pass needs, allocated once.
+ *
+ * The K/V cache is the reason generation is affordable at all. Without it,
+ * emitting token 500 means recomputing the keys and values of the 499 before
+ * it, every time. With it, each step appends one row per layer and reads the
+ * rest. Prefill and decode become the same code path: n tokens starting at
+ * position pos, with n = prompt length once and n = 1 thereafter.
+ *
+ * It is not free. 28 layers x 1024 kv dims x 4 bytes x 2 tensors is 229 KB
+ * per position, so 2048 tokens of context cost 469 MB — several times the
+ * weights themselves. That arithmetic is why quantising the cache is a real
+ * topic and not a micro-optimisation. */
 typedef struct {
-    int    seq;
+    int    max_seq;               /* capacity of the cache, in positions     */
+    int    max_rows;              /* how many rows of logits fit             */
     float *x, *xb;                /* residual stream, and a scratch copy     */
-    float *q, *k, *v;             /* projections, laid out (seq, heads, dim) */
-    float *att, *attout;          /* one head-row of scores; merged heads    */
+    float *q;                     /* queries, (n, heads, head_dim)           */
+    float *kcache, *vcache;       /* (layers, max_seq, kv_dim)               */
+    float *att, *attout;          /* scores over the cache; merged heads     */
     float *hb, *hb2;              /* SwiGLU gate and up                      */
-    float *logits;                /* (seq, vocab)                            */
+    float *logits;                /* (max_rows, vocab)                       */
 } RunState;
 
 void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w);
 void weights_free(Weights *w);
-void state_alloc(RunState *s, const Qwen3Config *cfg, int seq);
+void state_alloc(RunState *s, const Qwen3Config *cfg, int max_seq, int max_rows);
 void state_free(RunState *s);
-void forward(const int *tokens, int seq, const Weights *w,
-             const Qwen3Config *cfg, RunState *s);
+
+/* Run n tokens whose first one sits at absolute position `pos`. Keys and
+ * values for positions [0, pos) must already be in the cache; this appends
+ * its own. Logits are written for rows [logits_from, n), row i landing at
+ * logits + (i - logits_from) * vocab_size — generation wants only the last
+ * row, and the LM head is 13% of the work at prompt length. */
+void forward(const int *tokens, int n, int pos, int logits_from,
+             const Weights *w, const Qwen3Config *cfg, RunState *s);
 
 /* ------------------------------------------------------------- tokenizer
  * Byte-level BPE. The vocabulary starts from all 256 possible bytes, every
@@ -202,5 +231,17 @@ int  tokenizer_find(const Tokenizer *t, const unsigned char *b, int n); /* -1 ab
 int  tokenizer_rank(const Tokenizer *t, int left, int right);          /* -1 absent */
 int  tokenizer_encode(const Tokenizer *t, const char *text, int len, int *out, int cap);
 int  tokenizer_decode(const Tokenizer *t, const int *ids, int n, char *out, int cap);
+
+/* ------------------------------------------------------------- sampling */
+int  sample(const float *logits, int vocab, float temperature, float top_p,
+            int top_k, uint64_t *rng);
+void chat_format(char *out, int cap, const char *user, bool thinking);
+/* Generate up to max_new tokens. temperature 0 means greedy, which is the
+ * only setting under which two implementations can be compared token for
+ * token. If out_ids is non-NULL the generated ids are written there too. */
+int  generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
+              RunState *s, const char *prompt, int max_new,
+              float temperature, float top_p, int top_k, uint64_t seed,
+              int *out_ids, bool quiet);
 
 #endif /* PICOFORGE_H */

@@ -26,7 +26,10 @@ test: tests/test_ops
 
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
-test-all: test test-nfc test-tokenizer test-encode test-forward
+test-all: test test-nfc test-tokenizer test-encode test-forward test-generate
+
+test-generate: picoforge
+	@./tools/venv/bin/python tests/test_generate.py
 
 test-nfc: picoforge
 	@./tools/venv/bin/python tests/test_nfc.py
@@ -44,4 +47,4 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops
 
-.PHONY: clean test test-all test-forward test-tokenizer test-encode test-nfc
+.PHONY: clean test test-all test-forward test-tokenizer test-encode test-nfc test-generate
