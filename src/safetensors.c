@@ -29,11 +29,15 @@ static DType parse_dtype(const char *s) {
     if (strcmp(s, "BF16") == 0) return DT_BF16;
     if (strcmp(s, "F32")  == 0) return DT_F32;
     if (strcmp(s, "F16")  == 0) return DT_F16;
+    if (strcmp(s, "I8")   == 0) return DT_I8;       /* Phase 3: 8-bit codes     */
+    if (strcmp(s, "U8")   == 0) return DT_U8;       /* Phase 3: packed nibbles  */
     die("safetensors: unsupported dtype \"%s\"", s);
     return DT_F32;                                     /* unreachable */
 }
 
-static size_t dtype_size(DType d) { return (d == DT_F32) ? 4u : 2u; }
+static size_t dtype_size(DType d) {
+    return (d == DT_F32) ? 4u : (d == DT_I8 || d == DT_U8) ? 1u : 2u;
+}
 
 /* Walk the top-level object once. If `out` is NULL we only count, which is
  * how we learn how much to allocate before the second, filling pass. */
@@ -175,11 +179,16 @@ void st_close(SafeTensors *st) {
     st->n_tensors = 0;
 }
 
-const Tensor *st_find(const SafeTensors *st, const char *name) {
+const Tensor *st_try(const SafeTensors *st, const char *name) {
     for (int i = 0; i < st->n_tensors; i++)
         if (strcmp(st->tensors[i].name, name) == 0) return &st->tensors[i];
-    die("checkpoint has no tensor named \"%s\"", name);
-    return NULL;                                       /* unreachable */
+    return NULL;
+}
+
+const Tensor *st_find(const SafeTensors *st, const char *name) {
+    const Tensor *t = st_try(st, name);
+    if (!t) die("checkpoint has no tensor named \"%s\"", name);
+    return t;
 }
 
 void tensor_to_f32(const Tensor *t, float *out) {

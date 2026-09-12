@@ -52,11 +52,18 @@ void matmul_q(float *out, const float *x, const QWeight *w, int n_in, int n_out)
         float acc = 0.0f;
         for (int i = 0; i < n_in; i++) {
             float wi = bf16_to_f32(d[i / w->group]) * (float)q_code(row, i, w->bits);
-            if (w->c) wi *= bf16_to_f32(w->c[i]);
             acc += x[i] * wi;
         }
         out[j] = acc;
     }
+}
+
+void dequant_row(float *out, const QWeight *w, int row, int n_in) {
+    const int per_row = (w->bits == 8) ? n_in : n_in / 2;
+    const uint8_t  *q = w->q + (size_t)row * (size_t)per_row;
+    const uint16_t *d = w->d + (size_t)row * (size_t)(n_in / w->group);
+    for (int i = 0; i < n_in; i++)
+        out[i] = bf16_to_f32(d[i / w->group]) * (float)q_code(q, i, w->bits);
 }
 
 /* RMSNorm: rescale the row to unit RMS, then apply the learned gain.

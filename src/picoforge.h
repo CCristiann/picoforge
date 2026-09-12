@@ -66,7 +66,7 @@ const char *json_ints(const char *p, long *out, int cap, int *n_out);
  * Deliberately dumb, and that is its point — a PyTorch .bin is a pickle,
  * and unpickling executes arbitrary code. Here there is nothing to execute.
  */
-typedef enum { DT_BF16, DT_F32, DT_F16 } DType;
+typedef enum { DT_BF16, DT_F32, DT_F16, DT_I8, DT_U8 } DType;
 
 typedef struct {
     char        name[80];     /* longest in Qwen3-0.6B is 47 chars       */
@@ -87,6 +87,7 @@ typedef struct {
 void          st_open(const char *model_dir, SafeTensors *st);
 void          st_close(SafeTensors *st);
 const Tensor *st_find(const SafeTensors *st, const char *name);  /* dies if absent */
+const Tensor *st_try(const SafeTensors *st, const char *name);   /* NULL if absent */
 void          st_summary(const SafeTensors *st);
 
 /* bfloat16 IS the top half of an fp32: same sign bit, same 8 exponent bits,
@@ -113,7 +114,7 @@ void tensor_to_f32(const Tensor *t, float *out);
 void  matmul(float *out, const float *x, const uint16_t *w, int n_in, int n_out);
 
 /* A quantised weight matrix, [n_out, n_in], borrowed from the mapping like
- * every other weight. W[j, i] = d[j, i / group] * q[j, i] (* c[i] if c).
+ * every other weight. W[j, i] = d[j, i / group] * q[j, i].
  *
  * q is int8 for 8 bits. For 4 bits it is packed two codes per byte, LOW
  * nibble first, two's complement — not a choice but a measurement: it is
@@ -124,13 +125,13 @@ typedef struct {
     int             group;    /* block length along n_in; n_in = one per row */
     const uint8_t  *q;
     const uint16_t *d;        /* bf16 scales, [n_out, n_in / group]        */
-    const uint16_t *c;        /* bf16 column scales [n_in], or NULL        */
 } QWeight;
 
 /* The reference: dequantise each weight in the inner loop and multiply, the
  * obvious way. bf16 d times an integer q is exact in fp32, so this is the fp32
  * matmul over the dequantised matrix, digit for digit. */
 void  matmul_q(float *out, const float *x, const QWeight *w, int n_in, int n_out);
+void  dequant_row(float *out, const QWeight *w, int row, int n_in);   /* embedding lookup */
 void  rmsnorm(float *out, const float *x, const uint16_t *w, int n, float eps);
 void  softmax(float *x, int n);
 void  rope_apply(float *x, int head_dim, int pos, float theta);
@@ -138,15 +139,27 @@ float silu(float z);
 
 /* ----------------------------------------------------------------- model
  * Weights are borrowed pointers INTO the mapping — nothing here owns bytes,
- * so binding the whole model costs 311 lookups and zero copies. */
+ * so binding the whole model costs 311 lookups and zero copies.
+ *
+ * A Linear is one projection matrix in whichever form the checkpoint holds
+ * it: bf16 (w set, q.bits 0) or quantised (w NULL). The file decides, tensor
+ * by tensor -- X.weight means bf16, X.qweight + X.scales means quantised --
+ * so nothing has to be told which format it is loading. */
 typedef struct {
-    const uint16_t *input_ln, *q_proj, *k_proj, *v_proj;
-    const uint16_t *q_norm, *k_norm, *o_proj;
-    const uint16_t *post_attn_ln, *gate_proj, *up_proj, *down_proj;
+    const uint16_t *w;
+    QWeight         q;
+} Linear;
+
+/* out = W x, in whichever form W is stored. */
+void linear(float *out, const float *x, const Linear *l, int n_in, int n_out);
+
+typedef struct {
+    const uint16_t *input_ln, *q_norm, *k_norm, *post_attn_ln;
+    Linear q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj;
 } LayerWeights;
 
 typedef struct {
-    const uint16_t *embed;        /* [vocab, hidden]; tied, so also the LM head */
+    Linear          embed;        /* [vocab, hidden]; tied, so also the LM head */
     const uint16_t *final_norm;
     LayerWeights   *layers;
 } Weights;
@@ -291,6 +304,7 @@ bool   quant_check(MetalContext *ctx);
 
 /* The measurement harness. Writes one CSV row per (kernel, shape). */
 void   bench_matmul(MetalContext *ctx, const char *csv_path);
+void   bench_qmatmul(MetalContext *ctx, const char *csv_path);   /* Phase 3 kernels */
 
 /* Raw Metal objects, as void* so nothing else has to include Metal headers. */
 void  *metal_device(MetalContext *ctx);

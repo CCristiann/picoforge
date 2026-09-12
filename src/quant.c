@@ -55,7 +55,7 @@ static double check_one(MetalContext *ctx, const QKernel *qk, int M, int N, int 
         d[i] = f32_to_bf16(((rng_next(&s) & 1) ? -1.0f : 1.0f)
                            * (0.002f + (float)(rng_next(&s) % 1000u) * 2e-5f));
 
-    QWeight w = {qk->bits, G, q, d, NULL};
+    QWeight w = {qk->bits, G, q, d};
     for (int m = 0; m < M; m++)
         matmul_q(ref + (size_t)m * (size_t)N, x + (size_t)m * (size_t)K, &w, K, N);
 

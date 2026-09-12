@@ -48,23 +48,29 @@ int main(int argc, char **argv) {
 
     int q_dim  = cfg.num_attention_heads  * cfg.head_dim;
     int kv_dim = cfg.num_key_value_heads  * cfg.head_dim;
-    check_shape(&st, "model.embed_tokens.weight", cfg.vocab_size, cfg.hidden_size);
     check_shape(&st, "model.norm.weight", cfg.hidden_size, 0);
-    check_shape(&st, "model.layers.0.self_attn.q_proj.weight", q_dim, cfg.hidden_size);
-    check_shape(&st, "model.layers.0.self_attn.k_proj.weight", kv_dim, cfg.hidden_size);
-    check_shape(&st, "model.layers.0.self_attn.o_proj.weight", cfg.hidden_size, q_dim);
     check_shape(&st, "model.layers.0.self_attn.q_norm.weight", cfg.head_dim, 0);
-    check_shape(&st, "model.layers.0.mlp.gate_proj.weight", cfg.intermediate_size,
-                cfg.hidden_size);
-    check_shape(&st, "model.layers.0.mlp.down_proj.weight", cfg.hidden_size,
-                cfg.intermediate_size);
-    printf("shape cross-check     : all %d layers' dimensions agree with config\n",
-           cfg.num_hidden_layers);
+    /* Every projection, bf16 or quantised, in every layer: binding validates
+     * each shape against the config (model.c, bind_linear) and dies on the
+     * first disagreement. Binding is 311 lookups and no copies, so it is
+     * cheap enough to do here just for the check. */
+    Weights probe_w;
+    weights_bind(&st, &cfg, &probe_w);
+    printf("shape cross-check     : all %d layers' dimensions agree with config (%s)\n",
+           cfg.num_hidden_layers,
+           probe_w.layers[0].q_proj.w ? "bf16" :
+           probe_w.layers[0].q_proj.q.bits == 8 ? "8-bit codes" : "4-bit codes");
+    if (!probe_w.layers[0].q_proj.w)
+        printf("quantisation          : %d-bit, blocks of %d (q_proj), embedding %s\n",
+               probe_w.layers[0].q_proj.q.bits, probe_w.layers[0].q_proj.q.group,
+               probe_w.embed.w ? "bf16" : "quantised");
+    weights_free(&probe_w);
+    (void)q_dim; (void)kv_dim;
 
     printf("\n=== fingerprint (first 4 values, fp32) ===\n");
-    fingerprint(&st, "model.embed_tokens.weight", 4);
     fingerprint(&st, "model.layers.0.input_layernorm.weight", 4);
-    fingerprint(&st, "model.layers.27.mlp.down_proj.weight", 4);
+    if (st_try(&st, "model.layers.27.mlp.down_proj.weight"))
+        fingerprint(&st, "model.layers.27.mlp.down_proj.weight", 4);
 
     Tokenizer tok;
     tokenizer_load(model_dir, &tok);
@@ -107,6 +113,14 @@ int main(int argc, char **argv) {
         MetalContext *mtl = metal_init("picoforge.metallib");
         metal_info(mtl);
         bench_matmul(mtl, argv[3]);
+        metal_shutdown(mtl);
+    }
+
+    /* --bench-quant OUT.csv : the quantised kernels, same protocol. */
+    if (argc > 3 && strcmp(argv[2], "--bench-quant") == 0) {
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        metal_info(mtl);
+        bench_qmatmul(mtl, argv[3]);
         metal_shutdown(mtl);
     }
 

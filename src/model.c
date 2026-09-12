@@ -27,6 +27,44 @@ static const uint16_t *bind(const SafeTensors *st, const char *fmt, ...) {
     return st_find(st, name)->data;
 }
 
+/* One projection, bf16 or quantised, with its shape confronted with the
+ * config. A quantised file is new and hand-made by tools/quant/quantize.py, so
+ * it gets the same distrust as a download: every size the kernels will index
+ * with is checked here, once, instead of trusted forever. */
+static Linear bind_linear(const SafeTensors *st, const char *base, long n_out, long n_in) {
+    char name[128];
+    Linear l = {0};
+    snprintf(name, sizeof name, "%s.weight", base);
+    const Tensor *t = st_try(st, name);
+    if (t) {
+        if (t->dtype != DT_BF16 || t->shape[0] != n_out || t->shape[1] != n_in)
+            die("\"%s\": expected bf16 [%ld,%ld]", name, n_out, n_in);
+        l.w = t->data;
+        return l;
+    }
+    snprintf(name, sizeof name, "%s.qweight", base);
+    const Tensor *q = st_find(st, name);
+    snprintf(name, sizeof name, "%s.scales", base);
+    const Tensor *d = st_find(st, name);
+
+    l.q.bits = (q->dtype == DT_I8) ? 8 : (q->dtype == DT_U8) ? 4 : 0;
+    long want_cols = (l.q.bits == 8) ? n_in : n_in / 2;
+    if (!l.q.bits || q->shape[0] != n_out || q->shape[1] != want_cols || n_in % 2)
+        die("\"%s.qweight\": expected I8 [%ld,%ld] or U8 [%ld,%ld]",
+            base, n_out, n_in, n_out, n_in / 2);
+    if (d->dtype != DT_BF16 || d->shape[0] != n_out || d->shape[1] <= 0 || n_in % d->shape[1])
+        die("\"%s.scales\": expected bf16 [%ld, a divisor of %ld]", base, n_out, n_in);
+    l.q.group = (int)(n_in / d->shape[1]);
+    l.q.q = q->data;
+    l.q.d = d->data;
+    return l;
+}
+
+void linear(float *out, const float *x, const Linear *l, int n_in, int n_out) {
+    if (l->w) matmul(out, x, l->w, n_in, n_out);
+    else      matmul_q(out, x, &l->q, n_in, n_out);
+}
+
 void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
     /* tie_word_embeddings: the config says the LM head IS the embedding
      * matrix. The checkpoint also carries an lm_head.weight copy; the config
@@ -34,7 +72,10 @@ void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
     if (!cfg->tie_word_embeddings)
         die("untied embeddings are not implemented (this checkpoint ties them)");
 
-    w->embed      = bind(st, "model.embed_tokens.weight");
+    const long H = cfg->hidden_size, I = cfg->intermediate_size;
+    const long q_dim = (long)cfg->num_attention_heads * cfg->head_dim;
+    const long kv_dim = (long)cfg->num_key_value_heads * cfg->head_dim;
+    w->embed      = bind_linear(st, "model.embed_tokens", cfg->vocab_size, H);
     w->final_norm = bind(st, "model.norm.weight");
 
     w->layers = calloc((size_t)cfg->num_hidden_layers, sizeof *w->layers);
@@ -43,16 +84,20 @@ void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
     for (int l = 0; l < cfg->num_hidden_layers; l++) {
         LayerWeights *L = &w->layers[l];
         L->input_ln     = bind(st, "model.layers.%d.input_layernorm.weight", l);
-        L->q_proj       = bind(st, "model.layers.%d.self_attn.q_proj.weight", l);
-        L->k_proj       = bind(st, "model.layers.%d.self_attn.k_proj.weight", l);
-        L->v_proj       = bind(st, "model.layers.%d.self_attn.v_proj.weight", l);
         L->q_norm       = bind(st, "model.layers.%d.self_attn.q_norm.weight", l);
         L->k_norm       = bind(st, "model.layers.%d.self_attn.k_norm.weight", l);
-        L->o_proj       = bind(st, "model.layers.%d.self_attn.o_proj.weight", l);
         L->post_attn_ln = bind(st, "model.layers.%d.post_attention_layernorm.weight", l);
-        L->gate_proj    = bind(st, "model.layers.%d.mlp.gate_proj.weight", l);
-        L->up_proj      = bind(st, "model.layers.%d.mlp.up_proj.weight", l);
-        L->down_proj    = bind(st, "model.layers.%d.mlp.down_proj.weight", l);
+        char base[96];
+#define LIN(field, fmt, n_out, n_in) \
+        snprintf(base, sizeof base, fmt, l); L->field = bind_linear(st, base, n_out, n_in)
+        LIN(q_proj,    "model.layers.%d.self_attn.q_proj", q_dim, H);
+        LIN(k_proj,    "model.layers.%d.self_attn.k_proj", kv_dim, H);
+        LIN(v_proj,    "model.layers.%d.self_attn.v_proj", kv_dim, H);
+        LIN(o_proj,    "model.layers.%d.self_attn.o_proj", H, q_dim);
+        LIN(gate_proj, "model.layers.%d.mlp.gate_proj", I, H);
+        LIN(up_proj,   "model.layers.%d.mlp.up_proj", I, H);
+        LIN(down_proj, "model.layers.%d.mlp.down_proj", H, I);
+#undef LIN
     }
 }
 
@@ -113,8 +158,13 @@ void forward(const int *tokens, int n, int pos, int logits_from,
             n, pos, s->max_seq);
 
     for (int t = 0; t < n; t++) {
-        const uint16_t *row = w->embed + (size_t)tokens[t] * (size_t)H;
-        for (int i = 0; i < H; i++) s->x[t * H + i] = bf16_to_f32(row[i]);
+        if (w->embed.w) {
+            const uint16_t *row = w->embed.w + (size_t)tokens[t] * (size_t)H;
+            for (int i = 0; i < H; i++) s->x[t * H + i] = bf16_to_f32(row[i]);
+        } else {
+            /* A quantised lookup dequantises one row: d * q, exact in fp32. */
+            dequant_row(s->x + t * H, &w->embed.q, tokens[t], H);
+        }
     }
 
     for (int l = 0; l < cfg->num_hidden_layers; l++) {
@@ -129,11 +179,11 @@ void forward(const int *tokens, int n, int pos, int logits_from,
         /* K and V are projected straight into the cache at their absolute
          * positions. They are never recomputed again. */
         for (int t = 0; t < n; t++) {
-            matmul(s->q + t * q_dim, s->xb + t * H, L->q_proj, H, q_dim);
-            matmul(kc + (size_t)(pos + t) * (size_t)kv_dim, s->xb + t * H,
-                   L->k_proj, H, kv_dim);
-            matmul(vc + (size_t)(pos + t) * (size_t)kv_dim, s->xb + t * H,
-                   L->v_proj, H, kv_dim);
+            linear(s->q + t * q_dim, s->xb + t * H, &L->q_proj, H, q_dim);
+            linear(kc + (size_t)(pos + t) * (size_t)kv_dim, s->xb + t * H,
+                   &L->k_proj, H, kv_dim);
+            linear(vc + (size_t)(pos + t) * (size_t)kv_dim, s->xb + t * H,
+                   &L->v_proj, H, kv_dim);
         }
 
         /* Qwen3's per-head QK-norm, then RoPE, at the ABSOLUTE position. This
@@ -188,7 +238,7 @@ void forward(const int *tokens, int n, int pos, int logits_from,
         }
 
         for (int t = 0; t < n; t++) {
-            matmul(s->xb + t * H, s->attout + t * q_dim, L->o_proj, q_dim, H);
+            linear(s->xb + t * H, s->attout + t * q_dim, &L->o_proj, q_dim, H);
             for (int i = 0; i < H; i++) s->x[t * H + i] += s->xb[t * H + i];
         }
 
@@ -199,12 +249,12 @@ void forward(const int *tokens, int n, int pos, int logits_from,
             rmsnorm(s->xb + t * H, s->x + t * H, L->post_attn_ln, H, eps);
 
         for (int t = 0; t < n; t++) {
-            matmul(s->hb  + t * I, s->xb + t * H, L->gate_proj, H, I);
-            matmul(s->hb2 + t * I, s->xb + t * H, L->up_proj,   H, I);
+            linear(s->hb  + t * I, s->xb + t * H, &L->gate_proj, H, I);
+            linear(s->hb2 + t * I, s->xb + t * H, &L->up_proj,   H, I);
             for (int i = 0; i < I; i++)
                 s->hb[t * I + i] = silu(s->hb[t * I + i]) * s->hb2[t * I + i];
 
-            matmul(s->xb + t * H, s->hb + t * I, L->down_proj, I, H);
+            linear(s->xb + t * H, s->hb + t * I, &L->down_proj, I, H);
             for (int i = 0; i < H; i++) s->x[t * H + i] += s->xb[t * H + i];
         }
     }
@@ -218,7 +268,7 @@ void forward(const int *tokens, int n, int pos, int logits_from,
 
     for (int t = logits_from; t < n; t++) {
         rmsnorm(s->xb + t * H, s->x + t * H, w->final_norm, H, eps);
-        matmul(s->logits + (size_t)(t - logits_from) * (size_t)cfg->vocab_size,
-               s->xb + t * H, w->embed, H, cfg->vocab_size);
+        linear(s->logits + (size_t)(t - logits_from) * (size_t)cfg->vocab_size,
+               s->xb + t * H, &w->embed, H, cfg->vocab_size);
     }
 }

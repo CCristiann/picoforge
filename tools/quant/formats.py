@@ -31,13 +31,26 @@ def to_bf16(x: np.ndarray) -> np.ndarray:
                 .to(torch.bfloat16).to(torch.float32).numpy()
 
 
-def block_quant(w: np.ndarray, bits: int, group: int):
+def parse(fmt: str):
+    """'q4_g32_mse' -> (bits=4, layout='g32', group=32 or None for row, mse=True)."""
+    parts = fmt.split("_")
+    bits, layout = int(parts[0][1]), parts[1]
+    group = int(layout[1:]) if layout.startswith("g") else None
+    return bits, layout, group, "mse" in parts[2:]
+
+
+def block_quant(w: np.ndarray, bits: int, group: int, mse: bool = False):
     """Symmetric round-to-nearest over blocks of `group` along K.
 
     Q8: d = max|w| / 127, q in [-127, 127].
     Q4: llama.cpp's Q4_0 trick. The signed extreme m maps to exactly -8,
         d = m / -8, q in [-8, 7]. A symmetric max/7 would leave one of the 16
         codes unused; this spends it on the side that holds the extreme.
+    mse: instead of the max, pick the scale per block that minimises the
+        block's squared rounding error, over d * alpha for alpha in
+        [0.60, 1.00]. A smaller scale clips the extreme but resolves every
+        other weight more finely; which one wins is a per-block question the
+        max never asks. The file format is unchanged -- only which d is written.
     Returns q (int8, [N, K]) and d (fp32 holding bf16 values, [N, K//G]).
     """
     n, k = w.shape
@@ -51,13 +64,24 @@ def block_quant(w: np.ndarray, bits: int, group: int):
         idx = np.abs(b).argmax(-1)
         extreme = np.take_along_axis(b, idx[..., None], -1)[..., 0]
         d = extreme / -8.0
-    d = to_bf16(d)
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        q = np.where(d[..., None] != 0, np.rint(b / d[..., None].astype(np.float64)), 0.0)
     lo = -127 if bits == 8 else -8
-    q = np.clip(q, lo, QMAX[bits]).astype(np.int8).reshape(n, k)
-    return q, d
+
+    def codes(scale):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r = np.where(scale[..., None] != 0, np.rint(b / scale[..., None].astype(np.float64)), 0.0)
+        return np.clip(r, lo, QMAX[bits])
+
+    best_d = to_bf16(d)
+    if mse:
+        best_err = ((b - codes(best_d) * best_d[..., None]) ** 2).sum(-1)
+        for alpha in np.linspace(0.60, 0.98, 20):
+            cand = to_bf16(d * alpha)
+            err = ((b - codes(cand) * cand[..., None]) ** 2).sum(-1)
+            better = err < best_err
+            best_d = np.where(better, cand, best_d)
+            best_err = np.where(better, err, best_err)
+    q = codes(best_d).astype(np.int8).reshape(n, k)
+    return q, best_d
 
 
 def column_scale(w: np.ndarray) -> np.ndarray:
@@ -69,17 +93,15 @@ def column_scale(w: np.ndarray) -> np.ndarray:
 
 
 def quantize(w: np.ndarray, fmt: str) -> dict[str, np.ndarray]:
-    """fmt is 'q8_g32', 'q4_g64', 'q4_row', 'q4_rowcol', ... Returns the arrays
+    """fmt is 'q8_g32', 'q4_g64', 'q4_row', 'q4_g32_mse', ... Returns the arrays
     the file will hold: q, d and, for rowcol, c."""
-    bits = int(fmt[1])
-    layout = fmt.split("_", 1)[1]
+    bits, layout, group, mse = parse(fmt)
     k = w.shape[1]
     if layout == "rowcol":
         c = column_scale(w)
-        q, d = block_quant(w / c, bits, k)
+        q, d = block_quant(w / c, bits, k, mse)
         return {"q": q, "d": d, "c": c}
-    group = k if layout == "row" else int(layout[1:])
-    q, d = block_quant(w, bits, group)
+    q, d = block_quant(w, bits, group or k, mse)
     return {"q": q, "d": d}
 
 

@@ -13,6 +13,9 @@ are exactly what breaks a quantiser that only works on nice data.
    so |w|/|d| can reach 8 * (1 + 2^-8): one step plus 8 * 2^-8 = 2^-5.
    (Measured worst case on these tensors: 1.0089 steps, in q4_rowcol.)
 3. d*q is EXACT in fp32 — the claim the whole reference path rests on.
+4. For _mse formats the clipped bound in (2) does not apply -- they clip on
+   purpose -- and the provable property is different: the search starts from
+   the RTN scale, so every block's squared error is <= RTN's, never worse.
 
 "Clipped" means rint(w/d) fell outside the range. The first version of this
 test counted every code AT the range limit instead, and failed Q4_G32 at
@@ -33,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/quant"))
 from formats import dequantize, quantize  # noqa: E402
 
-FORMATS = ["q8_row", "q8_g32", "q4_row", "q4_rowcol", "q4_g128", "q4_g32"]
+FORMATS = ["q8_row", "q8_g32", "q4_row", "q4_rowcol", "q4_g128", "q4_g32", "q4_g32_mse"]
 TENSORS = ["model.layers.0.self_attn.q_proj.weight", "model.layers.27.mlp.down_proj.weight"]
 
 
@@ -60,8 +63,14 @@ def main() -> None:
                 # (Q4_0 makes it negative for a positive extreme) is irrelevant.
                 clipped = ideal > np.where(q < 0, -lo, hi)
                 tol = 1 + 1e-5
-                half_step = bool(np.all(err[~clipped] <= step[~clipped] / 2 * tol)
-                                 and np.all(err[clipped] <= step[clipped] * (1 + 2**-5) * tol))
+                half_step = bool(np.all(err[~clipped] <= step[~clipped] / 2 * tol))
+                if fmt.endswith("_mse"):
+                    rtn = quantize(w, fmt[:-4])
+                    g_rtn = err.reshape(err.shape[0], -1, g) ** 2
+                    e_rtn = (np.abs(w - dequantize(rtn)).reshape(g_rtn.shape) ** 2)
+                    half_step &= bool(np.all(g_rtn.sum(-1) <= e_rtn.sum(-1) * tol))
+                else:
+                    half_step &= bool(np.all(err[clipped] <= step[clipped] * (1 + 2**-5) * tol))
                 clip_frac = float(clipped.mean())
 
                 exact = np.array_equal(
@@ -73,7 +82,7 @@ def main() -> None:
                 good = in_range and half_step and exact
                 ok &= good
                 print(f"{name.split('.weight')[0][6:]:32s} {fmt:10s} range {in_range!s:5} "
-                      f"half-step {half_step!s:5} exact {exact!s:5} clipped {100*clip_frac:5.2f}%"
+                      f"bounds {half_step!s:5} exact {exact!s:5} clipped {100*clip_frac:5.2f}%"
                       f"  {'PASS' if good else 'FAIL'}")
     print("\n" + ("quantisers keep their promises" if ok else "QUANTISER BROKEN"))
     sys.exit(0 if ok else 1)

@@ -47,11 +47,30 @@ ui: picoforge
 
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
-test-all: test test-nfc test-tokenizer test-encode test-forward test-generate test-quant-formats
+test-all: test test-nfc test-tokenizer test-encode test-forward test-generate \
+          test-quant-formats test-quant-kernels test-forward-quant
 
 # Phase 3: the quantisers keep the bounds formats.py promises.
 test-quant-formats:
 	@./tools/venv/bin/python tests/test_quant_formats.py
+
+# Quantised checkpoints, rebuilt when the quantiser changes. Weights stay out
+# of git like the originals; these are derived from them in seconds.
+QMODELS := models/Qwen3-0.6B-q8_row models/Qwen3-0.6B-q4_g32
+models/Qwen3-0.6B-%: tools/quant/quantize.py tools/quant/formats.py
+	@./tools/venv/bin/python tools/quant/quantize.py models/Qwen3-0.6B $*
+quant-models: $(QMODELS)
+
+# Chain of oracles, Phase 3: the quantised engine against NumPy on the
+# dequantised weights, and the quantised kernels against the CPU reference.
+test-forward-quant: picoforge quant-models
+	@./tools/venv/bin/python tests/test_forward_quant.py $(QMODELS)
+
+# The engine's exit status is the verdict; a pipe into sed would swallow it.
+test-quant-kernels: picoforge
+	@mkdir -p build
+	@./picoforge models/Qwen3-0.6B --quant-check > build/quant_check.log; s=$$?; \
+	 sed -n '/quantised kernels/,$$p' build/quant_check.log; exit $$s
 
 test-generate: picoforge
 	@./tools/venv/bin/python tests/test_generate.py
@@ -72,4 +91,5 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops $(METALLIB) build/*.air
 
-.PHONY: clean test test-all ui test-forward test-tokenizer test-encode test-nfc test-generate test-quant-formats
+.PHONY: clean test test-all ui test-forward test-tokenizer test-encode test-nfc test-generate \
+        test-quant-formats test-quant-kernels test-forward-quant quant-models

@@ -22,6 +22,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define WARMUP 5
 #define REPS   25
@@ -128,6 +129,96 @@ void bench_matmul(MetalContext *ctx, const char *csv_path) {
         for (int S = 128; S <= 2048; S *= 2)
             measure(ctx, csv, names[which], which, S, S, S, "square");
 
+    fclose(csv);
+    printf("\nraw results -> %s\n", csv_path);
+}
+
+/* ------------------------------------------------------ quantised kernels
+ * The same protocol, over the Phase 3 kernels, with the bf16 TensorOps kernel
+ * as the baseline in the same file. The question is not only "how fast" but
+ * "what did the blocks cost": a per-row kernel runs the op once per tile, a
+ * G=32 kernel runs it K/32 = 32 times, and only a measurement says whether the
+ * bytes saved pay for the calls added.
+ *
+ * Bytes per run count what must cross the memory system: activations (fp32,
+ * or bf16 for Q4), codes, scales, and the fp32 output. */
+typedef struct { const char *name; int bits, group; bool bf16_act; } QBench;
+
+/* Warm-up by TIME, not by count. The first sweep of this harness measured
+ * M=1 at 154 us for every kernel, bf16 included, then watched the same cells
+ * get faster in the order they were measured -- 155, 153, 108, 89, 69 us --
+ * straight across kernels that do very different work. That is the GPU
+ * leaving a low-power state, not the kernels: five warm-up runs of a 0.1 ms
+ * kernel are half a millisecond of work, and the idle gap while the next
+ * cell's buffers are allocated is enough to let it drop back. */
+#define WARM_SECONDS 0.5
+
+static double wall_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static void stats_row(FILE *csv, const char *tag, const char *kernel, int M, int N, int K,
+                      double *t, double bytes) {
+    qsort(t, REPS, sizeof *t, cmp_double);
+    const double med = pct(t, REPS, 0.50), p10 = pct(t, REPS, 0.10), p90 = pct(t, REPS, 0.90);
+    const double flops = 2.0 * M * N * K;
+    fprintf(csv, "%s,%s,%d,%d,%d,%.9f,%.9f,%.9f,%.3f,%.3f,%.2f\n", tag, kernel, M, N, K,
+            med, p10, p90, flops / med / 1e9, bytes / med / 1e9, 100.0 * (bytes / med) / 307e9);
+    printf("  %-14s M=%-4d %8.3f ms  [%.3f, %.3f]  %8.1f GFLOP/s  %7.1f GB/s\n",
+           kernel, M, med * 1e3, p10 * 1e3, p90 * 1e3, flops / med / 1e9, bytes / med / 1e9);
+}
+
+void bench_qmatmul(MetalContext *ctx, const char *csv_path) {
+    static const QBench kernels[] = {
+        {"matmul_q8_row", 8, 0, false}, {"matmul_q8_g32", 8, 32, false},
+        {"matmul_q4_row", 4, 0, true},  {"matmul_q4_g64", 4, 64, true},
+        {"matmul_q4_g32", 4, 32, true},
+    };
+    const int N = 3072, K = 1024;          /* gate_proj: the widest matmul per layer */
+    FILE *csv = fopen(csv_path, "wb");
+    if (!csv) die("cannot write %s", csv_path);
+    fprintf(csv, "sweep,kernel,M,N,K,median_s,p10_s,p90_s,gflops,gbps,pct_of_307\n");
+    printf("\n=== quantised matmul benchmark (%.1f s warmup + %d reps) ===\n", WARM_SECONDS, REPS);
+    printf("dispatch floor: %.1f us\n", metal_dispatch_floor(ctx) * 1e6);
+
+    for (int M = 1; M <= 512; M *= 2) {
+        printf("M=%d\n", M);
+        double t[REPS];
+
+        float *A = malloc((size_t)M * K * sizeof *A);
+        uint16_t *B = malloc((size_t)N * K * sizeof *B);
+        uint8_t *Q = malloc((size_t)N * K);
+        uint16_t *D = malloc((size_t)N * K * sizeof *D);
+        if (!A || !B || !Q || !D) die("out of memory for the quantised benchmark");
+        fill_inputs(A, B, M, N, K);
+        for (size_t i = 0; i < (size_t)N * K; i++) { Q[i] = (uint8_t)(B[i] >> 3); D[i] = B[i]; }
+
+        MetalMatmul *base = metal_matmul_prepare(ctx, M, N, K);
+        metal_matmul_upload(base, A, B);
+        for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) (void)metal_matmul_run(base, MM_TENSOROPS);
+        for (int i = 0; i < REPS; i++) t[i] = metal_matmul_run(base, MM_TENSOROPS);
+        stats_row(csv, "quant-batch", "bf16", M, N, K, t,
+                  (double)M * K * 4 + (double)N * K * 2 + (double)M * N * 4);
+        metal_matmul_free(base);
+
+        for (size_t k = 0; k < sizeof kernels / sizeof kernels[0]; k++) {
+            const QBench *qb = &kernels[k];
+            const int G = qb->group ? qb->group : K;
+            MetalQMatmul *mm = metal_qmatmul_prepare(ctx, qb->name, M, N, K, G, qb->bits, qb->bf16_act);
+            /* Values do not matter to the timing; the activation buffer is
+             * uploaded as raw bytes of the right width either way. */
+            metal_qmatmul_upload(mm, A, Q, D);
+            for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) (void)metal_qmatmul_run(mm);
+            for (int i = 0; i < REPS; i++) t[i] = metal_qmatmul_run(mm);
+            double bytes = (double)M * K * (qb->bf16_act ? 2 : 4) + (double)N * K * qb->bits / 8.0
+                         + (double)N * (K / G) * 2 + (double)M * N * 4;
+            stats_row(csv, "quant-batch", qb->name + 7, M, N, K, t, bytes);
+            metal_qmatmul_free(mm);
+        }
+        free(A); free(B); free(Q); free(D);
+    }
     fclose(csv);
     printf("\nraw results -> %s\n", csv_path);
 }
