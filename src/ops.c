@@ -34,6 +34,31 @@ void matmul(float *out, const float *x, const uint16_t *w, int n_in, int n_out) 
     }
 }
 
+/* One integer code out of a quantised row. For 4 bits: pick the nibble (low
+ * first), then sign-extend it — shifting left so bit 3 lands on bit 7 and
+ * shifting back arithmetically turns 0x8..0xF into -8..-1. */
+static inline int q_code(const uint8_t *row, int i, int bits) {
+    if (bits == 8) return (int8_t)row[i];
+    int nib = (row[i >> 1] >> ((i & 1) << 2)) & 0xF;
+    return (int8_t)(uint8_t)(nib << 4) >> 4;
+}
+
+void matmul_q(float *out, const float *x, const QWeight *w, int n_in, int n_out) {
+    const int per_row = (w->bits == 8) ? n_in : n_in / 2;
+    const int blocks  = n_in / w->group;
+    for (int j = 0; j < n_out; j++) {
+        const uint8_t  *row = w->q + (size_t)j * (size_t)per_row;
+        const uint16_t *d   = w->d + (size_t)j * (size_t)blocks;
+        float acc = 0.0f;
+        for (int i = 0; i < n_in; i++) {
+            float wi = bf16_to_f32(d[i / w->group]) * (float)q_code(row, i, w->bits);
+            if (w->c) wi *= bf16_to_f32(w->c[i]);
+            acc += x[i] * wi;
+        }
+        out[j] = acc;
+    }
+}
+
 /* RMSNorm: rescale the row to unit RMS, then apply the learned gain.
  * LayerNorm without mean-centering and without bias — it turned out that
  * rescaling is what matters and recentering was never earning its cost.

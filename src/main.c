@@ -188,6 +188,15 @@ int main(int argc, char **argv) {
         metal_shutdown(mtl);
     }
 
+    /* --quant-check : the Phase 3 kernels against matmul_q. Exit status says
+     * whether they agree, so a test script can use it directly. */
+    if (argc > 2 && strcmp(argv[2], "--quant-check") == 0) {
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        bool ok = quant_check(mtl);
+        metal_shutdown(mtl);
+        if (!ok) return 1;
+    }
+
     /* --greedy TEXT MAX_NEW OUT.txt : greedy generation, ids written to OUT.
      * Greedy because it is the only setting under which two implementations
      * can be compared token for token — with sampling on, matching output

@@ -111,6 +111,26 @@ void tensor_to_f32(const Tensor *t, float *out);
  * kernels get judged against, so none of them may be clever.
  * Weight arguments are bf16 straight out of the mapping, never copies. */
 void  matmul(float *out, const float *x, const uint16_t *w, int n_in, int n_out);
+
+/* A quantised weight matrix, [n_out, n_in], borrowed from the mapping like
+ * every other weight. W[j, i] = d[j, i / group] * q[j, i] (* c[i] if c).
+ *
+ * q is int8 for 8 bits. For 4 bits it is packed two codes per byte, LOW
+ * nibble first, two's complement — not a choice but a measurement: it is
+ * what TensorOps reads (tools/probe/int4_probe), and a file laid out any
+ * other way would be silently misread by the GPU. */
+typedef struct {
+    int             bits;     /* 8 or 4                                    */
+    int             group;    /* block length along n_in; n_in = one per row */
+    const uint8_t  *q;
+    const uint16_t *d;        /* bf16 scales, [n_out, n_in / group]        */
+    const uint16_t *c;        /* bf16 column scales [n_in], or NULL        */
+} QWeight;
+
+/* The reference: dequantise each weight in the inner loop and multiply, the
+ * obvious way. bf16 d times an integer q is exact in fp32, so this is the fp32
+ * matmul over the dequantised matrix, digit for digit. */
+void  matmul_q(float *out, const float *x, const QWeight *w, int n_in, int n_out);
 void  rmsnorm(float *out, const float *x, const uint16_t *w, int n, float eps);
 void  softmax(float *x, int n);
 void  rope_apply(float *x, int head_dim, int pos, float theta);
@@ -255,6 +275,19 @@ void   metal_matmul_upload(MetalMatmul *mm, const float *A, const uint16_t *B);
 double metal_matmul_run(MetalMatmul *mm, int which);
 void   metal_matmul_download(MetalMatmul *mm, float *C);
 void   metal_matmul_free(MetalMatmul *mm);
+
+/* A quantised matmul, prepared once. `kernel` names the Metal function; A is
+ * bf16 when bf16_act (Q4), fp32 otherwise. Pipelines come from the cache. */
+typedef struct MetalQMatmul MetalQMatmul;
+MetalQMatmul *metal_qmatmul_prepare(MetalContext *ctx, const char *kernel,
+                                    int M, int N, int K, int G, int bits, bool bf16_act);
+void   metal_qmatmul_upload(MetalQMatmul *mm, const void *A, const uint8_t *Q, const uint16_t *D);
+double metal_qmatmul_run(MetalQMatmul *mm);
+void   metal_qmatmul_download(MetalQMatmul *mm, float *C);
+void   metal_qmatmul_free(MetalQMatmul *mm);
+
+/* --quant-check: every quantised kernel against matmul_q on the CPU. */
+bool   quant_check(MetalContext *ctx);
 
 /* The measurement harness. Writes one CSV row per (kernel, shape). */
 void   bench_matmul(MetalContext *ctx, const char *csv_path);

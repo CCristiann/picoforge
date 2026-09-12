@@ -270,3 +270,71 @@ void *metal_pipeline(MetalContext *ctx, const char *name) {
     ctx->cache[ctx->cached].pso = (__bridge_retained void *)pso;
     return ctx->cache[ctx->cached++].pso;
 }
+
+/* ------------------------------------------------------ quantised matmul
+ * The same prepare/run/free shape as MetalMatmul, for kernels that take a
+ * weight in three parts: codes, bf16 scales, and activations whose width
+ * depends on the format (bf16 for Q4, which has no float x int4 overload). */
+struct MetalQMatmul {
+    MetalContext *ctx;
+    void *pso, *bufA, *bufQ, *bufD, *bufC;
+    int M, N, K, G;
+    size_t a_bytes, q_bytes, d_bytes;
+};
+
+MetalQMatmul *metal_qmatmul_prepare(MetalContext *ctx, const char *kernel,
+                                    int M, int N, int K, int G, int bits, bool bf16_act) {
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)ctx->device;
+    MetalQMatmul *mm = calloc(1, sizeof *mm);
+    if (!mm) die("out of memory for a quantised matmul");
+    mm->ctx = ctx; mm->M = M; mm->N = N; mm->K = K; mm->G = G;
+    mm->pso = metal_pipeline(ctx, kernel);
+    mm->a_bytes = (size_t)M * (size_t)K * (bf16_act ? 2u : 4u);
+    mm->q_bytes = (size_t)N * (size_t)K * (size_t)bits / 8u;
+    mm->d_bytes = (size_t)N * (size_t)(K / G) * 2u;
+#define QALLOC(field, n) mm->field = (__bridge_retained void *) \
+    [dev newBufferWithLength:(n) options:MTLResourceStorageModeShared]
+    QALLOC(bufA, mm->a_bytes); QALLOC(bufQ, mm->q_bytes); QALLOC(bufD, mm->d_bytes);
+    QALLOC(bufC, (size_t)M * (size_t)N * sizeof(float));
+#undef QALLOC
+    return mm;
+}
+
+void metal_qmatmul_upload(MetalQMatmul *mm, const void *A, const uint8_t *Q, const uint16_t *D) {
+    memcpy(((__bridge id<MTLBuffer>)mm->bufA).contents, A, mm->a_bytes);
+    memcpy(((__bridge id<MTLBuffer>)mm->bufQ).contents, Q, mm->q_bytes);
+    memcpy(((__bridge id<MTLBuffer>)mm->bufD).contents, D, mm->d_bytes);
+}
+
+double metal_qmatmul_run(MetalQMatmul *mm) {
+    id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)mm->ctx->queue;
+    struct { uint32_t M, N, K, G; } dims = {(uint32_t)mm->M, (uint32_t)mm->N,
+                                            (uint32_t)mm->K, (uint32_t)mm->G};
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)mm->pso];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufC offset:0 atIndex:0];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufA offset:0 atIndex:1];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufQ offset:0 atIndex:2];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufD offset:0 atIndex:3];
+    [enc setBytes:&dims length:sizeof dims atIndex:4];
+    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((mm->N + 31) / 32),
+                                          (NSUInteger)((mm->M + 31) / 32), 1)
+        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (cb.error) die("quantised matmul failed: %s", cb.error.localizedDescription.UTF8String);
+    return cb.GPUEndTime - cb.GPUStartTime;
+}
+
+void metal_qmatmul_download(MetalQMatmul *mm, float *C) {
+    memcpy(C, ((__bridge id<MTLBuffer>)mm->bufC).contents,
+           (size_t)mm->M * (size_t)mm->N * sizeof(float));
+}
+
+void metal_qmatmul_free(MetalQMatmul *mm) {
+    if (!mm) return;
+    CFRelease(mm->bufA); CFRelease(mm->bufQ); CFRelease(mm->bufD); CFRelease(mm->bufC);
+    free(mm);
+}

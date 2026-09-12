@@ -216,6 +216,119 @@ kernel void matmul_tensorops(device float        *C [[buffer(0)]],
 }
 
 /* =======================================================================
+ * Phase 3: quantised weights straight into the matrix units.
+ *
+ * TensorOps multiplies integer weights by float activations natively, and
+ * knows nothing about scales. So the scale is ours to place, and where it
+ * goes decides how many times the op runs:
+ *
+ *   per row      W[n,k] = d[n] q[n,k]   ->  C[m,n] = d[n] * (A q^T)[m,n]
+ *                one op per tile, then one multiply per output element.
+ *
+ * Three things measured on the silicon, not read in the header:
+ *
+ *   - The destination is OVERWRITTEN. The header documents C = A*B + C;
+ *     tools/probe/int4_probe finds C = A*B. (It is why the fp32 kernel above
+ *     can write into reused buffers without clearing them.)
+ *   - int4 codes are packed low nibble first, two's complement, behind a
+ *     `device uchar *` — a `device int4b_format *` does not even compile.
+ *   - float x int4b does not exist; bfloat x int4b does. Q4 therefore takes
+ *     its activations in bf16, and Q8 (float x int8) keeps them in fp32.
+ * ======================================================================= */
+struct QMatmulDims { uint M, N, K, G; };
+
+#define Q_ROW_KERNEL(NAME, ACT_T, Q_STORE, Q_ELEM)                                 \
+kernel void NAME(device float        *C [[buffer(0)]],                            \
+                 device ACT_T        *A [[buffer(1)]],                            \
+                 device Q_STORE      *Q [[buffer(2)]],                            \
+                 device bfloat       *D [[buffer(3)]],                            \
+                 constant QMatmulDims &d [[buffer(4)]],                           \
+                 uint2 tgid [[threadgroup_position_in_grid]],                     \
+                 uint  tid  [[thread_index_in_threadgroup]]) {                    \
+    constexpr auto desc = matmul2d_descriptor(TM, TN, static_cast<int>(dynamic_extent), \
+                                              false, true);                       \
+    matmul2d<desc, execution_simdgroups<4>> op;                                   \
+    auto tA = tensor<device ACT_T, dextents<int32_t, 2>, tensor_inline>(          \
+                  A, dextents<int32_t, 2>(int(d.K), int(d.M)));                   \
+    auto tQ = tensor<device Q_ELEM, dextents<int32_t, 2>, tensor_inline>(         \
+                  Q, dextents<int32_t, 2>(int(d.K), int(d.N)));                   \
+    auto tC = tensor<device float, dextents<int32_t, 2>, tensor_inline>(          \
+                  C, dextents<int32_t, 2>(int(d.N), int(d.M)));                   \
+    const uint m0 = tgid.y * TM, n0 = tgid.x * TN;                                \
+    /* run() takes lvalues: slices passed as temporaries do not match. */         \
+    auto mA = tA.slice(0, int(m0));                                               \
+    auto mQ = tQ.slice(0, int(n0));                                               \
+    auto mC = tC.slice(int(n0), int(m0));                                         \
+    op.run(mA, mQ, mC);                                                           \
+    threadgroup_barrier(mem_flags::mem_device);                                   \
+    /* The scale, applied after the matrix units are done. 128 threads share  \
+     * the 1024 elements of the tile, each taking every 128th. */             \
+    for (uint i = tid; i < TM * TN; i += TG_THREADS) {                            \
+        const uint m = m0 + i / TN, n = n0 + i % TN;                              \
+        if (m < d.M && n < d.N) C[m * d.N + n] *= float(D[n]);                    \
+    }                                                                             \
+}
+
+Q_ROW_KERNEL(matmul_q8_row, float,  int8_t, int8_t)
+Q_ROW_KERNEL(matmul_q4_row, bfloat, uchar,  int4b_format)
+
+/* Blocks along K: W[n,k] = d[n, k/G] q[n,k], so
+ *
+ *     C[m,n] = sum_b d[n,b] * (A_b q_b^T)[m,n]
+ *
+ * where A_b and q_b are the G columns of block b. The scale depends on n AND
+ * b, so it can go neither onto A nor after one big product: the op runs once
+ * per block, on a G-wide K-slice, into a threadgroup scratch tile, and the
+ * scaled scratch is added into C. K static at G is legal for sub-byte types
+ * because G is a multiple of 32 (the compile probe: 16 is rejected). A
+ * fixed-width slice is slice<G, dynamic_extent>(k, m): the header's own
+ * example calls it static_slice, which does not exist in this SDK.
+ *
+ * The scratch is not optional. The op overwrites its destination (measured),
+ * so writing block b straight into C would erase blocks 0..b-1.
+ *
+ * Every thread of the threadgroup runs this code: the op is cooperative, and
+ * the scalar loops split the tile between threads by taking every 128th
+ * element from their own index, as in the simdgroup kernel. */
+#define Q_BLOCK_KERNEL(NAME, ACT_T, Q_STORE, Q_ELEM, G)                            \
+kernel void NAME(device float        *C [[buffer(0)]],                            \
+                 device ACT_T        *A [[buffer(1)]],                            \
+                 device Q_STORE      *Q [[buffer(2)]],                            \
+                 device bfloat       *D [[buffer(3)]],                            \
+                 constant QMatmulDims &d [[buffer(4)]],                           \
+                 uint2 tgid [[threadgroup_position_in_grid]],                     \
+                 uint  tid  [[thread_index_in_threadgroup]]) {                    \
+    constexpr auto desc = matmul2d_descriptor(TM, TN, G, false, true);            \
+    matmul2d<desc, execution_simdgroups<4>> op;                                   \
+    threadgroup float S[TM * TN];                                                 \
+    const uint m0 = tgid.y * TM, n0 = tgid.x * TN;                                \
+    const uint tm = min(uint(TM), d.M - m0), tn = min(uint(TN), d.N - n0);        \
+    const uint blocks = d.K / G;                                                  \
+    auto tA = tensor<device ACT_T, dextents<int32_t, 2>, tensor_inline>(          \
+                  A, dextents<int32_t, 2>(int(d.K), int(d.M)));                   \
+    auto tQ = tensor<device Q_ELEM, dextents<int32_t, 2>, tensor_inline>(         \
+                  Q, dextents<int32_t, 2>(int(d.K), int(d.N)));                   \
+    auto tS = tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline>(     \
+                  S, dextents<int32_t, 2>(int(tn), int(tm)));                     \
+    for (uint b = 0; b < blocks; b++) {                                           \
+        auto mA = tA.slice<G, dynamic_extent>(int(b * G), int(m0));        \
+        auto mQ = tQ.slice<G, dynamic_extent>(int(b * G), int(n0));        \
+        op.run(mA, mQ, tS);                                                       \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+        for (uint i = tid; i < tm * tn; i += TG_THREADS) {                        \
+            const uint m = m0 + i / tn, n = n0 + i % tn;                          \
+            const float v = float(D[n * blocks + b]) * S[i];                      \
+            C[m * d.N + n] = (b == 0) ? v : C[m * d.N + n] + v;                   \
+        }                                                                         \
+        threadgroup_barrier(mem_flags::mem_device);                               \
+    }                                                                             \
+}
+
+Q_BLOCK_KERNEL(matmul_q8_g32, float,  int8_t, int8_t,       32)
+Q_BLOCK_KERNEL(matmul_q4_g32, bfloat, uchar,  int4b_format, 32)
+Q_BLOCK_KERNEL(matmul_q4_g64, bfloat, uchar,  int4b_format, 64)
+
+/* =======================================================================
  * The rest of the forward pass.
  *
  * These are the obvious versions, written to be judged by the CPU oracle

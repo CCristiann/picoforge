@@ -18,13 +18,14 @@
 #include <string.h>
 
 static int run(id<MTLDevice> dev, id<MTLLibrary> lib, NSString *name,
-               void *a, size_t alen, void *b, size_t blen, float *out) {
+               void *a, size_t alen, void *b, size_t blen, float *out, float init) {
     NSError *err = nil;
     id<MTLComputePipelineState> pso =
         [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:name] error:&err];
     if (!pso) { printf("pipeline %s: %s\n", name.UTF8String, err.localizedDescription.UTF8String); return 0; }
     id<MTLBuffer> C = [dev newBufferWithLength:32 * sizeof(float) options:MTLResourceStorageModeShared];
-    memset(C.contents, 0, 32 * sizeof(float));  /* the op ACCUMULATES: C = A*B + C */
+    float *c0 = C.contents;
+    for (int i = 0; i < 32; i++) c0[i] = init;   /* the header says C = A*B + C */
     id<MTLCommandBuffer> cb = [[dev newCommandQueue] commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     [enc setComputePipelineState:pso];
@@ -55,7 +56,7 @@ int main(void) {
         for (int i = 0; i < 16; i++) packed[i] = (uint8_t)(0x01 + 0x22 * (i % 8));
 
         float got[32];
-        if (!run(dev, lib, @"probe_i4", a16, sizeof a16, packed, sizeof packed, got)) return 1;
+        if (!run(dev, lib, @"probe_i4", a16, sizeof a16, packed, sizeof packed, got, 0.0f)) return 1;
         printf("int4 codes as read    :");
         for (int i = 0; i < 32; i++) printf(" %g", got[i]);
         printf("\n");
@@ -78,10 +79,23 @@ int main(void) {
 
         int8_t codes8[32];
         for (int i = 0; i < 32; i++) codes8[i] = (int8_t)(i * 9 - 128);
-        if (!run(dev, lib, @"probe_i8", a32, sizeof a32, codes8, sizeof codes8, got)) return 1;
+        if (!run(dev, lib, @"probe_i8", a32, sizeof a32, codes8, sizeof codes8, got, 0.0f)) return 1;
         int ok8 = 1;
         for (int i = 0; i < 32; i++) ok8 &= (got[i] == (float)codes8[i]);
         printf("int8 codes            : %s\n", ok8 ? "read back exactly, as signed bytes" : "MISMATCH");
-        return matches == 1 && ok8 ? 0 : 1;
+
+        /* Does the op accumulate into C, as the header's "C = A*B + C" says,
+         * or overwrite it? The engine's fp32 kernel writes into reused
+         * buffers without clearing them, so exactly one of the two is true
+         * and it decides whether a blocked kernel needs its own scratch. */
+        if (!run(dev, lib, @"probe_i8", a32, sizeof a32, codes8, sizeof codes8, got, 1000.0f)) return 1;
+        int acc = 1, over = 1;
+        for (int i = 0; i < 32; i++) {
+            acc  &= (got[i] == 1000.0f + (float)codes8[i]);
+            over &= (got[i] == (float)codes8[i]);
+        }
+        printf("destination           : %s\n", acc ? "ACCUMULATES (C = A*B + C)" :
+                                            over ? "OVERWRITTEN (C = A*B)" : "neither -- UNEXPLAINED");
+        return matches == 1 && ok8 && (acc || over) ? 0 : 1;
     }
 }
