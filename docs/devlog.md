@@ -2,6 +2,30 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-12 (night) — the forward pass runs on the GPU
+
+End to end on Metal, twelve parity combinations green (3 prompt lengths x
+{CPU, GPU} x {batch, incremental}). Weights are bound with no copy over the
+existing mmap, so the GPU reads the same physical pages the CPU does. A whole
+forward pass is one command buffer: ~420 dispatches that would otherwise cost
+2.5 ms of command-buffer latency per token.
+
+              CPU scalar     GPU
+  prefill      4.9 tok/s   223.6 tok/s   45x
+  decode       3.7 tok/s    92.8 tok/s   25x, 110 GB/s of 307 (36%)
+
+Two findings. The GPU is MORE accurate than the CPU -- 7.2e-6 relative error
+against the oracle versus 1.1e-5 -- because tree reductions accumulate error
+as log(n) where a sequential loop accumulates it as n, and NumPy's BLAS sums
+in blocks too. And the microbenchmark could not pick the kernel: it found
+naive beating TensorOps at M=1 with N=8192, but the model's matmuls are
+1024-3072 wide and there TensorOps wins end to end, 92.8 vs 50.0 tok/s.
+
+**Next:** decode sits at 36% of the machine. The gap is worth profiling before
+optimising -- attention over the cache and the 151936-wide LM head are the
+suspects, not the projections. The batching result from the kernel sweep still
+stands unexploited: 32 tokens for the price of one is speculative decoding.
+
 ## 2026-09-12 (evening) — Phase 2: one kernel, three implementations
 
 All three matmul kernels written and all three bit-exact against the CPU
