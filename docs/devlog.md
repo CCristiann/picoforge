@@ -2,6 +2,24 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-12 — Phase 0 closed: the oracle is verified
+
+Full forward pass committed, then `tools/oracle/verify.py` against transformers
+(forced to fp32 + eager attention, so the reference is not the less precise of
+the two). Three prompt lengths — 1 / 5 / 40 tokens — all PASS: argmax agreement
+40/40, relative logit error 8.4e-6, KL 2.9e-10 worst case. One instrument bug
+found on the way: KL accumulated in fp32 read *negative*, which Gibbs' inequality
+forbids; fp64 moved the reading by four orders of magnitude. Tolerance budgets
+are now calibrated on measured values (1e-4, 1e-8), not guessed. Ecosystem check
+after the two-month gap: Metal 4 tensor APIs tightened since macOS 26.2 — K must
+be a multiple of 32 in `matmul2d_descriptor` (it silently truncates otherwise),
+at least one of M/N a multiple of 16, and no mixing bfloat with half. Landmines
+for Phase 2; re-run `tools/probe/metal4_probe` before starting it.
+
+**Next:** Phase 1 — the C engine. Scaffolding and config parsing first (read
+config.json, never hardcode), then the safetensors loader, the byte-level BPE
+tokenizer, the forward pass, KV cache and sampling.
+
 ## 2026-07-09 — Environment setup complete
 
 Toolchain verified (Xcode + Metal Toolchain 17F109, macOS 26.5.1, Apple clang 17).
