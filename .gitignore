@@ -19,3 +19,6 @@ tools/probe/metal4_probe
 
 # NOTE: bench/ CSVs and plots are deliberately NOT ignored — measured
 # numbers are the public artifact of this project.
+
+# Compiled engine binary
+/picoforge
