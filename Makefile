@@ -30,7 +30,8 @@ src/%.o: src/%.m src/picoforge.h
 # relinking the engine.
 $(METALLIB): src/kernels.metal
 	@mkdir -p build
-	xcrun -sdk macosx metal -c $< -o build/kernels.air
+	# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
+	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/kernels.air
 	xcrun -sdk macosx metallib build/kernels.air -o $@
 
 # Differential test: the C primitives judged by the Python oracle.

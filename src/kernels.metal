@@ -137,3 +137,80 @@ kernel void matmul_simdgroup(device float         *C [[buffer(0)]],
         if (m < d.M && n < d.N) C[m * d.N + n] = Cs[i];
     }
 }
+
+/* An empty kernel, dispatched over a single thread. It exists to measure the
+ * cost of asking the GPU to do anything at all: encode a command buffer,
+ * submit it, have the GPU pick it up, run nothing, and signal completion.
+ *
+ * That floor decides whether a measurement means anything. A 1024x1024 decode
+ * matmul moves 2 MB, which at 307 GB/s is under 7 microseconds of real work.
+ * If the floor is larger than that, every decode number in the table is a
+ * measurement of dispatch latency wearing a matmul's name. */
+kernel void empty_kernel(device float *sink [[buffer(0)]], uint i [[thread_position_in_grid]]) {
+    if (i == 0) sink[0] = 0.0f;
+}
+
+/* ------------------------------------------------------------ version 3
+ * Metal 4 TensorOps, on the M5's Neural Accelerators.
+ *
+ * Versions 1 and 2 moved data by hand. This one hands the whole tile to a
+ * hardware unit: describe the shapes, wrap the buffers in tensors, call run.
+ * There is no inner loop to write, which is the point — and also the reason
+ * it is the version most likely to be wrong for reasons nobody can see.
+ *
+ * Four things were probed rather than assumed, per the fresh-API rule, and
+ * all four cost real time:
+ *
+ * 1. tensor_inline, not the default tensor_handle. The default expects an
+ *    MTLTensor bound from the host; tensor_inline wraps a plain device
+ *    pointer, which is what an engine that already has buffers wants.
+ *
+ * 2. NO const on the element types. `tensor<device const float, ...>` makes
+ *    leftValueType const-qualified, the dispatch chain's is_same<T, float>
+ *    tests all fail, and control falls through to a terminal static_assert
+ *    that reports "Unsupported type" naming the DESTINATION type. The error
+ *    blames the wrong parameter entirely; only reading the header finds it.
+ *
+ * 3. float x bfloat -> float is supported here, unlike the older reports of
+ *    strict type matching. Activations stay fp32 and weights stay bf16.
+ *
+ * 4. The dispatch chain also accepts bfloat x int4b_format and
+ *    bfloat x int8_t with fp32 accumulation — 4-bit and 8-bit weights
+ *    straight into the matrix units, no dequantisation pass. That is Phase 3
+ *    arriving early, and it is worth knowing before designing the format.
+ *
+ * The descriptor's transpose_right does what the simdgroup version's
+ * transpose flag did: read the weights as stored, [n][k], and let the unit
+ * treat them as the B^T the product needs.
+ */
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+using namespace mpp::tensor_ops;
+
+kernel void matmul_tensorops(device float        *C [[buffer(0)]],
+                             device float        *A [[buffer(1)]],
+                             device bfloat       *B [[buffer(2)]],
+                             constant MatmulDims &d [[buffer(3)]],
+                             uint2 tgid [[threadgroup_position_in_grid]]) {
+    /* Tile shape is compile-time; K is dynamic and comes from the tensors. */
+    constexpr auto desc = matmul2d_descriptor(TM, TN, static_cast<int>(dynamic_extent),
+                                              /*transpose_left=*/false,
+                                              /*transpose_right=*/true);
+    matmul2d<desc, execution_simdgroups<4>> op;
+
+    /* Extents are (columns, rows): A is M x K, B is N x K, C is M x N.
+     * The tensors carry their own bounds, so slices at the edge of a matrix
+     * whose size is not a multiple of the tile are handled by the operation
+     * rather than by staging zeros as version 2 has to. */
+    auto tA = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(
+                  A, dextents<int32_t, 2>(int(d.K), int(d.M)));
+    auto tB = tensor<device bfloat, dextents<int32_t, 2>, tensor_inline>(
+                  B, dextents<int32_t, 2>(int(d.K), int(d.N)));
+    auto tC = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(
+                  C, dextents<int32_t, 2>(int(d.N), int(d.M)));
+
+    auto mA = tA.slice(0, int(tgid.y) * TM);
+    auto mB = tB.slice(0, int(tgid.x) * TN);
+    auto mC = tC.slice(int(tgid.x) * TN, int(tgid.y) * TM);
+
+    op.run(mA, mB, mC);
+}

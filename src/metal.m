@@ -19,6 +19,7 @@ struct MetalContext {
     void *device;        /* id<MTLDevice>       */
     void *queue;         /* id<MTLCommandQueue> */
     void *pipelines[3];  /* id<MTLComputePipelineState>, one per kernel */
+    void *empty;         /* the do-nothing kernel, for the dispatch floor */
 };
 
 static const char *kernel_names[3] = {
@@ -55,6 +56,13 @@ MetalContext *metal_init(const char *metallib_path) {
                       err.localizedDescription.UTF8String);
         ctx->pipelines[i] = (__bridge_retained void *)pso;
     }
+
+    id<MTLFunction> efn = [lib newFunctionWithName:@"empty_kernel"];
+    if (efn) {
+        id<MTLComputePipelineState> epso =
+            [dev newComputePipelineStateWithFunction:efn error:&err];
+        if (epso) ctx->empty = (__bridge_retained void *)epso;
+    }
     return ctx;
 }
 
@@ -62,6 +70,7 @@ void metal_shutdown(MetalContext *ctx) {
     if (!ctx) return;
     for (int i = 0; i < 3; i++)
         if (ctx->pipelines[i]) CFRelease(ctx->pipelines[i]);
+    if (ctx->empty) CFRelease(ctx->empty);
     if (ctx->queue)  CFRelease(ctx->queue);
     if (ctx->device) CFRelease(ctx->device);
     free(ctx);
@@ -86,56 +95,95 @@ bool metal_has_kernel(const MetalContext *ctx, int which) {
     return which >= 0 && which < 3 && ctx->pipelines[which] != NULL;
 }
 
-/* Run one matmul and return the GPU time in seconds.
- *
- * The timing comes from the command buffer's own GPUStartTime/GPUEndTime,
- * not from a clock around the submission. Wall time around a submit measures
- * queueing, driver overhead and scheduling as much as the kernel; these two
- * timestamps are taken by the GPU itself, on either side of this work. */
-double metal_matmul(MetalContext *ctx, int which,
-                    float *C, const float *A, const uint16_t *B,
-                    int M, int N, int K) {
+/* A prepared matmul: buffers allocated once for one shape, so a benchmark
+ * repeats the kernel and nothing else. Allocating and uploading inside the
+ * timed region would measure the driver, and the driver is not the subject. */
+struct MetalMatmul {
+    MetalContext *ctx;
+    void *bufA, *bufB, *bufC;    /* id<MTLBuffer> */
+    int M, N, K;
+};
+
+MetalMatmul *metal_matmul_prepare(MetalContext *ctx, int M, int N, int K) {
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)ctx->device;
+    MetalMatmul *mm = calloc(1, sizeof *mm);
+    if (!mm) die("out of memory for the matmul buffers");
+    mm->ctx = ctx; mm->M = M; mm->N = N; mm->K = K;
+
+    /* MTLResourceStorageModeShared: one allocation both processors address.
+     * On a discrete GPU this would be the slow path; on unified memory it is
+     * the only sensible one, and it is what lets the mmapped checkpoint reach
+     * a kernel without a second copy of the model existing. */
+    mm->bufA = (__bridge_retained void *)
+        [dev newBufferWithLength:(size_t)M * (size_t)K * sizeof(float)
+                         options:MTLResourceStorageModeShared];
+    mm->bufB = (__bridge_retained void *)
+        [dev newBufferWithLength:(size_t)N * (size_t)K * sizeof(uint16_t)
+                         options:MTLResourceStorageModeShared];
+    mm->bufC = (__bridge_retained void *)
+        [dev newBufferWithLength:(size_t)M * (size_t)N * sizeof(float)
+                         options:MTLResourceStorageModeShared];
+    return mm;
+}
+
+void metal_matmul_upload(MetalMatmul *mm, const float *A, const uint16_t *B) {
+    id<MTLBuffer> bufA = (__bridge id<MTLBuffer>)mm->bufA;
+    id<MTLBuffer> bufB = (__bridge id<MTLBuffer>)mm->bufB;
+    memcpy(bufA.contents, A, (size_t)mm->M * (size_t)mm->K * sizeof(float));
+    memcpy(bufB.contents, B, (size_t)mm->N * (size_t)mm->K * sizeof(uint16_t));
+}
+
+void metal_matmul_download(MetalMatmul *mm, float *C) {
+    id<MTLBuffer> bufC = (__bridge id<MTLBuffer>)mm->bufC;
+    memcpy(C, bufC.contents, (size_t)mm->M * (size_t)mm->N * sizeof(float));
+}
+
+void metal_matmul_free(MetalMatmul *mm) {
+    if (!mm) return;
+    CFRelease(mm->bufA); CFRelease(mm->bufB); CFRelease(mm->bufC);
+    free(mm);
+}
+
+/* One run. Returns GPU seconds, taken from the command buffer's own
+ * timestamps rather than a clock around the submit: wall time around a
+ * submission measures queueing, driver work and scheduling as much as the
+ * kernel, and those are not what is being compared. */
+double metal_matmul_run(MetalMatmul *mm, int which) {
+    MetalContext *ctx = mm->ctx;
     if (!metal_has_kernel(ctx, which))
         die("kernel %s is not implemented yet", kernel_names[which]);
 
-    id<MTLDevice> dev = (__bridge id<MTLDevice>)ctx->device;
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->queue;
     id<MTLComputePipelineState> pso =
         (__bridge id<MTLComputePipelineState>)ctx->pipelines[which];
 
-    const size_t a_bytes = (size_t)M * (size_t)K * sizeof(float);
-    const size_t b_bytes = (size_t)N * (size_t)K * sizeof(uint16_t);
-    const size_t c_bytes = (size_t)M * (size_t)N * sizeof(float);
-
-    /* MTLResourceStorageModeShared: one allocation both processors address.
-     * On a discrete GPU this would be the slow path; on unified memory it is
-     * the only sensible one. */
-    id<MTLBuffer> bufA = [dev newBufferWithBytes:A length:a_bytes
-                                         options:MTLResourceStorageModeShared];
-    id<MTLBuffer> bufB = [dev newBufferWithBytes:B length:b_bytes
-                                         options:MTLResourceStorageModeShared];
-    id<MTLBuffer> bufC = [dev newBufferWithLength:c_bytes
-                                          options:MTLResourceStorageModeShared];
-
-    struct { uint32_t M, N, K; } dims = {(uint32_t)M, (uint32_t)N, (uint32_t)K};
+    struct { uint32_t M, N, K; } dims = {(uint32_t)mm->M, (uint32_t)mm->N, (uint32_t)mm->K};
 
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     [enc setComputePipelineState:pso];
-    [enc setBuffer:bufA offset:0 atIndex:1];
-    [enc setBuffer:bufB offset:0 atIndex:2];
-    [enc setBuffer:bufC offset:0 atIndex:0];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufC offset:0 atIndex:0];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufA offset:0 atIndex:1];
+    [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufB offset:0 atIndex:2];
     [enc setBytes:&dims length:sizeof dims atIndex:3];
 
     /* Each kernel wants its grid shaped differently, and that shape is part
-     * of the kernel, so it lives next to the dispatch rather than in the
+     * of the kernel, so it lives beside the dispatch rather than in the
      * caller. The naive one is one thread per output element; the tiled ones
-     * are one threadgroup per 32x32 tile, 128 threads = 4 SIMD groups. */
+     * are one threadgroup per 32x32 tile, 128 threads = 4 SIMD groups.
+     *
+     * The naive threadgroup follows M. A fixed 16x16 is a disaster at M=1:
+     * Metal clamps the grid, leaving 16 of 256 threads live. Measuring that
+     * fix showed it changes almost nothing, which is itself the finding --
+     * at M=1 with N=1024 the output has 1024 elements, so the GPU is short of
+     * work, not short of occupancy. */
     if (which == MM_NAIVE) {
-        [enc dispatchThreads:MTLSizeMake((NSUInteger)N, (NSUInteger)M, 1)
-       threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        NSUInteger tgh = (NSUInteger)(mm->M < 16 ? mm->M : 16);
+        NSUInteger tgw = 256 / tgh;
+        [enc dispatchThreads:MTLSizeMake((NSUInteger)mm->N, (NSUInteger)mm->M, 1)
+       threadsPerThreadgroup:MTLSizeMake(tgw, tgh, 1)];
     } else {
-        NSUInteger gx = (NSUInteger)((N + 31) / 32), gy = (NSUInteger)((M + 31) / 32);
+        NSUInteger gx = (NSUInteger)((mm->N + 31) / 32), gy = (NSUInteger)((mm->M + 31) / 32);
         [enc dispatchThreadgroups:MTLSizeMake(gx, gy, 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     }
@@ -145,7 +193,43 @@ double metal_matmul(MetalContext *ctx, int which,
 
     if (cb.error) die("kernel %s failed: %s", kernel_names[which],
                       cb.error.localizedDescription.UTF8String);
-
-    memcpy(C, bufC.contents, c_bytes);
     return cb.GPUEndTime - cb.GPUStartTime;
+}
+
+/* Convenience wrapper: prepare, upload, run once, download, free. Used by the
+ * correctness check, never by the benchmark. */
+double metal_matmul(MetalContext *ctx, int which,
+                    float *C, const float *A, const uint16_t *B,
+                    int M, int N, int K) {
+    MetalMatmul *mm = metal_matmul_prepare(ctx, M, N, K);
+    metal_matmul_upload(mm, A, B);
+    double t = metal_matmul_run(mm, which);
+    metal_matmul_download(mm, C);
+    metal_matmul_free(mm);
+    return t;
+}
+
+/* Seconds for a command buffer that does nothing. Everything a GPU
+ * measurement reports sits on top of this. */
+double metal_dispatch_floor(MetalContext *ctx) {
+    if (!ctx->empty) die("the empty kernel is missing from the library");
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)ctx->device;
+    id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->queue;
+    id<MTLComputePipelineState> pso = (__bridge id<MTLComputePipelineState>)ctx->empty;
+    id<MTLBuffer> sink = [dev newBufferWithLength:4 options:MTLResourceStorageModeShared];
+
+    double best = 1e9;
+    for (int rep = 0; rep < 50; rep++) {
+        id<MTLCommandBuffer> cb = [queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:pso];
+        [enc setBuffer:sink offset:0 atIndex:0];
+        [enc dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        double t = cb.GPUEndTime - cb.GPUStartTime;
+        if (rep >= 5 && t < best) best = t;    /* best of 45, after warmup */
+    }
+    return best;
 }

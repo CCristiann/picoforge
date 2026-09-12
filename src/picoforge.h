@@ -245,6 +245,19 @@ bool   metal_has_kernel(const MetalContext *ctx, int which);
 
 /* C[M,N] = A[M,K] * B[N,K]^T, with A fp32, B bf16 and C fp32. Returns the
  * GPU time in seconds, measured by the GPU rather than around the submit. */
+double metal_dispatch_floor(MetalContext *ctx);
+
+/* A matmul with its buffers allocated once, so a benchmark can repeat the
+ * kernel without re-measuring the driver. */
+typedef struct MetalMatmul MetalMatmul;
+MetalMatmul *metal_matmul_prepare(MetalContext *ctx, int M, int N, int K);
+void   metal_matmul_upload(MetalMatmul *mm, const float *A, const uint16_t *B);
+double metal_matmul_run(MetalMatmul *mm, int which);
+void   metal_matmul_download(MetalMatmul *mm, float *C);
+void   metal_matmul_free(MetalMatmul *mm);
+
+/* The measurement harness. Writes one CSV row per (kernel, shape). */
+void   bench_matmul(MetalContext *ctx, const char *csv_path);
 double metal_matmul(MetalContext *ctx, int which,
                     float *C, const float *A, const uint16_t *B,
                     int M, int N, int K);

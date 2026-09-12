@@ -102,6 +102,14 @@ int main(int argc, char **argv) {
         printf("dumped %d merge rules -> %s\n", tok.n_merges, argv[3]);
     }
 
+    /* --bench OUT.csv : the full sweep, per docs/BENCHMARKS.md. */
+    if (argc > 3 && strcmp(argv[2], "--bench") == 0) {
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        metal_info(mtl);
+        bench_matmul(mtl, argv[3]);
+        metal_shutdown(mtl);
+    }
+
     /* --metal-check : every GPU kernel against the CPU matmul, on the shapes
      * the engine actually issues.
      *
@@ -113,6 +121,8 @@ int main(int argc, char **argv) {
     if (argc > 2 && strcmp(argv[2], "--metal-check") == 0) {
         MetalContext *mtl = metal_init("picoforge.metallib");
         metal_info(mtl);
+        printf("dispatch floor        : %.1f us (an empty kernel, best of 45)\n",
+               metal_dispatch_floor(mtl) * 1e6);
 
         struct { int M, N, K; const char *what; } cases[] = {
             {  1, 1024, 1024, "decode  q_proj  (M=1: the bandwidth-bound case)" },
