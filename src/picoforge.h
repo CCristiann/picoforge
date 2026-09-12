@@ -7,6 +7,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
 /* Every dimension the forward pass needs, all of it read from config.json
  * at load time (CLAUDE.md principle #5). Point the engine at Qwen3-1.7B
@@ -39,5 +41,50 @@ char *slurp(const char *path, size_t *len_out);
 
 void  config_load(const char *model_dir, Qwen3Config *cfg);
 void  config_print(const Qwen3Config *cfg);
+
+/* ---------------------------------------------------------------- weights
+ * safetensors: [u64 header length][JSON header][raw tensor bytes].
+ * Deliberately dumb, and that is its point — a PyTorch .bin is a pickle,
+ * and unpickling executes arbitrary code. Here there is nothing to execute.
+ */
+typedef enum { DT_BF16, DT_F32, DT_F16 } DType;
+
+typedef struct {
+    char        name[80];     /* longest in Qwen3-0.6B is 47 chars       */
+    DType       dtype;
+    int         ndim;
+    long        shape[4];
+    size_t      nelem;        /* product of shape                        */
+    const void *data;         /* points INTO the mapping; never freed    */
+} Tensor;
+
+typedef struct {
+    void   *map;              /* the whole file, mmapped read-only       */
+    size_t  map_len;
+    Tensor *tensors;
+    int     n_tensors;
+} SafeTensors;
+
+void          st_open(const char *model_dir, SafeTensors *st);
+void          st_close(SafeTensors *st);
+const Tensor *st_find(const SafeTensors *st, const char *name);  /* dies if absent */
+void          st_summary(const SafeTensors *st);
+
+/* bfloat16 IS the top half of an fp32: same sign bit, same 8 exponent bits,
+ * 7 mantissa bits instead of 23. Widening is therefore a SHIFT, not a
+ * conversion: append 16 zero bits and the value is bit-exactly the same
+ * number. No table, no rounding, nothing lost. (Narrowing does lose — which
+ * is why the checkpoint is the lossy artifact, never our load of it.) */
+static inline float bf16_to_f32(uint16_t h) {
+    uint32_t bits = (uint32_t)h << 16;
+    float f;
+    /* memcpy, not a pointer cast: casting uint32_t* to float* and
+     * dereferencing violates strict aliasing and is undefined behaviour.
+     * At -O2 the compiler emits zero instructions for this memcpy. */
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+void tensor_to_f32(const Tensor *t, float *out);
 
 #endif /* PICOFORGE_H */
