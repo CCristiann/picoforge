@@ -24,6 +24,9 @@ tests/test_ops: tests/test_ops.c src/ops.o src/picoforge.h
 test: tests/test_ops
 	@./tools/venv/bin/python tests/test_ops.py
 
+test-tokenizer: picoforge
+	@./tools/venv/bin/python tests/test_tokenizer.py
+
 # Chain of oracles, link two: the C forward pass judged by the NumPy one.
 test-forward: picoforge
 	@./tools/venv/bin/python tests/test_forward.py
@@ -31,4 +34,4 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops
 
-.PHONY: clean test test-forward
+.PHONY: clean test test-forward test-tokenizer

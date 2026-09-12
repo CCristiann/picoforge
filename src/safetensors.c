@@ -24,77 +24,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* ---------------------------------------------------------------- JSON
- * Step 1.1 looked up keys it already knew. Here we must ENUMERATE 311 keys
- * we do not know, which needs one primitive we did not have: skipping a
- * complete JSON value, whatever its type, including nesting and escapes.
- */
-static const char *json_skip(const char *p) {
-    while (isspace((unsigned char)*p)) p++;
-    if (*p == '"') {                                   /* string */
-        p++;
-        while (*p && *p != '"') { if (*p == '\\') p++; p++; }
-        if (*p != '"') die("safetensors: unterminated string in header");
-        return p + 1;
-    }
-    if (*p == '{' || *p == '[') {                      /* object or array */
-        char open = *p, close = (*p == '{') ? '}' : ']';
-        int depth = 0;
-        while (*p) {
-            if (*p == '"') { p = json_skip(p); continue; }  /* braces inside
-                                                               strings must
-                                                               not count */
-            if (*p == open) depth++;
-            else if (*p == close && --depth == 0) return p + 1;
-            p++;
-        }
-        die("safetensors: unbalanced '%c' in header", open);
-    }
-    while (*p && *p != ',' && *p != '}' && *p != ']'   /* number or literal */
-           && !isspace((unsigned char)*p)) p++;
-    return p;
-}
-
-static const char *json_str_into(const char *p, char *out, size_t cap) {
-    while (isspace((unsigned char)*p)) p++;
-    if (*p != '"') die("safetensors: expected a string in header");
-    p++;
-    size_t i = 0;
-    while (*p && *p != '"') {
-        if (*p == '\\') die("safetensors: escapes in names are not supported");
-        if (i + 1 >= cap) die("safetensors: name longer than %zu chars", cap - 1);
-        out[i++] = *p++;
-    }
-    if (*p != '"') die("safetensors: unterminated name in header");
-    out[i] = '\0';
-    return p + 1;
-}
-
-static const char *json_ints_into(const char *p, long *out, int cap, int *n_out) {
-    while (isspace((unsigned char)*p)) p++;
-    if (*p != '[') die("safetensors: expected an array in header");
-    p++;
-    int n = 0;
-    for (;;) {
-        while (isspace((unsigned char)*p) || *p == ',') p++;
-        if (*p == ']') { p++; break; }
-        char *end;
-        long v = strtol(p, &end, 10);
-        if (end == p) die("safetensors: malformed integer in header array");
-        if (n >= cap) die("safetensors: array longer than %d entries", cap);
-        out[n++] = v;
-        p = end;
-    }
-    *n_out = n;
-    return p;
-}
-
-static const char *expect(const char *p, char c) {
-    while (isspace((unsigned char)*p)) p++;
-    if (*p != c) die("safetensors: expected '%c' in header, found '%c'", c, *p);
-    return p + 1;
-}
-
 /* ------------------------------------------------------------- entries */
 static DType parse_dtype(const char *s) {
     if (strcmp(s, "BF16") == 0) return DT_BF16;
@@ -110,7 +39,7 @@ static size_t dtype_size(DType d) { return (d == DT_F32) ? 4u : 2u; }
  * how we learn how much to allocate before the second, filling pass. */
 static int walk_header(const char *json, Tensor *out,
                        const unsigned char *data, size_t data_len) {
-    const char *p = expect(json, '{');
+    const char *p = json_expect(json, '{');
     int n = 0;
 
     while (*p) {
@@ -118,8 +47,8 @@ static int walk_header(const char *json, Tensor *out,
         if (*p == '}') break;
 
         char name[80];
-        p = json_str_into(p, name, sizeof name);
-        p = expect(p, ':');
+        p = json_string(p, name, sizeof name);
+        p = json_expect(p, ':');
 
         /* Not a tensor: safetensors stores free-form strings here. */
         if (strcmp(name, "__metadata__") == 0) { p = json_skip(p); continue; }
@@ -133,25 +62,25 @@ static int walk_header(const char *json, Tensor *out,
         int  n_off = 0;
         bool seen_dtype = false, seen_shape = false;
 
-        p = expect(p, '{');
+        p = json_expect(p, '{');
         for (;;) {
             while (isspace((unsigned char)*p) || *p == ',') p++;
             if (*p == '}') { p++; break; }
 
             char key[32];
-            p = json_str_into(p, key, sizeof key);
-            p = expect(p, ':');
+            p = json_string(p, key, sizeof key);
+            p = json_expect(p, ':');
 
             if (strcmp(key, "dtype") == 0) {
                 char dt[16];
-                p = json_str_into(p, dt, sizeof dt);
+                p = json_string(p, dt, sizeof dt);
                 t->dtype = parse_dtype(dt);
                 seen_dtype = true;
             } else if (strcmp(key, "shape") == 0) {
-                p = json_ints_into(p, t->shape, 4, &t->ndim);
+                p = json_ints(p, t->shape, 4, &t->ndim);
                 seen_shape = true;
             } else if (strcmp(key, "data_offsets") == 0) {
-                p = json_ints_into(p, offsets, 2, &n_off);
+                p = json_ints(p, offsets, 2, &n_off);
             } else {
                 p = json_skip(p);
             }

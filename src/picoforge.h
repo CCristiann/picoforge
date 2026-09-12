@@ -42,6 +42,15 @@ char *slurp(const char *path, size_t *len_out);
 void  config_load(const char *model_dir, Qwen3Config *cfg);
 void  config_print(const Qwen3Config *cfg);
 
+/* ------------------------------------------------------------------ json
+ * Enough to walk a file whose shape you already know. Every one of these
+ * dies rather than returning an error: a malformed model file is not a
+ * condition an inference engine can sensibly continue from. */
+const char *json_skip(const char *p);                 /* past one whole value  */
+const char *json_expect(const char *p, char c);       /* assert next char      */
+const char *json_string(const char *p, char *out, size_t cap);   /* no escapes */
+const char *json_ints(const char *p, long *out, int cap, int *n_out);
+
 /* ---------------------------------------------------------------- weights
  * safetensors: [u64 header length][JSON header][raw tensor bytes].
  * Deliberately dumb, and that is its point — a PyTorch .bin is a pickle,
@@ -128,5 +137,36 @@ void state_alloc(RunState *s, const Qwen3Config *cfg, int seq);
 void state_free(RunState *s);
 void forward(const int *tokens, int seq, const Weights *w,
              const Qwen3Config *cfg, RunState *s);
+
+/* ------------------------------------------------------------- tokenizer
+ * Byte-level BPE. The vocabulary starts from all 256 possible bytes, every
+ * one of which really is present, so NOTHING is untokenisable: a binary
+ * file, an unseen script, a novel emoji all encode — badly, perhaps, but
+ * always. That is the whole point of going byte-level.
+ *
+ * The files spell tokens in a 256-character Unicode alphabet only because
+ * JSON cannot hold raw control bytes. That is presentation. Inside this
+ * struct every token is the byte string it actually stands for. */
+typedef struct {
+    unsigned char *blob;        /* every token's bytes, concatenated        */
+    int           *offset;      /* [n_tokens + 1] indices into blob         */
+    int            n_tokens;
+    int            n_merges;
+
+    /* byte string -> id. Open addressing, slot holds id + 1 (0 = empty). */
+    int           *str_slot;
+    unsigned       str_mask;
+
+    /* (left_id << 32 | right_id) -> merge rank. rank -1 marks an empty slot. */
+    uint64_t      *merge_key;
+    int           *merge_rank;
+    unsigned       merge_mask;
+} Tokenizer;
+
+void tokenizer_load(const char *model_dir, Tokenizer *t);
+void tokenizer_free(Tokenizer *t);
+void tokenizer_summary(const Tokenizer *t);
+int  tokenizer_find(const Tokenizer *t, const unsigned char *b, int n); /* -1 absent */
+int  tokenizer_rank(const Tokenizer *t, int left, int right);          /* -1 absent */
 
 #endif /* PICOFORGE_H */

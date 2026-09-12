@@ -65,6 +65,42 @@ int main(int argc, char **argv) {
     fingerprint(&st, "model.layers.0.input_layernorm.weight", 4);
     fingerprint(&st, "model.layers.27.mlp.down_proj.weight", 4);
 
+    Tokenizer tok;
+    tokenizer_load(model_dir, &tok);
+    tokenizer_summary(&tok);
+
+    /* --dump-vocab / --dump-merges FILE: write the whole loaded tables out so
+     * tests/test_tokenizer.py can check every entry against Python, rather
+     * than spot-checking a handful and hoping the rest followed. */
+    if (argc > 3 && strcmp(argv[2], "--dump-vocab") == 0) {
+        FILE *f = fopen(argv[3], "wb");
+        if (!f) die("cannot write %s", argv[3]);
+        for (int id = 0; id < tok.n_tokens; id++) {
+            fprintf(f, "%d\t", id);
+            for (int i = tok.offset[id]; i < tok.offset[id + 1]; i++)
+                fprintf(f, "%02x", tok.blob[i]);
+            fputc('\n', f);
+        }
+        fclose(f);
+        printf("dumped %d tokens -> %s\n", tok.n_tokens, argv[3]);
+    }
+
+    if (argc > 3 && strcmp(argv[2], "--dump-merges") == 0) {
+        FILE *f = fopen(argv[3], "wb");
+        if (!f) die("cannot write %s", argv[3]);
+        /* Walk the hash table, not the file: this prints what we actually
+         * stored, so a bug in insertion or probing shows up instead of being
+         * papered over by re-reading merges.txt. */
+        for (unsigned i = 0; i <= tok.merge_mask; i++) {
+            if (tok.merge_rank[i] < 0) continue;
+            fprintf(f, "%d\t%u\t%u\n", tok.merge_rank[i],
+                    (unsigned)(tok.merge_key[i] >> 32),
+                    (unsigned)(tok.merge_key[i] & 0xFFFFFFFFu));
+        }
+        fclose(f);
+        printf("dumped %d merge rules -> %s\n", tok.n_merges, argv[3]);
+    }
+
     /* --forward OUT.bin ID ID ... : run the model on those token ids, dump
      * the raw fp32 logits for tests/test_forward.py to judge. Tokenisation is
      * step 1.6; until then the ids come from the command line. */
@@ -132,6 +168,7 @@ int main(int argc, char **argv) {
         free(tokens);
     }
 
+    tokenizer_free(&tok);
     st_close(&st);
     return 0;
 }
