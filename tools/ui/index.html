@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>picoforge</title>
+<style>
+  :root {
+    --bg:#0c0f14; --panel:#141922; --line:#232c3a; --fg:#dfe6f0; --dim:#8b98ab;
+    --naive:#e5534b; --simd:#e3a008; --tensor:#4a9eff; --ok:#3fb950;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.55 -apple-system,
+         BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:16px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:19px; letter-spacing:-.01em; }
+  header .sub { color:var(--dim); font-size:12.5px; font-family:var(--mono); }
+  nav { display:flex; gap:4px; padding:0 24px; border-bottom:1px solid var(--line); }
+  nav button { background:none; border:0; border-bottom:2px solid transparent;
+               color:var(--dim); padding:11px 14px; font-size:13.5px; cursor:pointer; }
+  nav button.on { color:var(--fg); border-bottom-color:var(--tensor); }
+  main { padding:24px; max-width:1180px; }
+  .panel { display:none; } .panel.on { display:block; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-bottom:16px; }
+  label { display:block; color:var(--dim); font-size:11.5px; text-transform:uppercase;
+          letter-spacing:.05em; margin-bottom:6px; }
+  textarea, select, input[type=number] {
+    background:var(--panel); color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:9px 11px; font-family:inherit; font-size:14px; }
+  textarea { width:100%; resize:vertical; font-family:var(--mono); font-size:13px; }
+  button.go { background:var(--tensor); color:#06101f; border:0; border-radius:7px;
+              padding:10px 20px; font-weight:600; font-size:14px; cursor:pointer; }
+  button.go:disabled { opacity:.45; cursor:default; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:7px;
+         overflow:hidden; }
+  .seg button { background:var(--panel); color:var(--dim); border:0; padding:9px 16px;
+                cursor:pointer; font-size:13.5px; }
+  .seg button.on { background:var(--tensor); color:#06101f; font-weight:600; }
+  .out { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+         padding:16px 18px; min-height:150px; white-space:pre-wrap; font-family:var(--mono);
+         font-size:13.5px; line-height:1.6; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(165px,1fr));
+           gap:12px; margin-top:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+          padding:13px 15px; }
+  .card .k { color:var(--dim); font-size:11px; text-transform:uppercase;
+             letter-spacing:.05em; }
+  .card .v { font-size:23px; font-family:var(--mono); margin-top:3px; }
+  .card .u { color:var(--dim); font-size:11.5px; }
+  .bar { height:5px; background:var(--line); border-radius:3px; margin-top:9px;
+         overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--tensor); }
+  .cmd { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin-top:10px;
+         word-break:break-all; }
+  .chips { display:flex; flex-wrap:wrap; gap:5px; margin-top:14px; }
+  .chip { background:var(--panel); border:1px solid var(--line); border-radius:6px;
+          padding:4px 8px; font-family:var(--mono); font-size:12.5px; }
+  .chip b { font-weight:400; }
+  .chip .id { color:var(--dim); font-size:10.5px; margin-left:6px; }
+  .chip.frag { border-color:var(--naive); color:var(--naive); }
+  .chip .ws { color:var(--simd); }
+  .note { color:var(--dim); font-size:12.5px; margin-top:14px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:20px; }
+  .chart { background:var(--panel); border:1px solid var(--line); border-radius:9px;
+           padding:14px; }
+  .chart h3 { margin:0 0 2px; font-size:13.5px; }
+  .chart p { margin:0 0 8px; color:var(--dim); font-size:11.5px; }
+  .legend { display:flex; gap:14px; font-size:11.5px; color:var(--dim); margin-top:6px; }
+  .legend i { display:inline-block; width:9px; height:9px; border-radius:2px;
+              margin-right:5px; }
+  .err { color:var(--naive); font-family:var(--mono); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>picoforge</h1>
+  <span class="sub">Qwen3-0.6B &middot; Apple M5 Pro &middot; 307 GB/s</span>
+</header>
+
+<nav>
+  <button class="on" data-tab="gen">Generate</button>
+  <button data-tab="tok">Tokenizer</button>
+  <button data-tab="bench">Benchmarks</button>
+</nav>
+
+<main>
+
+<section class="panel on" id="gen">
+  <div class="row">
+    <div style="flex:1 1 420px">
+      <label>Prompt</label>
+      <textarea id="prompt" rows="3">Explain in two sentences why generating tokens is limited by memory bandwidth.</textarea>
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label>Device</label>
+      <div class="seg" id="device">
+        <button data-v="cpu">CPU scalar</button>
+        <button class="on" data-v="gpu">GPU Metal</button>
+      </div>
+    </div>
+    <div>
+      <label>Matmul kernel</label>
+      <select id="kernel">
+        <option value="0">1 &mdash; naive</option>
+        <option value="1">2 &mdash; simdgroup</option>
+        <option value="2" selected>3 &mdash; TensorOps</option>
+      </select>
+    </div>
+    <div>
+      <label>Max tokens</label>
+      <input type="number" id="maxnew" value="80" min="1" max="500" style="width:92px">
+    </div>
+    <button class="go" id="run">Generate</button>
+  </div>
+
+  <div class="out" id="out"></div>
+  <div class="cmd" id="cmd"></div>
+
+  <div class="cards">
+    <div class="card"><div class="k">Prefill</div>
+      <div class="v" id="s-prefill">&mdash;</div><div class="u">tokens/s &middot; compute bound</div></div>
+    <div class="card"><div class="k">Decode</div>
+      <div class="v" id="s-decode">&mdash;</div><div class="u">tokens/s &middot; bandwidth bound</div></div>
+    <div class="card"><div class="k">Memory traffic</div>
+      <div class="v" id="s-gbps">&mdash;</div><div class="u">GB/s of 307 available</div>
+      <div class="bar"><i id="s-bar" style="width:0"></i></div></div>
+    <div class="card"><div class="k">Ceiling</div>
+      <div class="v">258</div><div class="u">tok/s &middot; 307 GB/s &divide; 1.19 GB</div></div>
+  </div>
+  <p class="note">Decode reads every one of the model&rsquo;s 596 M weights to produce a
+     single token. That is 1.19 GB in bf16, so no implementation can exceed
+     307&nbsp;&divide;&nbsp;1.19&nbsp;=&nbsp;258 tokens per second on this machine. The
+     percentage above is the only honest score.</p>
+</section>
+
+<section class="panel" id="tok">
+  <div class="row"><div style="flex:1 1 100%">
+    <label>Text</label>
+    <textarea id="tok-in" rows="3">Ciao! 2026 &egrave; l'anno 🚀 &mdash; #include &lt;stdio.h&gt;</textarea>
+  </div></div>
+  <div class="chips" id="chips"></div>
+  <p class="note" id="tok-note"></p>
+  <p class="note">Orange marks whitespace made visible. <span style="color:var(--naive)">Red</span>
+     marks a token that is not valid UTF-8 on its own &mdash; a fragment of a multi-byte
+     character. Byte-level BPE merges bytes, not characters, so an emoji is routinely
+     split across two or three tokens. Nothing is untokenisable because all 256 single
+     bytes are themselves tokens.</p>
+</section>
+
+<section class="panel" id="bench">
+  <div class="charts" id="charts"></div>
+  <p class="note">Median of 25 runs after 5 warmups, timed by the GPU itself. Raw CSV in
+     <code>bench/matmul_m5pro.csv</code>; protocol in <code>docs/BENCHMARKS.md</code>.</p>
+</section>
+
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const COLORS = {naive:'var(--naive)', simd:'var(--simd)', tensor:'var(--tensor)'};
+const NAMES  = {naive:'1. naive', simd:'2. simdgroup', tensor:'3. TensorOps'};
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === b.dataset.tab));
+  if (b.dataset.tab === 'bench') drawCharts();
+});
+
+/* ---- generate ---- */
+let device = 'gpu';
+$('#device').querySelectorAll('button').forEach(b => b.onclick = () => {
+  device = b.dataset.v;
+  $('#device').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  $('#kernel').disabled = device === 'cpu';
+});
+
+$('#run').onclick = () => {
+  const btn = $('#run'), out = $('#out');
+  btn.disabled = true; out.textContent = ''; $('#cmd').textContent = '';
+  ['s-prefill','s-decode','s-gbps'].forEach(i => $('#'+i).textContent = '…');
+  $('#s-bar').style.width = '0';
+
+  const p = new URLSearchParams({prompt: $('#prompt').value, device,
+                                kernel: $('#kernel').value, max: $('#maxnew').value});
+  const es = new EventSource('/api/generate?' + p);
+
+  es.addEventListener('cmd', e => $('#cmd').textContent = '$ ' + JSON.parse(e.data).cmd);
+  es.addEventListener('token', e => {
+    out.textContent += JSON.parse(e.data).t;
+    out.scrollTop = out.scrollHeight;
+  });
+  es.addEventListener('done', e => {
+    const s = JSON.parse(e.data);
+    if (s.prefill) $('#s-prefill').textContent = s.prefill.tok_s.toFixed(1);
+    if (s.decode) {
+      $('#s-decode').textContent = s.decode.tok_s.toFixed(1);
+      if (s.decode.gbps != null) {
+        $('#s-gbps').textContent = s.decode.gbps.toFixed(1);
+        $('#s-bar').style.width = Math.min(100, s.decode.gbps / 307 * 100) + '%';
+      }
+    }
+    es.close(); btn.disabled = false;
+  });
+  es.onerror = () => { es.close(); btn.disabled = false;
+                       if (!out.textContent) out.innerHTML = '<span class="err">engine failed — see the server log</span>'; };
+};
+
+/* ---- tokenizer ---- */
+let tokTimer;
+const tokenize = async () => {
+  const r = await fetch('/api/tokenize?text=' + encodeURIComponent($('#tok-in').value));
+  const d = await r.json();
+  if (d.error) { $('#chips').innerHTML = '<span class="err">' + d.error + '</span>'; return; }
+  $('#chips').innerHTML = d.tokens.map(t => {
+    const shown = t.valid
+      ? t.text.replace(/ /g, '<span class="ws">␣</span>').replace(/\n/g, '<span class="ws">⏎</span>')
+      : t.text;
+    return `<span class="chip${t.valid ? '' : ' frag'}"><b>${shown || '&nbsp;'}</b><span class="id">${t.id}</span></span>`;
+  }).join('');
+  const frags = d.tokens.filter(t => !t.valid).length;
+  $('#tok-note').textContent =
+    `${d.tokens.length} tokens` + (frags ? ` · ${frags} are byte fragments, not characters` : '');
+};
+$('#tok-in').oninput = () => { clearTimeout(tokTimer); tokTimer = setTimeout(tokenize, 220); };
+tokenize();
+
+/* ---- benchmarks: hand-drawn SVG, no chart library ---- */
+let benchRows = null;
+async function drawCharts() {
+  if (!benchRows) benchRows = (await (await fetch('/api/bench')).json()).rows;
+  if (!benchRows.length) { $('#charts').innerHTML = '<p class="note">No CSV yet — run <code>make bench</code>.</p>'; return; }
+  $('#charts').innerHTML = '';
+  chart('Throughput vs batch size', 'N=3072, K=1024 — the MLP shape', 'batch-sweep',
+        'M', r => r.gflops / 1000, 'TFLOP/s', null);
+  chart('Bandwidth vs batch size', 'flat to M=32: batching up to 32 tokens is free',
+        'batch-sweep', 'M', r => r.gbps, 'GB/s', 307);
+  chart('Decode (M=1) vs output width', 'climbs with N: short of parallelism, not bandwidth',
+        'width-at-M1', 'N', r => r.gbps, 'GB/s', 307);
+}
+
+function chart(title, sub, sweep, xkey, yfn, ylabel, ceiling) {
+  const W = 420, H = 258, L = 52, R = 14, T = 26, B = 34;
+  const series = ['naive','simd','tensor'].map(k => ({
+    k, pts: benchRows.filter(r => r.sweep === sweep && r.kernel === k)
+                     .sort((a,b) => a[xkey] - b[xkey])
+                     .map(r => ({x: r[xkey], y: yfn(r)}))
+  })).filter(s => s.pts.length);
+  if (!series.length) return;
+
+  const xs = series[0].pts.map(p => p.x);
+  const ymax = Math.max(ceiling || 0, ...series.flatMap(s => s.pts.map(p => p.y))) * 1.08;
+  const lx = Math.log2(xs[0]), rx = Math.log2(xs[xs.length - 1]);
+  const px = x => L + (Math.log2(x) - lx) / (rx - lx) * (W - L - R);
+  const py = y => H - B - y / ymax * (H - T - B);
+
+  let g = `<svg viewBox="0 0 ${W} ${H}" width="100%">`;
+  for (let i = 0; i <= 4; i++) {
+    const y = py(ymax * i / 4);
+    g += `<line x1="${L}" y1="${y}" x2="${W-R}" y2="${y}" stroke="#232c3a"/>`;
+    g += `<text x="${L-7}" y="${y+4}" fill="#8b98ab" font-size="10" text-anchor="end">${(ymax*i/4).toFixed(ymax>20?0:1)}</text>`;
+  }
+  xs.forEach(x => {
+    g += `<text x="${px(x)}" y="${H-B+15}" fill="#8b98ab" font-size="10" text-anchor="middle">${x}</text>`;
+  });
+  if (ceiling) {
+    g += `<line x1="${L}" y1="${py(ceiling)}" x2="${W-R}" y2="${py(ceiling)}" stroke="#dfe6f0" stroke-dasharray="4 4" stroke-width="1"/>`;
+    g += `<text x="${L+6}" y="${py(ceiling)-5}" fill="#8b98ab" font-size="10">${ceiling} GB/s theoretical</text>`;
+  }
+  series.forEach(s => {
+    const d = s.pts.map((p,i) => (i ? 'L' : 'M') + px(p.x) + ' ' + py(p.y)).join(' ');
+    g += `<path d="${d}" fill="none" stroke="${COLORS[s.k]}" stroke-width="2"/>`;
+    s.pts.forEach(p => g += `<circle cx="${px(p.x)}" cy="${py(p.y)}" r="2.6" fill="${COLORS[s.k]}"/>`);
+  });
+  g += `<text x="${L-7}" y="13" fill="#8b98ab" font-size="10" text-anchor="end">${ylabel}</text>`;
+  g += `<text x="${W/2}" y="${H-3}" fill="#8b98ab" font-size="10" text-anchor="middle">${xkey}</text></svg>`;
+
+  const legend = series.map(s =>
+    `<span><i style="background:${COLORS[s.k]}"></i>${NAMES[s.k]}</span>`).join('');
+  $('#charts').insertAdjacentHTML('beforeend',
+    `<div class="chart"><h3>${title}</h3><p>${sub}</p>${g}<div class="legend">${legend}</div></div>`);
+}
+</script>
+</body>
+</html>

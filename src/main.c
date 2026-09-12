@@ -275,6 +275,28 @@ int main(int argc, char **argv) {
         weights_free(&w);
     }
 
+    /* --encode TEXT : one line per token, "id<TAB>bytes-as-hex". Hex rather
+     * than the text itself because a token can be half of a multi-byte
+     * character, and printing that raw would produce mojibake that looks like
+     * a tokenizer bug rather than a display one. */
+    if (argc > 3 && strcmp(argv[2], "--encode") == 0) {
+        int cap = 1 << 16;
+        int *ids = malloc((size_t)cap * sizeof *ids);
+        if (!ids) die("out of memory for the token buffer");
+        int n = tokenizer_encode(&tok, argv[3], (int)strlen(argv[3]), ids, cap);
+
+        printf("=== tokens ===\n");
+        char piece[512];
+        for (int i = 0; i < n; i++) {
+            int len = tokenizer_decode(&tok, &ids[i], 1, piece, (int)sizeof piece);
+            printf("%d\t", ids[i]);
+            for (int b = 0; b < len; b++) printf("%02x", (unsigned char)piece[b]);
+            printf("\n");
+        }
+        printf("=== %d tokens ===\n", n);
+        free(ids);
+    }
+
     /* --nfc-file IN.bin OUT.bin : normalise each NUL-separated text. Exists so
      * tests/test_nfc.py can fuzz nfc_normalize against Python's unicodedata
      * directly. The 30 hand-picked prompts in test_encode.py show NFC works

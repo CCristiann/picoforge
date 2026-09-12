@@ -41,6 +41,10 @@ tests/test_ops: tests/test_ops.c src/ops.o src/picoforge.h
 test: tests/test_ops
 	@./tools/venv/bin/python tests/test_ops.py
 
+# A local UI in front of the real binary: http://127.0.0.1:8000
+ui: picoforge
+	@./tools/venv/bin/python tools/ui/server.py
+
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
 test-all: test test-nfc test-tokenizer test-encode test-forward test-generate
@@ -64,4 +68,4 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops $(METALLIB) build/*.air
 
-.PHONY: clean test test-all test-forward test-tokenizer test-encode test-nfc test-generate
+.PHONY: clean test test-all ui test-forward test-tokenizer test-encode test-nfc test-generate
