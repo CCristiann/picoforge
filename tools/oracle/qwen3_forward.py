@@ -225,6 +225,23 @@ def mlp_block(x: np.ndarray, weights: dict, layer: int, cfg: Qwen3Config) -> np.
     return x + (silu(gate) * up) @ weights[f"{p}.down_proj.weight"].T
 
 
+def forward(token_ids: list[int], weights: dict, cfg: Qwen3Config) -> np.ndarray:
+    """The whole model: embeddings -> 28 identical layers -> norm -> logits.
+
+    Returns (seq, vocab_size) fp32 logits. Row i is the model's belief
+    about token i+1, computed — thanks to the causal mask — from tokens
+    0..i only. The LM head is embed_tokens transposed (tied weights: the
+    config's contract; the checkpoint's lm_head copy is ignored).
+    """
+    x = embed_tokens(weights, token_ids)
+    cos, sin = rope_tables(np.arange(len(token_ids)), cfg.head_dim, cfg.rope_theta)
+    for layer in range(cfg.num_hidden_layers):
+        x = attention_block(x, weights, layer, cfg, cos, sin)
+        x = mlp_block(x, weights, layer, cfg)
+    x = rms_norm(x, weights["model.norm.weight"], cfg.rms_norm_eps)
+    return x @ weights["model.embed_tokens.weight"].T
+
+
 def main() -> None:
     model_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("models/Qwen3-0.6B")
     cfg = Qwen3Config.from_json(model_dir)
@@ -319,6 +336,21 @@ def main() -> None:
     print(f"layer delta RMS       : {np.sqrt(np.mean((x2 - x) ** 2)):.4f}")
     print(f"MLP per-token check   : {np.max(np.abs(mlp_block(x1[:2], weights, 0, cfg) - x2[:2])):.1f} "
           f"(must be exactly 0: token i's MLP ignores every other token)")
+
+    # The moment of truth: the full forward pass on a real prompt. The
+    # tokenizer is I/O, not math — the forward path above stays pure numpy.
+    print("\n=== full forward pass ===")
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(model_dir)
+    prompt = "The capital of France is"
+    ids = tok(prompt)["input_ids"]
+    logits = forward(ids, weights, cfg)
+    print(f"prompt                : {prompt!r} ({len(ids)} tokens)")
+    print(f"logits shape          : {logits.shape} (seq, vocab)")
+    probs = softmax(logits[-1:])[0]          # last row: what comes next?
+    print("top-5 next tokens:")
+    for t in np.argsort(probs)[::-1][:5]:
+        print(f"  {probs[t]:6.1%}  {tok.decode([t])!r}")
 
 
 if __name__ == "__main__":
