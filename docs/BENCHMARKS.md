@@ -16,9 +16,15 @@ as excellent and anything above it as a bug in the measurement.
 
 ## Procedure
 
-- **5 warmup runs, discarded.** The first dispatch of a pipeline pays for
-  shader caches, page faults on freshly allocated buffers, and a GPU that may
-  still be at idle clocks.
+- **0.5 s of warm-up per cell, discarded.** The first dispatch of a pipeline
+  pays for shader caches, page faults on freshly allocated buffers, and a GPU
+  that may still be at idle clocks. Warm-up is by **time, not count**: until
+  Phase 3 it was 5 runs, and on a 0.1 ms kernel that is half a millisecond of
+  work. The first quantised sweep measured M=1 at 154 us for every kernel and
+  watched cells get faster in the order they were measured, straight across
+  kernels doing different work -- the GPU leaving a low-power state. Warmed by
+  time, the same cells read 33 us. (The Phase 2 CSV escaped this only because
+  its sweep began with the slow naive kernel, which woke the GPU first.)
 - **25 measured runs.** One run is an anecdote. A laptop is a noisy
   instrument: other processes, thermal state and the scheduler all leak into
   a single sample.
@@ -49,6 +55,37 @@ A factor of four and a half, entirely from cold buffers and no warmup. The
 first number is not a pessimistic version of the second; it is a measurement
 of something else.
 
+## Phase 3: quantisation
+
+Three measurements, each answering a different question, each with its CSV.
+
+**Kernel cost** -- `bench/matmul_quant_m5pro.csv`. The batch sweep above at
+gate_proj's shape (N=3072, K=1024), with the bf16 TensorOps kernel as the
+baseline in the same file, for Q8/Q4 per-row and Q8_G32, Q4_G64, Q4_G32
+blocked kernels. Bytes counted: activations (fp32, or bf16 for Q4), codes,
+scales, output.
+
+**End to end** -- `bench/e2e_quant_m5pro.csv`. Whole forward passes on the
+GPU, timed by the command buffer: prefill of 512 tokens from position 0,
+decode of 1 token at position 512, and a 32-token verify at position 512
+(the step speculative decoding would pay). The same depth for decode and
+verify, because a decode at position 10 reads almost no cache and flatters
+every format equally. Decode GB/s counts every weight once (the embedding in
+full, as the LM head) plus the K/V cache up to the position.
+
+**Quality** -- `bench/quant_quality_local.csv` (transformers, fake-quantised,
+exact fp32 arithmetic) and `bench/quant_quality_engine.csv` (the engine's own
+tokenizer and GPU forward, bf16 activations for Q4 included). Protocol shared
+by both so the columns line up:
+
+- Corpus pinned by SHA256 in `docs/corpus.lock`. Windows of 1024 tokens,
+  non-overlapping, the second half of each scored (llama.cpp's convention:
+  every scored token has at least 512 tokens of context).
+- Everything is **paired** against the unquantised model on the same windows:
+  dNLL, KL(fp32 || quantised), top-1 agreement. KL and log-softmax in fp64.
+- dNLL's standard error is taken across **windows**, not tokens. Neighbouring
+  tokens are correlated, and a per-token SE claims certainty the data lacks.
+
 ## Reproducing
 
 ```
@@ -59,6 +96,23 @@ make
 
 `--metal-check` runs the correctness comparison against the CPU oracle instead;
 its timings are single-shot and are printed for orientation only.
+
+Phase 3:
+
+```
+make quant-models
+./picoforge models/Qwen3-0.6B --bench-quant bench/matmul_quant_m5pro.csv
+for m in Qwen3-0.6B Qwen3-0.6B-q8_row-embed Qwen3-0.6B-q4_g32 Qwen3-0.6B-q4_g32-embed; do
+  ./picoforge models/$m --bench-e2e bench/e2e_quant_m5pro.csv; done
+tools/venv/bin/python tools/eval/build_local_corpus.py 8697213
+tools/venv/bin/python tools/quant/sweep.py build/corpus_local.txt bench/quant_quality_local.csv
+./picoforge models/Qwen3-0.6B-q4_g32 --ppl build/corpus_local.txt models/Qwen3-0.6B bench/quant_quality_engine.csv
+tools/venv/bin/python tools/plot_quant.py
+```
+
+Thermal state was read with `pmset -g therm` before and after the Phase 3
+runs: no thermal or performance warning recorded. (`powermetrics` needs root
+and was not run; that is the human's call, not the benchmark's.)
 
 ## What is measured
 

@@ -2,6 +2,52 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
+
+Q8 and Q4 run end to end on CPU and GPU, every link of the chain of oracles
+green (`make test-all`). Formats were chosen by measurement: quality first
+(fake-quantised sweep on an uncontaminated local corpus), kernel cost second,
+whole passes third.
+
+                  weights  ppl vs fp32  KL     prefill 512  decode@512  verify32@512
+  bf16            1192 MB     --         --    3692 tok/s   69.7        1575
+  q8_row+embed     597 MB   -0.24%     0.003   3556         73.5        1705
+  q4_g32           559 MB  +10.4%      0.165   2069         74.6        1055
+  q4_g32+embed     335 MB  +12.1%      0.184   2108         74.3        1007
+
+What the silicon said that the header did not: the TensorOps destination is
+overwritten, not accumulated (C = A*B, not A*B + C); int4 is packed low nibble
+first, two's complement, behind a `device uchar *`; there is no float x int4,
+so Q4 activations go in as bf16; a fixed-width slice is `slice<G, ...>`, not
+the header example's `static_slice`.
+
+Four findings worth keeping:
+- The scale is ours to place, and where it goes sets the op-call count. Per
+  row is one call and costs nothing over bf16 at any M; Q8 per row is also
+  free in quality, so Q8 ships that way. Per-row Q4 is +70% perplexity; Q4
+  needs blocks of 32, which cost 2.3x in prefill and verify.
+- Decode at this size is not bandwidth-bound: 3.5x fewer bytes buys 7%. A
+  lone matmul costs ~33 us whether it moves 6 MB or 1.5 MB, and a token issues
+  197 matmuls. IF that floor also holds inside one command buffer -- measured
+  only one call per buffer so far -- it is ~6.5 ms of decode's 13.4 ms. A
+  hypothesis worth a profile, not a result.
+- Q4's bf16 narrowing is a step function that turns fp32 noise into whole bf16
+  steps, so the GPU diverges from any other implementation by KL ~5e-4 at 9
+  tokens -- shown by the CPU diverging from ITSELF that much under a 1e-6
+  input perturbation. In perplexity it costs 0.00004 nats, 1% of an SE.
+- Two instruments were wrong before any kernel was: a clip counter that
+  counted the block extreme as clipped, and a relative error that reported
+  cancellation in sums of 1024 signed terms as kernel error. And warm-up by
+  count left the GPU asleep for M=1; it is by time now.
+
+The engine reproduces transformers' fp32 perplexity on the corpus to four
+decimals (8.5258), which validates tokenizer, cache and GPU pass at 1024 tokens.
+
+**Next:** `docs/phase3.md`, drafted by the human, then Phase 3 is done.
+Published numbers still need a comparable corpus (WikiText-2, 733 KB test
+split) and a larger post-cutoff one; both are downloads awaiting a yes. Phase 4
+needs Qwen3-30B-A3B: 16 bf16 shards, 61.07 GB, awaiting a yes as well.
+
 ## 2026-09-12 (night) — the forward pass runs on the GPU
 
 End to end on Metal, twelve parity combinations green (3 prompt lengths x
