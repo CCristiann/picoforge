@@ -47,7 +47,11 @@ ui: picoforge
 
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
-test-all: test test-nfc test-tokenizer test-encode test-forward test-generate
+test-all: test test-nfc test-tokenizer test-encode test-forward test-generate test-quant-formats
+
+# Phase 3: the quantisers keep the bounds formats.py promises.
+test-quant-formats:
+	@./tools/venv/bin/python tests/test_quant_formats.py
 
 test-generate: picoforge
 	@./tools/venv/bin/python tests/test_generate.py
@@ -68,4 +72,4 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops $(METALLIB) build/*.air
 
-.PHONY: clean test test-all ui test-forward test-tokenizer test-encode test-nfc test-generate
+.PHONY: clean test test-all ui test-forward test-tokenizer test-encode test-nfc test-generate test-quant-formats

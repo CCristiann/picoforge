@@ -1,0 +1,7 @@
+# Perplexity corpora. Numbers measured on different bytes are not comparable:
+# rebuild, then check with  shasum -a 256 -c docs/corpus.lock  from build/.
+#
+# corpus_local.txt: tools/eval/build_local_corpus.py 8697213
+#   picoforge's own sources and docs at that commit, written in 2026 (after
+#   Qwen3's release): uncontaminated, 77679 Qwen3 tokens, 75 windows of 1024.
+ffde2116596be2bc1224e95deec3ee6e2e5bbb68096942b3805b5761dcaf64c6  corpus_local.txt
