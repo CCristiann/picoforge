@@ -97,4 +97,36 @@ void  softmax(float *x, int n);
 void  rope_apply(float *x, int head_dim, int pos, float theta);
 float silu(float z);
 
+/* ----------------------------------------------------------------- model
+ * Weights are borrowed pointers INTO the mapping — nothing here owns bytes,
+ * so binding the whole model costs 311 lookups and zero copies. */
+typedef struct {
+    const uint16_t *input_ln, *q_proj, *k_proj, *v_proj;
+    const uint16_t *q_norm, *k_norm, *o_proj;
+    const uint16_t *post_attn_ln, *gate_proj, *up_proj, *down_proj;
+} LayerWeights;
+
+typedef struct {
+    const uint16_t *embed;        /* [vocab, hidden]; tied, so also the LM head */
+    const uint16_t *final_norm;
+    LayerWeights   *layers;
+} Weights;
+
+/* Every activation buffer the forward pass needs, allocated once. */
+typedef struct {
+    int    seq;
+    float *x, *xb;                /* residual stream, and a scratch copy     */
+    float *q, *k, *v;             /* projections, laid out (seq, heads, dim) */
+    float *att, *attout;          /* one head-row of scores; merged heads    */
+    float *hb, *hb2;              /* SwiGLU gate and up                      */
+    float *logits;                /* (seq, vocab)                            */
+} RunState;
+
+void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w);
+void weights_free(Weights *w);
+void state_alloc(RunState *s, const Qwen3Config *cfg, int seq);
+void state_free(RunState *s);
+void forward(const int *tokens, int seq, const Weights *w,
+             const Qwen3Config *cfg, RunState *s);
+
 #endif /* PICOFORGE_H */

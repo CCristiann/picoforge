@@ -5,6 +5,8 @@
 #include "picoforge.h"
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 /* The config and the checkpoint are two files that can disagree. Nothing
  * downstream re-checks them, so every dimension the forward pass will index
@@ -62,6 +64,73 @@ int main(int argc, char **argv) {
     fingerprint(&st, "model.embed_tokens.weight", 4);
     fingerprint(&st, "model.layers.0.input_layernorm.weight", 4);
     fingerprint(&st, "model.layers.27.mlp.down_proj.weight", 4);
+
+    /* --forward OUT.bin ID ID ... : run the model on those token ids, dump
+     * the raw fp32 logits for tests/test_forward.py to judge. Tokenisation is
+     * step 1.6; until then the ids come from the command line. */
+    if (argc > 4 && strcmp(argv[2], "--forward") == 0) {
+        const char *out_path = argv[3];
+        int seq = argc - 4;
+
+        int *tokens = malloc((size_t)seq * sizeof *tokens);
+        if (!tokens) die("out of memory for %d tokens", seq);
+        for (int i = 0; i < seq; i++) {
+            tokens[i] = atoi(argv[4 + i]);
+            /* An out-of-range id indexes past the embedding matrix: a read
+             * into whatever follows it in the mapping, with no crash and no
+             * sign that anything went wrong. */
+            if (tokens[i] < 0 || tokens[i] >= cfg.vocab_size)
+                die("token id %d is outside [0, %d)", tokens[i], cfg.vocab_size);
+        }
+
+        Weights w;
+        weights_bind(&st, &cfg, &w);
+        RunState state;
+        state_alloc(&state, &cfg, seq);
+
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        forward(tokens, seq, &w, &cfg, &state);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double secs = (double)(t1.tv_sec - t0.tv_sec)
+                    + (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+
+        printf("\n=== forward ===\n");
+        printf("tokens                : %d\n", seq);
+        printf("prefill               : %.3f s  (%.1f tok/s, scalar CPU, 1 thread)\n",
+               secs, (double)seq / secs);
+
+        /* Top-5 of the last row: what the model thinks comes next. softmax is
+         * in place and destructive, so it runs on a copy of that one row —
+         * 600 KB, against the 2 seconds a second forward pass would cost. */
+        size_t vocab = (size_t)cfg.vocab_size;
+        float *probs = malloc(vocab * sizeof *probs);
+        if (!probs) die("out of memory for the probability row");
+        memcpy(probs, state.logits + (size_t)(seq - 1) * vocab, vocab * sizeof *probs);
+        softmax(probs, cfg.vocab_size);
+
+        printf("top-5 next tokens     :");
+        for (int rank = 0; rank < 5; rank++) {
+            int best = 0;
+            for (int i = 1; i < cfg.vocab_size; i++) if (probs[i] > probs[best]) best = i;
+            printf(" %d(%.1f%%)", best, (double)probs[best] * 100.0);
+            probs[best] = -1.0f;                    /* pop it and look again */
+        }
+        printf("\n");
+        free(probs);
+
+        FILE *f = fopen(out_path, "wb");
+        if (!f) die("cannot write %s", out_path);
+        size_t n = (size_t)seq * (size_t)cfg.vocab_size;
+        if (fwrite(state.logits, sizeof(float), n, f) != n)
+            die("short write to %s", out_path);
+        fclose(f);
+        printf("logits                : %zu floats -> %s\n", n, out_path);
+
+        state_free(&state);
+        weights_free(&w);
+        free(tokens);
+    }
 
     st_close(&st);
     return 0;

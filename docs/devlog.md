@@ -2,6 +2,28 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-12 (later) — Phase 1 reaches logit parity
+
+The C engine now runs Qwen3-0.6B end to end. Steps 1.1-1.5: dependency-free
+config scanner; mmapped safetensors reader (bf16 stays bf16 in the mapping and
+is widened inside the loops — a shift, so free, and half the bytes moved);
+matmul / rmsnorm / softmax / rope / silu, each judged by the oracle's own
+functions rather than a reimplementation; then the full forward pass.
+
+Measured: argmax agreement with the oracle on every position of three prompts,
+worst relative logit error 1.1e-5, worst KL 1.8e-9. That is the same order as
+NumPy-vs-transformers (8.4e-6), so the chain of oracles is not degrading.
+"The capital of France is" -> " Paris" (65.7%). Prefill is 3.6 tok/s, scalar,
+single-threaded — the honest baseline Phase 2 gets measured against.
+
+Two bugs found in our own instruments, both worth remembering: a KL accumulated
+in fp32 read negative (Gibbs forbids it) and needed fp64; and the top-5 printer
+was softmaxing the logits in place, then re-running the whole forward to
+recover them — two seconds of work saved by a 600 KB copy.
+
+**Next:** step 1.6, the byte-level BPE tokenizer, so prompts stop being
+hand-typed token ids. Then KV cache (1.7), sampling and chat template (1.8).
+
 ## 2026-09-12 — Phase 0 closed: the oracle is verified
 
 Full forward pass committed, then `tools/oracle/verify.py` against transformers
