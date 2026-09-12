@@ -87,4 +87,14 @@ static inline float bf16_to_f32(uint16_t h) {
 
 void tensor_to_f32(const Tensor *t, float *out);
 
+/* ------------------------------------------------------------------- ops
+ * The obvious, slow implementations. They are the reference the Metal
+ * kernels get judged against, so none of them may be clever.
+ * Weight arguments are bf16 straight out of the mapping, never copies. */
+void  matmul(float *out, const float *x, const uint16_t *w, int n_in, int n_out);
+void  rmsnorm(float *out, const float *x, const uint16_t *w, int n, float eps);
+void  softmax(float *x, int n);
+void  rope_apply(float *x, int head_dim, int pos, float theta);
+float silu(float z);
+
 #endif /* PICOFORGE_H */

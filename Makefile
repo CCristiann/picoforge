@@ -17,7 +17,14 @@ picoforge: $(OBJ)
 src/%.o: src/%.c src/picoforge.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-clean:
-	rm -f src/*.o picoforge
+# Differential test: the C primitives judged by the Python oracle.
+tests/test_ops: tests/test_ops.c src/ops.o src/picoforge.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_ops.c src/ops.o $(LDFLAGS)
 
-.PHONY: clean
+test: tests/test_ops
+	@./tools/venv/bin/python tests/test_ops.py
+
+clean:
+	rm -f src/*.o picoforge tests/test_ops
+
+.PHONY: clean test
