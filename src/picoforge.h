@@ -306,6 +306,7 @@ bool   quant_check(MetalContext *ctx);
 /* The measurement harness. Writes one CSV row per (kernel, shape). */
 void   bench_matmul(MetalContext *ctx, const char *csv_path);
 void   bench_qmatmul(MetalContext *ctx, const char *csv_path);   /* Phase 3 kernels */
+void   bench_e2e(const char *model_dir, const char *csv_path);       /* whole forward passes */
 
 /* Raw Metal objects, as void* so nothing else has to include Metal headers. */
 void  *metal_device(MetalContext *ctx);
@@ -322,8 +323,14 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
                            const Qwen3Config *cfg, int max_seq, int max_rows);
 void gpu_model_free(GpuModel *g);
 void gpu_set_matmul_kernel(GpuModel *g, int which);
-void gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
-                 float *logits_out);
+/* Returns the GPU seconds the pass took, measured by the GPU. */
+double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                   float *logits_out);
+
+/* --ppl: perplexity of this model on a text file, paired against a reference
+ * model on the same windows (KL, top-1 agreement). One CSV row appended. */
+void eval_perplexity(const char *model_dir, const char *ref_dir, const char *corpus,
+                     const char *csv_path);
 double metal_matmul(MetalContext *ctx, int which,
                     float *C, const float *A, const uint16_t *B,
                     int M, int N, int K);

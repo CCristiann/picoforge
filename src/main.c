@@ -116,6 +116,11 @@ int main(int argc, char **argv) {
         metal_shutdown(mtl);
     }
 
+    /* --bench-e2e OUT.csv : prefill, decode and 32-token verify of this
+     * model, one row each appended to OUT. */
+    if (argc > 3 && strcmp(argv[2], "--bench-e2e") == 0)
+        bench_e2e(model_dir, argv[3]);
+
     /* --bench-quant OUT.csv : the quantised kernels, same protocol. */
     if (argc > 3 && strcmp(argv[2], "--bench-quant") == 0) {
         MetalContext *mtl = metal_init("picoforge.metallib");
@@ -201,6 +206,11 @@ int main(int argc, char **argv) {
                                  : "A GPU KERNEL DIVERGES");
         metal_shutdown(mtl);
     }
+
+    /* --ppl CORPUS REFERENCE_DIR OUT.csv : this model's perplexity on CORPUS,
+     * paired against REFERENCE_DIR on the same windows. */
+    if (argc > 5 && strcmp(argv[2], "--ppl") == 0)
+        eval_perplexity(model_dir, argv[4], argv[3], argv[5]);
 
     /* --quant-check : the Phase 3 kernels against matmul_q. Exit status says
      * whether they agree, so a test script can use it directly. */

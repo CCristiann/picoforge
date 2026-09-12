@@ -266,8 +266,8 @@ static void encode_rmsnorm(GpuModel *g, id<MTLComputeCommandEncoder> enc,
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
-void gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
-                 float *logits_out) {
+double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                   float *logits_out) {
     const Qwen3Config *cfg = &g->cfg;
     const int H = cfg->hidden_size, hd = cfg->head_dim;
     const int n_head = cfg->num_attention_heads, n_kv = cfg->num_key_value_heads;
@@ -378,4 +378,6 @@ void gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from
         memcpy(logits_out, lb.contents,
                (size_t)(n - logits_from) * (size_t)cfg->vocab_size * sizeof(float));
     }
+    /* GPU time for the whole pass, from the command buffer's own clock. */
+    return cb.GPUEndTime - cb.GPUStartTime;
 }

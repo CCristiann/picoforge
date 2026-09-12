@@ -2,9 +2,10 @@
  *
  * The protocol, and why each part of it is there:
  *
- *   >= 3 warmup runs      the first dispatch of a pipeline pays for shader
+ *   0.5 s of warm-up      the first dispatch of a pipeline pays for shader
  *                         caches, page faults on freshly allocated buffers,
- *                         and a GPU that may still be at idle clocks.
+ *                         and a GPU that may still be at idle clocks. By
+ *                         time, not count: see WARM_SECONDS below.
  *   >= 20 measured runs   one run is an anecdote. Silicon on a laptop is a
  *                         noisy instrument: other processes, thermal state
  *                         and the scheduler all leak into a single sample.
@@ -24,7 +25,6 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define WARMUP 5
 #define REPS   25
 
 static int cmp_double(const void *a, const void *b) {
@@ -55,7 +55,22 @@ static void fill_inputs(float *A, uint16_t *B, int M, int N, int K) {
     }
 }
 
-/* One (kernel, shape) cell: WARMUP + REPS runs, one CSV row. */
+/* Warm-up by TIME, not by count. The first sweep of this harness measured
+ * M=1 at 154 us for every kernel, bf16 included, then watched the same cells
+ * get faster in the order they were measured -- 155, 153, 108, 89, 69 us --
+ * straight across kernels that do very different work. That is the GPU
+ * leaving a low-power state, not the kernels: five warm-up runs of a 0.1 ms
+ * kernel are half a millisecond of work, and the idle gap while the next
+ * cell's buffers are allocated is enough to let it drop back. */
+#define WARM_SECONDS 0.5
+
+static double wall_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+/* One (kernel, shape) cell: a timed warm-up + REPS runs, one CSV row. */
 static void measure(MetalContext *ctx, FILE *csv, const char *kernel_name,
                     int which, int M, int N, int K, const char *tag) {
     if (!metal_has_kernel(ctx, which)) return;
@@ -68,7 +83,7 @@ static void measure(MetalContext *ctx, FILE *csv, const char *kernel_name,
     MetalMatmul *mm = metal_matmul_prepare(ctx, M, N, K);
     metal_matmul_upload(mm, A, B);
 
-    for (int i = 0; i < WARMUP; i++) (void)metal_matmul_run(mm, which);
+    for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) (void)metal_matmul_run(mm, which);
 
     double t[REPS];
     for (int i = 0; i < REPS; i++) t[i] = metal_matmul_run(mm, which);
@@ -104,8 +119,8 @@ void bench_matmul(MetalContext *ctx, const char *csv_path) {
     static const char *names[3] = {"naive", "simd", "tensor"};
     const int H = 1024, I = 3072;          /* Qwen3-0.6B's real widths */
 
-    printf("\n=== matmul benchmark (%d warmup + %d reps, median [p10, p90]) ===\n",
-           WARMUP, REPS);
+    printf("\n=== matmul benchmark (%.1f s warm-up + %d reps, median [p10, p90]) ===\n",
+           WARM_SECONDS, REPS);
     printf("dispatch floor: %.1f us — anything near it is measuring the queue\n\n",
            metal_dispatch_floor(ctx) * 1e6);
 
@@ -144,20 +159,6 @@ void bench_matmul(MetalContext *ctx, const char *csv_path) {
  * or bf16 for Q4), codes, scales, and the fp32 output. */
 typedef struct { const char *name; int bits, group; bool bf16_act; } QBench;
 
-/* Warm-up by TIME, not by count. The first sweep of this harness measured
- * M=1 at 154 us for every kernel, bf16 included, then watched the same cells
- * get faster in the order they were measured -- 155, 153, 108, 89, 69 us --
- * straight across kernels that do very different work. That is the GPU
- * leaving a low-power state, not the kernels: five warm-up runs of a 0.1 ms
- * kernel are half a millisecond of work, and the idle gap while the next
- * cell's buffers are allocated is enough to let it drop back. */
-#define WARM_SECONDS 0.5
-
-static double wall_s(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-}
 
 static void stats_row(FILE *csv, const char *tag, const char *kernel, int M, int N, int K,
                       double *t, double bytes) {
@@ -221,4 +222,85 @@ void bench_qmatmul(MetalContext *ctx, const char *csv_path) {
     }
     fclose(csv);
     printf("\nraw results -> %s\n", csv_path);
+}
+
+/* ------------------------------------------------------------ end to end
+ * Whole forward passes of one model, three regimes at the same cache depth:
+ *
+ *   prefill  512 tokens from position 0            (compute-bound)
+ *   decode     1 token at position 512             (bandwidth-bound, M=1)
+ *   verify    32 tokens at position 512            (M=32: what speculative
+ *                                                   decoding pays per step)
+ *
+ * The same position matters: a decode at position 10 reads almost no cache
+ * and would flatter every format equally. Repeating a pass at one position
+ * is idempotent -- it rewrites the same cache rows with the same values.
+ *
+ * Decode bytes: every weight is read once per token (the embedding in full,
+ * as the LM head), plus the K/V cache up to the position. That is the traffic
+ * the 307 GB/s ceiling applies to. */
+static double weight_bytes(const SafeTensors *st) {
+    double b = 0;
+    for (int i = 0; i < st->n_tensors; i++) {
+        const Tensor *t = &st->tensors[i];
+        if (strcmp(t->name, "lm_head.weight") == 0) continue;     /* tied copy, never read */
+        b += (double)t->nelem * (t->dtype == DT_F32 ? 4 : (t->dtype == DT_I8 || t->dtype == DT_U8) ? 1 : 2);
+    }
+    return b;
+}
+
+void bench_e2e(const char *model_dir, const char *csv_path) {
+    Qwen3Config cfg;
+    SafeTensors st;
+    config_load(model_dir, &cfg);
+    st_open(model_dir, &st);
+    MetalContext *mtl = metal_init("picoforge.metallib");
+    GpuModel *g = gpu_model_create(mtl, &st, &cfg, 1024, 32);
+
+    enum { POS = 512, VERIFY = 32 };
+    int tokens[1024];
+    for (int i = 0; i < 1024; i++) tokens[i] = (i * 7919 + 13) % cfg.vocab_size;
+    float *logits = malloc(32u * (size_t)cfg.vocab_size * sizeof *logits);
+    if (!logits) die("out of memory for e2e logits");
+
+    const double wbytes = weight_bytes(&st);
+    const double kv_bytes = (double)cfg.num_hidden_layers * (POS + 1)
+                          * cfg.num_key_value_heads * cfg.head_dim * 2 * 4;
+
+    FILE *csv = fopen(csv_path, "ab");
+    if (!csv) die("cannot append to %s", csv_path);
+    fseek(csv, 0, SEEK_END);
+    if (ftell(csv) == 0)
+        fprintf(csv, "model,regime,n,pos,median_s,p10_s,p90_s,tok_s,weight_gb,kv_gb,gbps,pct_of_307\n");
+    printf("\n=== end to end: %s (%.0f MB of weights, %.1f s warm-up + %d reps) ===\n",
+           model_dir, wbytes / 1e6, WARM_SECONDS, REPS);
+
+    (void)gpu_forward(g, tokens, POS, 0, POS - 1, logits);         /* fill the cache */
+    struct { const char *name; int n, pos, from; } regimes[] = {
+        {"prefill", POS, 0, POS - 1}, {"decode", 1, POS, 0}, {"verify32", VERIFY, POS, 0},
+    };
+    for (size_t r = 0; r < sizeof regimes / sizeof regimes[0]; r++) {
+        const int *t = tokens + regimes[r].pos;
+        double ts[REPS];
+        for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;)
+            (void)gpu_forward(g, t, regimes[r].n, regimes[r].pos, regimes[r].from, logits);
+        for (int i = 0; i < REPS; i++)
+            ts[i] = gpu_forward(g, t, regimes[r].n, regimes[r].pos, regimes[r].from, logits);
+        qsort(ts, REPS, sizeof *ts, cmp_double);
+        const double med = pct(ts, REPS, 0.5), p10 = pct(ts, REPS, 0.1), p90 = pct(ts, REPS, 0.9);
+        const bool dec = strcmp(regimes[r].name, "decode") == 0;
+        const double gbps = dec ? (wbytes + kv_bytes) / med / 1e9 : 0.0;
+        fprintf(csv, "%s,%s,%d,%d,%.6f,%.6f,%.6f,%.2f,%.4f,%.4f,%.2f,%.2f\n", model_dir,
+                regimes[r].name, regimes[r].n, regimes[r].pos, med, p10, p90, regimes[r].n / med,
+                wbytes / 1e9, dec ? kv_bytes / 1e9 : 0.0, gbps, 100.0 * gbps / 307.0);
+        printf("  %-9s n=%-4d pos=%-4d %8.2f ms  [%.2f, %.2f]  %8.1f tok/s%s",
+               regimes[r].name, regimes[r].n, regimes[r].pos, med * 1e3, p10 * 1e3, p90 * 1e3,
+               regimes[r].n / med, dec ? "" : "\n");
+        if (dec) printf("  %.1f GB/s (%.0f%% of 307)\n", gbps, 100.0 * gbps / 307.0);
+    }
+    fclose(csv);
+    free(logits);
+    gpu_model_free(g);
+    metal_shutdown(mtl);
+    st_close(&st);
 }

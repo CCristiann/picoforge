@@ -1,0 +1,4 @@
+model,reference,ppl,ppl_ref,dppl_pct,dnll,dnll_se,kl,top1,tokens
+models/Qwen3-0.6B-q8_row-embed,models/Qwen3-0.6B,8.5054,8.5258,-0.240,-0.00240,0.00051,0.00275,0.9783,38400
+models/Qwen3-0.6B-q4_g32,models/Qwen3-0.6B,9.4128,8.5258,10.403,0.09897,0.00444,0.16507,0.8368,38400
+models/Qwen3-0.6B-q4_g32-embed,models/Qwen3-0.6B,9.5557,8.5258,12.080,0.11404,0.00474,0.18399,0.8259,38400
