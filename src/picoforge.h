@@ -147,6 +147,10 @@ void forward(const int *tokens, int seq, const Weights *w,
  * The files spell tokens in a 256-character Unicode alphabet only because
  * JSON cannot hold raw control bytes. That is presentation. Inside this
  * struct every token is the byte string it actually stands for. */
+/* An added token: matched in the raw text before the regex and before BPE,
+ * because no merge rule can build one and none must ever be allowed to. */
+typedef struct { int id; int len; unsigned char text[64]; } SpecialToken;
+
 typedef struct {
     unsigned char *blob;        /* every token's bytes, concatenated        */
     int           *offset;      /* [n_tokens + 1] indices into blob         */
@@ -161,12 +165,42 @@ typedef struct {
     uint64_t      *merge_key;
     int           *merge_rank;
     unsigned       merge_mask;
+
+    SpecialToken   specials[64];
+    int            n_specials;
 } Tokenizer;
+
+/* Unicode general categories L and N, as sorted codepoint ranges. Generated
+ * by tools/gen_unicode_tables.py; see src/unicode_tables.c. */
+typedef struct { unsigned lo, hi; } CodepointRange;
+extern const CodepointRange unicode_letters[];
+extern const int unicode_letters_count;
+extern const CodepointRange unicode_numbers[];
+extern const int unicode_numbers_count;
+
+/* NFC tables. b == 0 marks a singleton decomposition. Hangul is absent from
+ * all three: its decomposition and composition are arithmetic. */
+typedef struct { unsigned cp, a, b; } Decomposition;
+extern const Decomposition unicode_decomp[];
+extern const int unicode_decomp_count;
+
+typedef struct { unsigned a, b, cp; } Composition;
+extern const Composition unicode_compose[];
+extern const int unicode_compose_count;
+
+typedef struct { unsigned cp; unsigned char ccc; } CombiningClass;
+extern const CombiningClass unicode_ccc[];
+extern const int unicode_ccc_count;
+
+/* NFC-normalise UTF-8. Returns the new byte length. */
+int nfc_normalize(const char *in, int len, char *out, int cap);
 
 void tokenizer_load(const char *model_dir, Tokenizer *t);
 void tokenizer_free(Tokenizer *t);
 void tokenizer_summary(const Tokenizer *t);
 int  tokenizer_find(const Tokenizer *t, const unsigned char *b, int n); /* -1 absent */
 int  tokenizer_rank(const Tokenizer *t, int left, int right);          /* -1 absent */
+int  tokenizer_encode(const Tokenizer *t, const char *text, int len, int *out, int cap);
+int  tokenizer_decode(const Tokenizer *t, const int *ids, int n, char *out, int cap);
 
 #endif /* PICOFORGE_H */

@@ -61,7 +61,15 @@ static const char *utf8_next(const char *p, int *cp) {
         if (*cp < 0x800) die("tokenizer: overlong UTF-8");
         return p + 3;
     }
-    die("tokenizer: codepoint above the byte-level alphabet");
+    if ((c & 0xF8) == 0xF0) {
+        if ((p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80)
+            die("tokenizer: truncated UTF-8");
+        *cp = ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12)
+            | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+        if (*cp < 0x10000) die("tokenizer: overlong UTF-8");
+        return p + 4;
+    }
+    die("tokenizer: invalid UTF-8 lead byte 0x%02X", c);
     return p;                                          /* unreachable */
 }
 
@@ -329,6 +337,9 @@ static void load_merges(const char *model_dir, Tokenizer *t, const int *cp_to_by
     free(txt);
 }
 
+/* Defined further down, next to the encoder it serves. */
+static void load_specials(const char *model_dir, Tokenizer *t);
+
 void tokenizer_load(const char *model_dir, Tokenizer *t) {
     int cp_to_byte[ALPHABET_CP];
     build_alphabet(cp_to_byte);
@@ -336,6 +347,7 @@ void tokenizer_load(const char *model_dir, Tokenizer *t) {
     memset(t, 0, sizeof *t);
     load_vocab(model_dir, t, cp_to_byte);
     load_merges(model_dir, t, cp_to_byte);
+    load_specials(model_dir, t);
 
     /* Byte-level BPE's founding promise: every one of the 256 bytes is itself
      * a token, so no input can fail to encode. Checked, not assumed — a
@@ -373,4 +385,366 @@ void tokenizer_summary(const Tokenizer *t) {
     printf("probe rank(\" \",\" \")   : %d (rule 0 is the best-ranked merge)\n",
            tokenizer_rank(t, tokenizer_find(t, (const unsigned char *)" ", 1),
                              tokenizer_find(t, (const unsigned char *)" ", 1)));
+    printf("added tokens          : %d (ids %d..%d, matched before the regex)\n",
+           t->n_specials, t->specials[0].id, t->specials[t->n_specials - 1].id);
+}
+
+/* --------------------------------------------------- codepoint classes */
+
+static bool in_ranges(const CodepointRange *r, int n, int cp) {
+    int lo = 0, hi = n - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if ((unsigned)cp < r[mid].lo)      hi = mid - 1;
+        else if ((unsigned)cp > r[mid].hi) lo = mid + 1;
+        else return true;
+    }
+    return false;
+}
+
+static bool is_letter(int cp) {
+    return in_ranges(unicode_letters, unicode_letters_count, cp);
+}
+static bool is_number(int cp) {
+    return in_ranges(unicode_numbers, unicode_numbers_count, cp);
+}
+
+/* \s in the regex dialect HuggingFace uses is \p{White_Space}: a short and
+ * very stable list, so it is spelled out rather than generated. */
+static bool is_space(int cp) {
+    return (cp >= 0x09 && cp <= 0x0D) || cp == 0x20 || cp == 0x85 || cp == 0xA0
+        || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028
+        || cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+static bool is_nl(int cp) { return cp == '\r' || cp == '\n'; }
+
+static const char *cp_at(const char *p, const char *end, int *cp) {
+    if (p >= end) { *cp = -1; return p; }
+    return utf8_next(p, cp);
+}
+
+/* ------------------------------------------------------ pre-tokenizer */
+
+/* Length in bytes of the pre-token starting at p. This hand-codes Qwen3's
+ * split pattern:
+ *
+ *   (?i:'s|'t|'re|'ve|'m|'ll|'d)
+ *   | [^\r\n\p{L}\p{N}]?\p{L}+
+ *   | \p{N}
+ *   |  ?[^\s\p{L}\p{N}]+[\r\n]*
+ *   | \s*[\r\n]+
+ *   | \s+(?!\S)
+ *   | \s+
+ *
+ * Alternatives are tried in order and the FIRST that matches wins — regex
+ * alternation is ordered, not longest-match, and getting that backwards
+ * changes the segmentation of ordinary text.
+ *
+ * Why any of this exists: merges are forbidden from crossing these
+ * boundaries. Without the split, BPE would happily learn a single token for
+ * "the cat", and every word's tokenisation would depend on its neighbour. */
+static int pretoken_len(const char *p, const char *end) {
+    int cp;
+
+    /* 1. contractions, case-insensitively */
+    if (*p == '\'' && p + 1 < end) {
+        int a = tolower((unsigned char)p[1]);
+        int b = (p + 2 < end) ? tolower((unsigned char)p[2]) : 0;
+        if (a == 's' || a == 't' || a == 'm' || a == 'd') return 2;
+        if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e')
+                                   || (a == 'l' && b == 'l')) return 3;
+    }
+
+    /* 2. one optional non-letter/non-digit/non-newline, then letters.
+     *
+     * This is the alternative that attaches a leading space to a word, which
+     * is why " the" is one token and "the" is another. No backtracking is
+     * needed: the prefix only matches when p is not a letter, in which case
+     * dropping it would leave \p{L}+ with nothing at p either. */
+    {
+        const char *q = p;
+        const char *after = cp_at(q, end, &cp);
+        if (cp >= 0 && !is_nl(cp) && !is_letter(cp) && !is_number(cp)) q = after;
+
+        const char *r = q;
+        int letters = 0;
+        for (;;) {
+            const char *nx = cp_at(r, end, &cp);
+            if (cp < 0 || !is_letter(cp)) break;
+            r = nx;
+            letters++;
+        }
+        if (letters > 0) return (int)(r - p);
+    }
+
+    /* 3. exactly ONE digit. Not \p{N}+ — Qwen splits numbers per digit, so
+     * "2026" is four tokens. Deliberate: it keeps arithmetic tractable. */
+    {
+        const char *q = cp_at(p, end, &cp);
+        if (cp >= 0 && is_number(cp)) return (int)(q - p);
+    }
+
+    /* 4. optional space, then punctuation/symbols, then trailing newlines */
+    {
+        const char *q = p;
+        if (q < end && *q == ' ') q++;
+        const char *r = q;
+        int n = 0;
+        for (;;) {
+            const char *nx = cp_at(r, end, &cp);
+            if (cp < 0 || is_space(cp) || is_letter(cp) || is_number(cp)) break;
+            r = nx;
+            n++;
+        }
+        if (n > 0) {
+            while (r < end && (*r == '\r' || *r == '\n')) r++;
+            return (int)(r - p);
+        }
+    }
+
+    /* The whitespace run, measured once for alternatives 5-7. */
+    const char *ws_end = p, *last_nl_end = NULL, *last_ws_start = NULL;
+    for (const char *r = p;;) {
+        const char *nx = cp_at(r, end, &cp);
+        if (cp < 0 || !is_space(cp)) { ws_end = r; break; }
+        last_ws_start = r;
+        if (is_nl(cp)) last_nl_end = nx;
+        r = nx;
+    }
+
+    /* 5. \s*[\r\n]+ : greedy, so it runs through the LAST newline in the run */
+    if (last_nl_end) return (int)(last_nl_end - p);
+
+    /* 6. \s+(?!\S) : a whitespace run that is not followed by a non-space.
+     * Greedy \s+ then backtracking means: the whole run if it reaches the end
+     * of the text, otherwise all but its last character — which is what hands
+     * the final space to the word that follows it. */
+    if (ws_end > p) {
+        if (ws_end == end) return (int)(ws_end - p);
+        if (last_ws_start > p) return (int)(last_ws_start - p);
+    }
+
+    /* 7. \s+ */
+    if (ws_end > p) return (int)(ws_end - p);
+
+    die("pre-tokenizer: no alternative matched — the pattern should be total");
+    return 0;                                          /* unreachable */
+}
+
+/* ----------------------------------------------------------------- BPE */
+
+/* Merge one pre-token's bytes into ids, always taking the best-ranked pair.
+ *
+ * The rank order is not an optimisation, it is the definition. Ranks record
+ * the order in which merges were learned during the tokenizer's training,
+ * most frequent first. Applying them in any other order yields a different
+ * but entirely plausible segmentation: the same text, different ids, ids the
+ * model never saw in that arrangement. Nothing errors; the output just gets
+ * quietly worse. That is why tokenizer bugs are the most dangerous kind.
+ *
+ * O(n^2) in the chunk length, which is fine because chunks are words. */
+static int bpe_chunk(const Tokenizer *t, const unsigned char *b, int n,
+                     int *start, int *len, int *id, int *out, int cap) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        start[m] = i;
+        len[m] = 1;
+        id[m] = tokenizer_find(t, b + i, 1);   /* all 256 exist; checked at load */
+        m++;
+    }
+
+    for (;;) {
+        int best = -1, best_rank = 0;
+        for (int i = 0; i + 1 < m; i++) {
+            int r = tokenizer_rank(t, id[i], id[i + 1]);
+            if (r >= 0 && (best < 0 || r < best_rank)) { best = i; best_rank = r; }
+        }
+        if (best < 0) break;
+
+        int merged_len = len[best] + len[best + 1];
+        int merged = tokenizer_find(t, b + start[best], merged_len);
+        /* A merge rule exists for this pair, so its result must be a token.
+         * If it is not, the two files disagree with each other. */
+        if (merged < 0)
+            die("bpe: rule %d merges a pair whose result is not in the vocabulary",
+                best_rank);
+
+        len[best] = merged_len;
+        id[best] = merged;
+        memmove(&start[best + 1], &start[best + 2], (size_t)(m - best - 2) * sizeof *start);
+        memmove(&len[best + 1],   &len[best + 2],   (size_t)(m - best - 2) * sizeof *len);
+        memmove(&id[best + 1],    &id[best + 2],    (size_t)(m - best - 2) * sizeof *id);
+        m--;
+    }
+
+    if (m > cap) die("bpe: %d tokens do not fit in %d slots", m, cap);
+    memcpy(out, id, (size_t)m * sizeof *out);
+    return m;
+}
+
+/* ------------------------------------------------------ added tokens */
+
+/* A JSON string kept as raw bytes. Unlike vocab.json's keys, an added
+ * token's content is literal text, not byte-level spelling: it is matched
+ * against the input as-is. */
+static const char *read_raw(const char *p, unsigned char *out, int cap, int *len) {
+    p = json_expect(p, '"');
+    int n = 0;
+    while (*p && *p != '"') {
+        unsigned char c;
+        if (*p == '\\') {
+            p++;
+            switch (*p) {
+            case '"':  c = '"';  break;  case '\\': c = '\\'; break;
+            case '/':  c = '/';  break;  case 'b':  c = '\b'; break;
+            case 'f':  c = '\f'; break;  case 'n':  c = '\n'; break;
+            case 'r':  c = '\r'; break;  case 't':  c = '\t'; break;
+            default: die("tokenizer_config.json: unsupported escape"); return p;
+            }
+            p++;
+        } else {
+            c = (unsigned char)*p++;          /* UTF-8 passes through as bytes */
+        }
+        if (n >= cap) die("tokenizer_config.json: added token longer than %d bytes", cap);
+        out[n++] = c;
+    }
+    if (*p != '"') die("tokenizer_config.json: unterminated string");
+    *len = n;
+    return p + 1;
+}
+
+static void load_specials(const char *model_dir, Tokenizer *t) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/tokenizer_config.json", model_dir);
+    char *json = slurp(path, NULL);
+
+    static const char key[] = "\"added_tokens_decoder\"";
+    const char *p = strstr(json, key);
+    if (!p) die("tokenizer_config.json has no added_tokens_decoder");
+    p = json_expect(json_expect(p + sizeof key - 1, ':'), '{');
+
+    while (*(p = entry_start(p)) && *p != '}') {
+        char idbuf[32];
+        p = json_string(p, idbuf, sizeof idbuf);     /* the id, as a key */
+        p = json_expect(p, ':');
+
+        if ((size_t)t->n_specials >= sizeof t->specials / sizeof t->specials[0])
+            die("tokenizer: more than %zu added tokens",
+                sizeof t->specials / sizeof t->specials[0]);
+        SpecialToken *s = &t->specials[t->n_specials];
+        s->id = (int)strtol(idbuf, NULL, 10);
+        s->len = 0;
+
+        p = json_expect(p, '{');
+        while (*(p = entry_start(p)) && *p != '}') {
+            char field[32];
+            p = json_string(p, field, sizeof field);
+            p = json_expect(p, ':');
+            if (strcmp(field, "content") == 0)
+                p = read_raw(p, s->text, (int)sizeof s->text, &s->len);
+            else
+                p = json_skip(p);
+        }
+        p++;                                          /* past the entry's '}' */
+
+        if (s->len == 0) die("added token %d has no content", s->id);
+        t->n_specials++;
+    }
+    free(json);
+}
+
+/* --------------------------------------------------- encode and decode */
+
+int tokenizer_encode(const Tokenizer *t, const char *text, int len, int *out, int cap) {
+    /* tokenizer.json declares an NFC normalizer, and it runs before anything
+     * else. Skipping it makes "e" + U+0301 tokenise differently from "e",
+     * which is the same text to a reader and a different prompt to the model.
+     * NFC is idempotent, so normalising already-normal input costs a copy. */
+    int ncap = len * 4 + 8;
+    char *norm = malloc((size_t)ncap);
+    if (!norm) die("out of memory normalising %d bytes", len);
+    len = nfc_normalize(text, len, norm, ncap);
+    text = norm;
+
+    /* One scratch allocation for the whole call: a pre-token can be as long
+     * as the input (a single unbroken run of whitespace, say). */
+    int *start = malloc((size_t)len * sizeof *start);
+    int *slen  = malloc((size_t)len * sizeof *slen);
+    int *sid   = malloc((size_t)len * sizeof *sid);
+    if (!start || !slen || !sid) die("out of memory tokenising %d bytes", len);
+
+    int n = 0;
+    const char *p = text, *end = text + len;
+    while (p < end) {
+        /* Added tokens cut the text BEFORE the regex ever runs, and that
+         * ordering is the whole point. Checking for them only at pre-token
+         * boundaries does not work: the pattern reaches a boundary having
+         * already swallowed " <|" as space-plus-punctuation, and the special
+         * token is never seen. So find the earliest occurrence anywhere
+         * ahead, tokenise the text up to it as its own segment, emit the
+         * token, and resume after it.
+         *
+         * The visible consequence is that the space before <|im_start|>
+         * becomes a token of its own rather than merging rightwards. */
+        const char *hit = NULL;
+        int hit_id = -1, hit_len = 0;
+
+        for (int i = 0; i < t->n_specials; i++) {
+            const SpecialToken *s = &t->specials[i];
+            for (const char *q = p; q + s->len <= end; q++) {
+                if (memcmp(q, s->text, (size_t)s->len) != 0) continue;
+                /* Earliest wins; at equal positions the longer token wins, so
+                 * a special that prefixes another cannot shadow it. */
+                if (!hit || q < hit || (q == hit && s->len > hit_len)) {
+                    hit = q;
+                    hit_id = s->id;
+                    hit_len = s->len;
+                }
+                break;
+            }
+        }
+
+        const char *seg_end = hit ? hit : end;
+        while (p < seg_end) {
+            int plen = pretoken_len(p, seg_end);
+            n += bpe_chunk(t, (const unsigned char *)p, plen, start, slen, sid,
+                           out + n, cap - n);
+            p += plen;
+        }
+        if (hit) {
+            if (n >= cap) die("tokenizer: more than %d tokens", cap);
+            out[n++] = hit_id;
+            p = hit + hit_len;
+        }
+    }
+
+    free(start); free(slen); free(sid); free(norm);
+    return n;
+}
+
+int tokenizer_decode(const Tokenizer *t, const int *ids, int n, char *out, int cap) {
+    int len = 0;
+    for (int i = 0; i < n; i++) {
+        const unsigned char *bytes = NULL;
+        int blen = 0;
+
+        if (ids[i] >= 0 && ids[i] < t->n_tokens) {
+            bytes = t->blob + t->offset[ids[i]];
+            blen = t->offset[ids[i] + 1] - t->offset[ids[i]];
+        } else {
+            for (int k = 0; k < t->n_specials; k++)
+                if (t->specials[k].id == ids[i]) {
+                    bytes = t->specials[k].text;
+                    blen = t->specials[k].len;
+                    break;
+                }
+            if (!bytes) die("decode: id %d is in no table", ids[i]);
+        }
+
+        if (len + blen >= cap) die("decode: output longer than %d bytes", cap);
+        memcpy(out + len, bytes, (size_t)blen);
+        len += blen;
+    }
+    out[len] = '\0';
+    return len;
 }

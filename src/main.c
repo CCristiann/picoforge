@@ -101,6 +101,84 @@ int main(int argc, char **argv) {
         printf("dumped %d merge rules -> %s\n", tok.n_merges, argv[3]);
     }
 
+    /* --nfc-file IN.bin OUT.bin : normalise each NUL-separated text. Exists so
+     * tests/test_nfc.py can fuzz nfc_normalize against Python's unicodedata
+     * directly. The 30 hand-picked prompts in test_encode.py show NFC works
+     * where it was aimed; only a fuzz shows it works where it was not. */
+    if (argc > 4 && strcmp(argv[2], "--nfc-file") == 0) {
+        size_t flen;
+        char *blob = slurp(argv[3], &flen);
+        FILE *f = fopen(argv[4], "wb");
+        if (!f) die("cannot write %s", argv[4]);
+
+        int cap = (int)flen * 4 + 16;
+        char *norm = malloc((size_t)cap);
+        if (!norm) die("out of memory for the normalisation buffer");
+
+        size_t pos = 0;
+        int texts = 0;
+        while (pos < flen) {
+            size_t n = strlen(blob + pos);
+            int m = nfc_normalize(blob + pos, (int)n, norm, cap);
+            fwrite(norm, 1, (size_t)m, f);
+            fputc('\0', f);
+            pos += n + 1;
+            texts++;
+        }
+        fclose(f);
+        free(norm); free(blob);
+        printf("normalised %d texts -> %s\n", texts, argv[4]);
+    }
+
+    /* --encode-file IN.bin OUT.txt : IN holds NUL-separated texts, OUT gets one
+     * line of ids per text. NUL-separated rather than line-based because the
+     * cases most likely to break a tokenizer are exactly the ones a line
+     * format cannot carry: newline runs, trailing whitespace, embedded CR. */
+    if (argc > 4 && strcmp(argv[2], "--encode-file") == 0) {
+        size_t flen;
+        char *blob = slurp(argv[3], &flen);
+        FILE *f = fopen(argv[4], "wb");
+        if (!f) die("cannot write %s", argv[4]);
+
+        int cap = 1 << 20;
+        int *ids = malloc((size_t)cap * sizeof *ids);
+        char *back = malloc(flen * 4 + 16);
+        if (!ids || !back) die("out of memory for the encode buffers");
+
+        size_t pos = 0;
+        int texts = 0;
+        while (pos < flen) {
+            size_t n = strlen(blob + pos);
+            int count = tokenizer_encode(&tok, blob + pos, (int)n, ids, cap);
+            for (int i = 0; i < count; i++)
+                fprintf(f, i ? " %d" : "%d", ids[i]);
+            fputc('\n', f);
+
+            /* Decode straight back and insist on the same bytes. Encoding is
+             * only half a tokenizer, and a round trip catches whole classes
+             * of bug — a dropped byte, a mangled multi-byte sequence — that
+             * comparing ids alone would not.
+             *
+             * The comparison is against the NFC-normalised text, not the
+             * input: normalisation is deliberately lossy, and "e" + combining
+             * acute is meant to come back as a composed accent. */
+            char *want = malloc(n * 4 + 8);
+            if (!want) die("out of memory for the round-trip buffer");
+            int wlen = nfc_normalize(blob + pos, (int)n, want, (int)n * 4 + 8);
+            int blen = tokenizer_decode(&tok, ids, count, back, (int)flen * 4 + 16);
+            if (blen != wlen || memcmp(back, want, (size_t)wlen) != 0)
+                die("round trip failed on text %d (%d bytes expected, %d back)",
+                    texts, wlen, blen);
+            free(want);
+
+            pos += n + 1;
+            texts++;
+        }
+        fclose(f);
+        free(ids); free(back); free(blob);
+        printf("encoded %d texts -> %s (all round-tripped)\n", texts, argv[4]);
+    }
+
     /* --forward OUT.bin ID ID ... : run the model on those token ids, dump
      * the raw fp32 logits for tests/test_forward.py to judge. Tokenisation is
      * step 1.6; until then the ids come from the command line. */
