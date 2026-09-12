@@ -232,6 +232,23 @@ int  tokenizer_rank(const Tokenizer *t, int left, int right);          /* -1 abs
 int  tokenizer_encode(const Tokenizer *t, const char *text, int len, int *out, int cap);
 int  tokenizer_decode(const Tokenizer *t, const int *ids, int n, char *out, int cap);
 
+/* ---------------------------------------------------------------- Metal
+ * The GPU side, behind a C interface: no object pointer ever escapes
+ * src/metal.m. Kernel indices are positional and match kernels.metal. */
+typedef struct MetalContext MetalContext;
+enum { MM_NAIVE = 0, MM_SIMDGROUP = 1, MM_TENSOROPS = 2 };
+
+MetalContext *metal_init(const char *metallib_path);
+void   metal_shutdown(MetalContext *ctx);
+void   metal_info(const MetalContext *ctx);
+bool   metal_has_kernel(const MetalContext *ctx, int which);
+
+/* C[M,N] = A[M,K] * B[N,K]^T, with A fp32, B bf16 and C fp32. Returns the
+ * GPU time in seconds, measured by the GPU rather than around the submit. */
+double metal_matmul(MetalContext *ctx, int which,
+                    float *C, const float *A, const uint16_t *B,
+                    int M, int N, int K);
+
 /* ------------------------------------------------------------- sampling */
 int  sample(const float *logits, int vocab, float temperature, float top_p,
             int top_k, uint64_t *rng);

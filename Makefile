@@ -8,14 +8,30 @@ CC      := clang
 CFLAGS  := -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 LDFLAGS := -lm
 
-SRC := $(wildcard src/*.c)
-OBJ := $(SRC:.c=.o)
+SRC     := $(wildcard src/*.c)
+OBJC    := $(wildcard src/*.m)
+OBJ     := $(SRC:.c=.o) $(OBJC:.m=.o)
+METALLIB := picoforge.metallib
 
-picoforge: $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS)
+# Objective-C appears exactly once, for Metal, and links the frameworks.
+FRAMEWORKS := -framework Metal -framework Foundation
+
+picoforge: $(OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 src/%.o: src/%.c src/picoforge.h
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/%.o: src/%.m src/picoforge.h
+	$(CC) $(CFLAGS) -fobjc-arc -c -o $@ $<
+
+# Kernels compile to AIR, then link into a library loaded at runtime. Keeping
+# them out of the binary means a kernel can be edited and re-tested without
+# relinking the engine.
+$(METALLIB): src/kernels.metal
+	@mkdir -p build
+	xcrun -sdk macosx metal -c $< -o build/kernels.air
+	xcrun -sdk macosx metallib build/kernels.air -o $@
 
 # Differential test: the C primitives judged by the Python oracle.
 tests/test_ops: tests/test_ops.c src/ops.o src/picoforge.h
@@ -45,6 +61,6 @@ test-forward: picoforge
 	@./tools/venv/bin/python tests/test_forward.py
 
 clean:
-	rm -f src/*.o picoforge tests/test_ops
+	rm -f src/*.o picoforge tests/test_ops $(METALLIB) build/*.air
 
 .PHONY: clean test test-all test-forward test-tokenizer test-encode test-nfc test-generate

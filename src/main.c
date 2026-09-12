@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <math.h>
 
 /* The config and the checkpoint are two files that can disagree. Nothing
  * downstream re-checks them, so every dimension the forward pass will index
@@ -99,6 +100,82 @@ int main(int argc, char **argv) {
         }
         fclose(f);
         printf("dumped %d merge rules -> %s\n", tok.n_merges, argv[3]);
+    }
+
+    /* --metal-check : every GPU kernel against the CPU matmul, on the shapes
+     * the engine actually issues.
+     *
+     * The CPU path is the oracle here (CLAUDE.md: chain of oracles). It was
+     * itself verified against NumPy, so a kernel that agrees with it is
+     * transitively verified against transformers. Shapes are the real ones,
+     * not round numbers: a kernel that works on 256x256x256 and not on
+     * 1x1024x151936 has not been tested on this engine's problem. */
+    if (argc > 2 && strcmp(argv[2], "--metal-check") == 0) {
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        metal_info(mtl);
+
+        struct { int M, N, K; const char *what; } cases[] = {
+            {  1, 1024, 1024, "decode  q_proj  (M=1: the bandwidth-bound case)" },
+            {  1, 3072, 1024, "decode  gate_proj" },
+            { 40, 2048, 1024, "prefill q_proj, 40 tokens" },
+            {128, 3072, 1024, "prefill gate_proj, 128 tokens" },
+            {  7,  333,  517, "awkward sizes: nothing divides anything" },
+        };
+
+        printf("\n=== GPU kernels vs the CPU oracle ===\n");
+        printf("%-46s %10s %10s %9s %9s\n", "case", "max |rel|", "GPU ms", "GFLOP/s", "GB/s");
+
+        bool all_ok = true;
+        for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+            int M = cases[c].M, N = cases[c].N, K = cases[c].K;
+            float *A = malloc((size_t)M * (size_t)K * sizeof *A);
+            uint16_t *B = malloc((size_t)N * (size_t)K * sizeof *B);
+            float *gpu = malloc((size_t)M * (size_t)N * sizeof *gpu);
+            float *ref = malloc((size_t)M * (size_t)N * sizeof *ref);
+            if (!A || !B || !gpu || !ref) die("out of memory for the %dx%dx%d case", M, N, K);
+
+            uint32_t rng = 12345u;
+            for (int i = 0; i < M * K; i++) {
+                rng = rng * 1664525u + 1013904223u;
+                A[i] = (float)((rng >> 16) % 2048u) / 1024.0f - 1.0f;
+            }
+            for (int i = 0; i < N * K; i++) {
+                rng = rng * 1664525u + 1013904223u;
+                float v = (float)((rng >> 16) % 2048u) / 1024.0f - 1.0f;
+                uint32_t bits;
+                memcpy(&bits, &v, sizeof bits);
+                B[i] = (uint16_t)(bits >> 16);
+            }
+
+            for (int m = 0; m < M; m++)
+                matmul(ref + (size_t)m * (size_t)N, A + (size_t)m * (size_t)K, B, K, N);
+
+            for (int which = 0; which < 3; which++) {
+                if (!metal_has_kernel(mtl, which)) continue;
+                double secs = metal_matmul(mtl, which, gpu, A, B, M, N, K);
+
+                double worst = 0.0;
+                for (int i = 0; i < M * N; i++) {
+                    double d = fabs((double)gpu[i] - (double)ref[i]);
+                    double scale = fabs((double)ref[i]);
+                    double rel = (scale > 1e-6) ? d / scale : d;
+                    if (rel > worst) worst = rel;
+                }
+                double flops = 2.0 * M * N * K;
+                double bytes = (double)M * K * 4 + (double)N * K * 2 + (double)M * N * 4;
+                char label[96];
+                snprintf(label, sizeof label, "[%d] %s", which, cases[c].what);
+                printf("%-46.46s %10.2e %10.3f %9.1f %9.1f\n", label, worst,
+                       secs * 1e3, flops / secs / 1e9, bytes / secs / 1e9);
+                /* fp32 accumulation in a different ORDER is the only
+                 * difference available, so a few ulps is the whole budget. */
+                if (worst > 1e-4) { printf("    ^^ FAIL\n"); all_ok = false; }
+            }
+            free(A); free(B); free(gpu); free(ref);
+        }
+        printf("\n%s\n", all_ok ? "every GPU kernel agrees with the CPU oracle"
+                                 : "A GPU KERNEL DIVERGES");
+        metal_shutdown(mtl);
     }
 
     /* --greedy TEXT MAX_NEW OUT.txt : greedy generation, ids written to OUT.
