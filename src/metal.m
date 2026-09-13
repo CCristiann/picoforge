@@ -147,6 +147,11 @@ void metal_matmul_download(MetalMatmul *mm, float *C) {
     memcpy(C, bufC.contents, (size_t)mm->M * (size_t)mm->N * sizeof(float));
 }
 
+void metal_matmul_fill_c(MetalMatmul *mm, float value) {
+    float *c = ((__bridge id<MTLBuffer>)mm->bufC).contents;
+    for (size_t i = 0; i < (size_t)mm->M * (size_t)mm->N; i++) c[i] = value;
+}
+
 void metal_matmul_free(MetalMatmul *mm) {
     if (!mm) return;
     CFRelease(mm->bufA); CFRelease(mm->bufB); CFRelease(mm->bufC);
@@ -158,14 +163,22 @@ void metal_matmul_free(MetalMatmul *mm) {
  * submission measures queueing, driver work and scheduling as much as the
  * kernel, and those are not what is being compared. */
 double metal_matmul_run(MetalMatmul *mm, int which) {
-    MetalContext *ctx = mm->ctx;
-    if (!metal_has_kernel(ctx, which))
-        die("kernel %s is not implemented yet", kernel_names[which]);
+    return metal_matmul_run_n(mm, which, 1, NULL);
+}
 
-    id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)ctx->queue;
-    id<MTLComputePipelineState> pso =
-        (__bridge id<MTLComputePipelineState>)ctx->pipelines[which];
-
+/* `count` copies of one dispatch inside ONE command buffer and one encoder,
+ * the way the forward pass issues ~420 of them. The GPU time answers "what
+ * does one more dispatch cost once the buffer is already paid for"; the wall
+ * time (encode + commit + wait, if wall_out is given) adds what the CPU spends
+ * building the buffer, which a token also has to wait for.
+ *
+ * per_thread: `grid` counts threads (dispatchThreads); otherwise it counts
+ * threadgroups of `group` threads each (dispatchThreadgroups). */
+static double run_grid(MetalMatmul *mm, id<MTLComputePipelineState> pso, const char *name,
+                       bool per_thread, MTLSize grid, MTLSize group, int count,
+                       double *wall_out) {
+    const CFAbsoluteTime w0 = CFAbsoluteTimeGetCurrent();
+    id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)mm->ctx->queue;
     struct { uint32_t M, N, K; } dims = {(uint32_t)mm->M, (uint32_t)mm->N, (uint32_t)mm->K};
 
     id<MTLCommandBuffer> cb = [queue commandBuffer];
@@ -175,6 +188,25 @@ double metal_matmul_run(MetalMatmul *mm, int which) {
     [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufA offset:0 atIndex:1];
     [enc setBuffer:(__bridge id<MTLBuffer>)mm->bufB offset:0 atIndex:2];
     [enc setBytes:&dims length:sizeof dims atIndex:3];
+    for (int i = 0; i < count; i++) {
+        if (per_thread) [enc dispatchThreads:grid threadsPerThreadgroup:group];
+        else            [enc dispatchThreadgroups:grid threadsPerThreadgroup:group];
+    }
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+
+    if (cb.error) die("kernel %s failed: %s", name, cb.error.localizedDescription.UTF8String);
+    if (wall_out) *wall_out = CFAbsoluteTimeGetCurrent() - w0;
+    return cb.GPUEndTime - cb.GPUStartTime;
+}
+
+double metal_matmul_run_n(MetalMatmul *mm, int which, int count, double *wall_out) {
+    MetalContext *ctx = mm->ctx;
+    if (!metal_has_kernel(ctx, which))
+        die("kernel %s is not implemented yet", kernel_names[which]);
+    id<MTLComputePipelineState> pso =
+        (__bridge id<MTLComputePipelineState>)ctx->pipelines[which];
 
     /* Each kernel wants its grid shaped differently, and that shape is part
      * of the kernel, so it lives beside the dispatch rather than in the
@@ -188,21 +220,29 @@ double metal_matmul_run(MetalMatmul *mm, int which) {
      * work, not short of occupancy. */
     if (which == MM_NAIVE) {
         NSUInteger tgh = (NSUInteger)(mm->M < 16 ? mm->M : 16);
-        NSUInteger tgw = 256 / tgh;
-        [enc dispatchThreads:MTLSizeMake((NSUInteger)mm->N, (NSUInteger)mm->M, 1)
-       threadsPerThreadgroup:MTLSizeMake(tgw, tgh, 1)];
-    } else {
-        NSUInteger gx = (NSUInteger)((mm->N + 31) / 32), gy = (NSUInteger)((mm->M + 31) / 32);
-        [enc dispatchThreadgroups:MTLSizeMake(gx, gy, 1)
-            threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        return run_grid(mm, pso, kernel_names[which], true,
+                        MTLSizeMake((NSUInteger)mm->N, (NSUInteger)mm->M, 1),
+                        MTLSizeMake(256 / tgh, tgh, 1), count, wall_out);
     }
-    [enc endEncoding];
-    [cb commit];
-    [cb waitUntilCompleted];
+    return run_grid(mm, pso, kernel_names[which], false,
+                    MTLSizeMake((NSUInteger)((mm->N + 31) / 32), (NSUInteger)((mm->M + 31) / 32), 1),
+                    MTLSizeMake(128, 1, 1), count, wall_out);
+}
 
-    if (cb.error) die("kernel %s failed: %s", kernel_names[which],
-                      cb.error.localizedDescription.UTF8String);
-    return cb.GPUEndTime - cb.GPUStartTime;
+/* A TensorOps variant by name, with its tile. thread_scope kernels run one op
+ * per GPU thread, one thread per tile; the others one 4-SIMD-group threadgroup
+ * per tile, like matmul_tensorops. */
+double metal_matmul_run_tiled(MetalMatmul *mm, const char *kernel, int tile_m, int tile_n,
+                              bool thread_scope, int count, double *wall_out) {
+    id<MTLComputePipelineState> pso =
+        (__bridge id<MTLComputePipelineState>)metal_pipeline(mm->ctx, kernel);
+    const NSUInteger gx = (NSUInteger)((mm->N + tile_n - 1) / tile_n);
+    const NSUInteger gy = (NSUInteger)((mm->M + tile_m - 1) / tile_m);
+    if (thread_scope)
+        return run_grid(mm, pso, kernel, true, MTLSizeMake(gx, gy, 1),
+                        MTLSizeMake(gx < 64 ? gx : 64, gy < 8 ? gy : 8, 1), count, wall_out);
+    return run_grid(mm, pso, kernel, false, MTLSizeMake(gx, gy, 1),
+                    MTLSizeMake(128, 1, 1), count, wall_out);
 }
 
 /* Convenience wrapper: prepare, upload, run once, download, free. Used by the

@@ -86,6 +86,18 @@ by both so the columns line up:
 - dNLL's standard error is taken across **windows**, not tokens. Neighbouring
   tokens are correlated, and a per-token SE claims certainty the data lacks.
 
+## Phase 4: cost per dispatch
+
+`bench/dispatch_m5pro.csv`. The same protocol, one cell per row, but each
+timed command buffer holds `count` copies of one matmul, so the GPU time
+divided by `count` is what one more dispatch costs inside a buffer that is
+already paid for. Wall time (encode + commit + wait) is recorded beside it.
+Sweeps: `count` 1..1024 at three shapes, tile fan-out, work per tile, rows per
+dispatch, and tile shape. Every tile-shape variant is checked against the
+32x32 TensorOps kernel before it is timed, with C poisoned with NaN first so
+a kernel that writes nothing cannot pass; the relative difference is in the
+last column.
+
 ## Reproducing
 
 ```
@@ -110,8 +122,14 @@ tools/venv/bin/python tools/quant/sweep.py build/corpus_local.txt bench/quant_qu
 tools/venv/bin/python tools/plot_quant.py
 ```
 
+Phase 4:
+
+```
+./picoforge models/Qwen3-0.6B --bench-dispatch bench/dispatch_m5pro.csv
+```
+
 Thermal state was read with `pmset -g therm` before and after the Phase 3
-runs: no thermal or performance warning recorded. (`powermetrics` needs root
+and Phase 4 runs: no thermal or performance warning recorded. (`powermetrics` needs root
 and was not run; that is the human's call, not the benchmark's.)
 
 ## What is measured

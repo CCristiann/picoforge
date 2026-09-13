@@ -121,6 +121,15 @@ int main(int argc, char **argv) {
     if (argc > 3 && strcmp(argv[2], "--bench-e2e") == 0)
         bench_e2e(model_dir, argv[3]);
 
+    /* --bench-dispatch OUT.csv : one matmul repeated 1..1024 times inside a
+     * single command buffer, to separate the cost of a call from its bytes. */
+    if (argc > 3 && strcmp(argv[2], "--bench-dispatch") == 0) {
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        metal_info(mtl);
+        bench_dispatch(mtl, argv[3]);
+        metal_shutdown(mtl);
+    }
+
     /* --bench-quant OUT.csv : the quantised kernels, same protocol. */
     if (argc > 3 && strcmp(argv[2], "--bench-quant") == 0) {
         MetalContext *mtl = metal_init("picoforge.metallib");

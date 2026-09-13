@@ -215,6 +215,56 @@ kernel void matmul_tensorops(device float        *C [[buffer(0)]],
     op.run(mA, mB, mC);
 }
 
+/* Phase 4 step 4.1: the same kernel with other tile shapes. The 32x32 tile
+ * was chosen for prefill, where M is large. At decode M is 1, and the dispatch
+ * sweep found the op costs the same for 1 row as for 32: the 31 absent rows
+ * look paid for. These variants keep everything but the tile (and, where the
+ * header forces it, the execution scope), so a timing difference can only
+ * come from there. The host dispatches ceil(N / TILE_N) x ceil(M / TILE_M)
+ * threadgroups -- or threads, for the single-thread scope.
+ *
+ * Probed, per the fresh-API rule (MPPTensorOpsMatMul2dImpl.h, SDK 26.5):
+ *   - execution_simdgroups<N>: M and N multiples of 8, one of them of 16.
+ *     A 1-row tile does not compile ("M must be a multiple of 8 or 16").
+ *   - execution_thread: M may be 1, 2, 4 or a multiple of 8. A 1-row tile is
+ *     legal only when each GPU thread runs its own op on its own tile.
+ *
+ * Measured (bench/dispatch_m5pro.csv): single-thread scope is 3.5x slower
+ * than the 32x32 kernel at a 1x32 tile and 20-160x slower with wider tiles,
+ * and a 1x1024 thread-scope tile over an 8x768 product left rows of C
+ * unwritten (NaN poison survived) while 1x768 was correct. Unexplained; the
+ * wide thread-scope variants were dropped rather than debugged, since they
+ * lose by an order of magnitude even when right. */
+#define TENSOROPS_TILED(NAME, TILE_M, TILE_N, SCOPE, POS)                          \
+kernel void NAME(device float  *C [[buffer(0)]],                                  \
+                 device float  *A [[buffer(1)]],                                  \
+                 device bfloat *B [[buffer(2)]],                                  \
+                 constant MatmulDims &d [[buffer(3)]],                            \
+                 uint2 tgid [[POS]]) {                                            \
+    constexpr auto desc = matmul2d_descriptor(TILE_M, TILE_N,                     \
+                              static_cast<int>(dynamic_extent), false, true);    \
+    matmul2d<desc, SCOPE> op;                                                     \
+    auto tA = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
+                  A, dextents<int32_t, 2>(int(d.K), int(d.M)));                   \
+    auto tB = tensor<device bfloat, dextents<int32_t, 2>, tensor_inline>(          \
+                  B, dextents<int32_t, 2>(int(d.K), int(d.N)));                   \
+    auto tC = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
+                  C, dextents<int32_t, 2>(int(d.N), int(d.M)));                   \
+    auto mA = tA.slice(0, int(tgid.y) * TILE_M);                                  \
+    auto mB = tB.slice(0, int(tgid.x) * TILE_N);                                  \
+    auto mC = tC.slice(int(tgid.x) * TILE_N, int(tgid.y) * TILE_M);               \
+    op.run(mA, mB, mC);                                                           \
+}
+#define SG4 execution_simdgroups<4>
+#define TG  threadgroup_position_in_grid
+#define TP  thread_position_in_grid
+TENSOROPS_TILED(matmul_tensorops_8x16,     8,   16, SG4, TG)
+TENSOROPS_TILED(matmul_tensorops_8x32,     8,   32, SG4, TG)
+TENSOROPS_TILED(matmul_tensorops_8x64,     8,   64, SG4, TG)
+TENSOROPS_TILED(matmul_tensorops_16x32,   16,   32, SG4, TG)
+TENSOROPS_TILED(matmul_tensorops_8x256,    8,  256, SG4, TG)
+TENSOROPS_TILED(matmul_tensorops_t1x32,    1,   32, execution_thread, TP)
+
 /* =======================================================================
  * Phase 3: quantised weights straight into the matrix units.
  *

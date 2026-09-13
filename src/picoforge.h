@@ -288,6 +288,10 @@ typedef struct MetalMatmul MetalMatmul;
 MetalMatmul *metal_matmul_prepare(MetalContext *ctx, int M, int N, int K);
 void   metal_matmul_upload(MetalMatmul *mm, const float *A, const uint16_t *B);
 double metal_matmul_run(MetalMatmul *mm, int which);
+double metal_matmul_run_n(MetalMatmul *mm, int which, int count, double *wall_out);
+double metal_matmul_run_tiled(MetalMatmul *mm, const char *kernel, int tile_m, int tile_n,
+                              bool thread_scope, int count, double *wall_out);
+void   metal_matmul_fill_c(MetalMatmul *mm, float value);   /* poison C before a check */
 void   metal_matmul_download(MetalMatmul *mm, float *C);
 void   metal_matmul_free(MetalMatmul *mm);
 
@@ -308,6 +312,7 @@ bool   quant_check(MetalContext *ctx);
 void   bench_matmul(MetalContext *ctx, const char *csv_path);
 void   bench_qmatmul(MetalContext *ctx, const char *csv_path);   /* Phase 3 kernels */
 void   bench_e2e(const char *model_dir, const char *csv_path);       /* whole forward passes */
+void   bench_dispatch(MetalContext *ctx, const char *csv_path);     /* Phase 4: cost per dispatch */
 
 /* Raw Metal objects, as void* so nothing else has to include Metal headers. */
 void  *metal_device(MetalContext *ctx);

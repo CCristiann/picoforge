@@ -16,8 +16,37 @@ leaves speculative decoding as future work; EcoSpec and EVICT make speculation
 expert-cost-aware, but on H200/A100 servers -- and nothing putting them
 together on unified memory. Plan and sources in `docs/phase4-plan.md`.
 
-**Next:** step 4.1, the measurement the whole plan rests on: does a matmul
-still cost ~33 us when it is one of hundreds in a single command buffer?
+### Step 4.1 — what a matmul costs inside a command buffer
+
+`--bench-dispatch`, raw CSV in `bench/dispatch_m5pro.csv`. One matmul
+repeated 1..1024 times in ONE buffer, then three sweeps to find the axis.
+
+- **The floor holds inside a buffer**, so Phase 3's hypothesis was right in
+  number and wrong in cause. TensorOps at 1x3072x1024 is 32.0 us per dispatch
+  whether alone or 1 of 1024. But it is not a toll: a 1x32x32 matmul costs
+  1.4 us per dispatch.
+- **Bytes do not set it either.** An expert projection (1x768x2048, half the
+  bytes) costs the same 31 us. What does: work per 32x32 tile grows linearly
+  with K (1.4 -> 105 us from K=32 to 8192), and tiles run in parallel for free
+  up to 16 of them (27.1 -> 27.5 us), then stop being free (128 tiles: 86 us).
+- **Rows are free.** 1 to 32 tokens routed through one expert projection cost
+  the same 31 us. The op computes the whole 32-row tile whether one row
+  exists or thirty-two.
+- **So the tile was the waste.** The same op with an 8x32 tile, output
+  bit-identical (max relative difference 0): 19.6 us at decode (1.64x),
+  13.8 us for 8 rows (2.2x), 31.8 vs 32.1 us at 32 rows. The header forbids a
+  1-row tile with SIMD groups ("M must be a multiple of 8 or 16"); the
+  single-thread scope allows it and is 3.5-160x slower.
+
+For the plan: on this machine a MoE verify step is priced neither by bytes
+(EcoSpec's H200 model) nor by calls, but by tiles and by how many of them
+fit in parallel. That changes what "an expensive draft" means.
+
+One unexplained failure, logged and not chased: a single-thread-scope 1x1024
+tile over 8x768 left rows of C unwritten; the check caught it before timing.
+
+**Next:** put the 8x32 kernel in the forward pass for M <= 32 and measure what
+decode gains end to end -- the drafter has to be fast before it can draft.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

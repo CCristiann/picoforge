@@ -21,6 +21,7 @@
  */
 #include "picoforge.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -220,6 +221,136 @@ void bench_qmatmul(MetalContext *ctx, const char *csv_path) {
         }
         free(A); free(B); free(Q); free(D);
     }
+    fclose(csv);
+    printf("\nraw results -> %s\n", csv_path);
+}
+
+/* ------------------------------------------------------- dispatch cost
+ * Phase 4 step 4.1. Phase 3 measured ~33 us for one TensorOps matmul at M=1
+ * whether it moved 6 MB or 1.5 MB -- but always ONE dispatch per command
+ * buffer, so that number may be the buffer, not the matmul. A MoE verify step
+ * issues thousands of matmuls, and whether each costs bytes or a fixed toll
+ * decides how speculation over experts should be priced. So: the same matmul
+ * N times in one buffer, N = 1..1024, at three shapes:
+ *
+ *   dense    1 x 3072 x 1024   Qwen3-0.6B's gate_proj at decode
+ *   expert   1 x  768 x 2048   one Qwen3-30B-A3B expert projection at decode
+ *   tiny     1 x   32 x   32   almost no work: whatever is left is the toll
+ *
+ * If time grows with N at the tiny shape as fast as at the dense one, the
+ * cost is per call. If tiny stays flat and dense grows, it is per byte. */
+/* One cell: `count` copies of an M x N x K matmul inside one command buffer.
+ * `tiles` is the number of 32x32 threadgroups the tiled kernels fan out to. */
+typedef struct { const char *name; int tile_m, tile_n; bool thread_scope; } TileVariant;
+
+static double run_cell(MetalMatmul *mm, int which, const TileVariant *v, int count, double *wall) {
+    return v ? metal_matmul_run_tiled(mm, v->name, v->tile_m, v->tile_n, v->thread_scope, count, wall)
+             : metal_matmul_run_n(mm, which, count, wall);
+}
+
+static void dispatch_cell(MetalContext *ctx, FILE *csv, const char *sweep, int which,
+                          const TileVariant *v, int M, int N, int K, int count) {
+    static const char *names[3] = {"naive", "simd", "tensor"};
+    if (!v && !metal_has_kernel(ctx, which)) return;
+    const char *kname = v ? v->name + strlen("matmul_") : names[which];
+    float *A = malloc((size_t)M * (size_t)K * sizeof *A);
+    uint16_t *B = malloc((size_t)N * (size_t)K * sizeof *B);
+    if (!A || !B) die("out of memory for the dispatch benchmark");
+    fill_inputs(A, B, M, N, K);
+    MetalMatmul *mm = metal_matmul_prepare(ctx, M, N, K);
+    metal_matmul_upload(mm, A, B);
+
+    double gpu[REPS], wall[REPS];
+    /* A variant is judged before it is timed: its output against the 32x32
+     * TensorOps kernel's, bit-exact with the CPU oracle since Phase 2. C is
+     * poisoned first, or a kernel that wrote nothing would pass. */
+    double max_rel = 0.0;
+    if (v) {
+        float *ref = malloc((size_t)M * (size_t)N * sizeof *ref);
+        float *got = malloc((size_t)M * (size_t)N * sizeof *got);
+        if (!ref || !got) die("out of memory for the variant check");
+        (void)metal_matmul_run(mm, MM_TENSOROPS);
+        metal_matmul_download(mm, ref);
+        metal_matmul_fill_c(mm, NAN);
+        (void)run_cell(mm, which, v, 1, NULL);
+        metal_matmul_download(mm, got);
+        for (size_t i = 0; i < (size_t)M * (size_t)N; i++) {
+            const double rel = fabs((double)got[i] - ref[i]) / (fabs((double)ref[i]) + 1e-6);
+            if (!(rel <= max_rel)) max_rel = isnan(rel) ? INFINITY : rel;
+        }
+        free(ref); free(got);
+        if (!(max_rel < 1e-5)) die("%s disagrees with matmul_tensorops at %dx%dx%d: rel %.3g",
+                                   v->name, M, N, K, max_rel);
+    }
+
+    for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) (void)run_cell(mm, which, v, count, NULL);
+    for (int i = 0; i < REPS; i++) gpu[i] = run_cell(mm, which, v, count, &wall[i]);
+    qsort(gpu, REPS, sizeof *gpu, cmp_double);
+    qsort(wall, REPS, sizeof *wall, cmp_double);
+    const double med = pct(gpu, REPS, 0.5), wmed = pct(wall, REPS, 0.5);
+    const int tm = v ? v->tile_m : 32, tn = v ? v->tile_n : 32;
+    const int tiles = ((N + tn - 1) / tn) * ((M + tm - 1) / tm);
+
+    fprintf(csv, "%s,%s,%d,%d,%d,%d,%d,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.3g\n", sweep, kname,
+            M, N, K, tiles, count, med, pct(gpu, REPS, 0.1), pct(gpu, REPS, 0.9), wmed,
+            med / count, wmed / count, max_rel);
+    printf("  %-9s %-18s %2dx%-5dx%-5d tiles %-4d x%-5d gpu %8.3f ms [%.3f, %.3f] %6.1f us/disp"
+           "   wall %6.1f us/disp\n", sweep, kname, M, N, K, tiles, count, med * 1e3,
+           pct(gpu, REPS, 0.1) * 1e3, pct(gpu, REPS, 0.9) * 1e3, med / count * 1e6,
+           wmed / count * 1e6);
+    metal_matmul_free(mm);
+    free(A); free(B);
+}
+
+void bench_dispatch(MetalContext *ctx, const char *csv_path) {
+    static const struct { const char *tag; int M, N, K; } shapes[] = {
+        {"dense", 1, 3072, 1024}, {"expert", 1, 768, 2048}, {"tiny", 1, 32, 32},
+    };
+    FILE *csv = fopen(csv_path, "wb");
+    if (!csv) die("cannot write %s", csv_path);
+    fprintf(csv, "sweep,kernel,M,N,K,tiles,count,gpu_median_s,gpu_p10_s,gpu_p90_s,"
+                 "wall_median_s,gpu_per_dispatch_s,wall_per_dispatch_s,max_rel_vs_32x32\n");
+    printf("\n=== dispatches per command buffer (%.1f s warm-up + %d reps) ===\n",
+           WARM_SECONDS, REPS);
+    printf("empty-buffer floor: %.1f us\n", metal_dispatch_floor(ctx) * 1e6);
+
+    /* 1. Does a dispatch cost the same alone as among 1024 others? */
+    for (size_t s = 0; s < sizeof shapes / sizeof shapes[0]; s++)
+        for (int which = 0; which < 3; which++)
+            for (int count = 1; count <= 1024; count *= 4)
+                dispatch_cell(ctx, csv, shapes[s].tag, which, NULL,
+                              shapes[s].M, shapes[s].N, shapes[s].K, count);
+
+    /* The TensorOps kernel costs ~31 us at both real shapes but 1.4 us on a
+     * single tile. Three sweeps, 64 dispatches each, to find which axis the
+     * toll lives on: */
+    /* 2. fan-out: more tiles, each the same size (K fixed, N grows). */
+    for (int N = 32; N <= 4096; N *= 2)
+        dispatch_cell(ctx, csv, "fanout", MM_TENSOROPS, NULL, 1, N, 2048, 64);
+    /* 3. work inside ONE tile (N = 32, K grows). */
+    for (int K = 32; K <= 8192; K *= 4)
+        dispatch_cell(ctx, csv, "tilework", MM_TENSOROPS, NULL, 1, 32, K, 64);
+    /* 4. rows: tokens routed to one expert, as in a verify step. */
+    for (int M = 1; M <= 32; M *= 2)
+        dispatch_cell(ctx, csv, "rows", MM_TENSOROPS, NULL, M, 768, 2048, 64);
+
+    /* 5. tile shape: the kernels.metal variants, at decode and verify shapes. */
+    static const TileVariant variants[] = {
+        {"matmul_tensorops_8x16", 8, 16, false},   {"matmul_tensorops_8x32", 8, 32, false},
+        {"matmul_tensorops_8x64", 8, 64, false},   {"matmul_tensorops_16x32", 16, 32, false},
+        {"matmul_tensorops_8x256", 8, 256, false}, {"matmul_tensorops_t1x32", 1, 32, true},
+    };
+    static const struct { int M, N, K; } tshapes[] = {
+        {1, 3072, 1024}, {1, 768, 2048}, {8, 768, 2048}, {32, 3072, 1024},
+    };
+    for (size_t s = 0; s < sizeof tshapes / sizeof tshapes[0]; s++) {
+        dispatch_cell(ctx, csv, "tileshape", MM_TENSOROPS, NULL,
+                      tshapes[s].M, tshapes[s].N, tshapes[s].K, 64);
+        for (size_t v = 0; v < sizeof variants / sizeof variants[0]; v++)
+            dispatch_cell(ctx, csv, "tileshape", MM_TENSOROPS, &variants[v],
+                          tshapes[s].M, tshapes[s].N, tshapes[s].K, 64);
+    }
+
     fclose(csv);
     printf("\nraw results -> %s\n", csv_path);
 }
