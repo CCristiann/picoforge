@@ -331,7 +331,7 @@ void bench_dispatch(MetalContext *ctx, const char *csv_path) {
     for (int K = 32; K <= 8192; K *= 4)
         dispatch_cell(ctx, csv, "tilework", MM_TENSOROPS, NULL, 1, 32, K, 64);
     /* 4. rows: tokens routed to one expert, as in a verify step. */
-    for (int M = 1; M <= 32; M *= 2)
+    for (int M = 1; M <= 8; M *= 2)
         dispatch_cell(ctx, csv, "rows", MM_TENSOROPS, NULL, M, 768, 2048, 64);
 
     /* 5. tile shape: the kernels.metal variants, at decode and verify shapes. */
@@ -410,6 +410,14 @@ void bench_e2e(const char *model_dir, const char *csv_path) {
     struct { const char *name; int n, pos, from; } regimes[] = {
         {"prefill", POS, 0, POS - 1}, {"decode", 1, POS, 0}, {"verify32", VERIFY, POS, 0},
     };
+    /* Both TensorOps tiles for the bf16 matmuls (step 4.1), labelled in the
+     * model column so the CSV keeps its shape. Quantised kernels ignore it. */
+    for (int tile = 0; tile < 2; tile++) {
+    const bool small = (tile == 1);
+    gpu_set_small_tile(g, small);
+    char label[256];
+    snprintf(label, sizeof label, "%s [bf16 tile %s]", model_dir, small ? "8x32 for M<=8" : "32x32");
+    printf("  -- bf16 matmul tile: %s\n", small ? "8x32 for M <= 8" : "32x32");
     for (size_t r = 0; r < sizeof regimes / sizeof regimes[0]; r++) {
         const int *t = tokens + regimes[r].pos;
         double ts[REPS];
@@ -421,13 +429,14 @@ void bench_e2e(const char *model_dir, const char *csv_path) {
         const double med = pct(ts, REPS, 0.5), p10 = pct(ts, REPS, 0.1), p90 = pct(ts, REPS, 0.9);
         const bool dec = strcmp(regimes[r].name, "decode") == 0;
         const double gbps = dec ? (wbytes + kv_bytes) / med / 1e9 : 0.0;
-        fprintf(csv, "%s,%s,%d,%d,%.6f,%.6f,%.6f,%.2f,%.4f,%.4f,%.2f,%.2f\n", model_dir,
+        fprintf(csv, "%s,%s,%d,%d,%.6f,%.6f,%.6f,%.2f,%.4f,%.4f,%.2f,%.2f\n", label,
                 regimes[r].name, regimes[r].n, regimes[r].pos, med, p10, p90, regimes[r].n / med,
                 wbytes / 1e9, dec ? kv_bytes / 1e9 : 0.0, gbps, 100.0 * gbps / 307.0);
         printf("  %-9s n=%-4d pos=%-4d %8.2f ms  [%.2f, %.2f]  %8.1f tok/s%s",
                regimes[r].name, regimes[r].n, regimes[r].pos, med * 1e3, p10 * 1e3, p90 * 1e3,
                regimes[r].n / med, dec ? "" : "\n");
         if (dec) printf("  %.1f GB/s (%.0f%% of 307)\n", gbps, 100.0 * gbps / 307.0);
+    }
     }
     fclose(csv);
     free(logits);

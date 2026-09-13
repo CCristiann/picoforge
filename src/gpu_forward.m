@@ -26,13 +26,14 @@
 
 enum { K_MATMUL_NAIVE, K_MATMUL_SIMD, K_MATMUL_TENSOR, K_EMBED, K_RMSNORM,
        K_QKROPE, K_ATTN, K_SWIGLU, K_RESIDUAL, K_NARROW, K_EMBED_Q,
-       K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_COUNT };
+       K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32, K_COUNT };
 
 static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_naive", "matmul_simdgroup", "matmul_tensorops", "embed_lookup",
     "rmsnorm_rows", "qk_norm_rope", "attention", "swiglu", "add_residual",
     "narrow_bf16", "embed_lookup_q",
     "matmul_q8_row", "matmul_q8_g32", "matmul_q4_row", "matmul_q4_g32", "matmul_q4_g64",
+    "matmul_tensorops_8x32",
 };
 
 /* A projection as the GPU sees it: offsets into the one weights buffer, and
@@ -47,6 +48,7 @@ struct GpuModel {
     MetalContext      *ctx;
     Qwen3Config        cfg;
     int                max_seq, max_rows, matmul_kernel;
+    bool               small_tile;       /* 8x32 TensorOps tiles when M <= 8 */
 
     void              *pso[K_COUNT];
     void              *weights;          /* one buffer over the whole mapping */
@@ -100,6 +102,7 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     g->ctx = ctx; g->cfg = *cfg;
     g->max_seq = max_seq; g->max_rows = max_rows;
     g->matmul_kernel = K_MATMUL_TENSOR;
+    g->small_tile = true;
 
     id<MTLDevice> dev = (__bridge id<MTLDevice>)metal_device(ctx);
     for (int i = 0; i < K_COUNT; i++)
@@ -184,6 +187,7 @@ void gpu_model_free(GpuModel *g) {
 }
 
 void gpu_set_matmul_kernel(GpuModel *g, int which) { g->matmul_kernel = which; }
+void gpu_set_small_tile(GpuModel *g, bool on) { g->small_tile = on; }
 
 /* ------------------------------------------------------------- encoding */
 
@@ -196,7 +200,14 @@ struct ElemDimsC   { uint32_t count; };
 static void encode_matmul(GpuModel *g, id<MTLComputeCommandEncoder> enc,
                           void *cbuf, size_t coff, void *abuf, size_t aoff,
                           size_t woff, int M, int N, int K) {
-    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[g->matmul_kernel]];
+    /* Decode and short verifies (M <= 8) take an 8-row tile. The 32x32 op
+     * computes its whole tile however few rows exist; step 4.1 measured the
+     * 8x32 one bit-identical and 1.6x faster at M=1, 2.2x at M=8. At M=32 the
+     * kernel sweep called it level but the whole pass lost 2% (four times the
+     * tiles to fan out), so 32 rows and prefill keep the 32-row tile. */
+    const bool tile8 = g->matmul_kernel == K_MATMUL_TENSOR && g->small_tile && M <= 8;
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)
+        g->pso[tile8 ? K_MATMUL_TENSOR_8X32 : g->matmul_kernel]];
     [enc setBuffer:(__bridge id<MTLBuffer>)cbuf offset:coff atIndex:0];
     [enc setBuffer:(__bridge id<MTLBuffer>)abuf offset:aoff atIndex:1];
     [enc setBuffer:(__bridge id<MTLBuffer>)g->weights offset:woff atIndex:2];
@@ -208,8 +219,9 @@ static void encode_matmul(GpuModel *g, id<MTLComputeCommandEncoder> enc,
         [enc dispatchThreads:MTLSizeMake((NSUInteger)N, (NSUInteger)M, 1)
        threadsPerThreadgroup:MTLSizeMake(256 / tgh, tgh, 1)];
     } else {
+        const int tile_m = tile8 ? 8 : 32;
         [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32),
-                                              (NSUInteger)((M + 31) / 32), 1)
+                                              (NSUInteger)((M + tile_m - 1) / tile_m), 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
     }
 }

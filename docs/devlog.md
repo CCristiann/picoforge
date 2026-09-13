@@ -45,8 +45,20 @@ fit in parallel. That changes what "an expensive draft" means.
 One unexplained failure, logged and not chased: a single-thread-scope 1x1024
 tile over 8x768 left rows of C unwritten; the check caught it before timing.
 
-**Next:** put the 8x32 kernel in the forward pass for M <= 32 and measure what
-decode gains end to end -- the drafter has to be fast before it can draft.
+In the forward pass (`bench/e2e_tile_m5pro.csv`, both tiles in one run):
+
+                      32x32 tile      8x32 for M <= 8
+  prefill 512          4489 tok/s      4490
+  decode @512          69.7 tok/s      75.9   (+8.9%)
+  verify32 @512        1574 tok/s      1572
+
+Tried at M <= 32 first: decode the same, verify32 2% slower -- four times the
+tiles to fan out -- so the threshold is 8, the range the kernel sweep showed
+winning. All parity tests green. Half of the 2.4 ms the kernel sweep promised
+arrived; the rest of decode's 13.2 ms is still unaccounted for.
+
+**Next:** a per-op GPU profile of one decode step (timestamps at encoder
+boundaries), so the drafter's time is measured by op class, not inferred.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 
