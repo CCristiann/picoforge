@@ -263,6 +263,49 @@ int main(int argc, char **argv) {
         weights_free(&w);
     }
 
+    /* --gpu-greedy TEXT MAX_NEW OUT.txt       : plain greedy, one token per pass.
+     * --spec-greedy TEXT MAX_NEW DRAFT OUT.txt : speculative, up to DRAFT
+     * prompt-lookup tokens verified per pass. Both on the GPU, ids to OUT, so
+     * tests/test_speculate.py can hold the second to the first token for
+     * token. --gpu-greedy goes through generate(), NOT the speculative loop:
+     * the reference must not share the code it is judging. */
+    if (argc > 5 && (strcmp(argv[2], "--gpu-greedy") == 0 ||
+                     (argc > 6 && strcmp(argv[2], "--spec-greedy") == 0))) {
+        const bool spec = strcmp(argv[2], "--spec-greedy") == 0;
+        const int max_new = atoi(argv[4]), draft = spec ? atoi(argv[5]) : 0;
+        const char *out_path = argv[spec ? 6 : 5];
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, 1024, 32);
+        int *ids = malloc((size_t)max_new * sizeof *ids);
+        if (!ids) die("out of memory for %d generated ids", max_new);
+
+        int got;
+        if (spec) {
+            SpecStats ss;
+            got = generate_speculative(&tok, &cfg, gpu, 1024, 32, argv[3], max_new, draft, ids, &ss);
+            printf("spec: %d tokens in %d passes (%.2f per pass), %d/%d drafts accepted, "
+                   "decode %.3f s (%.1f tok/s)\n", got, ss.passes,
+                   ss.passes ? (double)(got - 1) / ss.passes : 0.0, ss.accepted, ss.drafted,
+                   ss.decode_s, ss.decode_s > 0 ? (got - 1) / ss.decode_s : 0.0);
+        } else {
+            Weights w;
+            weights_bind(&st, &cfg, &w);
+            RunState state;
+            state_alloc(&state, &cfg, 1024, 1);
+            got = generate(&tok, &w, &cfg, &state, gpu, argv[3], max_new, 0.0f, 1.0f, 0, 0, ids, true);
+            state_free(&state);
+            weights_free(&w);
+        }
+        FILE *f = fopen(out_path, "wb");
+        if (!f) die("cannot write %s", out_path);
+        for (int i = 0; i < got; i++) fprintf(f, i ? " %d" : "%d", ids[i]);
+        fputc('\n', f);
+        fclose(f);
+        free(ids);
+        gpu_model_free(gpu);
+        metal_shutdown(mtl);
+    }
+
     /* --chat TEXT [MAX_NEW] [SEED] : wrap TEXT in the chat template and
      * generate. --complete TEXT continues raw text with no template at all,
      * which is what the base model actually does.

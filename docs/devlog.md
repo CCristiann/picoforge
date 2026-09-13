@@ -85,8 +85,33 @@ already in nanoseconds, and read as mach ticks (x 125/3) the groups summed to
 39x the pass. The profile now dies if the groups do not sum to 80-102% of the
 command buffer's own GPU time.
 
-**Next:** step 4.2 -- speculative decoding on the dense model, lossless by
-construction and checked token for token against plain greedy.
+### Step 4.2 — speculative decoding, lossless, on the dense model
+
+`src/speculate.c`, `make test-speculate`. Greedy verification of up to k
+drafted tokens per GPU pass; the drafter is prompt lookup (the most recent
+earlier occurrence of the last 3/2/1 tokens, and what followed it), which
+costs nothing and stands in for the 0.6B drafter of step 4.8. K/V rollback is
+free: the cache is indexed by position, and rejected rows are overwritten.
+
+Correctness: 5 prompts x draft lengths {2, 4, 8, 16}, 128 tokens each, every
+sequence identical to plain greedy through generate() -- a separate code path,
+so the reference does not share the code it judges.
+
+Speed, one run each (orientation, not the protocol), draft 4 vs draft 0:
+
+  continuing "The capital of France is"   1.69 tokens/pass   101.8 -> 167.4 tok/s
+  rewriting two functions with hints       1.61               98.0 -> 152.9
+  repeating a list                         1.66               98.3 -> 158.8
+  "def fibonacci(n):"                      1.43              102.2 -> 141.9
+  a poem                                   1.00              100.4 -> 100.8
+
+Where lookup finds nothing, nothing is lost up to draft 8; at 16 the poem
+pays 4.5% for 384 rejected drafts, because a 17-row verify leaves the 8-row
+tile and grows attention. Long drafts need a drafter that is right, which is
+what a model is for.
+
+**Next:** step 4.3 -- the MoE block in the NumPy oracle, verified against
+transformers on a tiny random Qwen3-MoE, before any 30B download.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

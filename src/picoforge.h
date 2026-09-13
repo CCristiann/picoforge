@@ -361,4 +361,16 @@ int  generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
               float temperature, float top_p, int top_k, uint64_t seed,
               int *out_ids, bool quiet);
 
+/* ----------------------------------------------------------- speculation
+ * Greedy speculative decoding on the GPU with a prompt-lookup drafter
+ * (speculate.c). Emits exactly what greedy generate() emits; the stats say
+ * how many passes that took. max_rows must be at least max_draft + 1. */
+typedef struct {
+    int    generated, passes, drafted, accepted;
+    double decode_s;          /* wall time after prefill                    */
+} SpecStats;
+int  generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
+                          int max_seq, int max_rows, const char *prompt, int max_new,
+                          int max_draft, int *out_ids, SpecStats *stats);
+
 #endif /* PICOFORGE_H */

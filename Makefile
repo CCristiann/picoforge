@@ -48,7 +48,11 @@ ui: picoforge
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
 test-all: test test-nfc test-tokenizer test-encode test-forward test-generate \
-          test-quant-formats test-quant-kernels test-forward-quant
+          test-quant-formats test-quant-kernels test-forward-quant test-speculate
+
+# Phase 4: speculative decoding emits exactly what plain greedy emits.
+test-speculate: picoforge
+	@./tools/venv/bin/python tests/test_speculate.py
 
 # Phase 3: the quantisers keep the bounds formats.py promises.
 test-quant-formats:
