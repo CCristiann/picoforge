@@ -2,6 +2,23 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-09-14 — Phase 3 closed by decision; Phase 4 aimed at a gap
+
+`make test-all` re-run: green. Repository published to
+github.com/CCristiann/picoforge (main + phase3). **Decision of the human:**
+Phase 3 closes without `docs/phase3.md`, against CLAUDE.md's done-criterion,
+and work continues building first and studying after. Phases 0-2 have no
+writeup either. phase3 fast-forwarded into main.
+
+The human asked for something that has not been built before. A literature
+search found the pieces apart -- BaseRT runs Qwen3-30B-A3B on an M5 Pro but
+leaves speculative decoding as future work; EcoSpec and EVICT make speculation
+expert-cost-aware, but on H200/A100 servers -- and nothing putting them
+together on unified memory. Plan and sources in `docs/phase4-plan.md`.
+
+**Next:** step 4.1, the measurement the whole plan rests on: does a matmul
+still cost ~33 us when it is one of hundreds in a single command buffer?
+
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 
 Q8 and Q4 run end to end on CPU and GPU, every link of the chain of oracles
