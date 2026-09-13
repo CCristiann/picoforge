@@ -313,6 +313,7 @@ void   bench_matmul(MetalContext *ctx, const char *csv_path);
 void   bench_qmatmul(MetalContext *ctx, const char *csv_path);   /* Phase 3 kernels */
 void   bench_e2e(const char *model_dir, const char *csv_path);       /* whole forward passes */
 void   bench_dispatch(MetalContext *ctx, const char *csv_path);     /* Phase 4: cost per dispatch */
+void   bench_profile(const char *model_dir, const char *csv_path);  /* Phase 4: GPU time by op group */
 
 /* Raw Metal objects, as void* so nothing else has to include Metal headers. */
 void  *metal_device(MetalContext *ctx);
@@ -333,6 +334,12 @@ void gpu_set_small_tile(GpuModel *g, bool on);   /* 8x32 TensorOps tiles for M <
 /* Returns the GPU seconds the pass took, measured by the GPU. */
 double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                    float *logits_out);
+/* The same pass cut into one encoder per op group, GPU-timestamped; adds each
+ * group's seconds into seconds[GPU_PROF_CLASSES] and computes no logits. */
+enum { GPU_PROF_CLASSES = 8 };
+double gpu_forward_profile(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                           double *seconds);
+const char *gpu_prof_name(int cls);
 
 /* --ppl: perplexity of this model on a text file, paired against a reference
  * model on the same windows (KL, top-1 agreement). One CSV row appended. */

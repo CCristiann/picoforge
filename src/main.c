@@ -130,6 +130,11 @@ int main(int argc, char **argv) {
         metal_shutdown(mtl);
     }
 
+    /* --profile OUT.csv : one pass's GPU time by op group, from encoder
+     * timestamps, at decode and verify sizes. */
+    if (argc > 3 && strcmp(argv[2], "--profile") == 0)
+        bench_profile(model_dir, argv[3]);
+
     /* --bench-quant OUT.csv : the quantised kernels, same protocol. */
     if (argc > 3 && strcmp(argv[2], "--bench-quant") == 0) {
         MetalContext *mtl = metal_init("picoforge.metallib");

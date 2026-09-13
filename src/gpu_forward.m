@@ -278,8 +278,88 @@ static void encode_rmsnorm(GpuModel *g, id<MTLComputeCommandEncoder> enc,
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
+/* ------------------------------------------------------------ profiling
+ * Optional. With a Prof attached, the pass is cut into one compute encoder
+ * per op group and the GPU stamps the start and end of each (Apple GPUs only
+ * sample at encoder boundaries, so the boundary is where the cut has to be).
+ * Cutting is not free, so the caller reports the profiled pass's total next to
+ * an uncut one: a profile that changes what it measures must say by how much. */
+static const char *prof_names[GPU_PROF_CLASSES] = {
+    "embed", "rmsnorm", "attn proj (q k v o)", "qk-norm + rope", "attention",
+    "mlp proj (gate up down)", "elementwise (swiglu, residual, narrow)", "lm head",
+};
+const char *gpu_prof_name(int cls) { return prof_names[cls]; }
+
+enum { PROF_MAX_ENCODERS = 1024 };
+typedef struct {
+    id<MTLCounterSampleBuffer> sb;
+    int n, cls[PROF_MAX_ENCODERS];
+} Prof;
+
+/* End the current encoder and open the next one, stamped, for op group cls. */
+static id<MTLComputeCommandEncoder> prof_next(Prof *p, id<MTLCommandBuffer> cb,
+                                              id<MTLComputeCommandEncoder> enc, int cls) {
+    if (!p) return enc;
+    if (enc) [enc endEncoding];
+    if (p->n == PROF_MAX_ENCODERS) die("profile needs more than %d encoders", PROF_MAX_ENCODERS);
+    MTLComputePassDescriptor *pd = [MTLComputePassDescriptor computePassDescriptor];
+    pd.sampleBufferAttachments[0].sampleBuffer = p->sb;
+    pd.sampleBufferAttachments[0].startOfEncoderSampleIndex = (NSUInteger)(2 * p->n);
+    pd.sampleBufferAttachments[0].endOfEncoderSampleIndex   = (NSUInteger)(2 * p->n + 1);
+    p->cls[p->n++] = cls;
+    return [cb computeCommandEncoderWithDescriptor:pd];
+}
+
+static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                      float *logits_out, Prof *prof);
+
 double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                    float *logits_out) {
+    return gpu_pass(g, tokens, n, pos, logits_from, logits_out, NULL);
+}
+
+/* One pass with per-group GPU time added into seconds[GPU_PROF_CLASSES].
+ * Returns the command buffer's own GPU time for the (cut) pass. */
+double gpu_forward_profile(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                           double *seconds) {
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)metal_device(g->ctx);
+    if (![dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
+        die("this GPU cannot timestamp encoder boundaries");
+    id<MTLCounterSet> ts_set = nil;
+    for (id<MTLCounterSet> cs in dev.counterSets)
+        if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) ts_set = cs;
+    if (!ts_set) die("no timestamp counter set on this GPU");
+
+    MTLCounterSampleBufferDescriptor *d = [MTLCounterSampleBufferDescriptor new];
+    d.counterSet = ts_set;
+    d.storageMode = MTLStorageModeShared;
+    d.sampleCount = 2 * PROF_MAX_ENCODERS;
+    NSError *err = nil;
+    Prof p = {.sb = [dev newCounterSampleBufferWithDescriptor:d error:&err]};
+    if (!p.sb) die("cannot create a counter sample buffer: %s", err.localizedDescription.UTF8String);
+
+    /* GPU timestamps are in GPU ticks. A (CPU, GPU) pair taken before and
+     * after the pass gives the rate. The CPU side is ALREADY nanoseconds, not
+     * mach ticks: read as ticks (x 125/3 on this machine) the groups summed to
+     * 39x the pass's own GPU time, and bench_profile now checks the sum. */
+    MTLTimestamp c0, g0, c1, g1;
+    [dev sampleTimestamps:&c0 gpuTimestamp:&g0];
+    double t = gpu_pass(g, tokens, n, pos, logits_from, NULL, &p);
+    [dev sampleTimestamps:&c1 gpuTimestamp:&g1];
+    const double s_per_gpu_tick = (double)(c1 - c0) / (double)(g1 - g0) / 1e9;
+
+    NSData *raw = [p.sb resolveCounterRange:NSMakeRange(0, (NSUInteger)(2 * p.n))];
+    const MTLCounterResultTimestamp *r = raw.bytes;
+    for (int i = 0; i < p.n; i++) {
+        if (r[2 * i].timestamp == MTLCounterErrorValue || r[2 * i + 1].timestamp == MTLCounterErrorValue)
+            die("encoder %d has no timestamp", i);
+        seconds[p.cls[i]] += (double)(r[2 * i + 1].timestamp - r[2 * i].timestamp) * s_per_gpu_tick;
+    }
+    return t;
+}
+
+static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
+                      float *logits_out, Prof *prof) {
     const Qwen3Config *cfg = &g->cfg;
     const int H = cfg->hidden_size, hd = cfg->head_dim;
     const int n_head = cfg->num_attention_heads, n_kv = cfg->num_key_value_heads;
@@ -294,9 +374,10 @@ double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_fr
 
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)metal_queue(g->ctx);
     id<MTLCommandBuffer> cb = [queue commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    id<MTLComputeCommandEncoder> enc = prof ? nil : [cb computeCommandEncoder];
 
     /* embeddings */
+    enc = prof_next(prof, cb, enc, 0);
     if (g->embed.kernel < 0) {
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_EMBED]];
         [enc setBuffer:(__bridge id<MTLBuffer>)g->x offset:0 atIndex:0];
@@ -323,13 +404,16 @@ double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_fr
         const size_t row_kv   = layer_kv + (size_t)pos * (size_t)kv_dim * sizeof(float);
 
         void *in; size_t in_off;
+        enc = prof_next(prof, cb, enc, 1);
         encode_rmsnorm(g, enc, g->xb, 0, g->x, 0, o->input_ln, n, H, eps);
+        enc = prof_next(prof, cb, enc, 2);
         input_for(g, enc, &o->q_proj, g->xb, 0, (size_t)n * (size_t)H, &in, &in_off);
         encode_linear(g, enc, g->q, 0, in, in_off, &o->q_proj, n, q_dim, H);
         encode_linear(g, enc, g->kcache, row_kv, in, in_off, &o->k_proj, n, kv_dim, H);
         encode_linear(g, enc, g->vcache, row_kv, in, in_off, &o->v_proj, n, kv_dim, H);
 
         /* QK-norm then RoPE, on Q and on the cache rows just written. */
+        enc = prof_next(prof, cb, enc, 3);
         for (int side = 0; side < 2; side++) {
             const bool is_q = (side == 0);
             [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_QKROPE]];
@@ -346,6 +430,7 @@ double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_fr
                 threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
         }
 
+        enc = prof_next(prof, cb, enc, 4);
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_ATTN]];
         [enc setBuffer:(__bridge id<MTLBuffer>)g->attout offset:0 atIndex:0];
         [enc setBuffer:(__bridge id<MTLBuffer>)g->q offset:0 atIndex:1];
@@ -359,21 +444,30 @@ double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_fr
         [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)n_head, (NSUInteger)n, 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 
+        enc = prof_next(prof, cb, enc, 2);
         input_for(g, enc, &o->o_proj, g->attout, 0, (size_t)n * (size_t)q_dim, &in, &in_off);
         encode_linear(g, enc, g->xb, 0, in, in_off, &o->o_proj, n, H, q_dim);
+        enc = prof_next(prof, cb, enc, 6);
         encode_elem(g, enc, K_RESIDUAL, g->x, 0, g->xb, 0, (size_t)n * (size_t)H);
 
+        enc = prof_next(prof, cb, enc, 1);
         encode_rmsnorm(g, enc, g->xb, 0, g->x, 0, o->post_attn_ln, n, H, eps);
+        enc = prof_next(prof, cb, enc, 5);
         input_for(g, enc, &o->gate_proj, g->xb, 0, (size_t)n * (size_t)H, &in, &in_off);
         encode_linear(g, enc, g->hb, 0, in, in_off, &o->gate_proj, n, I, H);
         encode_linear(g, enc, g->hb2, 0, in, in_off, &o->up_proj, n, I, H);
+        enc = prof_next(prof, cb, enc, 6);
         encode_elem(g, enc, K_SWIGLU, g->hb, 0, g->hb2, 0, (size_t)n * (size_t)I);
+        enc = prof_next(prof, cb, enc, 5);
         input_for(g, enc, &o->down_proj, g->hb, 0, (size_t)n * (size_t)I, &in, &in_off);
         encode_linear(g, enc, g->xb, 0, in, in_off, &o->down_proj, n, H, I);
+        enc = prof_next(prof, cb, enc, 6);
         encode_elem(g, enc, K_RESIDUAL, g->x, 0, g->xb, 0, (size_t)n * (size_t)H);
     }
 
+    enc = prof_next(prof, cb, enc, 1);
     encode_rmsnorm(g, enc, g->xb, 0, g->x, 0, g->final_norm_off, n, H, eps);
+    enc = prof_next(prof, cb, enc, 7);
     void *hin; size_t hin_off;
     input_for(g, enc, &g->embed, g->xb, (size_t)logits_from * (size_t)H * sizeof(float),
               (size_t)(n - logits_from) * (size_t)H, &hin, &hin_off);

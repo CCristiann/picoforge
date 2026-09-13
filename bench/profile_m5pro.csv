@@ -1,0 +1,41 @@
+model,regime,n,pos,group,median_s,p10_s,p90_s
+models/Qwen3-0.6B,decode,1,16,embed,0.000002708,0.000002625,0.000002750
+models/Qwen3-0.6B,decode,1,16,rmsnorm,0.000234790,0.000233834,0.000235171
+models/Qwen3-0.6B,decode,1,16,attn proj (q k v o),0.003134793,0.003124085,0.003152874
+models/Qwen3-0.6B,decode,1,16,qk-norm + rope,0.000159754,0.000159210,0.000160332
+models/Qwen3-0.6B,decode,1,16,attention,0.000413541,0.000412667,0.000414081
+models/Qwen3-0.6B,decode,1,16,mlp proj (gate up down),0.003794668,0.003788124,0.003808249
+models/Qwen3-0.6B,decode,1,16,elementwise (swiglu, residual, narrow),0.000163287,0.000162463,0.000164124
+models/Qwen3-0.6B,decode,1,16,lm head,0.001397250,0.001394917,0.001401833
+models/Qwen3-0.6B,decode,1,16,TOTAL, cut into encoders,0.010168375,0.010150125,0.010223708
+models/Qwen3-0.6B,decode,1,16,TOTAL, uncut,0.008943250,0.008930875,0.008967500
+models/Qwen3-0.6B,decode,1,512,embed,0.000002667,0.000002625,0.000002875
+models/Qwen3-0.6B,decode,1,512,rmsnorm,0.000236167,0.000234836,0.000237620
+models/Qwen3-0.6B,decode,1,512,attn proj (q k v o),0.003138503,0.003125500,0.003192453
+models/Qwen3-0.6B,decode,1,512,qk-norm + rope,0.000160459,0.000159543,0.000161333
+models/Qwen3-0.6B,decode,1,512,attention,0.004621497,0.004618293,0.004646626
+models/Qwen3-0.6B,decode,1,512,mlp proj (gate up down),0.003799834,0.003791383,0.003859541
+models/Qwen3-0.6B,decode,1,512,elementwise (swiglu, residual, narrow),0.000163455,0.000162334,0.000164756
+models/Qwen3-0.6B,decode,1,512,lm head,0.001397291,0.001394500,0.001405666
+models/Qwen3-0.6B,decode,1,512,TOTAL, cut into encoders,0.014388750,0.014344417,0.014515000
+models/Qwen3-0.6B,decode,1,512,TOTAL, uncut,0.013183750,0.013154292,0.013302042
+models/Qwen3-0.6B,verify8,8,512,embed,0.000002792,0.000002708,0.000002875
+models/Qwen3-0.6B,verify8,8,512,rmsnorm,0.000236043,0.000235125,0.000237126
+models/Qwen3-0.6B,verify8,8,512,attn proj (q k v o),0.002927753,0.002909291,0.002949123
+models/Qwen3-0.6B,verify8,8,512,qk-norm + rope,0.000160456,0.000159583,0.000161498
+models/Qwen3-0.6B,verify8,8,512,attention,0.004713753,0.004708001,0.004719705
+models/Qwen3-0.6B,verify8,8,512,mlp proj (gate up down),0.003590461,0.003569787,0.003614995
+models/Qwen3-0.6B,verify8,8,512,elementwise (swiglu, residual, narrow),0.000187549,0.000186250,0.000188792
+models/Qwen3-0.6B,verify8,8,512,lm head,0.001424541,0.001418875,0.001441334
+models/Qwen3-0.6B,verify8,8,512,TOTAL, cut into encoders,0.014147708,0.014060667,0.014205375
+models/Qwen3-0.6B,verify8,8,512,TOTAL, uncut,0.012900708,0.012839500,0.012932625
+models/Qwen3-0.6B,verify32,32,512,embed,0.000003917,0.000003875,0.000004042
+models/Qwen3-0.6B,verify32,32,512,rmsnorm,0.000237625,0.000236792,0.000238167
+models/Qwen3-0.6B,verify32,32,512,attn proj (q k v o),0.003317207,0.003304631,0.003348083
+models/Qwen3-0.6B,verify32,32,512,qk-norm + rope,0.000211418,0.000210497,0.000212084
+models/Qwen3-0.6B,verify32,32,512,attention,0.011007543,0.010991295,0.011025167
+models/Qwen3-0.6B,verify32,32,512,mlp proj (gate up down),0.004026126,0.004019041,0.004062578
+models/Qwen3-0.6B,verify32,32,512,elementwise (swiglu, residual, narrow),0.000274877,0.000273749,0.000277042
+models/Qwen3-0.6B,verify32,32,512,lm head,0.001589875,0.001583000,0.001602000
+models/Qwen3-0.6B,verify32,32,512,TOTAL, cut into encoders,0.021568708,0.021511250,0.021629167
+models/Qwen3-0.6B,verify32,32,512,TOTAL, uncut,0.020331583,0.020300875,0.020404500

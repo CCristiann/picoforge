@@ -57,8 +57,36 @@ tiles to fan out -- so the threshold is 8, the range the kernel sweep showed
 winning. All parity tests green. Half of the 2.4 ms the kernel sweep promised
 arrived; the rest of decode's 13.2 ms is still unaccounted for.
 
-**Next:** a per-op GPU profile of one decode step (timestamps at encoder
-boundaries), so the drafter's time is measured by op class, not inferred.
+### Step 4.1c — where a decode step's 13 ms actually go
+
+`--profile`, raw CSV in `bench/profile_m5pro.csv`: GPU timestamps at the
+boundaries of one encoder per op group. Cutting the pass into ~300 encoders
+costs 1.2 ms, and both totals are recorded.
+
+                       decode@16  decode@512  verify8@512  verify32@512
+  attention              0.41       4.62        4.71         11.01
+  mlp proj (84 matmuls)  3.80       3.80        3.59          4.03
+  attn proj (112)        3.14       3.14        2.93          3.32
+  lm head                1.40       1.40        1.43          1.59
+  everything else        0.56       0.56        0.59          0.73
+  total, uncut (ms)      8.94      13.18       12.90         20.33
+
+- **Attention is the decode bottleneck at depth**: 35% at 512 and growing
+  linearly with the cache (0.41 -> 4.62 ms). At verify32 it is 54% of the pass.
+- **Verifying 8 tokens costs less than decoding 1** (12.90 vs 13.18 ms). Any
+  accepted draft token is profit for speculation up to 8.
+- **Projections cost 28-45 us per matmul in situ**, not the 19.6 us of the
+  isolated sweep. Interleaving pipelines is not free; not yet explained.
+- **The LM head is the only bandwidth-bound op**: 311 MB in 1.4 ms, 222 GB/s,
+  72% of the machine.
+
+The instrument was wrong first: MTLDevice sampleTimestamps' CPU side is
+already in nanoseconds, and read as mach ticks (x 125/3) the groups summed to
+39x the pass. The profile now dies if the groups do not sum to 80-102% of the
+command buffer's own GPU time.
+
+**Next:** step 4.2 -- speculative decoding on the dense model, lossless by
+construction and checked token for token against plain greedy.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

@@ -444,3 +444,69 @@ void bench_e2e(const char *model_dir, const char *csv_path) {
     metal_shutdown(mtl);
     st_close(&st);
 }
+
+/* ------------------------------------------------------------ op profile
+ * Phase 4: where one pass's GPU time goes, by op group, from timestamps the
+ * GPU takes at encoder boundaries. Regimes at two cache depths, so attention's
+ * growth with the cache is visible beside the projections that do not grow.
+ * The profiled pass is cut into ~300 encoders; the uncut pass is timed too,
+ * and both totals are written, so the cost of looking is on the record. */
+void bench_profile(const char *model_dir, const char *csv_path) {
+    Qwen3Config cfg;
+    SafeTensors st;
+    config_load(model_dir, &cfg);
+    st_open(model_dir, &st);
+    MetalContext *mtl = metal_init("picoforge.metallib");
+    GpuModel *g = gpu_model_create(mtl, &st, &cfg, 1024, 32);
+
+    int tokens[1024];
+    for (int i = 0; i < 1024; i++) tokens[i] = (i * 7919 + 13) % cfg.vocab_size;
+    (void)gpu_forward(g, tokens, 1000, 0, 999, NULL);             /* fill the cache */
+
+    FILE *csv = fopen(csv_path, "wb");
+    if (!csv) die("cannot write %s", csv_path);
+    fprintf(csv, "model,regime,n,pos,group,median_s,p10_s,p90_s\n");
+    static const struct { const char *name; int n, pos; } regimes[] = {
+        {"decode", 1, 16}, {"decode", 1, 512}, {"verify8", 8, 512}, {"verify32", 32, 512},
+    };
+    for (size_t r = 0; r < sizeof regimes / sizeof regimes[0]; r++) {
+        const int n = regimes[r].n, pos = regimes[r].pos;
+        const int *t = tokens + pos;
+        double per[GPU_PROF_CLASSES + 2][REPS];                  /* groups, cut, uncut */
+        for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) {
+            double junk[GPU_PROF_CLASSES] = {0};
+            (void)gpu_forward_profile(g, t, n, pos, 0, junk);
+            (void)gpu_forward(g, t, n, pos, 0, NULL);
+        }
+        for (int i = 0; i < REPS; i++) {
+            double sec[GPU_PROF_CLASSES] = {0};
+            per[GPU_PROF_CLASSES][i] = gpu_forward_profile(g, t, n, pos, 0, sec);
+            per[GPU_PROF_CLASSES + 1][i] = gpu_forward(g, t, n, pos, 0, NULL);
+            double sum = 0;
+            for (int c = 0; c < GPU_PROF_CLASSES; c++) { per[c][i] = sec[c]; sum += sec[c]; }
+            /* The instrument checks itself: the groups are disjoint slices of
+             * one command buffer, so they cannot sum past its GPU time, and
+             * the idle gaps between ~300 encoders should not eat a fifth. */
+            const double cut = per[GPU_PROF_CLASSES][i];
+            if (sum > cut * 1.02 || sum < cut * 0.8)
+                die("profile groups sum to %.3f ms of a %.3f ms pass: the timestamps are misread",
+                    sum * 1e3, cut * 1e3);
+        }
+        printf("\n%s n=%d pos=%d\n", regimes[r].name, n, pos);
+        for (int c = 0; c < GPU_PROF_CLASSES + 2; c++) {
+            qsort(per[c], REPS, sizeof per[c][0], cmp_double);
+            const char *name = c < GPU_PROF_CLASSES ? gpu_prof_name(c)
+                             : c == GPU_PROF_CLASSES ? "TOTAL, cut into encoders" : "TOTAL, uncut";
+            const double med = pct(per[c], REPS, 0.5);
+            fprintf(csv, "%s,%s,%d,%d,%s,%.9f,%.9f,%.9f\n", model_dir, regimes[r].name, n, pos,
+                    name, med, pct(per[c], REPS, 0.1), pct(per[c], REPS, 0.9));
+            printf("  %-40s %8.3f ms  [%.3f, %.3f]\n", name, med * 1e3,
+                   pct(per[c], REPS, 0.1) * 1e3, pct(per[c], REPS, 0.9) * 1e3);
+        }
+    }
+    fclose(csv);
+    gpu_model_free(g);
+    metal_shutdown(mtl);
+    st_close(&st);
+    printf("\nraw results -> %s\n", csv_path);
+}
