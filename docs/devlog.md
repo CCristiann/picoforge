@@ -110,8 +110,30 @@ pays 4.5% for 384 rejected drafts, because a 17-row verify leaves the 8-row
 tile and grows attention. Long drafts need a drafter that is right, which is
 what a model is for.
 
-**Next:** step 4.3 -- the MoE block in the NumPy oracle, verified against
-transformers on a tiny random Qwen3-MoE, before any 30B download.
+### Step 4.3 — the MoE block in the oracle
+
+`tools/oracle/make_tiny_moe.py` builds a 3-layer random Qwen3-MoE (8 experts,
+top-2, one dense layer, untied head, bf16, the 0.6B's tokenizer);
+`make test-oracle-moe` verifies the NumPy oracle against transformers on it.
+All three prompt lengths PASS: relative error 1.9e-6, KL 1.2e-11, argmax 40/40.
+
+Three things read before written, each of which would have been a silent bug:
+- transformers 5 fuses experts in memory (gate_up_proj [E, 2I, H]) but
+  save_pretrained writes one tensor per expert -- the same names as the real
+  checkpoint's index (read from the Hub, weights not downloaded).
+- transformers 5 writes a different config dialect: num_local_experts, dtype,
+  rope_parameters. The real 30B config (saved by 4.51) says num_experts,
+  torch_dtype, rope_theta; the tiny config is rewritten in those words and
+  checked to read back identically.
+- The real 30B has tie_word_embeddings=false. The oracle used the embedding
+  as the head unconditionally; it now asks the config.
+
+A verifier that passes first time is itself suspect, so three deliberate bugs
+were run through it: router weights not renormalised, head tied, the dense
+layer routed. All three caught. Qwen3-0.6B still verifies.
+
+**Next:** step 4.4 -- the MoE block in the C engine on the CPU, held to this
+oracle on the tiny model. Then the 30B needs its download.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

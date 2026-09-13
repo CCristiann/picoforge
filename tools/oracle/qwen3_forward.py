@@ -39,13 +39,32 @@ class Qwen3Config:
     bos_token_id: int
     eos_token_id: int
 
+    # Mixture of experts (model_type "qwen3_moe", Phase 4). A dense Qwen3 has
+    # none of these keys and gets num_experts = 0: every layer a plain MLP.
+    num_experts: int = 0            # experts per MoE layer
+    num_experts_per_tok: int = 0    # top-k: experts each token is routed to
+    moe_intermediate_size: int = 0  # SwiGLU inner width of ONE expert
+    norm_topk_prob: bool = False    # renormalise the k router weights to sum 1
+    decoder_sparse_step: int = 1    # layer l is MoE when (l + 1) % step == 0 ...
+    mlp_only_layers: tuple = ()     # ... and l is not listed here
+
     @classmethod
     def from_json(cls, model_dir: Path) -> "Qwen3Config":
         raw = json.loads((model_dir / "config.json").read_text())
-        assert raw["model_type"] == "qwen3", f"not a Qwen3 config: {raw['model_type']}"
+        assert raw["model_type"] in ("qwen3", "qwen3_moe"), \
+            f"not a Qwen3 config: {raw['model_type']}"
         # Take only the fields we declared, so an unexpected config shape
-        # fails loudly here rather than deep inside the forward pass.
-        return cls(**{k: raw[k] for k in cls.__dataclass_fields__})
+        # fails loudly here rather than deep inside the forward pass. The
+        # MoE fields may be absent (dense model); the rest may not.
+        fields = {k: raw[k] for k in cls.__dataclass_fields__ if k in raw}
+        if "mlp_only_layers" in fields:
+            fields["mlp_only_layers"] = tuple(fields["mlp_only_layers"])
+        return cls(**fields)
+
+    def is_moe_layer(self, layer: int) -> bool:
+        """transformers' rule, spelled out: Qwen3MoeDecoderLayer.__init__."""
+        return (self.num_experts > 0 and layer not in self.mlp_only_layers
+                and (layer + 1) % self.decoder_sparse_step == 0)
 
 
 def print_summary(cfg: Qwen3Config) -> None:
@@ -66,8 +85,15 @@ def print_summary(cfg: Qwen3Config) -> None:
     print(f"  Q proj              : {cfg.hidden_size} -> {q_dim}")
     print(f"  K/V proj            : {cfg.hidden_size} -> {kv_dim} each")
     print(f"  O proj              : {q_dim} -> {cfg.hidden_size}")
-    print(f"MLP (SwiGLU)          : {cfg.hidden_size} -> {cfg.intermediate_size} -> "
-          f"{cfg.hidden_size}")
+    if cfg.num_experts:
+        n_moe = sum(cfg.is_moe_layer(l) for l in range(cfg.num_hidden_layers))
+        print(f"MoE                   : {n_moe}/{cfg.num_hidden_layers} layers, "
+              f"{cfg.num_experts} experts, top-{cfg.num_experts_per_tok}, expert SwiGLU "
+              f"{cfg.hidden_size} -> {cfg.moe_intermediate_size} -> {cfg.hidden_size}"
+              f"{', weights renormalised' if cfg.norm_topk_prob else ''}")
+    if not cfg.num_experts or n_moe < cfg.num_hidden_layers:
+        print(f"MLP (SwiGLU)          : {cfg.hidden_size} -> {cfg.intermediate_size} -> "
+              f"{cfg.hidden_size}")
     print(f"rope_theta            : {cfg.rope_theta:g}")
     print(f"max positions         : {cfg.max_position_embeddings}")
     print(f"rms_norm_eps          : {cfg.rms_norm_eps:g}")
@@ -225,6 +251,48 @@ def mlp_block(x: np.ndarray, weights: dict, layer: int, cfg: Qwen3Config) -> np.
     return x + (silu(gate) * up) @ weights[f"{p}.down_proj.weight"].T
 
 
+def route(h: np.ndarray, w_gate: np.ndarray, cfg: Qwen3Config):
+    """The router: which k experts each token goes to, and with what weight.
+
+    A linear layer scores every expert, softmax turns the scores into a
+    distribution, and the k most probable experts are kept. With
+    norm_topk_prob their k probabilities are rescaled to sum to 1 -- so the
+    token's output is a weighted AVERAGE of its experts, not a fraction of one.
+    Returns (indices (seq, k), weights (seq, k)), most probable first.
+    """
+    probs = softmax(h @ w_gate.T)                               # (seq, num_experts)
+    idx = np.argsort(-probs, axis=-1, kind="stable")[:, :cfg.num_experts_per_tok]
+    top = np.take_along_axis(probs, idx, axis=-1)
+    if cfg.norm_topk_prob:
+        top = top / top.sum(axis=-1, keepdims=True)
+    return idx, top
+
+
+def moe_block(x: np.ndarray, weights: dict, layer: int, cfg: Qwen3Config) -> np.ndarray:
+    """Sparse MoE sub-block, residual included.
+
+    Instead of one wide SwiGLU MLP, num_experts narrow ones, and each token
+    runs only its k routed experts: output = sum_j weight_j * expert_j(h).
+    That is the whole trick of a 30B-parameter model that costs 3B per token --
+    and why which experts two tokens pick decides how much work a batch is.
+
+    A plain loop over tokens and their experts. Slow and obviously correct,
+    which is the only thing an oracle needs to be.
+    """
+    p = f"model.layers.{layer}.mlp"
+    h = rms_norm(x, weights[f"model.layers.{layer}.post_attention_layernorm.weight"],
+                 cfg.rms_norm_eps)
+    idx, top = route(h, weights[f"{p}.gate.weight"], cfg)
+    out = np.zeros_like(h)
+    for t in range(h.shape[0]):
+        for e, wt in zip(idx[t], top[t]):
+            ex = f"{p}.experts.{e}"
+            gate = weights[f"{ex}.gate_proj.weight"] @ h[t]
+            up = weights[f"{ex}.up_proj.weight"] @ h[t]
+            out[t] += wt * (weights[f"{ex}.down_proj.weight"] @ (silu(gate) * up))
+    return x + out
+
+
 def forward(token_ids: list[int], weights: dict, cfg: Qwen3Config) -> np.ndarray:
     """The whole model: embeddings -> 28 identical layers -> norm -> logits.
 
@@ -237,9 +305,12 @@ def forward(token_ids: list[int], weights: dict, cfg: Qwen3Config) -> np.ndarray
     cos, sin = rope_tables(np.arange(len(token_ids)), cfg.head_dim, cfg.rope_theta)
     for layer in range(cfg.num_hidden_layers):
         x = attention_block(x, weights, layer, cfg, cos, sin)
-        x = mlp_block(x, weights, layer, cfg)
+        x = (moe_block if cfg.is_moe_layer(layer) else mlp_block)(x, weights, layer, cfg)
     x = rms_norm(x, weights["model.norm.weight"], cfg.rms_norm_eps)
-    return x @ weights["model.embed_tokens.weight"].T
+    # Tied or not is the config's call. Qwen3-0.6B ties (and ships an unused
+    # copy); Qwen3-30B-A3B does not, and its lm_head is a different matrix.
+    head = "model.embed_tokens.weight" if cfg.tie_word_embeddings else "lm_head.weight"
+    return x @ weights[head].T
 
 
 def main() -> None:

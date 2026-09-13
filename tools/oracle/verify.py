@@ -167,7 +167,7 @@ def main() -> None:
         ref = reference_logits(model, ids)
         all_ok &= compare(ours, ref, f"{len(ids)} tokens: {prompt[:44]!r}")
 
-    print("\n" + ("Phase 0 oracle VERIFIED — the C engine may be built on it."
+    print("\n" + (f"oracle VERIFIED on {model_dir.name} — the C engine may be built on it."
                   if all_ok else
                   "ORACLE DIVERGES — do not build anything on it until explained."))
     sys.exit(0 if all_ok else 1)
