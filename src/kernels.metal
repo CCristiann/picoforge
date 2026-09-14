@@ -639,9 +639,15 @@ kernel void embed_lookup_q(device float        *x      [[buffer(0)]],
  * cost nothing up to the tile and tiles run in parallel, so this is priced by
  * distinct experts, not by tokens -- the cost model the plan needs to measure.
  *
- * Bound: a group holds at most one tile of rows (8 or 32), so a MoE pass takes
- * at most 32 tokens; the host splits longer prefills. Each token picks an
- * expert at most once, so a group can never exceed the number of tokens. */
+ * Bound: a group spans at most 4 tiles of 8 rows, so a MoE pass
+ * takes at most 32 tokens; the host splits longer prefills. Each token picks
+ * an expert at most once, so a group can never exceed the number of tokens.
+ * Rows are tiled in eights whatever the group size: an 8-row op on a group of
+ * 32 is four tiles in parallel, where one 32-row op computes absent rows for
+ * every smaller group (measured in step 4.6b: q8 experts cost 38 us instead of
+ * 22 past 8 tokens). The host passes the row tiles per group, ceil(n / 8), in
+ * d.M (free in a grouped product): grid row y is group y / d.M, row tile
+ * y % d.M, and tiles past a smaller group's rows return at once. */
 struct MoeDims { uint n, experts, k, hidden, inter, norm; };
 #define MOE_MAX_EXPERTS 512
 
@@ -716,7 +722,7 @@ kernel void moe_gather(device float        *out          [[buffer(0)]],
 
 /* Expert weights sit at offs[2 * expert] bfloats into the one weights buffer
  * (offs[2 * expert + 1] is the scales' offset, unused by bf16 experts). */
-#define MOE_MATMUL(NAME, TILE_M)                                                   \
+#define MOE_MATMUL(NAME)                                                           \
 kernel void NAME(device float        *C        [[buffer(0)]],                     \
                  device float        *A        [[buffer(1)]],                     \
                  device bfloat       *W        [[buffer(2)]],                     \
@@ -725,10 +731,10 @@ kernel void NAME(device float        *C        [[buffer(0)]],                   
                  device const uint   *n_groups [[buffer(5)]],                     \
                  constant MatmulDims &d        [[buffer(6)]],                     \
                  uint2 tgid [[threadgroup_position_in_grid]]) {                   \
-    if (tgid.y >= n_groups[0]) return;                                            \
-    const uint e = groups[3 * tgid.y], r0 = groups[3 * tgid.y + 1];               \
-    const uint rows = groups[3 * tgid.y + 2];                                     \
-    constexpr auto desc = matmul2d_descriptor(TILE_M, 32,                         \
+    const uint g = tgid.y / d.M, m0 = (tgid.y % d.M) * 8;                         \
+    if (g >= n_groups[0] || m0 >= groups[3 * g + 2]) return;                      \
+    const uint e = groups[3 * g], r0 = groups[3 * g + 1], rows = groups[3 * g + 2]; \
+    constexpr auto desc = matmul2d_descriptor(8, 32,                              \
                               static_cast<int>(dynamic_extent), false, true);    \
     matmul2d<desc, execution_simdgroups<4>> op;                                   \
     auto tA = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
@@ -737,19 +743,19 @@ kernel void NAME(device float        *C        [[buffer(0)]],                   
                   W + offs[2 * e], dextents<int32_t, 2>(int(d.K), int(d.N)));    \
     auto tC = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
                   C + r0 * d.N, dextents<int32_t, 2>(int(d.N), int(rows)));      \
+    auto mA = tA.slice(0, int(m0));                                               \
     auto mB = tB.slice(0, int(tgid.x) * 32);                                      \
-    auto mC = tC.slice(int(tgid.x) * 32, 0);                                      \
-    op.run(tA, mB, mC);                                                           \
+    auto mC = tC.slice(int(tgid.x) * 32, int(m0));                                \
+    op.run(mA, mB, mC);                                                           \
 }
-MOE_MATMUL(moe_matmul_8,   8)
-MOE_MATMUL(moe_matmul_32, 32)
+MOE_MATMUL(moe_matmul)
 
 /* The same grouped product over 8-bit experts with one scale per output row,
  * Phase 3's q8_row: C = (A q^T) * d, the op on the codes, then the scales
  * applied by the threads of the tile once the matrix units are done (as
  * matmul_q8_row). offs[2e] is the codes' byte offset, offs[2e + 1] the scales'
  * offset in bfloats. */
-#define MOE_MATMUL_Q8ROW(NAME, TILE_M)                                             \
+#define MOE_MATMUL_Q8ROW(NAME)                                                     \
 kernel void NAME(device float        *C        [[buffer(0)]],                     \
                  device float        *A        [[buffer(1)]],                     \
                  device int8_t       *Q        [[buffer(2)]],                     \
@@ -760,10 +766,10 @@ kernel void NAME(device float        *C        [[buffer(0)]],                   
                  device const bfloat *D        [[buffer(7)]],                     \
                  uint2 tgid [[threadgroup_position_in_grid]],                     \
                  uint  tid  [[thread_index_in_threadgroup]]) {                    \
-    if (tgid.y >= n_groups[0]) return;                                            \
-    const uint e = groups[3 * tgid.y], r0 = groups[3 * tgid.y + 1];               \
-    const uint rows = groups[3 * tgid.y + 2];                                     \
-    constexpr auto desc = matmul2d_descriptor(TILE_M, 32,                         \
+    const uint g = tgid.y / d.M, m0 = (tgid.y % d.M) * 8;                         \
+    if (g >= n_groups[0] || m0 >= groups[3 * g + 2]) return;                      \
+    const uint e = groups[3 * g], r0 = groups[3 * g + 1], rows = groups[3 * g + 2]; \
+    constexpr auto desc = matmul2d_descriptor(8, 32,                              \
                               static_cast<int>(dynamic_extent), false, true);    \
     matmul2d<desc, execution_simdgroups<4>> op;                                   \
     auto tA = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
@@ -773,18 +779,18 @@ kernel void NAME(device float        *C        [[buffer(0)]],                   
     auto tC = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
                   C + r0 * d.N, dextents<int32_t, 2>(int(d.N), int(rows)));      \
     const uint n0 = tgid.x * 32;                                                  \
+    auto mA = tA.slice(0, int(m0));                                               \
     auto mQ = tQ.slice(0, int(n0));                                               \
-    auto mC = tC.slice(int(n0), 0);                                               \
-    op.run(tA, mQ, mC);                                                           \
+    auto mC = tC.slice(int(n0), int(m0));                                         \
+    op.run(mA, mQ, mC);                                                           \
     threadgroup_barrier(mem_flags::mem_device);                                   \
     const device bfloat *De = D + offs[2 * e + 1];                                \
-    for (uint i = tid; i < TILE_M * 32; i += TG_THREADS) {                        \
-        const uint m = i / 32, n = n0 + i % 32;                                   \
+    for (uint i = tid; i < 8 * 32; i += TG_THREADS) {                             \
+        const uint m = m0 + i / 32, n = n0 + i % 32;                              \
         if (m < rows && n < d.N) C[(r0 + m) * d.N + n] *= float(De[n]);           \
     }                                                                             \
 }
-MOE_MATMUL_Q8ROW(moe_matmul_q8row_8,   8)
-MOE_MATMUL_Q8ROW(moe_matmul_q8row_32, 32)
+MOE_MATMUL_Q8ROW(moe_matmul_q8row)
 
 /* x[t] += sum_j wt[t,j] * expert_out[row(t,j)], summed before the add as
  * model.c does, so the two paths round the same way. */

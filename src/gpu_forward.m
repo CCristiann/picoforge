@@ -27,8 +27,7 @@
 enum { K_MATMUL_NAIVE, K_MATMUL_SIMD, K_MATMUL_TENSOR, K_EMBED, K_RMSNORM,
        K_QKROPE, K_ATTN, K_SWIGLU, K_RESIDUAL, K_NARROW, K_EMBED_Q,
        K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32,
-       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM8, K_MOE_MM32, K_MOE_SCATTER,
-       K_MOE_Q8_8, K_MOE_Q8_32, K_COUNT };
+       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM, K_MOE_SCATTER, K_MOE_Q8, K_COUNT };
 
 static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_naive", "matmul_simdgroup", "matmul_tensorops", "embed_lookup",
@@ -36,11 +35,11 @@ static const char *gpu_kernel_names[K_COUNT] = {
     "narrow_bf16", "embed_lookup_q",
     "matmul_q8_row", "matmul_q8_g32", "matmul_q4_row", "matmul_q4_g32", "matmul_q4_g64",
     "matmul_tensorops_8x32",
-    "moe_route", "moe_group", "moe_gather", "moe_matmul_8", "moe_matmul_32", "moe_scatter",
-    "moe_matmul_q8row_8", "moe_matmul_q8row_32",
+    "moe_route", "moe_group", "moe_gather", "moe_matmul", "moe_scatter", "moe_matmul_q8row",
 };
 
-/* A MoE pass takes at most one tile of rows per expert group (kernels.metal). */
+/* A MoE pass takes at most 4 row tiles of 8 per expert group (kernels.metal),
+ * so at most 32 tokens. */
 enum { MOE_MAX_ROWS = 32 };
 
 /* A projection as the GPU sees it: offsets into the one weights buffer, and
@@ -345,22 +344,24 @@ static void pso_set(GpuModel *g, id<MTLComputeCommandEncoder> enc, int kernel, v
     for (int i = 0; i < nb; i++) [enc setBuffer:(__bridge id<MTLBuffer>)bufs[i] offset:0 atIndex:(NSUInteger)i];
 }
 
-/* One projection for every expert group at once: row y of the grid is a
- * group, column x a 32-wide tile of its output. 8-row tiles when no group can
- * exceed 8 rows (n <= 8), as in the dense pass. */
+/* One projection for every expert group at once: grid column x is a 32-wide
+ * tile of the output, row y one of a group's 8-row tiles. Each group gets as
+ * many row tiles as n tokens could fill, so a decode step dispatches no empty
+ * ones. */
 static void encode_moe_matmul(GpuModel *g, id<MTLComputeCommandEncoder> enc, void *C, void *A,
                               int layer, int proj, int n, int N, int K) {
     const int E = g->cfg.num_experts, pairs = n * g->cfg.num_experts_per_tok;
     const bool q8 = g->layer[layer].moe_q8;
     void *bufs[] = {C, A, g->weights, g->moe_offs, g->moe_groups, g->moe_ng};
-    pso_set(g, enc, q8 ? (n <= 8 ? K_MOE_Q8_8 : K_MOE_Q8_32) : (n <= 8 ? K_MOE_MM8 : K_MOE_MM32),
-            bufs, 6);
+    pso_set(g, enc, q8 ? K_MOE_Q8 : K_MOE_MM, bufs, 6);
     if (q8) [enc setBuffer:(__bridge id<MTLBuffer>)g->weights offset:0 atIndex:7];
     [enc setBuffer:(__bridge id<MTLBuffer>)g->moe_offs
             offset:((NSUInteger)layer * 3 + (NSUInteger)proj) * (NSUInteger)E * 2 * sizeof(uint64_t) atIndex:3];
-    struct MatmulDimsC d = {(uint32_t)n, (uint32_t)N, (uint32_t)K};
+    /* M carries the row tiles per group, which the kernel strides the grid by. */
+    struct MatmulDimsC d = {(uint32_t)((n + 7) / 8), (uint32_t)N, (uint32_t)K};
     [enc setBytes:&d length:sizeof d atIndex:6];
-    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32), (NSUInteger)(pairs < E ? pairs : E), 1)
+    const NSUInteger groups = (NSUInteger)(pairs < E ? pairs : E);
+    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32), groups * (NSUInteger)d.M, 1)
         threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 

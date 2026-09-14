@@ -225,13 +225,28 @@ The verify-cost surface, both formats measured in one session
 
 - **Half the bytes, half the marginal expert** -- 44 -> 22 us at <= 8 tokens,
   at the same ~217 GB/s. The byte model holds across formats.
-- **The 32-row tile throws that away.** Past 8 tokens the q8 kernel pays nearly
+- **The 32-row tile threw that away.** Past 8 tokens the q8 kernel paid nearly
   bf16's price per expert, because the 32-row op computes rows that are not
-  there. The obvious test: 8-row tiles for groups of any size.
+  there.
 
-**Next:** that test, then the 30B checkpoint (a download that needs the human's
-yes): sharded safetensors, parity, and the routing-overlap measurement that
-turns this cost model into a draft scheduler.
+So the grouped kernels now tile rows in eights for groups of any size: grid
+row y is group y / r, row tile y % r, with r = ceil(n / 8) passed in the
+otherwise unused M. Parity unchanged (bf16 and q8 tiny MoE). Same session,
+before -> after, ms per layer:
+
+  q8_row, 16 tokens, 64 experts     2.97 -> 1.78
+  q8_row, 32 tokens, 64 experts     3.00 -> 1.87
+  q8_row, 32 tokens, 128 experts    5.38 -> 3.34
+  bf16,   32 tokens, 64 experts     3.43 -> 3.45   (bandwidth-bound either way)
+
+A q8 expert now costs 21-23 us at every verify size up to 32 tokens. The one
+cost model, for the scheduler to use: **per MoE layer, ~0.35-0.6 ms + 22 us
+per distinct q8_row expert** (44 us bf16), almost independent of how many
+tokens share them.
+
+**Next:** the 30B checkpoint (a download that needs the human's yes): sharded
+safetensors, parity, and the routing-overlap measurement that turns this cost
+model into a draft scheduler.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 
