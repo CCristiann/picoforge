@@ -97,6 +97,10 @@ static GLinear to_glinear(const SafeTensors *st, const Linear *l, int n_in) {
 
 GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
                            const Qwen3Config *cfg, int max_seq, int max_rows) {
+    /* Refused rather than half-run: a MoE layer has no dense projections to
+     * bind, and an untied head is a matrix this pass never reads. */
+    if (cfg->num_experts) die("MoE layers are not on the GPU yet (Phase 4); use the CPU path");
+    if (!cfg->tie_word_embeddings) die("an untied LM head is not on the GPU yet");
     GpuModel *g = calloc(1, sizeof *g);
     if (!g) die("out of memory for the GPU model");
     g->ctx = ctx; g->cfg = *cfg;

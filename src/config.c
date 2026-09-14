@@ -80,7 +80,8 @@ void config_load(const char *model_dir, Qwen3Config *cfg) {
      * crash — they would quietly produce wrong numbers. */
     char model_type[32];
     json_str(json, "model_type", model_type, sizeof model_type);
-    if (strcmp(model_type, "qwen3") != 0)
+    const bool moe = strcmp(model_type, "qwen3_moe") == 0;
+    if (!moe && strcmp(model_type, "qwen3") != 0)
         die("not a Qwen3 config: model_type=\"%s\"", model_type);
 
     cfg->hidden_size             = (int)json_int(json, "hidden_size");
@@ -97,6 +98,29 @@ void config_load(const char *model_dir, Qwen3Config *cfg) {
     cfg->rope_theta              = (float)json_num(json, "rope_theta");
     cfg->tie_word_embeddings     = json_bool(json, "tie_word_embeddings");
     json_str(json, "torch_dtype", cfg->torch_dtype, sizeof cfg->torch_dtype);
+
+    /* Qwen3-MoE replaces the MLP of (most) layers with routed experts. Every
+     * key is required once the model says it is a MoE: a missing top-k would
+     * otherwise become 0 experts per token and a model that adds nothing. */
+    cfg->num_experts = cfg->num_experts_per_tok = cfg->moe_intermediate_size = 0;
+    cfg->norm_topk_prob = false;
+    cfg->decoder_sparse_step = 1;
+    cfg->n_mlp_only_layers = 0;
+    if (moe) {
+        cfg->num_experts           = (int)json_int(json, "num_experts");
+        cfg->num_experts_per_tok   = (int)json_int(json, "num_experts_per_tok");
+        cfg->moe_intermediate_size = (int)json_int(json, "moe_intermediate_size");
+        cfg->norm_topk_prob        = json_bool(json, "norm_topk_prob");
+        cfg->decoder_sparse_step   = (int)json_int(json, "decoder_sparse_step");
+        long ids[64];
+        json_ints(json_value(json, "mlp_only_layers"), ids, 64, &cfg->n_mlp_only_layers);
+        for (int i = 0; i < cfg->n_mlp_only_layers; i++) cfg->mlp_only_layers[i] = (int)ids[i];
+        if (cfg->num_experts < 1 || cfg->num_experts_per_tok < 1 ||
+            cfg->num_experts_per_tok > cfg->num_experts || cfg->num_experts_per_tok > PF_MAX_TOPK)
+            die("MoE: top-%d of %d experts is not something this engine can route",
+                cfg->num_experts_per_tok, cfg->num_experts);
+        if (cfg->decoder_sparse_step < 1) die("MoE: decoder_sparse_step %d", cfg->decoder_sparse_step);
+    }
 
     /* Invariants the rest of the engine will assume without re-checking. */
     if (cfg->num_attention_heads % cfg->num_key_value_heads != 0)
@@ -141,6 +165,14 @@ void config_load(const char *model_dir, Qwen3Config *cfg) {
     if (cfg->n_eos == 0) { cfg->eos_ids[0] = cfg->eos_token_id; cfg->n_eos = 1; }
 }
 
+/* transformers' rule, Qwen3MoeDecoderLayer.__init__, spelled out. */
+bool config_is_moe_layer(const Qwen3Config *cfg, int layer) {
+    if (cfg->num_experts == 0 || (layer + 1) % cfg->decoder_sparse_step != 0) return false;
+    for (int i = 0; i < cfg->n_mlp_only_layers; i++)
+        if (cfg->mlp_only_layers[i] == layer) return false;
+    return true;
+}
+
 void config_print(const Qwen3Config *cfg) {
     int q_dim  = cfg->num_attention_heads * cfg->head_dim;
     int kv_dim = cfg->num_key_value_heads * cfg->head_dim;
@@ -158,8 +190,16 @@ void config_print(const Qwen3Config *cfg) {
     printf("  Q proj              : %d -> %d\n", cfg->hidden_size, q_dim);
     printf("  K/V proj            : %d -> %d each\n", cfg->hidden_size, kv_dim);
     printf("  O proj              : %d -> %d\n", q_dim, cfg->hidden_size);
-    printf("MLP (SwiGLU)          : %d -> %d -> %d\n",
-           cfg->hidden_size, cfg->intermediate_size, cfg->hidden_size);
+    int n_moe = 0;
+    for (int l = 0; l < cfg->num_hidden_layers; l++) n_moe += config_is_moe_layer(cfg, l);
+    if (cfg->num_experts)
+        printf("MoE                   : %d/%d layers, %d experts, top-%d, expert SwiGLU "
+               "%d -> %d -> %d%s\n", n_moe, cfg->num_hidden_layers, cfg->num_experts,
+               cfg->num_experts_per_tok, cfg->hidden_size, cfg->moe_intermediate_size,
+               cfg->hidden_size, cfg->norm_topk_prob ? ", weights renormalised" : "");
+    if (n_moe < cfg->num_hidden_layers)
+        printf("MLP (SwiGLU)          : %d -> %d -> %d\n",
+               cfg->hidden_size, cfg->intermediate_size, cfg->hidden_size);
     printf("rope_theta            : %g\n", (double)cfg->rope_theta);
     printf("max positions         : %d\n", cfg->max_position_embeddings);
     printf("rms_norm_eps          : %g\n", (double)cfg->rms_norm_eps);

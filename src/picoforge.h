@@ -38,7 +38,19 @@ typedef struct {
     float gen_temperature;
     float gen_top_p;
     int   gen_top_k;
+
+    /* Mixture of experts: model_type "qwen3_moe" (Phase 4). A dense Qwen3 has
+     * none of these keys and loads with num_experts = 0. */
+    int   num_experts;             /* experts per MoE layer                 */
+    int   num_experts_per_tok;     /* top-k: experts each token runs        */
+    int   moe_intermediate_size;   /* SwiGLU inner width of ONE expert      */
+    bool  norm_topk_prob;          /* renormalise the k weights to sum to 1 */
+    int   decoder_sparse_step;     /* layer l is MoE if (l+1) % step == 0 ... */
+    int   mlp_only_layers[64];     /* ... and l is not listed here           */
+    int   n_mlp_only_layers;
 } Qwen3Config;
+
+enum { PF_MAX_TOPK = 64 };         /* bound on num_experts_per_tok            */
 
 /* Fail loudly and immediately. Printf-style, prefixed, exit(1).
  * There is no error-recovery story in this engine on purpose: an
@@ -51,6 +63,7 @@ char *slurp(const char *path, size_t *len_out);
 
 void  config_load(const char *model_dir, Qwen3Config *cfg);
 void  config_print(const Qwen3Config *cfg);
+bool  config_is_moe_layer(const Qwen3Config *cfg, int layer);
 
 /* ------------------------------------------------------------------ json
  * Enough to walk a file whose shape you already know. Every one of these
@@ -154,16 +167,25 @@ typedef struct {
 void linear(float *out, const float *x, const Linear *l, int n_in, int n_out);
 void set_q4_bf16_activations(bool on);   /* CPU mimics the GPU's Q4 narrowing */
 
+/* One expert of a MoE layer: a narrow SwiGLU MLP of its own. */
+typedef struct { Linear gate_proj, up_proj, down_proj; } Expert;
+
 typedef struct {
     const uint16_t *input_ln, *q_norm, *k_norm, *post_attn_ln;
     Linear q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj;
+    /* MoE layers only (NULL experts = dense): the router [num_experts, hidden]
+     * and the experts. The dense projections above stay unbound. */
+    Linear  router;
+    Expert *experts;
 } LayerWeights;
 
 typedef struct {
     double          bytes;        /* weight bytes one decoded token reads     */
-    Linear          embed;        /* [vocab, hidden]; tied, so also the LM head */
+    Linear          embed;        /* [vocab, hidden]                          */
+    Linear          head;         /* LM head: the embedding when tied         */
     const uint16_t *final_norm;
     LayerWeights   *layers;
+    int             n_layers;
 } Weights;
 
 /* Every activation buffer the forward pass needs, allocated once.
@@ -186,6 +208,7 @@ typedef struct {
     float *kcache, *vcache;       /* (layers, max_seq, kv_dim)               */
     float *att, *attout;          /* scores over the cache; merged heads     */
     float *hb, *hb2;              /* SwiGLU gate and up                      */
+    float *router, *moe_out, *eb; /* MoE: expert probs, one token's sum, one expert's output */
     float *logits;                /* (max_rows, vocab)                       */
 } RunState;
 

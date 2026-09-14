@@ -48,7 +48,7 @@ ui: picoforge
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
 test-all: test test-nfc test-tokenizer test-encode test-forward test-generate \
-          test-quant-formats test-quant-kernels test-forward-quant test-speculate test-oracle-moe
+          test-quant-formats test-quant-kernels test-forward-quant test-speculate test-oracle-moe test-forward-moe
 
 # Phase 4: a tiny random Qwen3-MoE (same architecture and on-disk layout as
 # Qwen3-30B-A3B, 3 layers), and the NumPy oracle verified against it.
@@ -57,6 +57,9 @@ build/tiny-qwen3-moe: tools/oracle/make_tiny_moe.py
 
 test-oracle-moe: build/tiny-qwen3-moe
 	@cd tools/oracle && ../venv/bin/python verify.py ../../build/tiny-qwen3-moe
+
+test-forward-moe: picoforge build/tiny-qwen3-moe
+	@./tools/venv/bin/python tests/test_forward.py build/tiny-qwen3-moe
 
 # Phase 4: speculative decoding emits exactly what plain greedy emits.
 test-speculate: picoforge

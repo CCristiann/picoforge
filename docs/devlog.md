@@ -132,8 +132,28 @@ A verifier that passes first time is itself suspect, so three deliberate bugs
 were run through it: router weights not renormalised, head tied, the dense
 layer routed. All three caught. Qwen3-0.6B still verifies.
 
-**Next:** step 4.4 -- the MoE block in the C engine on the CPU, held to this
-oracle on the tiny model. Then the 30B needs its download.
+### Step 4.4 — the MoE block in the C engine, on the CPU
+
+`make test-forward-moe`. The config reads qwen3_moe (every MoE key required
+once the model type says so), weights bind the router and every expert with
+its shape checked, the LM head follows tie_word_embeddings, and the forward
+pass runs the oracle's moe_block structurally: softmax over all experts, top-k
+by selection with ties to the lower index, renormalised, experts summed into a
+scratch before the residual add.
+
+Against the NumPy oracle on the tiny model, batch and incremental: relative
+error 1.2e-6, KL 4.3e-12, argmax 15/15. The architecture summary is
+byte-identical to the oracle's for both the dense and the MoE model.
+
+The C engine was then run on three wrong configs over the same weights --
+router weights not renormalised, head tied, top-1 instead of top-2 -- and
+compared with the oracle on the right one: all three caught. Dense, quantised
+and generation parity unchanged. The GPU refuses MoE and untied heads loudly.
+
+**Next:** without the 30B, two things can still be built at its real shapes:
+the MoE layer on the GPU (verified on the tiny model), and the verify-cost
+surface of ONE 30B-shaped MoE layer, with synthetic weights, as a function of
+tokens and distinct experts -- the measurement the whole plan rests on.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

@@ -102,22 +102,29 @@ void linear(float *out, const float *x, const Linear *l, int n_in, int n_out) {
 }
 
 void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
-    /* tie_word_embeddings: the config says the LM head IS the embedding
-     * matrix. The checkpoint also carries an lm_head.weight copy; the config
-     * is the contract, so we ignore the copy and never map it twice. */
-    if (!cfg->tie_word_embeddings)
-        die("untied embeddings are not implemented (this checkpoint ties them)");
-
     const long H = cfg->hidden_size, I = cfg->intermediate_size;
     const long q_dim = (long)cfg->num_attention_heads * cfg->head_dim;
     const long kv_dim = (long)cfg->num_key_value_heads * cfg->head_dim;
     w->embed      = bind_linear(st, "model.embed_tokens", cfg->vocab_size, H);
-    /* The embedding is read in full per token: it is also the LM head. */
-    w->bytes      = linear_bytes(&w->embed, cfg->vocab_size, H) + 2.0 * (double)H;
+    /* tie_word_embeddings: the config says whether the LM head IS the
+     * embedding. Qwen3-0.6B ties and still ships an lm_head.weight copy, which
+     * is ignored and never mapped twice; Qwen3-30B-A3B does not tie, and its
+     * lm_head is a different matrix. Per token the head is read in full, the
+     * embedding one row (which, tied, is already inside the full read). */
+    if (cfg->tie_word_embeddings) {
+        w->head  = w->embed;
+        w->bytes = linear_bytes(&w->embed, cfg->vocab_size, H) + 2.0 * (double)H;
+    } else {
+        w->head  = bind_linear(st, "lm_head", cfg->vocab_size, H);
+        w->bytes = linear_bytes(&w->head, cfg->vocab_size, H)
+                 + linear_bytes(&w->embed, cfg->vocab_size, H) / (double)cfg->vocab_size
+                 + 2.0 * (double)H;
+    }
     w->final_norm = bind(st, "model.norm.weight");
 
     w->layers = calloc((size_t)cfg->num_hidden_layers, sizeof *w->layers);
     if (!w->layers) die("out of memory for %d layers", cfg->num_hidden_layers);
+    w->n_layers = cfg->num_hidden_layers;
 
     for (int l = 0; l < cfg->num_hidden_layers; l++) {
         LayerWeights *L = &w->layers[l];
@@ -132,19 +139,46 @@ void weights_bind(const SafeTensors *st, const Qwen3Config *cfg, Weights *w) {
         LIN(k_proj,    "model.layers.%d.self_attn.k_proj", kv_dim, H);
         LIN(v_proj,    "model.layers.%d.self_attn.v_proj", kv_dim, H);
         LIN(o_proj,    "model.layers.%d.self_attn.o_proj", H, q_dim);
-        LIN(gate_proj, "model.layers.%d.mlp.gate_proj", I, H);
-        LIN(up_proj,   "model.layers.%d.mlp.up_proj", I, H);
-        LIN(down_proj, "model.layers.%d.mlp.down_proj", H, I);
-#undef LIN
         w->bytes += linear_bytes(&L->q_proj, q_dim, H) + linear_bytes(&L->k_proj, kv_dim, H)
                   + linear_bytes(&L->v_proj, kv_dim, H) + linear_bytes(&L->o_proj, H, q_dim)
-                  + linear_bytes(&L->gate_proj, I, H) + linear_bytes(&L->up_proj, I, H)
-                  + linear_bytes(&L->down_proj, H, I)
                   + 2.0 * (double)(2 * H + 2 * cfg->head_dim);          /* four norms */
+
+        if (!config_is_moe_layer(cfg, l)) {
+            LIN(gate_proj, "model.layers.%d.mlp.gate_proj", I, H);
+            LIN(up_proj,   "model.layers.%d.mlp.up_proj", I, H);
+            LIN(down_proj, "model.layers.%d.mlp.down_proj", H, I);
+            w->bytes += linear_bytes(&L->gate_proj, I, H) + linear_bytes(&L->up_proj, I, H)
+                      + linear_bytes(&L->down_proj, H, I);
+            continue;
+        }
+        /* MoE: every expert is bound (and shape-checked) now, although a token
+         * reads only k of them -- which is what the byte count says. */
+        const long E = cfg->num_experts, Ie = cfg->moe_intermediate_size;
+        LIN(router, "model.layers.%d.mlp.gate", E, H);
+        L->experts = calloc((size_t)E, sizeof *L->experts);
+        if (!L->experts) die("out of memory for %ld experts", E);
+        double expert_bytes = 0;
+        for (long e = 0; e < E; e++) {
+            Expert *x = &L->experts[e];
+            snprintf(base, sizeof base, "model.layers.%d.mlp.experts.%ld.gate_proj", l, e);
+            x->gate_proj = bind_linear(st, base, Ie, H);
+            snprintf(base, sizeof base, "model.layers.%d.mlp.experts.%ld.up_proj", l, e);
+            x->up_proj = bind_linear(st, base, Ie, H);
+            snprintf(base, sizeof base, "model.layers.%d.mlp.experts.%ld.down_proj", l, e);
+            x->down_proj = bind_linear(st, base, H, Ie);
+            expert_bytes = linear_bytes(&x->gate_proj, Ie, H) + linear_bytes(&x->up_proj, Ie, H)
+                         + linear_bytes(&x->down_proj, H, Ie);
+        }
+#undef LIN
+        w->bytes += linear_bytes(&L->router, E, H) + cfg->num_experts_per_tok * expert_bytes;
     }
 }
 
-void weights_free(Weights *w) { free(w->layers); w->layers = NULL; }
+void weights_free(Weights *w) {
+    for (int l = 0; w->layers && l < w->n_layers; l++) free(w->layers[l].experts);
+    free(w->layers);
+    w->layers = NULL;
+}
 
 static float *xalloc(size_t n, const char *what) {
     float *p = malloc(n * sizeof *p);
@@ -157,7 +191,9 @@ void state_alloc(RunState *s, const Qwen3Config *cfg, int max_seq, int max_rows)
     size_t H      = (size_t)cfg->hidden_size;
     size_t q_dim  = (size_t)(cfg->num_attention_heads * cfg->head_dim);
     size_t kv_dim = (size_t)(cfg->num_key_value_heads * cfg->head_dim);
-    size_t I      = (size_t)cfg->intermediate_size;
+    /* One scratch serves both MLP kinds: sized for the wider of the two. */
+    size_t I      = (size_t)(cfg->intermediate_size > cfg->moe_intermediate_size
+                             ? cfg->intermediate_size : cfg->moe_intermediate_size);
     size_t L      = (size_t)cfg->num_hidden_layers;
 
     s->max_seq  = max_seq;
@@ -171,6 +207,9 @@ void state_alloc(RunState *s, const Qwen3Config *cfg, int max_seq, int max_rows)
     s->attout   = xalloc(t * q_dim, "attention output");
     s->hb       = xalloc(t * I, "mlp gate");
     s->hb2      = xalloc(t * I, "mlp up");
+    s->router   = xalloc((size_t)(cfg->num_experts > 0 ? cfg->num_experts : 1), "router");
+    s->moe_out  = xalloc(H, "moe sum");
+    s->eb       = xalloc(H, "expert output");
     s->logits   = xalloc((size_t)max_rows * (size_t)cfg->vocab_size, "logits");
 }
 
@@ -178,6 +217,55 @@ void state_free(RunState *s) {
     free(s->x);   free(s->xb);     free(s->q);
     free(s->kcache); free(s->vcache);
     free(s->att); free(s->attout); free(s->hb); free(s->hb2); free(s->logits);
+    free(s->router); free(s->moe_out); free(s->eb);
+}
+
+/* ---- sparse MoE sub-block ----
+ * Instead of one wide MLP, num_experts narrow ones, and each token runs only
+ * the k its router picks: out = sum_j weight_j * expert_j(h). Structurally the
+ * oracle's moe_block: softmax over all experts, the k largest kept (ties to
+ * the lower index, as NumPy's stable argsort), renormalised, the weighted
+ * experts summed into a scratch and only then added to the residual stream.
+ * s->xb already holds the normed input. */
+static void moe_block(const LayerWeights *L, const Qwen3Config *cfg, RunState *s, int n) {
+    const int H = cfg->hidden_size, E = cfg->num_experts, k = cfg->num_experts_per_tok;
+    const int I = cfg->moe_intermediate_size;
+    int idx[PF_MAX_TOPK];
+    float wt[PF_MAX_TOPK];
+
+    for (int t = 0; t < n; t++) {
+        const float *h = s->xb + t * H;
+        linear(s->router, h, &L->router, H, E);
+        softmax(s->router, E);
+
+        /* Top-k by k passes of selection. O(k^2 E): 8 x 8 x 128 per token per
+         * layer on the 30B, which is nothing next to one expert's matmul. */
+        float sum = 0.0f;
+        for (int j = 0; j < k; j++) {
+            int best = -1;
+            for (int e = 0; e < E; e++) {
+                bool taken = false;
+                for (int i = 0; i < j; i++) taken |= (idx[i] == e);
+                if (!taken && (best < 0 || s->router[e] > s->router[best])) best = e;
+            }
+            idx[j] = best;
+            wt[j] = s->router[best];
+            sum += wt[j];
+        }
+        if (cfg->norm_topk_prob)
+            for (int j = 0; j < k; j++) wt[j] /= sum;
+
+        for (int i = 0; i < H; i++) s->moe_out[i] = 0.0f;
+        for (int j = 0; j < k; j++) {
+            const Expert *x = &L->experts[idx[j]];
+            linear(s->hb,  h, &x->gate_proj, H, I);
+            linear(s->hb2, h, &x->up_proj,   H, I);
+            for (int i = 0; i < I; i++) s->hb[i] = silu(s->hb[i]) * s->hb2[i];
+            linear(s->eb, s->hb, &x->down_proj, I, H);
+            for (int i = 0; i < H; i++) s->moe_out[i] += wt[j] * s->eb[i];
+        }
+        for (int i = 0; i < H; i++) s->x[t * H + i] += s->moe_out[i];
+    }
 }
 
 void forward(const int *tokens, int n, int pos, int logits_from,
@@ -291,6 +379,7 @@ void forward(const int *tokens, int n, int pos, int logits_from,
         for (int t = 0; t < n; t++)
             rmsnorm(s->xb + t * H, s->x + t * H, L->post_attn_ln, H, eps);
 
+        if (L->experts) { moe_block(L, cfg, s, n); continue; }
         for (int t = 0; t < n; t++) {
             linear(s->hb  + t * I, s->xb + t * H, &L->gate_proj, H, I);
             linear(s->hb2 + t * I, s->xb + t * H, &L->up_proj,   H, I);
@@ -302,8 +391,8 @@ void forward(const int *tokens, int n, int pos, int logits_from,
         }
     }
 
-    /* Final norm, then the LM head — the embedding matrix read the other way
-     * round. Only the requested rows: during generation the caller wants the
+    /* Final norm, then the LM head (the embedding read the other way round,
+     * when tied). Only the requested rows: during generation the caller wants the
      * last one, and this matmul is 13% of a prompt-length forward pass. */
     if (logits_from < 0 || logits_from >= n) die("forward: logits_from out of range");
     if (n - logits_from > s->max_rows)
@@ -312,6 +401,6 @@ void forward(const int *tokens, int n, int pos, int logits_from,
     for (int t = logits_from; t < n; t++) {
         rmsnorm(s->xb + t * H, s->x + t * H, w->final_norm, H, eps);
         linear(s->logits + (size_t)(t - logits_from) * (size_t)cfg->vocab_size,
-               s->xb + t * H, &w->embed, H, cfg->vocab_size);
+               s->xb + t * H, &w->head, H, cfg->vocab_size);
     }
 }
