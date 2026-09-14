@@ -103,8 +103,49 @@ def print_summary(cfg: Qwen3Config) -> None:
     print(f"bos / eos             : {cfg.bos_token_id} / {cfg.eos_token_id}")
 
 
+class LazyWeights(dict):
+    """A sharded checkpoint, read tensor by tensor as the forward pass asks.
+
+    Qwen3-30B-A3B is 61 GB of bf16, 122 GB as fp32: it does not fit in this
+    machine's memory as a dict of arrays, and a forward pass over a few tokens
+    touches a small fraction of its experts anyway. So a tensor is widened when
+    first read and kept in a cache bounded by bytes, least recently used first
+    out. The arithmetic is unchanged -- only when the upcast happens moves.
+    """
+
+    def __init__(self, model_dir: Path, budget_bytes: int = 8 << 30):
+        super().__init__()
+        index = json.loads((model_dir / "model.safetensors.index.json").read_text())
+        self.where = index["weight_map"]
+        self.dir, self.budget, self.used, self.files = model_dir, budget_bytes, 0, {}
+
+    def keys(self):
+        return self.where.keys()
+
+    def __contains__(self, name):
+        return name in self.where
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        import torch
+        if dict.__contains__(self, name):
+            value = dict.pop(self, name)            # re-insert: most recent last
+            dict.__setitem__(self, name, value)
+            return value
+        file = self.where[name]
+        if file not in self.files:
+            self.files[file] = safe_open(self.dir / file, framework="pt")
+        value = self.files[file].get_tensor(name).to(torch.float32).numpy()
+        while self.used + value.nbytes > self.budget and dict.__len__(self):
+            oldest = next(iter(dict.keys(self)))
+            self.used -= dict.pop(self, oldest).nbytes
+        dict.__setitem__(self, name, value)
+        self.used += value.nbytes
+        return value
+
+
 def load_weights(model_dir: Path) -> dict[str, np.ndarray]:
     """Load every tensor from model.safetensors as an fp32 numpy array.
+    A sharded checkpoint comes back as LazyWeights instead.
 
     The weights are stored in bfloat16, which numpy cannot represent, so
     torch does the bf16 -> fp32 upcast. This is the ONLY place torch is
@@ -113,6 +154,8 @@ def load_weights(model_dir: Path) -> dict[str, np.ndarray]:
     """
     import torch  # deliberately local: keeps torch out of the forward path
 
+    if (model_dir / "model.safetensors.index.json").exists():
+        return LazyWeights(model_dir)
     weights = {}
     with safe_open(model_dir / "model.safetensors", framework="pt") as f:
         for name in f.keys():

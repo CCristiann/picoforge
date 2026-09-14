@@ -110,6 +110,11 @@ static GLinear to_glinear(const SafeTensors *st, const Linear *l, int n_in) {
 
 GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
                            const Qwen3Config *cfg, int max_seq, int max_rows) {
+    /* Every weight is an offset into ONE buffer over the mapping, and Metal
+     * caps a buffer at maxBufferLength (41.75 GB here). A sharded checkpoint
+     * is quantised into one file first (tools/quant/quantize.py). */
+    if (st->n_maps > 1)
+        die("a sharded checkpoint cannot bind as one GPU buffer; quantise it into one file");
     GpuModel *g = calloc(1, sizeof *g);
     if (!g) die("out of memory for the GPU model");
     g->ctx = ctx; g->cfg = *cfg;

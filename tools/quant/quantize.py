@@ -93,9 +93,24 @@ def main() -> None:
     dst_dir.mkdir(exist_ok=True)
     tied = json.loads((src_dir / "config.json").read_text()).get("tie_word_embeddings", False)
 
-    src = src_dir / "model.safetensors"
-    header, data_start = read_header(src)
-    mm = np.memmap(src, dtype=np.uint8, mode="r")
+    # One file or a sharded checkpoint in; always ONE file out, since the GPU
+    # binds the model as a single buffer. Each tensor remembers its source
+    # file's mapping and data start, and the output is in name order, so a
+    # checkpoint quantises to the same bytes however it was split.
+    index = src_dir / "model.safetensors.index.json"
+    files = (sorted(set(json.loads(index.read_text())["weight_map"].values()))
+             if index.exists() else ["model.safetensors"])
+    header, mapped = {}, {}
+    for file in files:
+        h, start = read_header(src_dir / file)
+        mm = np.memmap(src_dir / file, dtype=np.uint8, mode="r")
+        for name, meta in h.items():
+            if name == "__metadata__":
+                continue
+            if name in header:
+                sys.exit(f"{name} appears in two shards")
+            header[name], mapped[name] = meta, (mm, start)
+    header = dict(sorted(header.items()))
     entries = plan(header, fmt, embed, tied)
 
     out_header, offset = {"__metadata__": {"picoforge.format": fmt + ("+embed" if embed else "")}}, 0
@@ -112,6 +127,7 @@ def main() -> None:
         for name, dtype, shape, source, role in entries:
             meta = header[source]
             lo, hi = meta["data_offsets"]
+            mm, data_start = mapped[source]
             raw = mm[data_start + lo: data_start + hi]
             if role == "copy":
                 f.write(raw.tobytes())
@@ -128,7 +144,7 @@ def main() -> None:
         assert f.tell() == 8 + len(blob) + offset, "wrote a different size than the header claims"
 
     for extra in src_dir.iterdir():
-        if extra.is_file() and extra.name != "model.safetensors":
+        if extra.is_file() and not extra.name.startswith("model"):
             shutil.copy2(extra, dst_dir / extra.name)
     print(f"{fmt}: {len(entries)} tensors, {(8 + len(blob) + offset) / 1e6:.1f} MB -> {dst_dir}")
 

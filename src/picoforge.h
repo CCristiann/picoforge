@@ -90,10 +90,18 @@ typedef struct {
     const void *data;         /* points INTO the mapping; never freed    */
 } Tensor;
 
+/* One file, or a sharded checkpoint (model.safetensors.index.json names the
+ * file each tensor lives in). Every shard is mapped; tensors point into their
+ * own shard's mapping. map / map_len are the first shard -- the whole model
+ * when there is one file, which is what the GPU's single buffer binds. */
+enum { ST_MAX_SHARDS = 64 };
 typedef struct {
-    void   *map;              /* the whole file, mmapped read-only       */
+    void   *map;              /* the (first) file, mmapped read-only     */
     size_t  map_len;
-    Tensor *tensors;
+    void   *maps[ST_MAX_SHARDS];
+    size_t  map_lens[ST_MAX_SHARDS];
+    int     n_maps;
+    Tensor *tensors;          /* sorted by name, for binary search       */
     int     n_tensors;
 } SafeTensors;
 

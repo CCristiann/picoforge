@@ -123,36 +123,38 @@ static int walk_header(const char *json, Tensor *out,
 }
 
 /* ---------------------------------------------------------------- open */
-void st_open(const char *model_dir, SafeTensors *st) {
-    char path[1024];
-    snprintf(path, sizeof path, "%s/model.safetensors", model_dir);
 
+/* Map one safetensors file and append its tensors to st->tensors. */
+static void open_file(const char *path, SafeTensors *st) {
+    if (st->n_maps == ST_MAX_SHARDS) die("more than %d shards", ST_MAX_SHARDS);
     int fd = open(path, O_RDONLY);
     if (fd < 0) die("cannot open %s", path);
     struct stat sb;
     if (fstat(fd, &sb) != 0) die("cannot stat %s", path);
     if (sb.st_size < 8) die("%s is too small to be a safetensors file", path);
-    st->map_len = (size_t)sb.st_size;
+    const size_t map_len = (size_t)sb.st_size;
 
     /* PROT_READ | MAP_PRIVATE: our view, copy-on-write, never written back. */
-    st->map = mmap(NULL, st->map_len, PROT_READ, MAP_PRIVATE, fd, 0);
-    if (st->map == MAP_FAILED) die("mmap failed on %s", path);
+    void *map = mmap(NULL, map_len, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (map == MAP_FAILED) die("mmap failed on %s", path);
     close(fd);                       /* the mapping keeps the file alive */
+    st->maps[st->n_maps] = map;
+    st->map_lens[st->n_maps++] = map_len;
 
-    const unsigned char *base = st->map;
+    const unsigned char *base = map;
 
     /* u64 little-endian, assembled byte by byte rather than memcpy'd into a
      * uint64_t: the format is defined as little-endian, our CPU merely
      * happens to agree. Spelling it out costs nothing and states the rule. */
     uint64_t hdr_len = 0;
     for (int i = 7; i >= 0; i--) hdr_len = (hdr_len << 8) | base[i];
-    if (hdr_len == 0 || hdr_len > st->map_len - 8)
-        die("safetensors: header length %llu is impossible",
-            (unsigned long long)hdr_len);
+    if (hdr_len == 0 || hdr_len > map_len - 8)
+        die("safetensors: header length %llu is impossible in %s",
+            (unsigned long long)hdr_len, path);
 
     /* The header inside the mapping is NOT NUL-terminated: the first tensor's
      * bytes start immediately after its closing brace. Every str* call would
-     * walk straight into the weights and read them as text. Copying 35 KB out
+     * walk straight into the weights and read them as text. Copying it out
      * makes the rest of this file safe by construction. */
     char *json = malloc((size_t)hdr_len + 1);
     if (!json) die("out of memory for the %llu-byte header",
@@ -161,27 +163,93 @@ void st_open(const char *model_dir, SafeTensors *st) {
     json[hdr_len] = '\0';
 
     const unsigned char *data = base + 8 + hdr_len;
-    size_t data_len = st->map_len - 8 - (size_t)hdr_len;
+    size_t data_len = map_len - 8 - (size_t)hdr_len;
 
-    st->n_tensors = walk_header(json, NULL, data, data_len);
-    st->tensors = calloc((size_t)st->n_tensors, sizeof *st->tensors);
-    if (!st->tensors) die("out of memory for %d tensor records", st->n_tensors);
-    (void)walk_header(json, st->tensors, data, data_len);
-
+    const int n = walk_header(json, NULL, data, data_len);
+    Tensor *grown = realloc(st->tensors, (size_t)(st->n_tensors + n) * sizeof *grown);
+    if (!grown) die("out of memory for %d tensor records", st->n_tensors + n);
+    st->tensors = grown;
+    memset(st->tensors + st->n_tensors, 0, (size_t)n * sizeof *grown);
+    (void)walk_header(json, st->tensors + st->n_tensors, data, data_len);
+    st->n_tensors += n;
     free(json);
 }
 
+static int cmp_tensor_name(const void *a, const void *b) {
+    return strcmp(((const Tensor *)a)->name, ((const Tensor *)b)->name);
+}
+
+void st_open(const char *model_dir, SafeTensors *st) {
+    memset(st, 0, sizeof *st);
+    char path[1024];
+    snprintf(path, sizeof path, "%s/model.safetensors.index.json", model_dir);
+    FILE *probe = fopen(path, "rb");
+
+    int indexed = 0;
+    if (!probe) {
+        snprintf(path, sizeof path, "%s/model.safetensors", model_dir);
+        open_file(path, st);
+    } else {
+        /* Sharded: the index's weight_map says which file holds each tensor.
+         * Every file it names is opened once, in order of first mention, and
+         * the index's count is held to what the files actually contain. */
+        fclose(probe);
+        char *index = slurp(path, NULL);
+        const char *p = strstr(index, "\"weight_map\"");
+        if (!p) die("%s has no weight_map", path);
+        p = json_expect(p + strlen("\"weight_map\""), ':');
+        p = json_expect(p, '{');
+        char files[ST_MAX_SHARDS][128];
+        int n_files = 0;
+        for (;;) {
+            while (isspace((unsigned char)*p) || *p == ',') p++;
+            if (*p == '}') break;
+            char name[128], file[128];
+            p = json_string(p, name, sizeof name);
+            p = json_expect(p, ':');
+            while (isspace((unsigned char)*p)) p++;
+            p = json_string(p, file, sizeof file);
+            indexed++;
+            bool seen = false;
+            for (int i = 0; i < n_files; i++) seen |= strcmp(files[i], file) == 0;
+            if (seen) continue;
+            if (n_files == ST_MAX_SHARDS) die("%s names more than %d shards", path, ST_MAX_SHARDS);
+            memcpy(files[n_files++], file, sizeof file);
+        }
+        free(index);
+        for (int i = 0; i < n_files; i++) {
+            snprintf(path, sizeof path, "%s/%s", model_dir, files[i]);
+            open_file(path, st);
+        }
+        if (st->n_tensors != indexed)
+            die("the index lists %d tensors, its %d shards hold %d", indexed, n_files, st->n_tensors);
+    }
+    st->map = st->maps[0];
+    st->map_len = st->map_lens[0];
+
+    /* Sorted once, so a lookup is a binary search: Qwen3-30B-A3B has ~19k
+     * tensors, and binding all of them by linear search would be 1.8e8
+     * string compares. Sorting also exposes a name two shards both claim. */
+    qsort(st->tensors, (size_t)st->n_tensors, sizeof *st->tensors, cmp_tensor_name);
+    for (int i = 1; i < st->n_tensors; i++)
+        if (strcmp(st->tensors[i - 1].name, st->tensors[i].name) == 0)
+            die("checkpoint holds \"%s\" twice", st->tensors[i].name);
+}
+
 void st_close(SafeTensors *st) {
-    if (st->map) munmap(st->map, st->map_len);
+    for (int i = 0; i < st->n_maps; i++) munmap(st->maps[i], st->map_lens[i]);
     free(st->tensors);
-    st->map = NULL;
-    st->tensors = NULL;
-    st->n_tensors = 0;
+    memset(st, 0, sizeof *st);
 }
 
 const Tensor *st_try(const SafeTensors *st, const char *name) {
-    for (int i = 0; i < st->n_tensors; i++)
-        if (strcmp(st->tensors[i].name, name) == 0) return &st->tensors[i];
+    int lo = 0, hi = st->n_tensors - 1;
+    while (lo <= hi) {
+        const int mid = lo + (hi - lo) / 2;
+        const int c = strcmp(st->tensors[mid].name, name);
+        if (c == 0) return &st->tensors[mid];
+        if (c < 0) lo = mid + 1; else hi = mid - 1;
+    }
     return NULL;
 }
 
@@ -225,7 +293,11 @@ void st_summary(const SafeTensors *st) {
         }
 
     printf("\n=== checkpoint ===\n");
-    printf("mapped                : %.2f GB\n", (double)st->map_len / 1e9);
+    double mapped = 0;
+    for (int i = 0; i < st->n_maps; i++) mapped += (double)st->map_lens[i];
+    printf("mapped                : %.2f GB%s\n", mapped / 1e9,
+           st->n_maps > 1 ? " (sharded)" : "");
+    if (st->n_maps > 1) printf("shards                : %d\n", st->n_maps);
     printf("tensors               : %d\n", st->n_tensors);
     printf("tensor bytes          : %.2f GB\n", (double)bytes / 1e9);
     printf("parameters on disk    : %.1f M\n", (double)on_disk / 1e6);

@@ -48,7 +48,7 @@ ui: picoforge
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
 test-all: test test-nfc test-tokenizer test-encode test-forward test-generate \
-          test-quant-formats test-quant-kernels test-forward-quant test-speculate test-oracle-moe test-forward-moe test-forward-moe-quant
+          test-quant-formats test-quant-kernels test-forward-quant test-speculate test-oracle-moe test-forward-moe test-forward-moe-quant test-shards
 
 # Phase 4: a tiny random Qwen3-MoE (same architecture and on-disk layout as
 # Qwen3-30B-A3B, 3 layers), and the NumPy oracle verified against it.
@@ -64,6 +64,12 @@ build/synth-30b-layer: tools/synth/make_moe_layer.py
 
 build/synth-30b-layer-q8_row: build/synth-30b-layer tools/quant/quantize.py tools/quant/formats.py
 	@./tools/venv/bin/python tools/quant/quantize.py build/synth-30b-layer q8_row
+
+build/tiny-qwen3-moe-sharded: build/tiny-qwen3-moe tools/synth/shard_checkpoint.py
+	@./tools/venv/bin/python tools/synth/shard_checkpoint.py build/tiny-qwen3-moe $@ 3
+
+test-shards: picoforge build/tiny-qwen3-moe-sharded
+	@./tools/venv/bin/python tests/test_shards.py
 
 test-forward-moe: picoforge build/tiny-qwen3-moe
 	@./tools/venv/bin/python tests/test_forward.py build/tiny-qwen3-moe

@@ -291,6 +291,25 @@ buys independence with memory traffic -- and memory, not synchronisation, is
 what this machine runs short of first. The code is committed switched off so
 the table can be reproduced, and removed in the next commit.
 
+### Step 4.5a — reading a checkpoint the way the 30B ships
+
+Qwen3-30B-A3B is 16 safetensors files and an index. Before it exists here,
+every reader is held to the tiny MoE split into three files the Hub's way
+(`tools/synth/shard_checkpoint.py`), and `make test-shards` checks them all
+against the single-file model:
+
+- the C loader maps every shard the index names, holds the index's tensor
+  count to what the files contain, and sorts tensors by name so a lookup is a
+  binary search (the 30B has ~19k tensors: binding by linear search would be
+  1.8e8 string compares) and a name in two shards is caught. CPU logits from
+  three shards: identical bits.
+- the GPU refuses a sharded checkpoint: one no-copy buffer, capped at 41.75 GB.
+- quantize.py reads shards and writes ONE file in name order: identical bytes
+  from either input -- the path from the 61 GB download to a ~31 GB GPU file.
+- the oracle reads a sharded checkpoint lazily (fp32 would be 122 GB), with a
+  byte-bounded LRU cache; with 40 MB of cache on an 80 MB model its logits
+  equal the eager load's exactly.
+
 **Next:** the 30B checkpoint (a download that needs the human's yes): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.
