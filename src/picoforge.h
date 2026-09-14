@@ -11,7 +11,7 @@
 #include <string.h>
 
 /* Every dimension the forward pass needs, all of it read from config.json
- * at load time (CLAUDE.md principle #5). Point the engine at Qwen3-1.7B
+ * at load time (docs/DESIGN.md, principle 5). Point the engine at Qwen3-1.7B
  * and these numbers simply change; not one of them is compiled in. */
 typedef struct {
     int   hidden_size;             /* width of the residual stream        */

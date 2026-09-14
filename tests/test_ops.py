@@ -21,7 +21,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "oracle"))
 from qwen3_forward import apply_rope, rms_norm, rope_tables, silu, softmax  # noqa: E402
 
-# Calibrated on the first run, not guessed (CLAUDE.md principle #4). Worst
+# Calibrated on the first run, not guessed (docs/DESIGN.md, principle 4). Worst
 # case across the five primitives was 1.3e-9 relative — one or two fp32 ulps
 # on the smallest elements, which is the floor: reductions here are a few
 # dozen terms long, so summation order and libm-vs-numpy transcendentals are

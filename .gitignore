@@ -25,3 +25,7 @@ tools/probe/metal4_probe
 /tests/test_ops
 /picoforge.metallib
 build/
+
+# Local assistant configuration, not part of the project
+CLAUDE.md
+.claude/

@@ -1,6 +1,6 @@
 """verify.py — Phase 0's closing argument: is the oracle actually an oracle?
 
-CLAUDE.md, "chain of oracles": Python/transformers is the reference for our
+docs/DESIGN.md, "chain of oracles": Python/transformers is the reference for our
 NumPy forward pass, which will in turn be the reference for the C engine.
 This script closes the first link. Until it is green, every self-check in
 qwen3_forward.py proves only that the code is self-consistent — not correct.
@@ -25,7 +25,7 @@ from qwen3_forward import Qwen3Config, forward, load_weights
 #     different order genuinely produces different bits. They are guards
 #     against catastrophe ("a layer is missing", "the norm is misplaced"),
 #     not claims about precision.
-# These two numbers are MEASURED, not guessed (CLAUDE.md principle #4).
+# These two numbers are MEASURED, not guessed (docs/DESIGN.md, principle 4).
 # First run on Qwen3-0.6B, worst case over the three prompts below:
 #
 #     relative error   8.4e-06   (at 40 tokens)

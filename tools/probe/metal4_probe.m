@@ -2,7 +2,7 @@
 //
 // Why a compiled probe instead of trusting version strings: the SDK headers
 // tell us what we can *compile against*; only the runtime can tell us what
-// this specific GPU + driver actually *supports*. CLAUDE.md rule: never
+// this specific GPU + driver actually *supports*. docs/DESIGN.md rule: never
 // assume, always probe.
 //
 // Build:  clang -fobjc-arc -framework Metal -framework Foundation \

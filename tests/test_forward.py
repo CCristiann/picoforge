@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "tools" / "oracle"))
 from qwen3_forward import Qwen3Config, forward, load_weights  # noqa: E402
 from verify import log_softmax  # noqa: E402
 
-# Calibrated on the first run (CLAUDE.md principle #4). Worst case over the
+# Calibrated on the first run (docs/DESIGN.md, principle 4). Worst case over the
 # three prompts: relative error 1.1e-5 and KL 1.8e-9, both at 9 tokens.
 #
 # Worth noting what those numbers say: C-vs-NumPy here is the same order as

@@ -1,4 +1,4 @@
-# picoforge — plain C11, no external dependencies (CLAUDE.md principle #3).
+# picoforge — plain C11, no external dependencies (docs/DESIGN.md, principle 3).
 #
 # The warning set is deliberately strict. -Wconversion in particular is
 # noisy in most projects, but this engine is nothing but numeric code:

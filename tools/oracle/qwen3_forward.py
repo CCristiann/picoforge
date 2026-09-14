@@ -1,7 +1,7 @@
 """qwen3_forward.py — Phase 0 oracle: Qwen3-0.6B forward pass in pure NumPy.
 
 This file is the reference implementation the C engine will be validated
-against (CLAUDE.md: "chain of oracles"). It grows one component at a time;
+against (docs/DESIGN.md: "chain of oracles"). It grows one component at a time;
 today it only loads the config and prints the architecture summary.
 
 Rule: every dimension comes from config.json. Nothing is hardcoded.
@@ -68,7 +68,7 @@ class Qwen3Config:
 
 
 def print_summary(cfg: Qwen3Config) -> None:
-    """Architecture summary, printed at startup (CLAUDE.md principle #5)."""
+    """Architecture summary, printed at startup (docs/DESIGN.md, principle 5)."""
     q_dim = cfg.num_attention_heads * cfg.head_dim   # width of Q projection output
     kv_dim = cfg.num_key_value_heads * cfg.head_dim  # width of K and V projections
     gqa_group = cfg.num_attention_heads // cfg.num_key_value_heads

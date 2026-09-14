@@ -196,7 +196,7 @@ int main(int argc, char **argv) {
     /* --metal-check : every GPU kernel against the CPU matmul, on the shapes
      * the engine actually issues.
      *
-     * The CPU path is the oracle here (CLAUDE.md: chain of oracles). It was
+     * The CPU path is the oracle here (docs/DESIGN.md: chain of oracles). It was
      * itself verified against NumPy, so a kernel that agrees with it is
      * transitively verified against transformers. Shapes are the real ones,
      * not round numbers: a kernel that works on 256x256x256 and not on

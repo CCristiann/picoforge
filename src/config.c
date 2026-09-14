@@ -3,7 +3,7 @@
  * We are NOT writing a JSON parser. config.json is machine-generated, and
  * every value the forward pass needs is a top-level scalar, so a scanner
  * that locates "key" and reads the literal after the colon is enough:
- * ~60 lines instead of ~2000, and no dependency (CLAUDE.md principle #3).
+ * ~60 lines instead of ~2000, and no dependency (docs/DESIGN.md, principle 3).
  *
  * The price of that shortcut: strstr() would happily match a key nested
  * inside some other object. We pay it with strictness — every lookup that

@@ -2,7 +2,7 @@
  *
  * Every function here is the slow, readable version. That is deliberate:
  * these are the reference the Metal kernels will be judged against in
- * Phase 2 (CLAUDE.md: chain of oracles), and a reference that is clever is
+ * Phase 2 (docs/DESIGN.md: chain of oracles), and a reference that is clever is
  * a reference you cannot trust.
  *
  * One design decision runs through all of them: WEIGHTS STAY bf16. They are
