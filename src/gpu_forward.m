@@ -352,14 +352,14 @@ static void encode_moe_matmul(GpuModel *g, id<MTLComputeCommandEncoder> enc, voi
 }
 
 static void encode_moe(GpuModel *g, id<MTLComputeCommandEncoder> enc, const LayerOffsets *o,
-                       int layer, int n) {
+                       int layer, int n, bool run_router) {
     const Qwen3Config *c = &g->cfg;
     const int H = c->hidden_size, E = c->num_experts, Ie = c->moe_intermediate_size;
     const NSUInteger P = (NSUInteger)(n * c->num_experts_per_tok);
     struct MoeDimsC md = {(uint32_t)n, (uint32_t)E, (uint32_t)c->num_experts_per_tok,
                           (uint32_t)H, (uint32_t)Ie, c->norm_topk_prob ? 1u : 0u};
 
-    encode_linear(g, enc, g->moe_logits, 0, g->xb, 0, &o->router, n, E, H);
+    if (run_router) encode_linear(g, enc, g->moe_logits, 0, g->xb, 0, &o->router, n, E, H);
     void *route[] = {g->moe_logits, g->moe_idx, g->moe_wt};
     pso_set(g, enc, K_MOE_ROUTE, route, 3);
     [enc setBytes:&md length:sizeof md atIndex:3];
@@ -385,6 +385,39 @@ static void encode_moe(GpuModel *g, id<MTLComputeCommandEncoder> enc, const Laye
     [enc setBytes:&md length:sizeof md atIndex:4];
     [enc dispatchThreads:MTLSizeMake((NSUInteger)n * (NSUInteger)H, 1, 1)
    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+/* Phase 4 measurement: ONE MoE block, routing forced. The router matmul is
+ * skipped and its logits written here, so that token t picks exactly
+ * experts[t*k .. t*k+k-1], most probable first; xb holds fixed pseudo-random
+ * activations. Returns GPU seconds. *groups_out is the number of expert groups
+ * the GPU actually formed, so the caller can check that the routing it claims
+ * to have forced is the routing that ran. */
+double gpu_moe_bench(GpuModel *g, int layer, int n, const int *experts, int *groups_out) {
+    const Qwen3Config *c = &g->cfg;
+    if (layer < 0 || layer >= c->num_hidden_layers || !g->layer[layer].moe)
+        die("layer %d is not a MoE layer", layer);
+    if (n < 1 || n > MOE_MAX_ROWS) die("a MoE block takes 1..%d tokens, not %d", MOE_MAX_ROWS, n);
+    const int E = c->num_experts, k = c->num_experts_per_tok, H = c->hidden_size;
+
+    float *lg = ((__bridge id<MTLBuffer>)g->moe_logits).contents;
+    float *xb = ((__bridge id<MTLBuffer>)g->xb).contents;
+    for (int t = 0; t < n; t++) {
+        for (int e = 0; e < E; e++) lg[t * E + e] = 0.0f;
+        for (int j = 0; j < k; j++) lg[t * E + experts[t * k + j]] = 10.0f - 0.5f * (float)j;
+        for (int i = 0; i < H; i++) xb[t * H + i] = sinf((float)(t * H + i) * 0.37f);
+    }
+
+    id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)metal_queue(g->ctx);
+    id<MTLCommandBuffer> cb = [queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    encode_moe(g, enc, &g->layer[layer], layer, n, false);
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+    if (cb.error) die("MoE bench failed: %s", cb.error.localizedDescription.UTF8String);
+    if (groups_out) *groups_out = (int)*(uint32_t *)((__bridge id<MTLBuffer>)g->moe_ng).contents;
+    return cb.GPUEndTime - cb.GPUStartTime;
 }
 
 /* ------------------------------------------------------------ profiling
@@ -582,7 +615,7 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
         enc = prof_next(prof, cb, enc, 1);
         encode_rmsnorm(g, enc, g->xb, 0, g->x, 0, o->post_attn_ln, n, H, eps);
         enc = prof_next(prof, cb, enc, 5);
-        if (o->moe) { encode_moe(g, enc, o, l, n); continue; }
+        if (o->moe) { encode_moe(g, enc, o, l, n, true); continue; }
         input_for(g, enc, &o->gate_proj, g->xb, 0, (size_t)n * (size_t)H, &in, &in_off);
         encode_linear(g, enc, g->hb, 0, in, in_off, &o->gate_proj, n, I, H);
         encode_linear(g, enc, g->hb2, 0, in, in_off, &o->up_proj, n, I, H);

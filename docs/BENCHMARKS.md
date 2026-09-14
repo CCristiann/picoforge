@@ -98,6 +98,16 @@ dispatch, and tile shape. Every tile-shape variant is checked against the
 a kernel that writes nothing cannot pass; the relative difference is in the
 last column.
 
+## Phase 4: MoE verify cost
+
+`bench/moe_verify_cost_m5pro.csv`. One MoE block at Qwen3-30B-A3B's shapes
+(synthetic weights: the time depends on shapes and routing, not on what the
+weights say), the router matmul skipped and routing forced so that n tokens
+touch exactly D distinct experts. The harness reads back how many expert
+groups the GPU formed and aborts unless it equals D. Same warm-up, repetitions
+and percentiles as above. The x48 column is arithmetic, labelled as such:
+real layers route differently from one another and attention is not included.
+
 ## Reproducing
 
 ```
@@ -126,6 +136,10 @@ Phase 4:
 
 ```
 ./picoforge models/Qwen3-0.6B --bench-dispatch bench/dispatch_m5pro.csv
+./picoforge models/Qwen3-0.6B --profile bench/profile_m5pro.csv
+make build/synth-30b-layer
+./picoforge build/synth-30b-layer --bench-moe bench/moe_verify_cost_m5pro.csv
+./tools/venv/bin/python tools/plot_moe.py
 ```
 
 Thermal state was read with `pmset -g therm` before and after the Phase 3

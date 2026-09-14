@@ -510,3 +510,63 @@ void bench_profile(const char *model_dir, const char *csv_path) {
     st_close(&st);
     printf("\nraw results -> %s\n", csv_path);
 }
+
+/* ---------------------------------------------------------- MoE verify cost
+ * Phase 4 step 4.7, the measurement the plan rests on. One MoE block at the
+ * checkpoint's shapes (build/synth-30b-layer: Qwen3-30B-A3B's, one layer),
+ * GPU time as a function of n, the tokens verified at once, and D, the
+ * distinct experts they touch -- routing forced, token t taking experts
+ * (t*k + j) mod D, which covers exactly D whenever n*k >= D.
+ *
+ * Two models of the answer, written next to the measurement: bytes (D experts'
+ * weights read, what a bandwidth-bound server pays) and nothing else. Which one
+ * the silicon follows decides how drafts should be chosen on this machine. */
+void bench_moe(const char *model_dir, const char *csv_path) {
+    Qwen3Config cfg;
+    SafeTensors st;
+    config_load(model_dir, &cfg);
+    st_open(model_dir, &st);
+    if (!cfg.num_experts) die("%s is not a MoE model", model_dir);
+    MetalContext *mtl = metal_init("picoforge.metallib");
+    GpuModel *g = gpu_model_create(mtl, &st, &cfg, 64, 1);
+    const int k = cfg.num_experts_per_tok, E = cfg.num_experts;
+    const double expert_bytes = 3.0 * cfg.hidden_size * cfg.moe_intermediate_size * 2.0;
+
+    FILE *csv = fopen(csv_path, "wb");
+    if (!csv) die("cannot write %s", csv_path);
+    fprintf(csv, "n,distinct_experts,median_s,p10_s,p90_s,expert_gb_read,layers,est_all_layers_s\n");
+    printf("\n=== one MoE block: %d experts, top-%d, %dx%d (%.1f s warm-up + %d reps) ===\n",
+           E, k, cfg.hidden_size, cfg.moe_intermediate_size, WARM_SECONDS, REPS);
+    printf("   n  experts   GB read   median ms  [p10, p90]      x%d layers (estimate)\n", 48);
+
+    int experts[64 * PF_MAX_TOPK];
+    static const int Ds[] = {8, 16, 24, 32, 48, 64, 96, 128};
+    for (int n = 1; n <= 32; n *= 2) {
+        for (size_t di = 0; di < sizeof Ds / sizeof Ds[0]; di++) {
+            const int D = Ds[di];
+            if (D > n * k || D > E) continue;
+            for (int t = 0; t < n; t++)
+                for (int j = 0; j < k; j++) experts[t * k + j] = (t * k + j) % D;
+            int groups = 0;
+            double ts[REPS];
+            for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;)
+                (void)gpu_moe_bench(g, 0, n, experts, &groups);
+            for (int i = 0; i < REPS; i++) ts[i] = gpu_moe_bench(g, 0, n, experts, &groups);
+            if (groups != D) die("forced %d distinct experts, the GPU formed %d groups", D, groups);
+            qsort(ts, REPS, sizeof *ts, cmp_double);
+            const double med = pct(ts, REPS, 0.5);
+            /* x48 is arithmetic, not a measurement: the real model's layers
+             * route differently from one another, and attention is not here. */
+            fprintf(csv, "%d,%d,%.9f,%.9f,%.9f,%.4f,48,%.6f\n", n, D, med, pct(ts, REPS, 0.1),
+                    pct(ts, REPS, 0.9), D * expert_bytes / 1e9, med * 48);
+            printf("  %2d  %7d   %7.2f   %9.3f  [%.3f, %.3f]   %8.1f ms\n", n, D,
+                   D * expert_bytes / 1e9, med * 1e3, pct(ts, REPS, 0.1) * 1e3,
+                   pct(ts, REPS, 0.9) * 1e3, med * 48e3);
+        }
+    }
+    fclose(csv);
+    gpu_model_free(g);
+    metal_shutdown(mtl);
+    st_close(&st);
+    printf("\nraw results -> %s\n", csv_path);
+}

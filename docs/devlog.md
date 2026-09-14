@@ -41,6 +41,8 @@ repeated 1..1024 times in ONE buffer, then three sweeps to find the axis.
 For the plan: on this machine a MoE verify step is priced neither by bytes
 (EcoSpec's H200 model) nor by calls, but by tiles and by how many of them
 fit in parallel. That changes what "an expensive draft" means.
+*(Superseded by step 4.7: true of one small matmul per dispatch, false of a
+grouped MoE matmul at the 30B's shapes, which is bandwidth-bound.)*
 
 One unexplained failure, logged and not chased: a single-thread-scope 1x1024
 tile over 8x768 left rows of C unwritten; the check caught it before timing.
@@ -171,9 +173,38 @@ worst relative error 1.1e-6, KL 4.0e-12 -- the 40-token prompt goes through a
 renormalisation) fails all four GPU cases. Dense and quantised parity and
 test-speculate unchanged.
 
-**Next:** the verify-cost surface of ONE Qwen3-30B-A3B-shaped MoE layer with
-synthetic weights (128 experts x 3 x 2048x768, 1.2 GB bf16): GPU time as a
-function of tokens verified and distinct experts touched, routing forced.
+### Step 4.7 (synthetic) — what verifying a 30B MoE layer costs here
+
+`tools/synth/make_moe_layer.py` writes one decoder layer at Qwen3-30B-A3B's
+published shapes (128 experts of 2048x768, real attention), random bf16
+weights, vocabulary cut to 1024: 1.25 GB instead of 61. `--bench-moe` times the
+GPU MoE block with routing forced -- n tokens touching exactly D distinct
+experts -- and dies unless the GPU formed exactly D expert groups. Raw CSV
+`bench/moe_verify_cost_m5pro.csv`, plot `bench/moe_verify_cost.png`.
+
+  per layer, 8 tokens:   t = 0.35 ms + 43 us x D     (6 points, max residual 18 us)
+            32 tokens:   t = 0.48 ms + 45 us x D     (8 points, max residual 57 us)
+  8 experts, 1 -> 32 tokens:   0.65 -> 0.80 ms
+
+- **Priced by experts, almost not by tokens.** Thirty-two tokens through the
+  same 8 experts cost 23% more than one token.
+- **Each extra expert costs its bytes.** 43 us for 9.4 MB is 221 GB/s, 72% of
+  the machine: at the 30B's shapes the grouped kernel runs every expert's tiles
+  in parallel and waits on memory. Step 4.1's "tiles, not bytes" described one
+  small matmul per dispatch on the 0.6B; it does not carry over. EcoSpec's
+  byte-cost model holds on this machine too -- now with its constants measured.
+
+What that says, as arithmetic to be checked against the real model: at bf16,
+decode is 48 x 0.65 = 31 ms of MoE per token. A verify of 8 tokens whose
+routing were uniform would touch ~51 experts per layer, ~2.5 ms, 3.8x a decode
+step, so speculation would need 3.8 accepted tokens per pass to break even.
+Every expert two drafts share saves 43 us x 48 = 2 ms. How much real
+consecutive tokens share is a property of the trained router, and the one
+number here that cannot be synthesised: it needs the 30B.
+
+**Next:** the 30B checkpoint (a download that needs the human's yes): sharded
+safetensors, layer-by-layer oracle parity, and the routing-overlap measurement
+that turns this cost model into a draft scheduler.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

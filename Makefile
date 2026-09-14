@@ -58,6 +58,10 @@ build/tiny-qwen3-moe: tools/oracle/make_tiny_moe.py
 test-oracle-moe: build/tiny-qwen3-moe
 	@cd tools/oracle && ../venv/bin/python verify.py ../../build/tiny-qwen3-moe
 
+# One Qwen3-30B-A3B layer at its real shapes, random weights, for timing.
+build/synth-30b-layer: tools/synth/make_moe_layer.py
+	@./tools/venv/bin/python tools/synth/make_moe_layer.py $@
+
 test-forward-moe: picoforge build/tiny-qwen3-moe
 	@./tools/venv/bin/python tests/test_forward.py build/tiny-qwen3-moe
 

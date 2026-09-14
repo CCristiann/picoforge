@@ -135,6 +135,11 @@ int main(int argc, char **argv) {
     if (argc > 3 && strcmp(argv[2], "--profile") == 0)
         bench_profile(model_dir, argv[3]);
 
+    /* --bench-moe OUT.csv : one MoE block's GPU time against tokens verified
+     * and distinct experts touched, routing forced. */
+    if (argc > 3 && strcmp(argv[2], "--bench-moe") == 0)
+        bench_moe(model_dir, argv[3]);
+
     /* --bench-quant OUT.csv : the quantised kernels, same protocol. */
     if (argc > 3 && strcmp(argv[2], "--bench-quant") == 0) {
         MetalContext *mtl = metal_init("picoforge.metallib");

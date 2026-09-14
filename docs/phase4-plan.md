@@ -44,19 +44,24 @@ Two things could be what that costs, and they predict different schedulers:
 
 Step 4.1 settles which one is real, before anything is built on top of it.
 
+**Measured (step 4.7, synthetic layer):** bytes. One MoE layer costs
+0.35 ms + 43 us per distinct expert whatever the number of tokens up to 32,
+and 43 us is an expert's 9.4 MB at 221 GB/s. The "calls" arithmetic above
+assumed one dispatch per expert; the grouped kernel runs them all in one.
+
 ## Steps
 
 Each one is small, verified against an oracle, and committed on its own.
 
 | step | what | needs the 30B? |
 |---|---|---|
-| 4.1 | Dispatch cost inside one command buffer: time vs number of dispatches, big and tiny shapes | no |
-| 4.2 | Speculative decoding on the dense 0.6B, lossless: greedy output must equal plain greedy, token for token | no |
-| 4.3 | MoE block in the NumPy oracle, verified against transformers on a tiny random Qwen3-MoE | no |
-| 4.4 | MoE on the C CPU path, parity with the oracle on the tiny model | no |
+| 4.1 | Dispatch cost inside one command buffer: time vs number of dispatches, big and tiny shapes -- **done** | no |
+| 4.2 | Speculative decoding on the dense 0.6B, lossless: greedy output must equal plain greedy, token for token -- **done** | no |
+| 4.3 | MoE block in the NumPy oracle, verified against transformers on a tiny random Qwen3-MoE -- **done** | no |
+| 4.4 | MoE on the C CPU path, parity with the oracle on the tiny model -- **done** | no |
 | 4.5 | Qwen3-30B-A3B: download (61 GB, needs a yes), quantise, layer-by-layer parity | yes |
-| 4.6 | MoE on the GPU: routed expert matmuls grouped per expert on TensorOps | yes |
-| 4.7 | The verify cost surface on this machine: time(k tokens, distinct experts) | yes |
+| 4.6 | MoE on the GPU: routed expert matmuls grouped per expert on TensorOps -- **done on the tiny model**; quantised experts pending | no |
+| 4.7 | The verify cost surface on this machine: time(k tokens, distinct experts) -- **done on a synthetic 30B layer**; real routing overlap pending | partly |
 | 4.8 | Expert-cost-aware draft selection, training-free, 0.6B drafting; speedup vs plain speculation vs none | yes |
 
 Correctness rule for 4.2 and 4.8: speculative decoding with greedy

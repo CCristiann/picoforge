@@ -337,6 +337,7 @@ void   bench_qmatmul(MetalContext *ctx, const char *csv_path);   /* Phase 3 kern
 void   bench_e2e(const char *model_dir, const char *csv_path);       /* whole forward passes */
 void   bench_dispatch(MetalContext *ctx, const char *csv_path);     /* Phase 4: cost per dispatch */
 void   bench_profile(const char *model_dir, const char *csv_path);  /* Phase 4: GPU time by op group */
+void   bench_moe(const char *model_dir, const char *csv_path);      /* Phase 4: verify cost vs experts */
 
 /* Raw Metal objects, as void* so nothing else has to include Metal headers. */
 void  *metal_device(MetalContext *ctx);
@@ -363,6 +364,8 @@ enum { GPU_PROF_CLASSES = 8 };
 double gpu_forward_profile(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                            double *seconds);
 const char *gpu_prof_name(int cls);
+/* One MoE block of `layer` with routing forced: token t runs experts[t*k..]. */
+double gpu_moe_bench(GpuModel *g, int layer, int n, const int *experts, int *groups_out);
 
 /* --ppl: perplexity of this model on a text file, paired against a reference
  * model on the same windows (KL, top-1 agreement). One CSV row appended. */
