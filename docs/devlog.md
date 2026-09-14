@@ -358,6 +358,30 @@ group names contain commas and the CSV writer did not quote them, so every
 reader split one column into three. The committed CSV was re-quoted in place
 (the numbers are the original run's) and the writer fixed.
 
+### Step 4.5b — the real checkpoint, and the chain of oracles on it
+
+Qwen3-30B-A3B at revision ad44e77: 16 shards, 61.07 GB, all SHA256 sums equal
+to the Hub's (`docs/weights-qwen3-30b-a3b.lock`). Its tokenizer.json is
+byte-identical to Qwen3-0.6B's, so the drafter and the target share every id.
+The engine binds all 18867 tensors, shape-checked against the config, in
+0.46 s (sorted names, binary search).
+
+Loading it exposed two summary lines that had only ever seen tied models: an
+untied head was described as absent, and its 311 M parameters were
+subtracted as a copy. A copy is now recognised by comparing bytes.
+
+The chain, on the real weights:
+- **transformers -> oracle, one layer at a time** (`tests/test_layer_real.py`):
+  the whole model is 122 GB as fp32, but a decoder layer is a function of its
+  input and its own weights. Layers 0, 24 and 47 in transformers'
+  Qwen3MoeDecoderLayer (experts fused as it holds them) against the oracle's
+  blocks: relative error 7.8e-7, 3.2e-6, 1.1e-6. Loading layer 25's weights
+  into the oracle instead moves it to 0.88.
+- **oracle -> C CPU, whole model** (`tests/test_forward.py`, lazy sharded
+  oracle): 1, 5, 9 and 40 tokens, batch and incremental, worst relative error
+  4.5e-6, KL 3.0e-10, argmax 40/40. "The capital of France is" -> " Paris".
+  The scalar CPU runs it at 0.6-0.7 tok/s.
+
 **Next:** the 30B checkpoint (a 61 GB download): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.
