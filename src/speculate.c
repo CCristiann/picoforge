@@ -26,6 +26,7 @@
  */
 #include "picoforge.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -81,6 +82,80 @@ static void model_draft(GpuModel *d, int *ctx, int n, int *dpos, int k, float *l
     *dpos = n + (k > 0 ? k - 1 : 0);
 }
 
+/* ------------------------------------------------------ adaptive draft length
+ * A fixed draft length is wrong for most text: measured on Qwen3-30B-A3B, the
+ * best k ran from 2 to 6 across five prompts, and k = 8 on a story the drafter
+ * could not predict halved throughput. So k is chosen before every pass, from
+ * three running estimates, none trained, all measured on this machine and
+ * this text as generation goes:
+ *
+ *   alpha     the chance a draft token is accepted given its predecessors
+ *             were, from accepted and rejected drafts (Beta(1,1) prior,
+ *             exponentially forgotten so a change of topic shows quickly)
+ *   draft_s   seconds of drafting per draft token
+ *   verify_s  seconds for a target pass of n tokens, per n. Unmeasured sizes
+ *             come from the nearest measured one scaled by a line fitted to
+ *             nothing yet: 6% more per extra token (the 30B's verify of 8
+ *             cost 1.43 decode steps) until real passes replace it.
+ *
+ * With acceptance alpha, a draft of k yields (1 - alpha^(k+1)) / (1 - alpha)
+ * tokens in expectation (the accepted prefix plus the target's own token), for
+ * k * draft_s + verify_s[k+1] seconds; the k with the most tokens per second
+ * wins. k = 0 is plain decoding. On a MoE the verify cost already carries the
+ * experts the text's routing touches, because it is timed, not assumed. */
+typedef struct {
+    double acc, rej;              /* forgotten counts of accepted / rejected drafts */
+    double draft_s;               /* per draft token, < 0 until measured            */
+    double verify_s[64];          /* per pass size n, < 0 until measured            */
+    int    zero_streak;
+} Scheduler;
+
+static void sched_init(Scheduler *sc) {
+    sc->acc = sc->rej = 0.0;
+    sc->draft_s = -1.0;
+    for (int n = 0; n < 64; n++) sc->verify_s[n] = -1.0;
+    sc->zero_streak = 0;
+}
+
+static double sched_verify(const Scheduler *sc, int n) {
+    if (sc->verify_s[n] > 0) return sc->verify_s[n];
+    for (int d = 1; d < 64; d++)                       /* nearest measured size */
+        for (int m = n - d; m <= n + d; m += 2 * d)
+            if (m >= 1 && m < 64 && sc->verify_s[m] > 0)
+                return sc->verify_s[m] * (1.0 + 0.06 * (n - 1)) / (1.0 + 0.06 * (m - 1));
+    return -1.0;
+}
+
+static int sched_choose(Scheduler *sc, int max_k) {
+    const double alpha = (sc->acc + 1.0) / (sc->acc + sc->rej + 2.0);
+    const double v1 = sched_verify(sc, 1);
+    if (v1 < 0 || sc->draft_s < 0) return max_k < 2 ? max_k : 2;   /* nothing measured: probe */
+    int best = 0;
+    double best_rate = 1.0 / v1;
+    for (int k = 1; k <= max_k; k++) {
+        const double tokens = (1.0 - pow(alpha, k + 1)) / (1.0 - alpha);
+        const double rate = tokens / (k * sc->draft_s + sched_verify(sc, k + 1));
+        if (rate > best_rate) { best_rate = rate; best = k; }
+    }
+    /* Never stop measuring: after 8 plain steps, try one draft so that a text
+     * turning predictable again is noticed. */
+    if (best == 0 && max_k > 0 && ++sc->zero_streak >= 8) { sc->zero_streak = 0; return 1; }
+    if (best > 0) sc->zero_streak = 0;
+    return best;
+}
+
+static void sched_update(Scheduler *sc, int k, int accepted, double draft_s, double verify_s) {
+    const double keep = 0.85, ema = 0.3;
+    sc->acc = keep * sc->acc + accepted;
+    sc->rej = keep * sc->rej + (accepted < k ? 1.0 : 0.0);
+    if (k > 0) {
+        const double per = draft_s / k;
+        sc->draft_s = sc->draft_s < 0 ? per : (1 - ema) * sc->draft_s + ema * per;
+    }
+    const int n = k + 1;
+    if (n < 64) sc->verify_s[n] = sc->verify_s[n] < 0 ? verify_s : (1 - ema) * sc->verify_s[n] + ema * verify_s;
+}
+
 int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
                          GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
                          int max_new, int max_draft, int *out_ids, SpecStats *stats) {
@@ -96,6 +171,10 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     if (pos >= max_seq - 1) die("prompt fills the whole %d-position context", max_seq);
     gpu_forward(gpu, tokens, pos, 0, pos - 1, logits);
     int dpos = 0;                 /* tokens[0..dpos) are in the drafter's cache */
+    const bool adaptive = max_draft < 0;
+    if (adaptive) max_draft = -max_draft;
+    Scheduler sched;
+    sched_init(&sched);
 
     /* Invariant: tokens[0..pos) are in the cache; `next` is decided and not. */
     int next = argmax(logits, cfg->vocab_size);
@@ -114,6 +193,7 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         int room = max_seq - pos - 2;
         int budget = max_draft < max_new - generated ? max_draft : max_new - generated;
         if (budget > room) budget = room;
+        if (adaptive && budget > 0) budget = sched_choose(&sched, budget);
         double t1 = now();
         int k = 0;
         if (budget > 0 && drafter) {
@@ -126,7 +206,9 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         s.draft_s += t2 - t1;
 
         gpu_forward(gpu, tokens + pos, k + 1, pos, 0, logits);
-        s.verify_s += now() - t2;
+        const double t3 = now();
+        s.verify_s += t3 - t2;
+        if (k < (int)(sizeof s.k_hist / sizeof s.k_hist[0])) s.k_hist[k]++;
         s.passes++;
         s.drafted += k;
 
@@ -139,6 +221,7 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
             out_ids[generated++] = t;
         }
         s.accepted += i;
+        if (adaptive) sched_update(&sched, k, i, t2 - t1, t3 - t2);
         if (s.groups > 0 && s.groups <= (int)(sizeof s.group_len / sizeof s.group_len[0]))
             s.group_len[s.groups - 1] = (short)(s.group_len[s.groups - 1] + i);
         /* The drafter's rows past the accepted text hold rejected drafts. */

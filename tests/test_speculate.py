@@ -30,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_NEW = 128
-DRAFTS = [2, 4, 8, 16]
+DRAFTS = [2, 4, 8, 16, "auto"]           # "auto": length chosen per pass
 
 CHAT = "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 PROMPTS = [
@@ -60,7 +60,7 @@ def run(args: list[str], model: Path | None = None) -> tuple[list[int], str]:
 MODEL = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "models/Qwen3-0.6B"
 MODEL_PAIRS = [(ROOT / "models/Qwen3-0.6B", ROOT / "models/Qwen3-0.6B-q4_g32"),
                (ROOT / "build/tiny-qwen3-moe", ROOT / "models/Qwen3-0.6B")]
-MODEL_DRAFTS = [3, 8]
+MODEL_DRAFTS = [3, 8, "auto"]
 
 
 def main() -> None:
@@ -77,10 +77,10 @@ def main() -> None:
                 failures += 1
                 first = next((i for i, (a, b) in enumerate(zip(ids, ref)) if a != b),
                              min(len(ids), len(ref)))
-                print(f"  draft {k:2d} : DIFFERS from greedy at token {first} "
+                print(f"  draft {k!s:>4} : DIFFERS from greedy at token {first} "
                       f"({len(ids)} vs {len(ref)} tokens)")
             else:
-                print(f"  draft {k:2d} : identical   {stats.removeprefix('spec: ')}")
+                print(f"  draft {k!s:>4} : identical   {stats.removeprefix('spec: ')}")
 
     for target, draft in MODEL_PAIRS:
         print(f"\n##### target {target.name}, drafted by {draft.name} #####")

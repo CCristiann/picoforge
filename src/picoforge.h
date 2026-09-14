@@ -409,13 +409,15 @@ typedef struct {
     int    generated, passes, drafted, accepted;
     double decode_s;          /* wall time after prefill                    */
     double draft_s, verify_s; /* of which drafting, and the target's passes  */
+    int    k_hist[33];        /* passes that verified k drafts, k = 0..32    */
     int    groups;            /* entries used in group_len                   */
     short  group_len[2048];   /* tokens emitted per loop step: the token the
                                * previous pass decided, plus the drafts this
                                * pass accepted -- what a UI colours as a unit */
 } SpecStats;
 /* drafter NULL: prompt lookup. Otherwise a draft model sharing the target's
- * vocabulary, with a context of at least max_seq. */
+ * vocabulary, with a context of at least max_seq. max_draft < 0 chooses the
+ * draft length before every pass, up to -max_draft (speculate.c, adaptive). */
 int  generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
                           GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
                           int max_new, int max_draft, int *out_ids, SpecStats *stats);

@@ -59,7 +59,9 @@ def main() -> None:
     reps = int(sys.argv[4]) if len(sys.argv) > 4 else 3
     configs = [("plain", ["--spec-greedy", None, str(MAX_NEW), "0"])]
     configs.append(("lookup-4", ["--spec-greedy", None, str(MAX_NEW), "4"]))
+    configs.append(("lookup-auto", ["--spec-greedy", None, str(MAX_NEW), "auto"]))
     configs += [(f"model-{k}", ["--spec-model", str(draft), None, str(MAX_NEW), str(k)]) for k in DRAFTS]
+    configs.append(("model-auto", ["--spec-model", str(draft), None, str(MAX_NEW), "auto"]))
 
     rows, bad = [], 0
     for name, prompt in PROMPTS.items():
@@ -83,7 +85,7 @@ def main() -> None:
                    "median_draft_s": f"{med('draft_s'):.3f}", "median_verify_s": f"{med('verify_s'):.3f}",
                    "identical_to_greedy": same}
             rows.append(row)
-            print(f"  {name:8s} {cfg:9s} {tok_s:7.2f} tok/s  x{tok_s / base:4.2f}  "
+            print(f"  {name:8s} {cfg:11s} {tok_s:7.2f} tok/s  x{tok_s / base:4.2f}  "
                   f"{row['tokens_per_pass']} tok/pass  accept {row['acceptance']}  "
                   f"draft {row['median_draft_s']} s  verify {row['median_verify_s']} s  "
                   f"{'identical' if same else 'DIFFERS'}", flush=True)

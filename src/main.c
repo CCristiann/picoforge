@@ -329,7 +329,10 @@ int main(int argc, char **argv) {
                      (argc > 6 && strcmp(argv[2], "--spec-greedy") == 0)))) {
         const char **a = spec_model ? (const char **)argv + 1 : (const char **)argv;
         const bool spec = spec_model || strcmp(argv[2], "--spec-greedy") == 0;
-        const int max_new = atoi(a[4]), draft = spec ? atoi(a[5]) : 0;
+        /* DRAFT as "auto" or "auto:K" chooses the length per pass, up to K (8). */
+        const int max_new = atoi(a[4]);
+        int draft = spec ? atoi(a[5]) : 0;
+        if (spec && strncmp(a[5], "auto", 4) == 0) draft = -(a[5][4] == ':' ? atoi(a[5] + 5) : 8);
         const char *out_path = a[spec ? 6 : 5];
         MetalContext *mtl = metal_init("picoforge.metallib");
         GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, 1024, 32);
@@ -357,6 +360,9 @@ int main(int argc, char **argv) {
                    ss.passes, ss.passes ? (double)(got - 1) / ss.passes : 0.0, ss.accepted,
                    ss.drafted, ss.decode_s, ss.decode_s > 0 ? (got - 1) / ss.decode_s : 0.0,
                    ss.draft_s, ss.verify_s);
+            printf("draft lengths:");
+            for (int k = 0; k < 33; k++) if (ss.k_hist[k]) printf(" k=%d x%d", k, ss.k_hist[k]);
+            printf("\n");
             last_stats = ss;
         } else {
             Weights w;
