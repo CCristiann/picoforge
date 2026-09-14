@@ -355,7 +355,6 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
 void gpu_model_free(GpuModel *g);
 void gpu_set_matmul_kernel(GpuModel *g, int which);
 void gpu_set_small_tile(GpuModel *g, bool on);   /* 8x32 TensorOps tiles for M <= 8, default on */
-void gpu_set_split_attention(GpuModel *g, bool on);   /* barrier-free attention, default off */
 /* Returns the GPU seconds the pass took, measured by the GPU. */
 double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                    float *logits_out);

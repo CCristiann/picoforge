@@ -465,63 +465,45 @@ void bench_profile(const char *model_dir, const char *csv_path) {
 
     FILE *csv = fopen(csv_path, "wb");
     if (!csv) die("cannot write %s", csv_path);
-    fprintf(csv, "model,attention,regime,n,pos,group,median_s,p10_s,p90_s\n");
+    fprintf(csv, "model,regime,n,pos,group,median_s,p10_s,p90_s\n");
     static const struct { const char *name; int n, pos; } regimes[] = {
         {"decode", 1, 16}, {"decode", 1, 512}, {"verify8", 8, 512}, {"verify32", 32, 512},
     };
-    /* Both attention kernels, INTERLEAVED rep by rep: the machine's load drifts
-     * over a run (a second session on this laptop moved every total by 30% in
-     * one afternoon), and alternating puts both variants under the same drift. */
-    static const char *variants[2] = {"barriers", "split"};
-    enum { V = 2, C = GPU_PROF_CLASSES + 2 };
     for (size_t r = 0; r < sizeof regimes / sizeof regimes[0]; r++) {
         const int n = regimes[r].n, pos = regimes[r].pos;
         const int *t = tokens + pos;
-        static double per[V][C][REPS];                             /* groups, cut, uncut */
+        double per[GPU_PROF_CLASSES + 2][REPS];                  /* groups, cut, uncut */
         for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) {
-            for (int v = 0; v < V; v++) {
-                double junk[GPU_PROF_CLASSES] = {0};
-                gpu_set_split_attention(g, v == 1);
-                (void)gpu_forward_profile(g, t, n, pos, 0, junk);
-                (void)gpu_forward(g, t, n, pos, 0, NULL);
-            }
+            double junk[GPU_PROF_CLASSES] = {0};
+            (void)gpu_forward_profile(g, t, n, pos, 0, junk);
+            (void)gpu_forward(g, t, n, pos, 0, NULL);
         }
         for (int i = 0; i < REPS; i++) {
-            for (int v = 0; v < V; v++) {
-                gpu_set_split_attention(g, v == 1);
-                double sec[GPU_PROF_CLASSES] = {0};
-                per[v][GPU_PROF_CLASSES][i] = gpu_forward_profile(g, t, n, pos, 0, sec);
-                per[v][GPU_PROF_CLASSES + 1][i] = gpu_forward(g, t, n, pos, 0, NULL);
-                double sum = 0;
-                for (int c = 0; c < GPU_PROF_CLASSES; c++) { per[v][c][i] = sec[c]; sum += sec[c]; }
-                /* The instrument checks itself: the groups are disjoint slices of
-                 * one command buffer, so they cannot sum past its GPU time, and
-                 * the idle gaps between ~300 encoders should not eat a fifth. */
-                const double cut = per[v][GPU_PROF_CLASSES][i];
-                if (sum > cut * 1.02 || sum < cut * 0.8)
-                    die("profile groups sum to %.3f ms of a %.3f ms pass: the timestamps are misread",
-                        sum * 1e3, cut * 1e3);
-            }
+            double sec[GPU_PROF_CLASSES] = {0};
+            per[GPU_PROF_CLASSES][i] = gpu_forward_profile(g, t, n, pos, 0, sec);
+            per[GPU_PROF_CLASSES + 1][i] = gpu_forward(g, t, n, pos, 0, NULL);
+            double sum = 0;
+            for (int c = 0; c < GPU_PROF_CLASSES; c++) { per[c][i] = sec[c]; sum += sec[c]; }
+            /* The instrument checks itself: the groups are disjoint slices of
+             * one command buffer, so they cannot sum past its GPU time, and
+             * the idle gaps between ~300 encoders should not eat a fifth. */
+            const double cut = per[GPU_PROF_CLASSES][i];
+            if (sum > cut * 1.02 || sum < cut * 0.8)
+                die("profile groups sum to %.3f ms of a %.3f ms pass: the timestamps are misread",
+                    sum * 1e3, cut * 1e3);
         }
-        printf("\n%s n=%d pos=%d                      %-22s %s\n", regimes[r].name, n, pos,
-               variants[0], variants[1]);
-        for (int c = 0; c < C; c++) {
+        printf("\n%s n=%d pos=%d\n", regimes[r].name, n, pos);
+        for (int c = 0; c < GPU_PROF_CLASSES + 2; c++) {
+            qsort(per[c], REPS, sizeof per[c][0], cmp_double);
             const char *name = c < GPU_PROF_CLASSES ? gpu_prof_name(c)
                              : c == GPU_PROF_CLASSES ? "TOTAL, cut into encoders" : "TOTAL, uncut";
-            printf("  %-40s", name);
-            for (int v = 0; v < V; v++) {
-                qsort(per[v][c], REPS, sizeof per[v][c][0], cmp_double);
-                const double med = pct(per[v][c], REPS, 0.5);
-                fprintf(csv, "%s,%s,%s,%d,%d,%s,%.9f,%.9f,%.9f\n", model_dir, variants[v],
-                        regimes[r].name, n, pos, name, med, pct(per[v][c], REPS, 0.1),
-                        pct(per[v][c], REPS, 0.9));
-                printf(" %8.3f ms [%.3f, %.3f]", med * 1e3, pct(per[v][c], REPS, 0.1) * 1e3,
-                       pct(per[v][c], REPS, 0.9) * 1e3);
-            }
-            printf("\n");
+            const double med = pct(per[c], REPS, 0.5);
+            fprintf(csv, "%s,%s,%d,%d,%s,%.9f,%.9f,%.9f\n", model_dir, regimes[r].name, n, pos,
+                    name, med, pct(per[c], REPS, 0.1), pct(per[c], REPS, 0.9));
+            printf("  %-40s %8.3f ms  [%.3f, %.3f]\n", name, med * 1e3,
+                   pct(per[c], REPS, 0.1) * 1e3, pct(per[c], REPS, 0.9) * 1e3);
         }
     }
-    gpu_set_split_attention(g, true);
     fclose(csv);
     gpu_model_free(g);
     metal_shutdown(mtl);
