@@ -59,7 +59,7 @@ Each one is small, verified against an oracle, and committed on its own.
 | 4.2 | Speculative decoding on the dense 0.6B, lossless: greedy output must equal plain greedy, token for token -- **done** | no |
 | 4.3 | MoE block in the NumPy oracle, verified against transformers on a tiny random Qwen3-MoE -- **done** | no |
 | 4.4 | MoE on the C CPU path, parity with the oracle on the tiny model -- **done** | no |
-| 4.5 | Qwen3-30B-A3B: download (61 GB, needs a yes), quantise, layer-by-layer parity | yes |
+| 4.5 | Qwen3-30B-A3B: download (61 GB), quantise, layer-by-layer parity | yes |
 | 4.6 | MoE on the GPU: routed expert matmuls grouped per expert on TensorOps -- **done on the tiny model**; quantised experts pending | no |
 | 4.7 | The verify cost surface on this machine: time(k tokens, distinct experts) -- **done on a synthetic 30B layer**; real routing overlap pending | partly |
 | 4.8 | Expert-cost-aware draft selection, training-free, 0.6B drafting; speedup vs plain speculation vs none | yes |

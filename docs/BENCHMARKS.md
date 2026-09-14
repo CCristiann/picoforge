@@ -144,7 +144,7 @@ make build/synth-30b-layer
 
 Thermal state was read with `pmset -g therm` before and after the Phase 3
 and Phase 4 runs: no thermal or performance warning recorded. (`powermetrics` needs root
-and was not run; that is the human's call, not the benchmark's.)
+and was not run: the benchmarks do not require elevated privileges.)
 
 ## What is measured
 

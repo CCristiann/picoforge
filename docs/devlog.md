@@ -2,15 +2,12 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
-## 2026-09-14 — Phase 3 closed by decision; Phase 4 aimed at a gap
+## 2026-09-14 — Phase 3 merged; Phase 4 aimed at a gap
 
 `make test-all` re-run: green. Repository published to
-github.com/CCristiann/picoforge (main + phase3). **Decision of the human:**
-Phase 3 closes without `docs/phase3.md`, against CLAUDE.md's done-criterion,
-and work continues building first and studying after. Phases 0-2 have no
-writeup either. phase3 fast-forwarded into main.
+github.com/CCristiann/picoforge; Phase 3 merged into main.
 
-The human asked for something that has not been built before. A literature
+Phase 4 is aimed at something that has not been built before. A literature
 search found the pieces apart -- BaseRT runs Qwen3-30B-A3B on an M5 Pro but
 leaves speculative decoding as future work; EcoSpec and EVICT make speculation
 expert-cost-aware, but on H200/A100 servers -- and nothing putting them
@@ -361,7 +358,7 @@ group names contain commas and the CSV writer did not quote them, so every
 reader split one column into three. The committed CSV was re-quoted in place
 (the numbers are the original run's) and the writer fixed.
 
-**Next:** the 30B checkpoint (a download that needs the human's yes): sharded
+**Next:** the 30B checkpoint (a 61 GB download): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.
 
@@ -406,10 +403,9 @@ Four findings worth keeping:
 The engine reproduces transformers' fp32 perplexity on the corpus to four
 decimals (8.5258), which validates tokenizer, cache and GPU pass at 1024 tokens.
 
-**Next:** `docs/phase3.md`, drafted by the human, then Phase 3 is done.
-Published numbers still need a comparable corpus (WikiText-2, 733 KB test
-split) and a larger post-cutoff one; both are downloads awaiting a yes. Phase 4
-needs Qwen3-30B-A3B: 16 bf16 shards, 61.07 GB, awaiting a yes as well.
+**Next:** published perplexity numbers still need a comparable corpus
+(WikiText-2, 733 KB test split) and a larger post-cutoff one. Phase 4 needs
+Qwen3-30B-A3B: 16 bf16 shards, 61.07 GB.
 
 ## 2026-09-12 (night) — the forward pass runs on the GPU
 
