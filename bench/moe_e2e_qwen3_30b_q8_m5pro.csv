@@ -1,0 +1,7 @@
+model,regime,n,pos,median_s,p10_s,p90_s,tok_s,x_decode,mean_distinct_experts,gbps
+models/Qwen3-30B-A3B-q8_row,decode,1,512,0.047652,0.047612,0.047761,20.99,1.000,8.00,72.82
+models/Qwen3-30B-A3B-q8_row,verify,2,512,0.051558,0.051444,0.051748,38.79,1.082,11.75,0.00
+models/Qwen3-30B-A3B-q8_row,verify,4,512,0.058641,0.058512,0.059093,68.21,1.231,17.73,0.00
+models/Qwen3-30B-A3B-q8_row,verify,8,512,0.067961,0.067827,0.068189,117.71,1.426,23.98,0.00
+models/Qwen3-30B-A3B-q8_row,verify,16,512,0.091642,0.091542,0.091834,174.59,1.923,34.85,0.00
+models/Qwen3-30B-A3B-q8_row,verify,32,512,0.116394,0.116222,0.116641,274.93,2.443,43.77,0.00

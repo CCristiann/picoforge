@@ -1,0 +1,7 @@
+window,windows,mean_distinct_experts,uniform_expectation,est_moe_verify_ms,est_x_decode,cost_format
+1,4096,8.000,8.000,23.230,1.000,q8_row
+2,2048,10.847,15.500,26.216,1.129,q8_row
+4,1024,14.931,29.123,31.571,1.359,q8_row
+8,512,20.343,51.620,37.687,1.622,q8_row
+16,256,26.733,82.423,46.712,2.011,q8_row
+32,128,33.615,111.771,63.267,2.724,q8_row

@@ -154,9 +154,12 @@ int main(int argc, char **argv) {
         size_t len;
         char *text = slurp(argv[3], &len);
         const int max_tokens = atoi(argv[4]);
-        int *ids = malloc((size_t)max_tokens * sizeof *ids);
-        if (!ids) die("out of memory for %d tokens", max_tokens);
-        const int n_ids = tokenizer_encode(&tok, text, (int)len, ids, max_tokens);
+        /* Encode the whole text (a token is at least one byte), then keep the
+         * first MAX_TOKENS: the encoder refuses to truncate mid-text itself. */
+        int *ids = malloc((len + 16) * sizeof *ids);
+        if (!ids) die("out of memory for %zu tokens", len + 16);
+        int n_ids = tokenizer_encode(&tok, text, (int)len, ids, (int)len + 16);
+        if (n_ids > max_tokens) n_ids = max_tokens;
         free(text);
         MetalContext *mtl = metal_init("picoforge.metallib");
         GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, n_ids, 1);

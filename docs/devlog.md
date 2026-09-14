@@ -336,8 +336,11 @@ With the 30B, the measurement is four commands:
 
 `tools/synth/make_moe_model.py` writes all 48 layers of Qwen3-30B-A3B's shapes
 straight in q8_row, random weights: 31.2 GB, one file, inside the 41.75 GB
-buffer cap, in 27 s. The GPU matches the CPU on it (2 tokens, relative 4.7e-6,
+buffer cap, in 27 s. The GPU matches the CPU on it (2 tokens, relative 4.4e-6,
 same argmax) -- the first integration check at the real shapes and depth.
+*(Corrected: the first run of this check passed its token ids as one unsplit
+zsh word, so the engine saw one token; 4.7e-6 was that 1-token figure. Rerun
+with two tokens: 4.4e-6.)*
 `--bench-moe-e2e`, `bench/moe_e2e_synth30b_m5pro.csv`, cache depth 512:
 
   decode       48.5 ms   20.6 tok/s   72 GB/s (23% of 307)   8.0 experts/layer
@@ -381,6 +384,39 @@ The chain, on the real weights:
   oracle): 1, 5, 9 and 40 tokens, batch and incremental, worst relative error
   4.5e-6, KL 3.0e-10, argmax 40/40. "The capital of France is" -> " Paris".
   The scalar CPU runs it at 0.6-0.7 tok/s.
+
+### Step 4.7c — Qwen3-30B-A3B on the GPU, and how its router really routes
+
+`tools/quant/quantize.py` turned the 16 bf16 shards into one q8_row file:
+31.2 GB, 37491 tensors, inside the 41.75 GB buffer cap. The GPU pass on it is
+held to the CPU pass on the same file (`tests/test_gpu_vs_cpu.py`): 1, 5, 9
+and 40 tokens, batch and incremental, worst relative error 1.7e-5, KL 1.9e-9,
+argmax 40/40. "The capital of France is" -> " Paris" at 74.7%.
+
+`--bench-moe-e2e`, `bench/moe_e2e_qwen3_30b_q8_m5pro.csv`, cache depth 512:
+
+  decode       47.7 ms   21.0 tok/s   73 GB/s (24% of 307)    8.0 experts/layer
+  verify 4     58.6 ms   1.23 x decode                        17.7
+  verify 8     68.0 ms   1.43 x decode                        24.0
+  verify 32   116.4 ms   2.44 x decode                        43.8
+
+`--routing-trace` over the first 4096 tokens of `build/corpus_local.txt`, then
+`tools/eval/routing_overlap.py`, `bench/routing_overlap_qwen3_30b_corpus.csv`:
+distinct experts per MoE layer touched by w consecutive tokens, against
+w independent uniformly routed tokens.
+
+  w          1     2     4     8    16    32
+  measured  8.0  10.8  14.9  20.3  26.7  33.6
+  uniform   8.0  15.5  29.1  51.6  82.4 111.8
+  ratio    1.00  0.70  0.51  0.39  0.32  0.30
+
+**The trained router has strong temporal locality:** eight consecutive tokens
+share their experts so much that they touch 39% of what uniform routing would.
+With the measured cost of 22 us per distinct q8 expert, that is what keeps a
+verify of 8 tokens at 1.43 decode steps instead of ~2.5.
+
+(The trace first died in the tokenizer: the encoder will not truncate a text
+longer than its buffer, so the whole corpus is now encoded and cut after.)
 
 **Next:** the 30B checkpoint (a 61 GB download): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
