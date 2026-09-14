@@ -346,6 +346,7 @@ void   bench_e2e(const char *model_dir, const char *csv_path);       /* whole fo
 void   bench_dispatch(MetalContext *ctx, const char *csv_path);     /* Phase 4: cost per dispatch */
 void   bench_profile(const char *model_dir, const char *csv_path);  /* Phase 4: GPU time by op group */
 void   bench_moe(const char *model_dir, const char *csv_path);      /* Phase 4: verify cost vs experts */
+void   bench_moe_e2e(const char *model_dir, const char *csv_path);  /* Phase 4: MoE decode and verify */
 
 /* Raw Metal objects, as void* so nothing else has to include Metal headers. */
 void  *metal_device(MetalContext *ctx);
@@ -408,6 +409,10 @@ typedef struct {
     int    generated, passes, drafted, accepted;
     double decode_s;          /* wall time after prefill                    */
     double draft_s, verify_s; /* of which drafting, and the target's passes  */
+    int    groups;            /* entries used in group_len                   */
+    short  group_len[2048];   /* tokens emitted per loop step: the token the
+                               * previous pass decided, plus the drafts this
+                               * pass accepted -- what a UI colours as a unit */
 } SpecStats;
 /* drafter NULL: prompt lookup. Otherwise a draft model sharing the target's
  * vocabulary, with a context of at least max_seq. */

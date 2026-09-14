@@ -71,18 +71,36 @@
   .legend i { display:inline-block; width:9px; height:9px; border-radius:2px;
               margin-right:5px; }
   .err { color:var(--naive); font-family:var(--mono); font-size:13px; }
+  .spec-out { line-height:2.05; white-space:pre-wrap; }
+  .spec-out .g0 { background:#1b2433; } .spec-out .g1 { background:#22314a; }
+  .spec-out span.grp { border-radius:4px; padding:1px 0; }
+  .spec-out i { font-style:normal; }
+  .spec-out i.d { color:#9fd0ff; text-decoration:underline; text-decoration-color:var(--tensor);
+                  text-underline-offset:4px; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:20px; font-size:12px;
+           font-family:var(--mono); border:1px solid var(--line); }
+  .badge.ok { color:var(--ok); border-color:var(--ok); } .badge.bad { color:var(--naive); border-color:var(--naive); }
+  .presets button { background:var(--panel); color:var(--dim); border:1px solid var(--line);
+                    border-radius:6px; padding:6px 10px; cursor:pointer; font-size:12.5px; }
+  table.t { border-collapse:collapse; width:100%; font-family:var(--mono); font-size:12.5px; }
+  table.t th, table.t td { text-align:right; padding:6px 10px; border-bottom:1px solid var(--line); }
+  table.t th { color:var(--dim); font-weight:400; } table.t td:first-child, table.t th:first-child { text-align:left; }
+  h2.sec { font-size:15px; margin:28px 0 4px; } p.lead { color:var(--dim); margin:0 0 12px; font-size:12.5px; }
+  img.plot { width:100%; border-radius:9px; background:#fcfcfb; }
 </style>
 </head>
 <body>
 <header>
   <h1>picoforge</h1>
-  <span class="sub">Qwen3-0.6B &middot; Apple M5 Pro &middot; 307 GB/s</span>
+  <span class="sub">Qwen3-0.6B &rarr; Qwen3-30B-A3B &middot; Apple M5 Pro &middot; 307 GB/s</span>
 </header>
 
 <nav>
   <button class="on" data-tab="gen">Generate</button>
   <button data-tab="tok">Tokenizer</button>
   <button data-tab="bench">Benchmarks</button>
+  <button data-tab="spec">Speculative</button>
+  <button data-tab="p4">Phase 4</button>
 </nav>
 
 <main>
@@ -157,6 +175,68 @@
      <code>bench/matmul_m5pro.csv</code>; protocol in <code>docs/BENCHMARKS.md</code>.</p>
 </section>
 
+<section class="panel" id="spec">
+  <div class="row presets">
+    <button data-p="code">code</button>
+    <button data-p="list">repeat a list (chat)</button>
+    <button data-p="rewrite">rewrite code (chat)</button>
+    <button data-p="poem">poem (chat)</button>
+  </div>
+  <div class="row"><div style="flex:1 1 100%">
+    <label>Prompt (raw text: the chat presets include Qwen3's template)</label>
+    <textarea id="sp-prompt" rows="4">def fibonacci(n):</textarea>
+  </div></div>
+  <div class="row">
+    <div>
+      <label>Drafter</label>
+      <div class="seg" id="sp-drafter">
+        <button class="on" data-v="lookup">prompt lookup</button>
+        <button data-v="model">draft model (0.6B q4)</button>
+      </div>
+    </div>
+    <div>
+      <label>Draft length</label>
+      <select id="sp-k"><option>2</option><option selected>4</option><option>8</option></select>
+    </div>
+    <div>
+      <label>Max tokens</label>
+      <input type="number" id="sp-max" value="96" min="8" max="400" style="width:92px">
+    </div>
+    <button class="go" id="sp-run">Run both</button>
+    <span id="sp-badge"></span>
+  </div>
+  <div class="out spec-out" id="sp-out"></div>
+  <p class="note">Each shaded block is one step of the loop: the token the previous pass decided,
+     then the <span style="color:#9fd0ff;text-decoration:underline">underlined drafts</span> this
+     pass verified and accepted. Every token is still the model's own greedy choice &mdash; the
+     badge checks it against plain greedy, token for token.</p>
+  <div class="cards">
+    <div class="card"><div class="k">Plain greedy</div><div class="v" id="sp-plain">&mdash;</div><div class="u">tokens/s &middot; one per pass</div></div>
+    <div class="card"><div class="k">Speculative</div><div class="v" id="sp-fast">&mdash;</div><div class="u">tokens/s</div></div>
+    <div class="card"><div class="k">Speedup</div><div class="v" id="sp-x">&mdash;</div><div class="u">same loop, same GPU</div></div>
+    <div class="card"><div class="k">Tokens per pass</div><div class="v" id="sp-pp">&mdash;</div><div class="u" id="sp-acc">drafts accepted</div></div>
+  </div>
+</section>
+
+<section class="panel" id="p4">
+  <p class="lead">Measured on this machine today. Every number comes from a CSV in <code>bench/</code>;
+     the story behind each is in <code>docs/devlog.md</code>.</p>
+  <div class="cards" id="p4-cards"></div>
+
+  <h2 class="sec">What verifying one Qwen3-30B-A3B MoE layer costs</h2>
+  <p class="lead">One layer at the real shapes, routing forced: priced by distinct experts, almost not by tokens.
+     A q8 expert costs its bytes at ~217 GB/s.</p>
+  <img class="plot" src="/bench/moe_verify_cost.png" alt="MoE verify cost">
+
+  <h2 class="sec">Where a Qwen3-0.6B decode step goes (GPU timestamps, depth 512)</h2>
+  <div class="chart" id="p4-profile"></div>
+
+  <h2 class="sec">A full-depth 30B-shaped model (48 layers, random q8_row weights, 31 GB)</h2>
+  <p class="lead">Decode is exact for the shapes. Verify times are optimistic: random weights route
+     every token to the same ~10 experts, far fewer than a trained router would.</p>
+  <div class="chart"><table class="t" id="p4-e2e"></table></div>
+</section>
+
 </main>
 
 <script>
@@ -168,6 +248,7 @@ document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === b.dataset.tab));
   if (b.dataset.tab === 'bench') drawCharts();
+  if (b.dataset.tab === 'p4') drawPhase4();
 });
 
 /* ---- generate ---- */
@@ -227,6 +308,80 @@ const tokenize = async () => {
 };
 $('#tok-in').oninput = () => { clearTimeout(tokTimer); tokTimer = setTimeout(tokenize, 220); };
 tokenize();
+
+/* ---- speculative ---- */
+const CHAT = u => `<|im_start|>user\n${u}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`;
+const PRESETS = {
+  code: 'def fibonacci(n):',
+  list: CHAT('Repeat this list back to me exactly, one item per line: apple, banana, cherry, dragonfruit, elderberry, fig, grape, honeydew, kiwi, lemon, mango, nectarine, orange, papaya.'),
+  rewrite: CHAT('Rewrite this function with type hints and a docstring:\n\ndef area(width, height):\n    return width * height\n\ndef perimeter(width, height):\n    return 2 * (width + height)\n'),
+  poem: CHAT('Write a short poem about the sea.'),
+};
+document.querySelectorAll('.presets button').forEach(b => b.onclick = () => $('#sp-prompt').value = PRESETS[b.dataset.p]);
+let drafter = 'lookup';
+$('#sp-drafter').querySelectorAll('button').forEach(b => b.onclick = () => {
+  drafter = b.dataset.v;
+  $('#sp-drafter').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+});
+const esc = t => t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+$('#sp-run').onclick = async () => {
+  const btn = $('#sp-run'); btn.disabled = true;
+  $('#sp-out').textContent = 'running the engine three times (reference, plain, speculative)…';
+  $('#sp-badge').innerHTML = '';
+  const p = new URLSearchParams({prompt: $('#sp-prompt').value, drafter, k: $('#sp-k').value, max: $('#sp-max').value});
+  try {
+    const d = await (await fetch('/api/speculate?' + p)).json();
+    if (d.error) throw new Error(d.error);
+    let html = '', i = 0;
+    d.groups.forEach((n, g) => {
+      html += `<span class="grp g${g % 2}">`;
+      for (let j = 0; j < n && i < d.tokens.length; j++, i++)
+        html += `<i class="${j ? 'd' : ''}">${esc(d.tokens[i])}</i>`;
+      html += '</span>';
+    });
+    $('#sp-out').innerHTML = html;
+    $('#sp-badge').innerHTML = d.identical ? '<span class="badge ok">✓ identical to plain greedy</span>'
+                                           : '<span class="badge bad">✗ differs from greedy</span>';
+    $('#sp-plain').textContent = d.plain.tok_s.toFixed(1);
+    $('#sp-fast').textContent = d.spec.tok_s.toFixed(1);
+    $('#sp-x').textContent = (d.spec.tok_s / d.plain.tok_s).toFixed(2) + '×';
+    $('#sp-pp').textContent = d.spec.per_pass.toFixed(2);
+    $('#sp-acc').textContent = `${d.spec.accepted}/${d.spec.drafted} drafts accepted`;
+  } catch (e) { $('#sp-out').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  btn.disabled = false;
+};
+
+/* ---- phase 4 ---- */
+let p4 = null;
+async function drawPhase4() {
+  if (!p4) p4 = await (await fetch('/api/phase4')).json();
+  const card = (k, v, u) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="u">${u}</div></div>`;
+  const e2e = p4.moe_e2e, dec = e2e.find(r => r.regime === 'decode'), v8 = e2e.find(r => +r.n === 8);
+  const tile = p4.tile.filter(r => r.regime === 'decode');
+  const q8 = p4.moe_cost.filter(r => r.format === 'q8_row' && +r.n === 8);
+  let slope = null;
+  if (q8.length > 1) { const a = q8[0], b = q8[q8.length - 1];
+    slope = (b.median_s - a.median_s) / (b.distinct_experts - a.distinct_experts) * 1e6; }
+  $('#p4-cards').innerHTML =
+    (dec ? card('30B-shaped decode', (+dec.tok_s).toFixed(1), 'tok/s · q8_row · synthetic · depth 512') : '') +
+    (v8 ? card('Verify 8 tokens', (+v8.x_decode).toFixed(2) + '×', 'the cost of one decode step') : '') +
+    (slope ? card('One more q8 expert', slope.toFixed(0) + ' µs', 'per MoE layer, verify ≤ 8 tokens') : '') +
+    (tile.length === 2 ? card('8-row tiles', '+' + ((tile[0].median_s / tile[1].median_s - 1) * 100).toFixed(1) + '%', 'Qwen3-0.6B decode, bit-identical') : '');
+
+  const prof = p4.profile.filter(r => r.regime === 'decode' && +r.pos === 512 && !r.group.startsWith('TOTAL'));
+  const total = p4.profile.find(r => r.regime === 'decode' && +r.pos === 512 && r.group === 'TOTAL, uncut');
+  const max = Math.max(...prof.map(r => +r.median_s));
+  $('#p4-profile').innerHTML = prof.sort((a, b) => b.median_s - a.median_s).map(r =>
+    `<div style="display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12.5px">
+       <div style="width:260px;color:var(--dim)">${r.group}</div>
+       <div style="flex:1;background:var(--line);border-radius:3px;height:14px">
+         <i style="display:block;height:100%;width:${r.median_s / max * 100}%;background:var(--tensor);border-radius:3px"></i></div>
+       <div style="width:80px;text-align:right;font-family:var(--mono)">${(r.median_s * 1e3).toFixed(2)} ms</div></div>`).join('') +
+    (total ? `<p class="note">whole pass, uncut: ${(total.median_s * 1e3).toFixed(2)} ms</p>` : '');
+
+  $('#p4-e2e').innerHTML = '<tr><th>pass</th><th>tokens</th><th>median ms</th><th>tok/s</th><th>× decode</th><th>experts / layer</th></tr>' +
+    e2e.map(r => `<tr><td>${r.regime}</td><td>${r.n}</td><td>${(r.median_s * 1e3).toFixed(1)}</td><td>${(+r.tok_s).toFixed(1)}</td><td>${(+r.x_decode).toFixed(2)}</td><td>${(+r.mean_distinct_experts).toFixed(1)}</td></tr>`).join('');
+}
 
 /* ---- benchmarks: hand-drawn SVG, no chart library ---- */
 let benchRows = null;

@@ -52,7 +52,7 @@ def run(args: list[str], model: Path | None = None) -> tuple[list[int], str]:
                               capture_output=True, text=True, cwd=ROOT)
         if proc.returncode != 0:
             sys.exit(f"picoforge {args[0]} failed:\n{proc.stdout}\n{proc.stderr}")
-        ids = [int(x) for x in Path(tmp.name).read_text().split()]
+        ids = [int(x) for x in Path(tmp.name).read_text().splitlines()[0].split()]
         stats = [l for l in proc.stdout.splitlines() if l.startswith("spec:")]
         return ids, stats[0] if stats else ""
 

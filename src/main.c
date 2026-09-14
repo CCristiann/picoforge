@@ -140,6 +140,11 @@ int main(int argc, char **argv) {
     if (argc > 3 && strcmp(argv[2], "--bench-moe") == 0)
         bench_moe(model_dir, argv[3]);
 
+    /* --bench-moe-e2e OUT.csv : whole MoE passes, decode and verifies, with
+     * the distinct experts each verify touched. */
+    if (argc > 3 && strcmp(argv[2], "--bench-moe-e2e") == 0)
+        bench_moe_e2e(model_dir, argv[3]);
+
     /* --routing-trace TEXT_FILE MAX_TOKENS OUT.bin : feed a text through a MoE
      * model on the GPU, 32 tokens a pass, and record which experts every token
      * chose in every layer. OUT is a 16-byte header (u32 tokens, layers, k,
@@ -339,6 +344,7 @@ int main(int argc, char **argv) {
         if (!ids) die("out of memory for %d generated ids", max_new);
 
         int got;
+        static SpecStats last_stats;
         if (spec) {
             SpecStats ss;
             got = generate_speculative(&tok, &cfg, gpu, drafter, 1024, 32, a[3], max_new, draft,
@@ -348,6 +354,7 @@ int main(int argc, char **argv) {
                    ss.passes, ss.passes ? (double)(got - 1) / ss.passes : 0.0, ss.accepted,
                    ss.drafted, ss.decode_s, ss.decode_s > 0 ? (got - 1) / ss.decode_s : 0.0,
                    ss.draft_s, ss.verify_s);
+            last_stats = ss;
         } else {
             Weights w;
             weights_bind(&st, &cfg, &w);
@@ -357,10 +364,25 @@ int main(int argc, char **argv) {
             state_free(&state);
             weights_free(&w);
         }
+        /* OUT: the ids on line 1 (what the tests compare); for speculative
+         * runs, the tokens emitted per step on line 2 and each token's bytes
+         * in hex on line 3, for tools/ui to show which tokens arrived together. */
         FILE *f = fopen(out_path, "wb");
         if (!f) die("cannot write %s", out_path);
         for (int i = 0; i < got; i++) fprintf(f, i ? " %d" : "%d", ids[i]);
         fputc('\n', f);
+        if (spec) {
+            for (int i = 0; i < last_stats.groups; i++) fprintf(f, i ? " %d" : "%d", last_stats.group_len[i]);
+            fputc('\n', f);
+            char piece[512];
+            for (int i = 0; i < got; i++) {
+                const int len = tokenizer_decode(&tok, &ids[i], 1, piece, (int)sizeof piece);
+                if (i) fputc(' ', f);
+                for (int b = 0; b < len; b++) fprintf(f, "%02x", (unsigned char)piece[b]);
+                if (len == 0) fputc('-', f);
+            }
+            fputc('\n', f);
+        }
         fclose(f);
         free(ids);
         if (drafter) { gpu_model_free(drafter); st_close(&dst); }

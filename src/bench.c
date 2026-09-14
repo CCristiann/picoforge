@@ -498,7 +498,8 @@ void bench_profile(const char *model_dir, const char *csv_path) {
             const char *name = c < GPU_PROF_CLASSES ? gpu_prof_name(c)
                              : c == GPU_PROF_CLASSES ? "TOTAL, cut into encoders" : "TOTAL, uncut";
             const double med = pct(per[c], REPS, 0.5);
-            fprintf(csv, "%s,%s,%d,%d,%s,%.9f,%.9f,%.9f\n", model_dir, regimes[r].name, n, pos,
+            /* Quoted: group names carry commas ("swiglu, residual, narrow"). */
+            fprintf(csv, "%s,%s,%d,%d,\"%s\",%.9f,%.9f,%.9f\n", model_dir, regimes[r].name, n, pos,
                     name, med, pct(per[c], REPS, 0.1), pct(per[c], REPS, 0.9));
             printf("  %-40s %8.3f ms  [%.3f, %.3f]\n", name, med * 1e3,
                    pct(per[c], REPS, 0.1) * 1e3, pct(per[c], REPS, 0.9) * 1e3);
@@ -587,4 +588,91 @@ void bench_moe(const char *model_dir, const char *csv_path) {
     metal_shutdown(mtl);
     st_close(&st);
     printf("\nraw results -> %s\n", csv_path);
+}
+
+/* --------------------------------------------------------- MoE end to end
+ * Phase 4: whole passes of a full-depth MoE at cache depth 512 -- a decode and
+ * verifies of 2..32 tokens -- by the same protocol as bench_e2e. Before each
+ * regime is timed, one untimed pass with the routing trace on counts how many
+ * distinct experts per MoE layer that verify really touched, so every time
+ * comes with the D it paid for. On build/synth-30b-q8 (random weights) routing
+ * is NOT near-uniform, as first assumed: the trace shows every token going to
+ * nearly the same ~10 experts per layer, so its verify rows are optimistic,
+ * not upper bounds. The decode row is exact for the shapes. Decode GB/s counts the bytes one token reads: attention,
+ * router and k experts per layer, the head in full, an embedding row, the cache. */
+void bench_moe_e2e(const char *model_dir, const char *csv_path) {
+    Qwen3Config cfg;
+    SafeTensors st;
+    config_load(model_dir, &cfg);
+    st_open(model_dir, &st);
+    if (!cfg.num_experts) die("%s is not a MoE model", model_dir);
+    Weights w;
+    weights_bind(&st, &cfg, &w);
+    const double wbytes = w.bytes;
+    weights_free(&w);
+    MetalContext *mtl = metal_init("picoforge.metallib");
+    GpuModel *g = gpu_model_create(mtl, &st, &cfg, 1024, 32);
+
+    enum { POS = 512 };
+    int tokens[1024];
+    for (int i = 0; i < 1024; i++) tokens[i] = (i * 7919 + 13) % cfg.vocab_size;
+    const double kv_bytes = (double)cfg.num_hidden_layers * (POS + 1)
+                          * cfg.num_key_value_heads * cfg.head_dim * 2 * 4;
+    const int L = cfg.num_hidden_layers, k = cfg.num_experts_per_tok;
+
+    FILE *csv = fopen(csv_path, "ab");
+    if (!csv) die("cannot append to %s", csv_path);
+    fseek(csv, 0, SEEK_END);
+    if (ftell(csv) == 0)
+        fprintf(csv, "model,regime,n,pos,median_s,p10_s,p90_s,tok_s,x_decode,mean_distinct_experts,gbps\n");
+    printf("\n=== MoE end to end: %s (%.2f GB read per token, %.1f s warm-up + %d reps) ===\n",
+           model_dir, (wbytes + kv_bytes) / 1e9, WARM_SECONDS, REPS);
+
+    double tp0 = wall_s();
+    (void)gpu_forward(g, tokens, POS, 0, POS - 1, NULL);           /* fill the cache */
+    printf("  prefill %d tokens (single shot, chunks of 32): %.2f s\n", POS, wall_s() - tp0);
+
+    double decode_s = 0;
+    for (int n = 1; n <= 32; n *= 2) {
+        const int *t = tokens + POS;
+        gpu_set_routing_trace(g, true);
+        (void)gpu_forward(g, t, n, POS, 0, NULL);
+        const uint32_t *tr = gpu_routing_trace(g);
+        double distinct = 0;
+        int moe_layers = 0;
+        for (int l = 0; l < L; l++) {
+            if (tr[(size_t)l * 32 * (size_t)k] == 0xFFFFFFFFu) continue;
+            bool seen[1024] = {false};
+            int d = 0;
+            for (int i = 0; i < n * k; i++) {
+                const uint32_t e = tr[((size_t)l * 32) * (size_t)k + (size_t)i];
+                if (e >= 1024) die("routing trace holds expert %u", e);
+                if (!seen[e]) { seen[e] = true; d++; }
+            }
+            distinct += d;
+            moe_layers++;
+        }
+        distinct /= moe_layers;
+        gpu_set_routing_trace(g, false);
+
+        double ts[REPS];
+        for (double t0 = wall_s(); wall_s() - t0 < WARM_SECONDS;) (void)gpu_forward(g, t, n, POS, 0, NULL);
+        for (int i = 0; i < REPS; i++) ts[i] = gpu_forward(g, t, n, POS, 0, NULL);
+        qsort(ts, REPS, sizeof *ts, cmp_double);
+        const double med = pct(ts, REPS, 0.5);
+        if (n == 1) decode_s = med;
+        const double gbps = n == 1 ? (wbytes + kv_bytes) / med / 1e9 : 0.0;
+        fprintf(csv, "%s,%s,%d,%d,%.6f,%.6f,%.6f,%.2f,%.3f,%.2f,%.2f\n", model_dir,
+                n == 1 ? "decode" : "verify", n, POS, med, pct(ts, REPS, 0.1), pct(ts, REPS, 0.9),
+                n / med, med / decode_s, distinct, gbps);
+        printf("  %-7s n=%-2d  %8.2f ms [%.2f, %.2f]  %7.1f tok/s  %5.2f x decode  %6.1f experts/layer",
+               n == 1 ? "decode" : "verify", n, med * 1e3, pct(ts, REPS, 0.1) * 1e3,
+               pct(ts, REPS, 0.9) * 1e3, n / med, med / decode_s, distinct);
+        if (n == 1) printf("  %.0f GB/s (%.0f%% of 307)", gbps, 100 * gbps / 307);
+        printf("\n");
+    }
+    fclose(csv);
+    gpu_model_free(g);
+    metal_shutdown(mtl);
+    st_close(&st);
 }

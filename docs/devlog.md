@@ -330,10 +330,36 @@ straight to the measurement:
 
 With the 30B, the measurement is four commands:
 
-    hf download Qwen/Qwen3-30B-A3B --local-dir models/Qwen3-30B-A3B
+    tools/venv/bin/hf download Qwen/Qwen3-30B-A3B --local-dir models/Qwen3-30B-A3B
     tools/venv/bin/python tools/quant/quantize.py models/Qwen3-30B-A3B q8_row
     ./picoforge models/Qwen3-30B-A3B-q8_row --routing-trace TEXT 4096 build/trace_30b.bin
     tools/venv/bin/python tools/eval/routing_overlap.py build/trace_30b.bin bench/routing_overlap_30b.csv
+
+### A full-depth 30B-shaped model, and the UI
+
+`tools/synth/make_moe_model.py` writes all 48 layers of Qwen3-30B-A3B's shapes
+straight in q8_row, random weights: 31.2 GB, one file, inside the 41.75 GB
+buffer cap, in 27 s. The GPU matches the CPU on it (2 tokens, relative 4.7e-6,
+same argmax) -- the first integration check at the real shapes and depth.
+`--bench-moe-e2e`, `bench/moe_e2e_synth30b_m5pro.csv`, cache depth 512:
+
+  decode       48.5 ms   20.6 tok/s   72 GB/s (23% of 307)   8.0 experts/layer
+  verify 8     53.3 ms   1.10 x decode                        9.9 experts/layer
+  verify 32    90.4 ms   1.86 x decode                       11.7 experts/layer
+
+Decode is exact for the shapes. The verify rows are NOT the upper bounds the
+bench's first comment claimed: random weights route every token to nearly the
+same ~10 experts per layer (measured by the trace, printed in the last column),
+where a trained router would spread them. The honest reading: at D ~ 10, a
+verify of 8 costs 1.1 decodes; what D real text reaches is the missing number.
+
+`make ui` gained two tabs: **Speculative** runs plain greedy and a drafter side
+by side on the real engine, shades each loop step, underlines the accepted
+drafts and checks the output against plain greedy; **Phase 4** draws the
+measured results from the CSVs. Building it found an instrument bug: profile
+group names contain commas and the CSV writer did not quote them, so every
+reader split one column into three. The committed CSV was re-quoted in place
+(the numbers are the original run's) and the writer fixed.
 
 **Next:** the 30B checkpoint (a download that needs the human's yes): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost

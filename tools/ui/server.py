@@ -12,9 +12,11 @@ from a request; it is a development tool for one machine, not a service.
 
 import csv
 import json
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = ROOT / "picoforge"
 MODEL = ROOT / "models" / "Qwen3-0.6B"
+DRAFT_MODEL = ROOT / "models" / "Qwen3-0.6B-q4_g32"
 PORT = 8000
 
 # The engine prints its architecture and tokenizer summaries before doing any
@@ -74,6 +77,56 @@ def bench() -> dict:
     return {"rows": rows}
 
 
+SPEC_LINE = re.compile(r"spec: (\d+) tokens in (\d+) passes \(([\d.]+) per pass\), (\d+)/(\d+) drafts "
+                       r"accepted, decode ([\d.]+) s \(([\d.]+) tok/s; drafting ([\d.]+) s, "
+                       r"verifying ([\d.]+) s\)")
+
+
+def engine_file(args: list[str]) -> tuple[list[str], str]:
+    """Run the engine with an output file appended; return its lines and stdout."""
+    with tempfile.NamedTemporaryFile(suffix=".txt") as tmp:
+        out = run(args + [tmp.name])
+        return Path(tmp.name).read_text().splitlines(), out
+
+
+def spec_stats(stdout: str) -> dict:
+    m = SPEC_LINE.search(stdout)
+    if not m:
+        return {}
+    g = m.groups()
+    return {"tokens": int(g[0]), "passes": int(g[1]), "per_pass": float(g[2]),
+            "accepted": int(g[3]), "drafted": int(g[4]), "decode_s": float(g[5]),
+            "tok_s": float(g[6]), "draft_s": float(g[7]), "verify_s": float(g[8])}
+
+
+def speculate(prompt: str, drafter: str, k: int, max_new: int) -> dict:
+    """Three runs of the real engine on the GPU: plain greedy through generate()
+    (the reference), the speculative loop with no drafts (the same loop's own
+    speed), and the speculative loop with the chosen drafter."""
+    n = str(max_new)
+    ref, _ = engine_file(["--gpu-greedy", prompt, n])
+    plain_lines, plain_out = engine_file(["--spec-greedy", prompt, n, "0"])
+    if drafter == "model":
+        lines, out = engine_file(["--spec-model", str(DRAFT_MODEL), prompt, n, str(k)])
+    else:
+        lines, out = engine_file(["--spec-greedy", prompt, n, str(k)])
+    pieces = []
+    for h in (lines[2].split() if len(lines) > 2 else []):
+        raw = b"" if h == "-" else bytes.fromhex(h)
+        pieces.append(raw.decode(errors="replace"))
+    return {"identical": ref[0] == lines[0] == plain_lines[0],
+            "groups": [int(x) for x in lines[1].split()] if len(lines) > 1 else [],
+            "tokens": pieces, "plain": spec_stats(plain_out), "spec": spec_stats(out)}
+
+
+def phase4() -> dict:
+    def rows(name: str) -> list[dict]:
+        path = ROOT / "bench" / name
+        return list(csv.DictReader(open(path))) if path.exists() else []
+    return {"profile": rows("profile_m5pro.csv"), "moe_cost": rows("moe_verify_cost_m5pro.csv"),
+            "moe_e2e": rows("moe_e2e_synth30b_m5pro.csv"), "tile": rows("e2e_tile_m5pro.csv")}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -115,6 +168,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(bench())
             elif url.path == "/api/generate":
                 self.stream_generate(q)
+            elif url.path == "/api/speculate":
+                self._json(speculate(q.get("prompt", [""])[0], q.get("drafter", ["lookup"])[0],
+                                     int(q.get("k", ["4"])[0]), int(q.get("max", ["96"])[0])))
+            elif url.path == "/api/phase4":
+                self._json(phase4())
+            elif re.fullmatch(r"/bench/[\w.-]+\.png", url.path):
+                self._send(200, (ROOT / url.path.lstrip("/")).read_bytes(), "image/png")
             else:
                 self._send(404, b"not found", "text/plain")
         except Exception as exc:                       # noqa: BLE001

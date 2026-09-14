@@ -106,6 +106,7 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     while (generated < max_new && !is_eos(cfg, next) && pos + 1 < max_seq) {
         tokens[pos] = next;
         out_ids[generated++] = next;
+        if (s.groups < (int)(sizeof s.group_len / sizeof s.group_len[0])) s.group_len[s.groups++] = 1;
         if (generated == max_new) break;
 
         /* Drafts go straight into tokens[] after `next`, so the verify pass
@@ -138,6 +139,8 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
             out_ids[generated++] = t;
         }
         s.accepted += i;
+        if (s.groups > 0 && s.groups <= (int)(sizeof s.group_len / sizeof s.group_len[0]))
+            s.group_len[s.groups - 1] = (short)(s.group_len[s.groups - 1] + i);
         /* The drafter's rows past the accepted text hold rejected drafts. */
         if (dpos > pos + 1 + i) dpos = pos + 1 + i;
         if (stop) break;
