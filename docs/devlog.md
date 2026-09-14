@@ -418,6 +418,33 @@ verify of 8 tokens at 1.43 decode steps instead of ~2.5.
 (The trace first died in the tokenizer: the encoder will not truncate a text
 longer than its buffer, so the whole corpus is now encoded and cut after.)
 
+### Step 4.8c — speculative decoding on the real 30B
+
+`tools/eval/bench_speculate.py`, `bench/spec_qwen3_30b_m5pro.csv`: Qwen3-30B-A3B
+q8_row on the GPU, drafted by Qwen3-0.6B bf16, five chat prompts, 128 tokens,
+median of 3 runs per configuration. All 105 runs emit exactly plain greedy's
+tokens.
+
+  prompt    plain      best fixed draft             lookup-4   draft 8
+  rewrite   23.6 tok/s 37.2  (k=3, 1.58x, 78% acc)  1.11x      1.41x
+  code      23.7       36.4  (k=6, 1.54x, 64%)      1.11x      1.43x
+  list      23.5       35.3  (k=4, 1.50x, 73%)      0.89x      1.14x
+  explain   23.4       32.9  (k=2, 1.41x, 75%)      0.91x      1.01x
+  story     23.6       26.0  (k=2, 1.10x, 43%)      0.92x      0.58x
+
+- **It works, and it is not free.** 1.4-1.6x on text the 0.6B can predict;
+  1.1x on a story it cannot.
+- **A fixed draft length is a trap.** The best k runs from 2 to 6 across five
+  prompts, and the wrong one turns the story into a 0.58x slowdown: eight
+  mostly rejected drafts cost 4.6 s of drafting against 3.8 s of verifying.
+- **On a MoE, wrong drafts cost real time.** Prompt lookup, free on the dense
+  0.6B, loses 8-11% here when it finds nothing, because a 5-token verify
+  costs ~1.2 decode steps where on the dense model it cost ~1.0.
+
+That is the case for choosing the draft length step by step from what the
+machine and the text are doing -- expected accepted tokens against the
+measured cost of drafting and of verifying n tokens.
+
 **Next:** the 30B checkpoint (a 61 GB download): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.
