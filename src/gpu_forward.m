@@ -26,7 +26,8 @@
 
 enum { K_MATMUL_NAIVE, K_MATMUL_SIMD, K_MATMUL_TENSOR, K_EMBED, K_RMSNORM,
        K_QKROPE, K_ATTN, K_SWIGLU, K_RESIDUAL, K_NARROW, K_EMBED_Q,
-       K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32, K_COUNT };
+       K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32,
+       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM8, K_MOE_MM32, K_MOE_SCATTER, K_COUNT };
 
 static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_naive", "matmul_simdgroup", "matmul_tensorops", "embed_lookup",
@@ -34,7 +35,11 @@ static const char *gpu_kernel_names[K_COUNT] = {
     "narrow_bf16", "embed_lookup_q",
     "matmul_q8_row", "matmul_q8_g32", "matmul_q4_row", "matmul_q4_g32", "matmul_q4_g64",
     "matmul_tensorops_8x32",
+    "moe_route", "moe_group", "moe_gather", "moe_matmul_8", "moe_matmul_32", "moe_scatter",
 };
+
+/* A MoE pass takes at most one tile of rows per expert group (kernels.metal). */
+enum { MOE_MAX_ROWS = 32 };
 
 /* A projection as the GPU sees it: offsets into the one weights buffer, and
  * the kernel that multiplies by it. kernel < 0 means bf16 (the selectable
@@ -42,7 +47,8 @@ static const char *gpu_kernel_names[K_COUNT] = {
 typedef struct { size_t w, q, d; int bits, group, kernel; } GLinear;
 
 typedef struct { size_t input_ln, q_norm, k_norm, post_attn_ln;
-                 GLinear q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj; } LayerOffsets;
+                 GLinear q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj;
+                 bool moe; GLinear router; } LayerOffsets;
 
 struct GpuModel {
     MetalContext      *ctx;
@@ -53,11 +59,16 @@ struct GpuModel {
     void              *pso[K_COUNT];
     void              *weights;          /* one buffer over the whole mapping */
     size_t             final_norm_off;
-    GLinear            embed;
+    GLinear            embed, head;      /* head == embed when tied           */
     LayerOffsets      *layer;
 
     void *x, *xb, *q, *attout, *hb, *hb2, *kcache, *vcache, *logits, *tokens;
     void *act16;                         /* bf16 activations for Q4 matmuls   */
+
+    /* MoE: expert weight offsets in bfloats, [layer][gate, up, down][expert],
+     * and the routing and packed-row buffers of one <= 32-token pass. */
+    void *moe_offs, *moe_logits, *moe_idx, *moe_wt, *moe_rop, *moe_tor, *moe_groups,
+         *moe_ng, *moe_a, *moe_g, *moe_u, *moe_d;
 };
 
 static size_t offset_of(const SafeTensors *st, const char *name) {
@@ -97,10 +108,6 @@ static GLinear to_glinear(const SafeTensors *st, const Linear *l, int n_in) {
 
 GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
                            const Qwen3Config *cfg, int max_seq, int max_rows) {
-    /* Refused rather than half-run: a MoE layer has no dense projections to
-     * bind, and an untied head is a matrix this pass never reads. */
-    if (cfg->num_experts) die("MoE layers are not on the GPU yet (Phase 4); use the CPU path");
-    if (!cfg->tie_word_embeddings) die("an untied LM head is not on the GPU yet");
     GpuModel *g = calloc(1, sizeof *g);
     if (!g) die("out of memory for the GPU model");
     g->ctx = ctx; g->cfg = *cfg;
@@ -133,6 +140,14 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     const int Hd = cfg->hidden_size, Id = cfg->intermediate_size;
     const int qd = cfg->num_attention_heads * cfg->head_dim;
     g->embed = to_glinear(st, &w.embed, Hd);
+    g->head  = to_glinear(st, &w.head, Hd);
+    const size_t E = (size_t)cfg->num_experts;
+    uint64_t *offs = NULL;
+    if (E) {
+        g->moe_offs = (__bridge_retained void *)[dev newBufferWithLength:
+            (size_t)cfg->num_hidden_layers * 3 * E * sizeof(uint64_t) options:MTLResourceStorageModeShared];
+        offs = ((__bridge id<MTLBuffer>)g->moe_offs).contents;
+    }
     g->layer = calloc((size_t)cfg->num_hidden_layers, sizeof *g->layer);
     if (!g->layer) die("out of memory for %d layer offsets", cfg->num_hidden_layers);
 
@@ -147,6 +162,25 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
         o->k_proj    = to_glinear(st, &L->k_proj, Hd);
         o->v_proj    = to_glinear(st, &L->v_proj, Hd);
         o->o_proj    = to_glinear(st, &L->o_proj, qd);
+        if (L->experts) {
+            /* The grouped kernel reads bf16 experts by offset; quantised experts
+             * and routers are a later step, refused rather than misread. */
+            o->moe = true;
+            o->router = to_glinear(st, &L->router, Hd);
+            if (o->router.kernel >= 0) die("layer %d: a quantised router is not on the GPU yet", l);
+            for (size_t e = 0; e < E; e++) {
+                const Linear *pr[3] = {&L->experts[e].gate_proj, &L->experts[e].up_proj,
+                                       &L->experts[e].down_proj};
+                for (size_t p = 0; p < 3; p++) {
+                    GLinear gl = to_glinear(st, pr[p], p == 2 ? cfg->moe_intermediate_size : Hd);
+                    if (gl.kernel >= 0) die("layer %d: quantised experts are not on the GPU yet", l);
+                    offs[((size_t)l * 3 + p) * E + e] = gl.w / 2;
+                }
+            }
+            if (o->k_proj.bits != o->q_proj.bits || o->v_proj.bits != o->q_proj.bits)
+                die("layer %d mixes bit widths among projections sharing an input", l);
+            continue;
+        }
         o->gate_proj = to_glinear(st, &L->gate_proj, Hd);
         o->up_proj   = to_glinear(st, &L->up_proj, Hd);
         o->down_proj = to_glinear(st, &L->down_proj, Id);
@@ -174,6 +208,13 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     /* Widest matmul input is I (down_proj); bf16 needs half of a float each,
      * and allocating in floats keeps the macro. */
     ALLOC(act16, S * (I > q_dim ? I : q_dim));
+    if (E) {
+        const size_t R = MOE_MAX_ROWS, P = R * (size_t)cfg->num_experts_per_tok;
+        const size_t Ie = (size_t)cfg->moe_intermediate_size;
+        ALLOC(moe_logits, R * E); ALLOC(moe_idx, P); ALLOC(moe_wt, P); ALLOC(moe_rop, P);
+        ALLOC(moe_tor, P); ALLOC(moe_groups, 3 * E); ALLOC(moe_ng, 1);
+        ALLOC(moe_a, P * H); ALLOC(moe_g, P * Ie); ALLOC(moe_u, P * Ie); ALLOC(moe_d, P * H);
+    }
 #undef ALLOC
     g->tokens = (__bridge_retained void *)
         [dev newBufferWithLength:S * sizeof(int) options:MTLResourceStorageModeShared];
@@ -183,7 +224,9 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
 void gpu_model_free(GpuModel *g) {
     if (!g) return;
     void *bufs[] = {g->weights, g->x, g->xb, g->q, g->attout, g->hb, g->hb2,
-                    g->kcache, g->vcache, g->logits, g->tokens, g->act16};
+                    g->kcache, g->vcache, g->logits, g->tokens, g->act16, g->moe_offs,
+                    g->moe_logits, g->moe_idx, g->moe_wt, g->moe_rop, g->moe_tor, g->moe_groups,
+                    g->moe_ng, g->moe_a, g->moe_g, g->moe_u, g->moe_d};
     for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++)
         if (bufs[i]) CFRelease(bufs[i]);
     free(g->layer);
@@ -282,6 +325,68 @@ static void encode_rmsnorm(GpuModel *g, id<MTLComputeCommandEncoder> enc,
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
+/* ------------------------------------------------------------------ MoE
+ * Route, group, gather, grouped SwiGLU, scatter: nine dispatches per layer
+ * however many experts the tokens pick. kernels.metal says why. */
+struct MoeDimsC { uint32_t n, experts, k, hidden, inter, norm; };
+
+static void pso_set(GpuModel *g, id<MTLComputeCommandEncoder> enc, int kernel, void **bufs, int nb) {
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[kernel]];
+    for (int i = 0; i < nb; i++) [enc setBuffer:(__bridge id<MTLBuffer>)bufs[i] offset:0 atIndex:(NSUInteger)i];
+}
+
+/* One projection for every expert group at once: row y of the grid is a
+ * group, column x a 32-wide tile of its output. 8-row tiles when no group can
+ * exceed 8 rows (n <= 8), as in the dense pass. */
+static void encode_moe_matmul(GpuModel *g, id<MTLComputeCommandEncoder> enc, void *C, void *A,
+                              int layer, int proj, int n, int N, int K) {
+    const int E = g->cfg.num_experts, pairs = n * g->cfg.num_experts_per_tok;
+    void *bufs[] = {C, A, g->weights, g->moe_offs, g->moe_groups, g->moe_ng};
+    pso_set(g, enc, n <= 8 ? K_MOE_MM8 : K_MOE_MM32, bufs, 6);
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->moe_offs
+            offset:((NSUInteger)layer * 3 + (NSUInteger)proj) * (NSUInteger)E * sizeof(uint64_t) atIndex:3];
+    struct MatmulDimsC d = {(uint32_t)n, (uint32_t)N, (uint32_t)K};
+    [enc setBytes:&d length:sizeof d atIndex:6];
+    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32), (NSUInteger)(pairs < E ? pairs : E), 1)
+        threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+}
+
+static void encode_moe(GpuModel *g, id<MTLComputeCommandEncoder> enc, const LayerOffsets *o,
+                       int layer, int n) {
+    const Qwen3Config *c = &g->cfg;
+    const int H = c->hidden_size, E = c->num_experts, Ie = c->moe_intermediate_size;
+    const NSUInteger P = (NSUInteger)(n * c->num_experts_per_tok);
+    struct MoeDimsC md = {(uint32_t)n, (uint32_t)E, (uint32_t)c->num_experts_per_tok,
+                          (uint32_t)H, (uint32_t)Ie, c->norm_topk_prob ? 1u : 0u};
+
+    encode_linear(g, enc, g->moe_logits, 0, g->xb, 0, &o->router, n, E, H);
+    void *route[] = {g->moe_logits, g->moe_idx, g->moe_wt};
+    pso_set(g, enc, K_MOE_ROUTE, route, 3);
+    [enc setBytes:&md length:sizeof md atIndex:3];
+    [enc dispatchThreads:MTLSizeMake((NSUInteger)n, 1, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+
+    void *group[] = {g->moe_idx, g->moe_rop, g->moe_tor, g->moe_groups, g->moe_ng};
+    pso_set(g, enc, K_MOE_GROUP, group, 5);
+    [enc setBytes:&md length:sizeof md atIndex:5];
+    [enc dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+
+    void *gather[] = {g->moe_a, g->xb, g->moe_tor};
+    pso_set(g, enc, K_MOE_GATHER, gather, 3);
+    [enc setBytes:&md length:sizeof md atIndex:3];
+    [enc dispatchThreads:MTLSizeMake(P * (NSUInteger)H, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+
+    encode_moe_matmul(g, enc, g->moe_g, g->moe_a, layer, 0, n, Ie, H);
+    encode_moe_matmul(g, enc, g->moe_u, g->moe_a, layer, 1, n, Ie, H);
+    encode_elem(g, enc, K_SWIGLU, g->moe_g, 0, g->moe_u, 0, P * (NSUInteger)Ie);
+    encode_moe_matmul(g, enc, g->moe_d, g->moe_g, layer, 2, n, H, Ie);
+
+    void *scatter[] = {g->x, g->moe_d, g->moe_rop, g->moe_wt};
+    pso_set(g, enc, K_MOE_SCATTER, scatter, 4);
+    [enc setBytes:&md length:sizeof md atIndex:4];
+    [enc dispatchThreads:MTLSizeMake((NSUInteger)n * (NSUInteger)H, 1, 1)
+   threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
 /* ------------------------------------------------------------ profiling
  * Optional. With a Prof attached, the pass is cut into one compute encoder
  * per op group and the GPU stamps the start and end of each (Apple GPUs only
@@ -319,13 +424,33 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
 
 double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                    float *logits_out) {
-    return gpu_pass(g, tokens, n, pos, logits_from, logits_out, NULL);
+    if (!g->cfg.num_experts || n <= MOE_MAX_ROWS)
+        return gpu_pass(g, tokens, n, pos, logits_from, logits_out, NULL);
+
+    /* A MoE model takes longer inputs in chunks of MOE_MAX_ROWS. The cache
+     * makes that exact: a chunk at position p reads what earlier chunks wrote,
+     * the same arithmetic as one pass. Each chunk returns only the logit rows
+     * the caller asked for, landing where one pass would have put them. */
+    const size_t V = (size_t)g->cfg.vocab_size;
+    double t = 0;
+    for (int done = 0; done < n; done += MOE_MAX_ROWS) {
+        const int c = n - done < MOE_MAX_ROWS ? n - done : MOE_MAX_ROWS;
+        if (done + c <= logits_from) {
+            t += gpu_pass(g, tokens + done, c, pos + done, c - 1, NULL, NULL);
+            continue;
+        }
+        const int from = logits_from > done ? logits_from - done : 0;
+        t += gpu_pass(g, tokens + done, c, pos + done, from,
+                      logits_out ? logits_out + (size_t)(done + from - logits_from) * V : NULL, NULL);
+    }
+    return t;
 }
 
 /* One pass with per-group GPU time added into seconds[GPU_PROF_CLASSES].
  * Returns the command buffer's own GPU time for the (cut) pass. */
 double gpu_forward_profile(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                            double *seconds) {
+    if (g->cfg.num_experts && n > MOE_MAX_ROWS) die("profile a MoE pass at most %d tokens", MOE_MAX_ROWS);
     id<MTLDevice> dev = (__bridge id<MTLDevice>)metal_device(g->ctx);
     if (![dev supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])
         die("this GPU cannot timestamp encoder boundaries");
@@ -457,6 +582,7 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
         enc = prof_next(prof, cb, enc, 1);
         encode_rmsnorm(g, enc, g->xb, 0, g->x, 0, o->post_attn_ln, n, H, eps);
         enc = prof_next(prof, cb, enc, 5);
+        if (o->moe) { encode_moe(g, enc, o, l, n); continue; }
         input_for(g, enc, &o->gate_proj, g->xb, 0, (size_t)n * (size_t)H, &in, &in_off);
         encode_linear(g, enc, g->hb, 0, in, in_off, &o->gate_proj, n, I, H);
         encode_linear(g, enc, g->hb2, 0, in, in_off, &o->up_proj, n, I, H);
@@ -473,9 +599,9 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
     encode_rmsnorm(g, enc, g->xb, 0, g->x, 0, g->final_norm_off, n, H, eps);
     enc = prof_next(prof, cb, enc, 7);
     void *hin; size_t hin_off;
-    input_for(g, enc, &g->embed, g->xb, (size_t)logits_from * (size_t)H * sizeof(float),
+    input_for(g, enc, &g->head, g->xb, (size_t)logits_from * (size_t)H * sizeof(float),
               (size_t)(n - logits_from) * (size_t)H, &hin, &hin_off);
-    encode_linear(g, enc, g->logits, 0, hin, hin_off, &g->embed, n - logits_from,
+    encode_linear(g, enc, g->logits, 0, hin, hin_off, &g->head, n - logits_from,
                   cfg->vocab_size, H);
 
     [enc endEncoding];

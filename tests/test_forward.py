@@ -40,6 +40,9 @@ MAX_REL_ERROR = 1e-4
 MAX_KL_NATS = 1e-7
 
 PROMPTS = ["Hello", "The capital of France is", "Roses are red and violets are"]
+LONG_PROMPT = ("Machine learning systems are usually evaluated on benchmarks, but the numbers "
+               "that matter in production are latency, memory footprint, and the cost of a "
+               "single request; everything else is a proxy for one of those.")
 
 
 def c_logits(model_dir: Path, ids: list[int], vocab: int, mode: str) -> np.ndarray:
@@ -89,16 +92,18 @@ def main() -> None:
 
     tok = AutoTokenizer.from_pretrained(model_dir)
 
+    # A MoE pass takes at most 32 tokens and splits longer inputs (gpu_forward.m),
+    # and groups of more than 8 rows switch tile. 40 tokens covers both.
+    prompts = PROMPTS + ([LONG_PROMPT] if cfg.num_experts else [])
     all_ok = True
-    for prompt in PROMPTS:
+    for prompt in prompts:
         ids = tok(prompt)["input_ids"]
         print(f"\n=== {len(ids)} tokens: {prompt!r} ===")
         ref = forward(ids, weights, cfg)
-        modes = [("--forward", "CPU batch"), ("--forward-incr", "CPU incremental")]
-        # A MoE model has no GPU pass yet (Phase 4); the engine refuses one.
-        if not cfg.num_experts:
-            modes += [("--gpu-forward", "GPU batch"), ("--gpu-forward-incr", "GPU incremental")]
-        for mode, label in modes:
+        for mode, label in (("--forward", "CPU batch"),
+                            ("--forward-incr", "CPU incremental"),
+                            ("--gpu-forward", "GPU batch"),
+                            ("--gpu-forward-incr", "GPU incremental")):
             ours = c_logits(model_dir, ids, cfg.vocab_size, mode)
             all_ok &= compare(ours, ref, f"{len(ids)} tokens, {label}")
         print(f"  oracle's next token   : {tok.decode([int(ref[-1].argmax())])!r}")

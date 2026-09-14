@@ -150,10 +150,30 @@ router weights not renormalised, head tied, top-1 instead of top-2 -- and
 compared with the oracle on the right one: all three caught. Dense, quantised
 and generation parity unchanged. The GPU refuses MoE and untied heads loudly.
 
-**Next:** without the 30B, two things can still be built at its real shapes:
-the MoE layer on the GPU (verified on the tiny model), and the verify-cost
-surface of ONE 30B-shaped MoE layer, with synthetic weights, as a function of
-tokens and distinct experts -- the measurement the whole plan rests on.
+### Step 4.6 (early) — the MoE layer on the GPU, routing included
+
+Routing is data, and reading it back per layer would cost 48 round trips per
+token on the 30B, so it never leaves the GPU. One MoE layer is nine dispatches
+whatever the tokens pick: router matmul, `moe_route` (softmax and top-k, the
+CPU's arithmetic in the CPU's order), `moe_group` (a counting sort of the
+token-expert pairs by expert, one GPU thread), `moe_gather`, grouped gate and
+up, swiglu, grouped down, `moe_scatter`. A grouped matmul is one dispatch for
+every expert at once -- grid row y is an expert group, column x a 32-wide
+tile -- so by step 4.1's measurements it should be priced by distinct experts.
+
+A group holds at most one tile of rows, so a MoE pass takes <= 32 tokens and
+gpu_forward splits longer inputs into cached chunks. Bf16 experts only for now;
+quantised experts are refused, not misread. The LM head is untied on the GPU.
+
+Against the oracle on the tiny MoE, 1/5/9/40 tokens, GPU batch and incremental:
+worst relative error 1.1e-6, KL 4.0e-12 -- the 40-token prompt goes through a
+32-token chunk, the 32-row tile, and an 8-token tail. A mutated moe_route (no
+renormalisation) fails all four GPU cases. Dense and quantised parity and
+test-speculate unchanged.
+
+**Next:** the verify-cost surface of ONE Qwen3-30B-A3B-shaped MoE layer with
+synthetic weights (128 experts x 3 x 2048x768, 1.2 GB bf16): GPU time as a
+function of tokens verified and distinct experts touched, routing forced.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

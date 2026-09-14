@@ -620,3 +620,141 @@ kernel void embed_lookup_q(device float        *x      [[buffer(0)]],
     }
     x[gid] = float(scales[row * (d.hidden / d.group) + i / d.group]) * float(code);
 }
+
+/* =======================================================================
+ * Phase 4: a MoE layer on the GPU, routing included.
+ *
+ * Which experts a token uses is data, known only after the router runs. Reading
+ * it back to the CPU would cost a round trip per layer, 48 per token on the
+ * 30B. So routing stays on the GPU and the layer is a fixed handful of
+ * dispatches whatever the routing turns out to be:
+ *
+ *   router matmul -> moe_route (softmax, top-k) -> moe_group (counting sort of
+ *   the (token, expert) pairs by expert) -> moe_gather (rows per expert, packed)
+ *   -> grouped gate, up -> swiglu -> grouped down -> moe_scatter (weighted sum
+ *   back into the residual stream).
+ *
+ * A grouped matmul is ONE dispatch for all experts: threadgroup row y is expert
+ * group y, column x a 32-wide tile of its output. Step 4.1 measured that rows
+ * cost nothing up to the tile and tiles run in parallel, so this is priced by
+ * distinct experts, not by tokens -- the cost model the plan needs to measure.
+ *
+ * Bound: a group holds at most one tile of rows (8 or 32), so a MoE pass takes
+ * at most 32 tokens; the host splits longer prefills. Each token picks an
+ * expert at most once, so a group can never exceed the number of tokens. */
+struct MoeDims { uint n, experts, k, hidden, inter, norm; };
+#define MOE_MAX_EXPERTS 512
+
+/* Per token: the CPU's arithmetic in the CPU's order (softmax as ops.c,
+ * selection with ties to the lower index as model.c), so routing agrees. */
+kernel void moe_route(device const float *logits [[buffer(0)]],
+                      device uint        *idx    [[buffer(1)]],
+                      device float       *wt     [[buffer(2)]],
+                      constant MoeDims   &d      [[buffer(3)]],
+                      uint t [[thread_position_in_grid]]) {
+    if (t >= d.n) return;
+    const uint E = d.experts, k = d.k;
+    float p[MOE_MAX_EXPERTS];
+    float mx = logits[t * E];
+    for (uint e = 1; e < E; e++) mx = max(mx, logits[t * E + e]);
+    float sum = 0.0f;
+    for (uint e = 0; e < E; e++) { p[e] = exp(logits[t * E + e] - mx); sum += p[e]; }
+    for (uint e = 0; e < E; e++) p[e] /= sum;
+
+    float s = 0.0f;
+    for (uint j = 0; j < k; j++) {
+        int best = -1;
+        for (uint e = 0; e < E; e++) {
+            bool taken = false;
+            for (uint i = 0; i < j; i++) taken = taken || idx[t * k + i] == e;
+            if (!taken && (best < 0 || p[e] > p[best])) best = int(e);
+        }
+        idx[t * k + j] = uint(best);
+        wt[t * k + j] = p[best];
+        s += p[best];
+    }
+    if (d.norm) for (uint j = 0; j < k; j++) wt[t * k + j] /= s;
+}
+
+/* One thread, sequential: n*k <= 256 pairs, E buckets. groups[3g..3g+2] =
+ * (expert, first row, rows); row_of_pair maps a pair to its packed row. */
+kernel void moe_group(device const uint *idx          [[buffer(0)]],
+                      device uint       *row_of_pair  [[buffer(1)]],
+                      device uint       *token_of_row [[buffer(2)]],
+                      device uint       *groups       [[buffer(3)]],
+                      device uint       *n_groups     [[buffer(4)]],
+                      constant MoeDims  &d            [[buffer(5)]],
+                      uint gid [[thread_position_in_grid]]) {
+    if (gid != 0) return;
+    uint count[MOE_MAX_EXPERTS], start[MOE_MAX_EXPERTS];
+    for (uint e = 0; e < d.experts; e++) count[e] = 0;
+    for (uint p = 0; p < d.n * d.k; p++) count[idx[p]]++;
+    uint g = 0, acc = 0;
+    for (uint e = 0; e < d.experts; e++) {
+        start[e] = acc;
+        if (count[e] == 0) continue;
+        groups[3 * g] = e; groups[3 * g + 1] = acc; groups[3 * g + 2] = count[e];
+        g++;
+        acc += count[e];
+    }
+    for (uint p = 0; p < d.n * d.k; p++) {
+        const uint r = start[idx[p]]++;
+        row_of_pair[p] = r;
+        token_of_row[r] = p / d.k;
+    }
+    n_groups[0] = g;
+}
+
+kernel void moe_gather(device float        *out          [[buffer(0)]],
+                       device const float  *xb           [[buffer(1)]],
+                       device const uint   *token_of_row [[buffer(2)]],
+                       constant MoeDims    &d            [[buffer(3)]],
+                       uint i [[thread_position_in_grid]]) {
+    if (i >= d.n * d.k * d.hidden) return;
+    out[i] = xb[token_of_row[i / d.hidden] * d.hidden + i % d.hidden];
+}
+
+/* Expert weights sit at offs[expert] bfloats into the one weights buffer. */
+#define MOE_MATMUL(NAME, TILE_M)                                                   \
+kernel void NAME(device float        *C        [[buffer(0)]],                     \
+                 device float        *A        [[buffer(1)]],                     \
+                 device bfloat       *W        [[buffer(2)]],                     \
+                 device const ulong  *offs     [[buffer(3)]],                     \
+                 device const uint   *groups   [[buffer(4)]],                     \
+                 device const uint   *n_groups [[buffer(5)]],                     \
+                 constant MatmulDims &d        [[buffer(6)]],                     \
+                 uint2 tgid [[threadgroup_position_in_grid]]) {                   \
+    if (tgid.y >= n_groups[0]) return;                                            \
+    const uint e = groups[3 * tgid.y], r0 = groups[3 * tgid.y + 1];               \
+    const uint rows = groups[3 * tgid.y + 2];                                     \
+    constexpr auto desc = matmul2d_descriptor(TILE_M, 32,                         \
+                              static_cast<int>(dynamic_extent), false, true);    \
+    matmul2d<desc, execution_simdgroups<4>> op;                                   \
+    auto tA = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
+                  A + r0 * d.K, dextents<int32_t, 2>(int(d.K), int(rows)));      \
+    auto tB = tensor<device bfloat, dextents<int32_t, 2>, tensor_inline>(          \
+                  W + offs[e], dextents<int32_t, 2>(int(d.K), int(d.N)));        \
+    auto tC = tensor<device float,  dextents<int32_t, 2>, tensor_inline>(          \
+                  C + r0 * d.N, dextents<int32_t, 2>(int(d.N), int(rows)));      \
+    auto mB = tB.slice(0, int(tgid.x) * 32);                                      \
+    auto mC = tC.slice(int(tgid.x) * 32, 0);                                      \
+    op.run(tA, mB, mC);                                                           \
+}
+MOE_MATMUL(moe_matmul_8,   8)
+MOE_MATMUL(moe_matmul_32, 32)
+
+/* x[t] += sum_j wt[t,j] * expert_out[row(t,j)], summed before the add as
+ * model.c does, so the two paths round the same way. */
+kernel void moe_scatter(device float        *x           [[buffer(0)]],
+                        device const float  *out         [[buffer(1)]],
+                        device const uint   *row_of_pair [[buffer(2)]],
+                        device const float  *wt          [[buffer(3)]],
+                        constant MoeDims    &d           [[buffer(4)]],
+                        uint i [[thread_position_in_grid]]) {
+    if (i >= d.n * d.hidden) return;
+    const uint t = i / d.hidden, c = i % d.hidden;
+    float acc = 0.0f;
+    for (uint j = 0; j < d.k; j++)
+        acc += wt[t * d.k + j] * out[row_of_pair[t * d.k + j] * d.hidden + c];
+    x[i] += acc;
+}
