@@ -797,6 +797,16 @@ kernel void NAME(device float        *C        [[buffer(0)]],                   
 }
 MOE_MATMUL_Q8ROW(moe_matmul_q8row)
 
+/* Routing trace (Phase 4): one layer's top-k indices copied out for the host,
+ * so what the router chose can be counted without leaving the GPU pass. */
+kernel void copy_uint(device uint        *dst [[buffer(0)]],
+                      device const uint  *src [[buffer(1)]],
+                      constant ElemDims  &d   [[buffer(2)]],
+                      uint i [[thread_position_in_grid]]) {
+    if (i >= d.count) return;
+    dst[i] = src[i];
+}
+
 /* x[t] += sum_j wt[t,j] * expert_out[row(t,j)], summed before the add as
  * model.c does, so the two paths round the same way. */
 kernel void moe_scatter(device float        *x           [[buffer(0)]],

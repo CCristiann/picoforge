@@ -27,7 +27,8 @@
 enum { K_MATMUL_NAIVE, K_MATMUL_SIMD, K_MATMUL_TENSOR, K_EMBED, K_RMSNORM,
        K_QKROPE, K_ATTN, K_SWIGLU, K_RESIDUAL, K_NARROW, K_EMBED_Q,
        K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32,
-       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM, K_MOE_SCATTER, K_MOE_Q8, K_COUNT };
+       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM, K_MOE_SCATTER, K_MOE_Q8, K_COPY_UINT,
+       K_COUNT };
 
 static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_naive", "matmul_simdgroup", "matmul_tensorops", "embed_lookup",
@@ -36,6 +37,7 @@ static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_q8_row", "matmul_q8_g32", "matmul_q4_row", "matmul_q4_g32", "matmul_q4_g64",
     "matmul_tensorops_8x32",
     "moe_route", "moe_group", "moe_gather", "moe_matmul", "moe_scatter", "moe_matmul_q8row",
+    "copy_uint",
 };
 
 /* A MoE pass takes at most 4 row tiles of 8 per expert group (kernels.metal),
@@ -71,6 +73,7 @@ struct GpuModel {
      * and the routing and packed-row buffers of one <= 32-token pass. */
     void *moe_offs, *moe_logits, *moe_idx, *moe_wt, *moe_rop, *moe_tor, *moe_groups,
          *moe_ng, *moe_a, *moe_g, *moe_u, *moe_d;
+    void *moe_trace;                     /* [layer][row][k] when tracing, else NULL */
 };
 
 static size_t offset_of(const SafeTensors *st, const char *name) {
@@ -240,7 +243,7 @@ void gpu_model_free(GpuModel *g) {
     void *bufs[] = {g->weights, g->x, g->xb, g->q, g->attout, g->hb, g->hb2,
                     g->kcache, g->vcache, g->logits, g->tokens, g->act16, g->moe_offs,
                     g->moe_logits, g->moe_idx, g->moe_wt, g->moe_rop, g->moe_tor, g->moe_groups,
-                    g->moe_ng, g->moe_a, g->moe_g, g->moe_u, g->moe_d};
+                    g->moe_ng, g->moe_a, g->moe_g, g->moe_u, g->moe_d, g->moe_trace};
     for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++)
         if (bufs[i]) CFRelease(bufs[i]);
     free(g->layer);
@@ -249,6 +252,25 @@ void gpu_model_free(GpuModel *g) {
 
 void gpu_set_matmul_kernel(GpuModel *g, int which) { g->matmul_kernel = which; }
 void gpu_set_small_tile(GpuModel *g, bool on) { g->small_tile = on; }
+
+void gpu_set_routing_trace(GpuModel *g, bool on) {
+    if (!g->cfg.num_experts) die("routing trace: not a MoE model");
+    if (on && !g->moe_trace) {
+        id<MTLDevice> dev = (__bridge id<MTLDevice>)metal_device(g->ctx);
+        g->moe_trace = (__bridge_retained void *)[dev newBufferWithLength:
+            (size_t)g->cfg.num_hidden_layers * MOE_MAX_ROWS * (size_t)g->cfg.num_experts_per_tok
+            * sizeof(uint32_t) options:MTLResourceStorageModeShared];
+        memset(((__bridge id<MTLBuffer>)g->moe_trace).contents, 0xFF,
+               ((__bridge id<MTLBuffer>)g->moe_trace).length);
+    } else if (!on && g->moe_trace) {
+        CFRelease(g->moe_trace);
+        g->moe_trace = NULL;
+    }
+}
+
+const uint32_t *gpu_routing_trace(const GpuModel *g) {
+    return g->moe_trace ? ((__bridge id<MTLBuffer>)g->moe_trace).contents : NULL;
+}
 
 /* ------------------------------------------------------------- encoding */
 
@@ -398,6 +420,16 @@ static void encode_moe(GpuModel *g, id<MTLComputeCommandEncoder> enc, const Laye
     encode_moe_matmul(g, enc, g->moe_u, g->moe_a, layer, 1, n, Ie, H);
     encode_elem(g, enc, K_SWIGLU, g->moe_g, 0, g->moe_u, 0, P * (NSUInteger)Ie);
     encode_moe_matmul(g, enc, g->moe_d, g->moe_g, layer, 2, n, H, Ie);
+
+    if (g->moe_trace) {
+        const NSUInteger per_layer = MOE_MAX_ROWS * (NSUInteger)c->num_experts_per_tok * sizeof(uint32_t);
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_COPY_UINT]];
+        [enc setBuffer:(__bridge id<MTLBuffer>)g->moe_trace offset:(NSUInteger)layer * per_layer atIndex:0];
+        [enc setBuffer:(__bridge id<MTLBuffer>)g->moe_idx offset:0 atIndex:1];
+        struct ElemDimsC ed = {(uint32_t)P};
+        [enc setBytes:&ed length:sizeof ed atIndex:2];
+        [enc dispatchThreads:MTLSizeMake(P, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+    }
 
     void *scatter[] = {g->x, g->moe_d, g->moe_rop, g->moe_wt};
     pso_set(g, enc, K_MOE_SCATTER, scatter, 4);

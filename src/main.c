@@ -140,6 +140,46 @@ int main(int argc, char **argv) {
     if (argc > 3 && strcmp(argv[2], "--bench-moe") == 0)
         bench_moe(model_dir, argv[3]);
 
+    /* --routing-trace TEXT_FILE MAX_TOKENS OUT.bin : feed a text through a MoE
+     * model on the GPU, 32 tokens a pass, and record which experts every token
+     * chose in every layer. OUT is a 16-byte header (u32 tokens, layers, k,
+     * experts) then u16 ids [token][layer][k], dense layers as 0xFFFF.
+     * tools/eval/routing_overlap.py turns it into distinct experts per window. */
+    if (argc > 5 && strcmp(argv[2], "--routing-trace") == 0) {
+        size_t len;
+        char *text = slurp(argv[3], &len);
+        const int max_tokens = atoi(argv[4]);
+        int *ids = malloc((size_t)max_tokens * sizeof *ids);
+        if (!ids) die("out of memory for %d tokens", max_tokens);
+        const int n_ids = tokenizer_encode(&tok, text, (int)len, ids, max_tokens);
+        free(text);
+        MetalContext *mtl = metal_init("picoforge.metallib");
+        GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, n_ids, 1);
+        gpu_set_routing_trace(gpu, true);
+
+        const int L = cfg.num_hidden_layers, k = cfg.num_experts_per_tok;
+        FILE *f = fopen(argv[5], "wb");
+        if (!f) die("cannot write %s", argv[5]);
+        const uint32_t hdr[4] = {(uint32_t)n_ids, (uint32_t)L, (uint32_t)k, (uint32_t)cfg.num_experts};
+        fwrite(hdr, sizeof hdr, 1, f);
+        for (int done = 0; done < n_ids; done += 32) {
+            const int n = n_ids - done < 32 ? n_ids - done : 32;
+            gpu_forward(gpu, ids + done, n, done, n - 1, NULL);
+            const uint32_t *tr = gpu_routing_trace(gpu);
+            for (int t = 0; t < n; t++)
+                for (int l = 0; l < L; l++)
+                    for (int j = 0; j < k; j++) {
+                        const uint16_t e = (uint16_t)tr[((size_t)l * 32 + (size_t)t) * (size_t)k + (size_t)j];
+                        fwrite(&e, sizeof e, 1, f);
+                    }
+        }
+        fclose(f);
+        printf("routing trace: %d tokens x %d layers x top-%d -> %s\n", n_ids, L, k, argv[5]);
+        gpu_model_free(gpu);
+        metal_shutdown(mtl);
+        free(ids);
+    }
+
     /* --bench-quant OUT.csv : the quantised kernels, same protocol. */
     if (argc > 3 && strcmp(argv[2], "--bench-quant") == 0) {
         MetalContext *mtl = metal_init("picoforge.metallib");

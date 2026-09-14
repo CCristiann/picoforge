@@ -363,6 +363,11 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
 void gpu_model_free(GpuModel *g);
 void gpu_set_matmul_kernel(GpuModel *g, int which);
 void gpu_set_small_tile(GpuModel *g, bool on);   /* 8x32 TensorOps tiles for M <= 8, default on */
+/* Routing trace, MoE models only. When on, every MoE layer of a pass of n <= 32
+ * tokens records its top-k experts: trace[(layer * 32 + t) * k + j], most
+ * probable first. Dense layers keep 0xFFFFFFFF. Valid until the next pass. */
+void gpu_set_routing_trace(GpuModel *g, bool on);
+const uint32_t *gpu_routing_trace(const GpuModel *g);
 /* Returns the GPU seconds the pass took, measured by the GPU. */
 double gpu_forward(GpuModel *g, const int *tokens, int n, int pos, int logits_from,
                    float *logits_out);

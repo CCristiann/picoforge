@@ -310,6 +310,31 @@ against the single-file model:
   byte-bounded LRU cache; with 40 MB of cache on an 80 MB model its logits
   equal the eager load's exactly.
 
+### Step 4.7b — the instrument for the one number still missing
+
+What a verify step costs is known as a function of distinct experts; how many
+distinct experts real consecutive tokens touch is a property of the trained
+router. The instrument for it is built and verified, so the download can go
+straight to the measurement:
+
+- `--routing-trace TEXT MAX_TOKENS OUT.bin` feeds a text through a MoE model on
+  the GPU, 32 tokens a pass, and records every token's top-k experts in every
+  layer (a copy kernel after moe_route; routing never leaves the pass).
+- `make test-routing-trace` holds the trace to transformers on the tiny MoE,
+  router logits top-k'd in PyTorch: 46/46 tokens identical in both MoE layers,
+  in probability order; the dense layer marked dense.
+- `tools/eval/routing_overlap.py` reports distinct experts per window of
+  w = 1..32 tokens against the uniform-routing expectation, and turns them into
+  the estimated MoE cost of a verify step in decode steps, from the committed
+  cost model.
+
+With the 30B, the measurement is four commands:
+
+    hf download Qwen/Qwen3-30B-A3B --local-dir models/Qwen3-30B-A3B
+    tools/venv/bin/python tools/quant/quantize.py models/Qwen3-30B-A3B q8_row
+    ./picoforge models/Qwen3-30B-A3B-q8_row --routing-trace TEXT 4096 build/trace_30b.bin
+    tools/venv/bin/python tools/eval/routing_overlap.py build/trace_30b.bin bench/routing_overlap_30b.csv
+
 **Next:** the 30B checkpoint (a download that needs the human's yes): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.
