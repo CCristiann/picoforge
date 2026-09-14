@@ -14,6 +14,14 @@ measured on one reference machine by a written protocol.
 Measured on an Apple M5 Pro (64 GB, 307 GB/s). Raw data in [`bench/`](bench/),
 protocol in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
+- **Qwen3-30B-A3B on one laptop GPU:** q8_row (31.2 GB), 21.0 tok/s decode at
+  cache depth 512, verified against the CPU path, which is verified against
+  the NumPy oracle and transformers on the real weights.
+- **Adaptive, lossless speculative decoding for MoE:** Qwen3-0.6B drafts for the
+  30B; the draft length is chosen before every pass from measured acceptance
+  and measured drafting and verification cost. 1.44x geometric-mean decode
+  speedup over five prompts (1.11x-1.67x), output identical to greedy in every
+  run, and better than any fixed draft length.
 - **Qwen3-0.6B on the GPU:** 4490 tok/s prefill (512 tokens), 75.9 tok/s decode
   at cache depth 512, bf16.
 - **Lossless speculative decoding:** greedy verification with a prompt-lookup
@@ -25,7 +33,9 @@ protocol in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 - **A measured verify-cost model for MoE on this machine:** one Qwen3-30B-A3B
   layer costs ~0.35 ms + 22 µs per distinct q8 expert touched, nearly
   independent of how many tokens share them
-  ([plot](bench/moe_verify_cost.png)).
+  ([plot](bench/moe_verify_cost.png)); and the trained router's locality keeps
+  that union small: eight consecutive tokens of real text touch 39% of the
+  experts uniform routing would.
 - **Quantisation:** q8_row (no measurable perplexity cost) and q4_g32 formats,
   consumed natively by the matrix units.
 

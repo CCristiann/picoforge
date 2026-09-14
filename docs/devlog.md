@@ -445,9 +445,46 @@ That is the case for choosing the draft length step by step from what the
 machine and the text are doing -- expected accepted tokens against the
 measured cost of drafting and of verifying n tokens.
 
-**Next:** the 30B checkpoint (a 61 GB download): sharded
-safetensors, parity, and the routing-overlap measurement that turns this cost
-model into a draft scheduler.
+### Step 4.8d — choosing the draft length from the machine and the text
+
+`DRAFT=auto` (src/speculate.c): before every pass, the scheduler picks the
+k that maximises expected tokens per second, from three running estimates --
+draft acceptance (forgotten counts over a Beta(1,1) prior), drafter seconds
+per token, and target seconds per pass size -- with k = 0 as plain decoding
+and a one-draft probe after eight plain steps. Nothing is trained; on a MoE
+the verify cost already contains the experts the text's routing touches,
+because it is timed.
+
+The first version lost to every fixed length (0.98x on the list prompt,
+35 of 42 passes at k = 0). It charged the drafter's prompt prefill, and each
+catch-up pass after plain steps, to the draft tokens that followed: drafting
+looked like 17 ms a token instead of 9.5, so it drafted less, fell further
+behind, and looked dearer still. The drafter now reads the prompt before the
+loop and its cost is timed on ordinary passes. Moving that prefill first wrote
+the drafter's logits over the target's and changed the first token -- 61
+tokens where greedy emits 47 -- caught by comparing against greedy before any
+number was taken, and fixed.
+
+Same benchmark as 4.8c, re-run in full, `bench/spec_qwen3_30b_m5pro.csv`,
+speedup over plain decoding, all 135 runs identical to greedy:
+
+                 explain  code  list  rewrite  story   geomean  worst
+  draft 2          1.48   1.54  1.40   1.55    1.13     1.41    1.13
+  draft 3          1.29   1.51  1.48   1.64    0.97     1.36    0.97
+  draft 4          1.28   1.54  1.70   1.53    0.86     1.35    0.86
+  draft 8          1.06   1.50  1.25   1.48    0.58     1.11    0.58
+  auto             1.43   1.49  1.57   1.67    1.11     1.44    1.11
+
+**Without being told anything about the text, the scheduler beats every fixed
+draft length on the geometric mean and keeps the worst case at 1.11x**, within
+93-101% of the best length chosen after the fact for each prompt. Prompt
+lookup, costly on a MoE when it finds nothing, goes from 0.98x to 1.03x under
+the same scheduler.
+
+**Next:** expert-aware drafting proper -- predicting the experts a draft will
+touch from the routing of the tokens just accepted, and pricing drafts by their
+predicted union rather than by the average verify cost; and the decode path
+itself, where the 30B spends 47.7 ms a token at 24% of the machine's bandwidth.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 
