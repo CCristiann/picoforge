@@ -100,10 +100,12 @@ def main() -> None:
         ids = tok(prompt)["input_ids"]
         print(f"\n=== {len(ids)} tokens: {prompt!r} ===")
         ref = forward(ids, weights, cfg)
-        for mode, label in (("--forward", "CPU batch"),
-                            ("--forward-incr", "CPU incremental"),
-                            ("--gpu-forward", "GPU batch"),
-                            ("--gpu-forward-incr", "GPU incremental")):
+        modes = [("--forward", "CPU batch"), ("--forward-incr", "CPU incremental")]
+        # A sharded checkpoint cannot bind as one GPU buffer (the engine
+        # refuses); its GPU check is on the quantised single file instead.
+        if not (model_dir / "model.safetensors.index.json").exists():
+            modes += [("--gpu-forward", "GPU batch"), ("--gpu-forward-incr", "GPU incremental")]
+        for mode, label in modes:
             ours = c_logits(model_dir, ids, cfg.vocab_size, mode)
             all_ok &= compare(ours, ref, f"{len(ids)} tokens, {label}")
         print(f"  oracle's next token   : {tok.decode([int(ref[-1].argmax())])!r}")
