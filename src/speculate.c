@@ -72,14 +72,29 @@ static int lookup_draft(const int *ctx, int n, int max_draft, int *draft) {
 /* k greedy tokens from the draft model continuing ctx[0..n), written to
  * ctx[n..n+k). The drafter's cache holds ctx[0..*dpos); what it has not seen
  * of the accepted text goes in first as one pass. It is fed its own drafts
- * 1..k-1 to produce 2..k, so afterwards its cache holds ctx[0..n+k-1). */
-static void model_draft(GpuModel *d, int *ctx, int n, int *dpos, int k, float *logits, int V) {
-    gpu_forward(d, ctx + *dpos, n - *dpos, *dpos, n - *dpos - 1, logits);
+ * 1..k-1 to produce 2..k, so afterwards its cache holds ctx[0..n+k-1).
+ * Returns the mean seconds of its ordinary passes -- one or two tokens -- or
+ * -1 if there were none: a catch-up pass after plain steps is a different
+ * cost, and charging it to every draft token taught the scheduler that
+ * drafting costs twice what it does. */
+static double model_draft(GpuModel *d, int *ctx, int n, int *dpos, int k, float *logits, int V) {
+    double sum = 0.0;
+    int passes = 0;
+    const int catch_up = n - *dpos;
+    double t = now();
+    gpu_forward(d, ctx + *dpos, catch_up, *dpos, catch_up - 1, logits);
+    if (catch_up <= 2) { sum += now() - t; passes++; }
     for (int j = 0; j < k; j++) {
         ctx[n + j] = argmax(logits, V);
-        if (j + 1 < k) gpu_forward(d, ctx + n + j, 1, n + j, 0, logits);
+        if (j + 1 < k) {
+            t = now();
+            gpu_forward(d, ctx + n + j, 1, n + j, 0, logits);
+            sum += now() - t;
+            passes++;
+        }
     }
     *dpos = n + (k > 0 ? k - 1 : 0);
+    return passes ? sum / passes : -1.0;
 }
 
 /* ------------------------------------------------------ adaptive draft length
@@ -144,14 +159,12 @@ static int sched_choose(Scheduler *sc, int max_k) {
     return best;
 }
 
-static void sched_update(Scheduler *sc, int k, int accepted, double draft_s, double verify_s) {
+static void sched_update(Scheduler *sc, int k, int accepted, double pass_s, double verify_s) {
     const double keep = 0.85, ema = 0.3;
     sc->acc = keep * sc->acc + accepted;
     sc->rej = keep * sc->rej + (accepted < k ? 1.0 : 0.0);
-    if (k > 0) {
-        const double per = draft_s / k;
-        sc->draft_s = sc->draft_s < 0 ? per : (1 - ema) * sc->draft_s + ema * per;
-    }
+    if (pass_s > 0)
+        sc->draft_s = sc->draft_s < 0 ? pass_s : (1 - ema) * sc->draft_s + ema * pass_s;
     const int n = k + 1;
     if (n < 64) sc->verify_s[n] = sc->verify_s[n] < 0 ? verify_s : (1 - ema) * sc->verify_s[n] + ema * verify_s;
 }
@@ -170,7 +183,15 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     int pos = tokenizer_encode(tok, prompt, (int)strlen(prompt), tokens, max_seq);
     if (pos >= max_seq - 1) die("prompt fills the whole %d-position context", max_seq);
     gpu_forward(gpu, tokens, pos, 0, pos - 1, logits);
+    /* The drafter reads the prompt up front, as the target just did: a prefill
+     * is not a draft, and timing it as one inflates what drafting costs. */
     int dpos = 0;                 /* tokens[0..dpos) are in the drafter's cache */
+    if (drafter) {
+        /* NULL: `logits` still holds the target's prediction for `next`. Writing
+         * the drafter's there made its guess the first emitted token. */
+        gpu_forward(drafter, tokens, pos, 0, pos - 1, NULL);
+        dpos = pos;
+    }
     const bool adaptive = max_draft < 0;
     if (adaptive) max_draft = -max_draft;
     Scheduler sched;
@@ -196,8 +217,9 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         if (adaptive && budget > 0) budget = sched_choose(&sched, budget);
         double t1 = now();
         int k = 0;
+        double pass_s = -1.0;
         if (budget > 0 && drafter) {
-            model_draft(drafter, tokens, pos + 1, &dpos, budget, logits, cfg->vocab_size);
+            pass_s = model_draft(drafter, tokens, pos + 1, &dpos, budget, logits, cfg->vocab_size);
             k = budget;
         } else if (budget > 0) {
             k = lookup_draft(tokens, pos + 1, budget, tokens + pos + 1);
@@ -221,7 +243,8 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
             out_ids[generated++] = t;
         }
         s.accepted += i;
-        if (adaptive) sched_update(&sched, k, i, t2 - t1, t3 - t2);
+        /* Prompt lookup drafts in microseconds; its pass cost is the clock's. */
+        if (adaptive) sched_update(&sched, k, i, drafter ? pass_s : (k ? (t2 - t1) / k : -1.0), t3 - t2);
         if (s.groups > 0 && s.groups <= (int)(sizeof s.group_len / sizeof s.group_len[0]))
             s.group_len[s.groups - 1] = (short)(s.group_len[s.groups - 1] + i);
         /* The drafter's rows past the accepted text hold rejected drafts. */
@@ -231,6 +254,13 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         pos += 1 + i;
     }
 
+    if (adaptive && getenv("PICOFORGE_SCHED_DEBUG")) {
+        fprintf(stderr, "sched: alpha %.3f  draft %.2f ms/token  verify ms:",
+                (sched.acc + 1.0) / (sched.acc + sched.rej + 2.0), sched.draft_s * 1e3);
+        for (int n = 1; n <= max_draft + 1; n++) fprintf(stderr, " n%d=%.1f%s", n,
+                sched_verify(&sched, n) * 1e3, sched.verify_s[n] > 0 ? "" : "*");
+        fprintf(stderr, "\n");
+    }
     s.decode_s = now() - t0;
     s.generated = generated;
     if (stats) *stats = s;
