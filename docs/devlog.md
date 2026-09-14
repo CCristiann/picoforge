@@ -265,6 +265,32 @@ Two numbers for the plan, one run each (orientation):
   speculative speedup is divided by; the 0.6B's attention (35% of its decode at
   depth 512) is where that ratio can still move.
 
+### Step 4.8b — barrier-free attention: a hypothesis the silicon rejected
+
+The attention kernel coordinates 128 threads per (head, token) through sixteen
+threadgroup barriers, and at depth 512 each thread owns four positions. The
+hypothesis: the GPU spends its time synchronising, so three dispatches where
+every thread owns its work (scores per position, softmax per head, one value
+sum per output dimension) should be faster. It was built, verified against the
+oracle on every model (82 checks green), and measured.
+
+`bench/attention_ab_m5pro.csv`, both kernels interleaved rep by rep in one
+process -- the first attempt at a baseline read decode 30% slower than the
+morning's while another session loaded the machine (load average 6.2), and
+alternating is what makes a comparison survive that:
+
+                   attention, barriers   attention, split    whole pass
+  decode@16          0.42 ms               0.54 ms           9.42 -> 9.53
+  decode@512         4.69                  6.08             13.70 -> 15.08
+  verify8@512        4.77                  7.43             13.37 -> 16.13
+  verify32@512      11.18                 12.89             21.04 -> 22.82
+
+Slower everywhere. The likely reason, not yet measured: the value sum strides
+one float per cache row, 128 x 16 threads of it, so the barrier-free version
+buys independence with memory traffic -- and memory, not synchronisation, is
+what this machine runs short of first. The code is committed switched off so
+the table can be reproduced, and removed in the next commit.
+
 **Next:** the 30B checkpoint (a download that needs the human's yes): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.

@@ -27,7 +27,8 @@
 enum { K_MATMUL_NAIVE, K_MATMUL_SIMD, K_MATMUL_TENSOR, K_EMBED, K_RMSNORM,
        K_QKROPE, K_ATTN, K_SWIGLU, K_RESIDUAL, K_NARROW, K_EMBED_Q,
        K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32,
-       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM, K_MOE_SCATTER, K_MOE_Q8, K_COUNT };
+       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM, K_MOE_SCATTER, K_MOE_Q8,
+       K_ATTN_SCORES, K_ATTN_SOFTMAX, K_ATTN_VALUES, K_COUNT };
 
 static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_naive", "matmul_simdgroup", "matmul_tensorops", "embed_lookup",
@@ -36,6 +37,7 @@ static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_q8_row", "matmul_q8_g32", "matmul_q4_row", "matmul_q4_g32", "matmul_q4_g64",
     "matmul_tensorops_8x32",
     "moe_route", "moe_group", "moe_gather", "moe_matmul", "moe_scatter", "moe_matmul_q8row",
+    "attn_scores", "attn_softmax", "attn_values",
 };
 
 /* A MoE pass takes at most 4 row tiles of 8 per expert group (kernels.metal),
@@ -56,6 +58,7 @@ struct GpuModel {
     Qwen3Config        cfg;
     int                max_seq, max_rows, matmul_kernel;
     bool               small_tile;       /* 8x32 TensorOps tiles when M <= 8 */
+    bool               split_attn;       /* three barrier-free attention dispatches */
 
     void              *pso[K_COUNT];
     void              *weights;          /* one buffer over the whole mapping */
@@ -65,6 +68,7 @@ struct GpuModel {
 
     void *x, *xb, *q, *attout, *hb, *hb2, *kcache, *vcache, *logits, *tokens;
     void *act16;                         /* bf16 activations for Q4 matmuls   */
+    void *scores;                        /* [heads][max_seq][max_seq] attention weights */
 
     /* MoE: expert weight offsets, [layer][gate, up, down][expert][weights or
      * codes, scales] -- bfloats for bf16 and scales, bytes for 8-bit codes --
@@ -116,6 +120,7 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     g->max_seq = max_seq; g->max_rows = max_rows;
     g->matmul_kernel = K_MATMUL_TENSOR;
     g->small_tile = true;
+    g->split_attn = false;              /* measured slower: see devlog, step 4.8b */
 
     id<MTLDevice> dev = (__bridge id<MTLDevice>)metal_device(ctx);
     for (int i = 0; i < K_COUNT; i++)
@@ -217,6 +222,7 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     /* Widest matmul input is I (down_proj); bf16 needs half of a float each,
      * and allocating in floats keeps the macro. */
     ALLOC(act16, S * (I > q_dim ? I : q_dim));
+    ALLOC(scores, (size_t)cfg->num_attention_heads * S * S);
     if (E) {
         const size_t R = MOE_MAX_ROWS, P = R * (size_t)cfg->num_experts_per_tok;
         const size_t Ie = (size_t)cfg->moe_intermediate_size;
@@ -233,7 +239,7 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
 void gpu_model_free(GpuModel *g) {
     if (!g) return;
     void *bufs[] = {g->weights, g->x, g->xb, g->q, g->attout, g->hb, g->hb2,
-                    g->kcache, g->vcache, g->logits, g->tokens, g->act16, g->moe_offs,
+                    g->kcache, g->vcache, g->logits, g->tokens, g->act16, g->scores, g->moe_offs,
                     g->moe_logits, g->moe_idx, g->moe_wt, g->moe_rop, g->moe_tor, g->moe_groups,
                     g->moe_ng, g->moe_a, g->moe_g, g->moe_u, g->moe_d};
     for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++)
@@ -244,6 +250,7 @@ void gpu_model_free(GpuModel *g) {
 
 void gpu_set_matmul_kernel(GpuModel *g, int which) { g->matmul_kernel = which; }
 void gpu_set_small_tile(GpuModel *g, bool on) { g->small_tile = on; }
+void gpu_set_split_attention(GpuModel *g, bool on) { g->split_attn = on; }
 
 /* ------------------------------------------------------------- encoding */
 
@@ -332,6 +339,38 @@ static void encode_rmsnorm(GpuModel *g, id<MTLComputeCommandEncoder> enc,
     [enc setBytes:&d length:sizeof d atIndex:3];
     [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)rows, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+/* Attention as three barrier-free dispatches (kernels.metal, attn_scores). */
+static void encode_attention_split(GpuModel *g, id<MTLComputeCommandEncoder> enc, int n, int pos,
+                                   size_t layer_kv, int n_head, int n_kv, int hd, int q_dim,
+                                   int kv_dim) {
+    struct AttnDimsC ad = {(uint32_t)n, (uint32_t)n_head, (uint32_t)n_kv, (uint32_t)hd,
+                           (uint32_t)q_dim, (uint32_t)kv_dim, (uint32_t)pos,
+                           (uint32_t)g->max_seq, 1.0f / sqrtf((float)hd)};
+    const NSUInteger len = (NSUInteger)(pos + n), H = (NSUInteger)n_head, N = (NSUInteger)n;
+
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_ATTN_SCORES]];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->scores offset:0 atIndex:0];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->q offset:0 atIndex:1];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->kcache offset:layer_kv atIndex:2];
+    [enc setBytes:&ad length:sizeof ad atIndex:3];
+    [enc dispatchThreads:MTLSizeMake(len, H, N)
+   threadsPerThreadgroup:MTLSizeMake(64, H < 16 ? H : 16, 1)];
+
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_ATTN_SOFTMAX]];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->scores offset:0 atIndex:0];
+    [enc setBytes:&ad length:sizeof ad atIndex:1];
+    [enc dispatchThreads:MTLSizeMake(H, N, 1)
+   threadsPerThreadgroup:MTLSizeMake(H < 32 ? H : 32, N < 32 ? N : 32, 1)];
+
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_ATTN_VALUES]];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->attout offset:0 atIndex:0];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->scores offset:0 atIndex:1];
+    [enc setBuffer:(__bridge id<MTLBuffer>)g->vcache offset:layer_kv atIndex:2];
+    [enc setBytes:&ad length:sizeof ad atIndex:3];
+    [enc dispatchThreads:MTLSizeMake((NSUInteger)hd, H, N)
+   threadsPerThreadgroup:MTLSizeMake(64, H < 16 ? H : 16, 1)];
 }
 
 /* ------------------------------------------------------------------ MoE
@@ -607,18 +646,22 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
         }
 
         enc = prof_next(prof, cb, enc, 4);
-        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_ATTN]];
-        [enc setBuffer:(__bridge id<MTLBuffer>)g->attout offset:0 atIndex:0];
-        [enc setBuffer:(__bridge id<MTLBuffer>)g->q offset:0 atIndex:1];
-        [enc setBuffer:(__bridge id<MTLBuffer>)g->kcache offset:layer_kv atIndex:2];
-        [enc setBuffer:(__bridge id<MTLBuffer>)g->vcache offset:layer_kv atIndex:3];
-        struct AttnDimsC ad = {(uint32_t)n, (uint32_t)n_head, (uint32_t)n_kv,
-                               (uint32_t)hd, (uint32_t)q_dim, (uint32_t)kv_dim,
-                               (uint32_t)pos, (uint32_t)g->max_seq,
-                               1.0f / sqrtf((float)hd)};
-        [enc setBytes:&ad length:sizeof ad atIndex:4];
-        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)n_head, (NSUInteger)n, 1)
-            threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        if (g->split_attn) {
+            encode_attention_split(g, enc, n, pos, layer_kv, n_head, n_kv, hd, q_dim, kv_dim);
+        } else {
+            [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->pso[K_ATTN]];
+            [enc setBuffer:(__bridge id<MTLBuffer>)g->attout offset:0 atIndex:0];
+            [enc setBuffer:(__bridge id<MTLBuffer>)g->q offset:0 atIndex:1];
+            [enc setBuffer:(__bridge id<MTLBuffer>)g->kcache offset:layer_kv atIndex:2];
+            [enc setBuffer:(__bridge id<MTLBuffer>)g->vcache offset:layer_kv atIndex:3];
+            struct AttnDimsC ad = {(uint32_t)n, (uint32_t)n_head, (uint32_t)n_kv,
+                                   (uint32_t)hd, (uint32_t)q_dim, (uint32_t)kv_dim,
+                                   (uint32_t)pos, (uint32_t)g->max_seq,
+                                   1.0f / sqrtf((float)hd)};
+            [enc setBytes:&ad length:sizeof ad atIndex:4];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)n_head, (NSUInteger)n, 1)
+                threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        }
 
         enc = prof_next(prof, cb, enc, 2);
         input_for(g, enc, &o->o_proj, g->attout, 0, (size_t)n * (size_t)q_dim, &in, &in_off);

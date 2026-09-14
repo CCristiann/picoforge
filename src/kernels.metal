@@ -566,6 +566,63 @@ kernel void attention(device float        *out [[buffer(0)]],
     }
 }
 
+/* Attention in three dispatches, with no threadgroup barriers (Phase 4).
+ *
+ * The kernel above coordinates 128 threads per (head, token) through sixteen
+ * barriers, and at depth 512 each of those threads owns four positions: the
+ * GPU spends its time synchronising. Here every thread owns its work outright,
+ * and the only sharing is through a scores buffer [heads][n][max_seq]:
+ *
+ *   attn_scores   one thread per (position j, head, token): q . k_j * scale
+ *   attn_softmax  one thread per (head, token): the CPU's stable softmax, in
+ *                 the CPU's order, over positions 0..pos+t
+ *   attn_values   one thread per (output dim, head, token): sum_j a_j v_j[i]
+ *
+ * Every sum runs sequentially in the same order as model.c, so apart from exp
+ * the GPU does the CPU's arithmetic. */
+kernel void attn_scores(device float        *score [[buffer(0)]],
+                        device const float  *q     [[buffer(1)]],
+                        device const float  *kc    [[buffer(2)]],
+                        constant AttnDims   &d     [[buffer(3)]],
+                        uint3 gid [[thread_position_in_grid]]) {
+    const uint j = gid.x, h = gid.y, t = gid.z;
+    if (h >= d.heads || t >= d.n || j > d.pos + t) return;
+    const uint kvh = h / (d.heads / d.kv_heads);
+    device const float *qh = q + t * d.q_dim + h * d.head_dim;
+    device const float *kh = kc + j * d.kv_dim + kvh * d.head_dim;
+    float dot = 0.0f;
+    for (uint i = 0; i < d.head_dim; i++) dot += qh[i] * kh[i];
+    score[(h * d.n + t) * d.max_seq + j] = dot * d.scale;
+}
+
+kernel void attn_softmax(device float       *score [[buffer(0)]],
+                         constant AttnDims  &d     [[buffer(1)]],
+                         uint2 gid [[thread_position_in_grid]]) {
+    const uint h = gid.x, t = gid.y;
+    if (h >= d.heads || t >= d.n) return;
+    device float *s = score + (h * d.n + t) * d.max_seq;
+    const uint len = d.pos + t + 1;
+    float mx = s[0];
+    for (uint j = 1; j < len; j++) mx = max(mx, s[j]);
+    float sum = 0.0f;
+    for (uint j = 0; j < len; j++) { s[j] = exp(s[j] - mx); sum += s[j]; }
+    for (uint j = 0; j < len; j++) s[j] /= sum;
+}
+
+kernel void attn_values(device float        *out   [[buffer(0)]],
+                        device const float  *score [[buffer(1)]],
+                        device const float  *vc    [[buffer(2)]],
+                        constant AttnDims   &d     [[buffer(3)]],
+                        uint3 gid [[thread_position_in_grid]]) {
+    const uint i = gid.x, h = gid.y, t = gid.z;
+    if (i >= d.head_dim || h >= d.heads || t >= d.n) return;
+    const uint kvh = h / (d.heads / d.kv_heads), len = d.pos + t + 1;
+    device const float *a = score + (h * d.n + t) * d.max_seq;
+    float acc = 0.0f;
+    for (uint j = 0; j < len; j++) acc += a[j] * vc[j * d.kv_dim + kvh * d.head_dim + i];
+    out[t * d.q_dim + h * d.head_dim + i] = acc;
+}
+
 /* SwiGLU's elementwise half: gate <- silu(gate) * up. */
 kernel void swiglu(device float       *gate [[buffer(0)]],
                    device const float *up   [[buffer(1)]],
