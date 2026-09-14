@@ -24,7 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = ROOT / "picoforge"
 MODEL = ROOT / "models" / "Qwen3-0.6B"
-DRAFT_MODEL = ROOT / "models" / "Qwen3-0.6B-q4_g32"
+# Speculative tab: target -> (checkpoint, draft model over the same vocabulary).
+TARGETS = {"0.6b": (MODEL, ROOT / "models" / "Qwen3-0.6B-q4_g32"),
+           "30b": (ROOT / "models" / "Qwen3-30B-A3B-q8_row", MODEL)}
 PORT = 8000
 
 # The engine prints its architecture and tokenizer summaries before doing any
@@ -35,8 +37,8 @@ GEN_START = "\n---\n"
 GEN_END = "\n\n--- "
 
 
-def run(args: list[str], timeout: int = 600) -> str:
-    proc = subprocess.run([str(ENGINE), str(MODEL), *args],
+def run(args: list[str], timeout: int = 600, model: Path = MODEL) -> str:
+    proc = subprocess.run([str(ENGINE), str(model), *args],
                           capture_output=True, text=True, cwd=ROOT, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip())
@@ -82,10 +84,10 @@ SPEC_LINE = re.compile(r"spec: (\d+) tokens in (\d+) passes \(([\d.]+) per pass\
                        r"verifying ([\d.]+) s\)")
 
 
-def engine_file(args: list[str]) -> tuple[list[str], str]:
+def engine_file(args: list[str], model: Path = MODEL) -> tuple[list[str], str]:
     """Run the engine with an output file appended; return its lines and stdout."""
     with tempfile.NamedTemporaryFile(suffix=".txt") as tmp:
-        out = run(args + [tmp.name])
+        out = run(args + [tmp.name], model=model)
         return Path(tmp.name).read_text().splitlines(), out
 
 
@@ -99,24 +101,30 @@ def spec_stats(stdout: str) -> dict:
             "tok_s": float(g[6]), "draft_s": float(g[7]), "verify_s": float(g[8])}
 
 
-def speculate(prompt: str, drafter: str, k: int, max_new: int) -> dict:
+def speculate(prompt: str, drafter: str, k: str, max_new: int, target: str) -> dict:
     """Three runs of the real engine on the GPU: plain greedy through generate()
     (the reference), the speculative loop with no drafts (the same loop's own
-    speed), and the speculative loop with the chosen drafter."""
+    speed), and the speculative loop with the chosen drafter. k is a number or
+    "auto" (the length chosen before every pass)."""
+    model, draft_model = TARGETS[target]
+    k = k if k == "auto" else str(int(k))
     n = str(max_new)
-    ref, _ = engine_file(["--gpu-greedy", prompt, n])
-    plain_lines, plain_out = engine_file(["--spec-greedy", prompt, n, "0"])
+    ref, _ = engine_file(["--gpu-greedy", prompt, n], model)
+    plain_lines, plain_out = engine_file(["--spec-greedy", prompt, n, "0"], model)
     if drafter == "model":
-        lines, out = engine_file(["--spec-model", str(DRAFT_MODEL), prompt, n, str(k)])
+        lines, out = engine_file(["--spec-model", str(draft_model), prompt, n, k], model)
     else:
-        lines, out = engine_file(["--spec-greedy", prompt, n, str(k)])
+        lines, out = engine_file(["--spec-greedy", prompt, n, k], model)
+    lengths = re.search(r"draft lengths:(.*)", out)
     pieces = []
     for h in (lines[2].split() if len(lines) > 2 else []):
         raw = b"" if h == "-" else bytes.fromhex(h)
         pieces.append(raw.decode(errors="replace"))
     return {"identical": ref[0] == lines[0] == plain_lines[0],
             "groups": [int(x) for x in lines[1].split()] if len(lines) > 1 else [],
-            "tokens": pieces, "plain": spec_stats(plain_out), "spec": spec_stats(out)}
+            "tokens": pieces, "plain": spec_stats(plain_out), "spec": spec_stats(out),
+            "draft_lengths": lengths.group(1).strip() if lengths else "",
+            "target": model.name, "drafter": draft_model.name if drafter == "model" else "prompt lookup"}
 
 
 def phase4() -> dict:
@@ -124,7 +132,9 @@ def phase4() -> dict:
         path = ROOT / "bench" / name
         return list(csv.DictReader(open(path))) if path.exists() else []
     return {"profile": rows("profile_m5pro.csv"), "moe_cost": rows("moe_verify_cost_m5pro.csv"),
-            "moe_e2e": rows("moe_e2e_synth30b_m5pro.csv"), "tile": rows("e2e_tile_m5pro.csv")}
+            "moe_e2e": rows("moe_e2e_qwen3_30b_q8_m5pro.csv"), "tile": rows("e2e_tile_m5pro.csv"),
+            "spec": rows("spec_qwen3_30b_m5pro.csv"),
+            "overlap": rows("routing_overlap_qwen3_30b_corpus.csv")}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -169,8 +179,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/generate":
                 self.stream_generate(q)
             elif url.path == "/api/speculate":
-                self._json(speculate(q.get("prompt", [""])[0], q.get("drafter", ["lookup"])[0],
-                                     int(q.get("k", ["4"])[0]), int(q.get("max", ["96"])[0])))
+                self._json(speculate(q.get("prompt", [""])[0], q.get("drafter", ["model"])[0],
+                                     q.get("k", ["auto"])[0], int(q.get("max", ["96"])[0]),
+                                     q.get("target", ["30b"])[0]))
             elif url.path == "/api/phase4":
                 self._json(phase4())
             elif re.fullmatch(r"/bench/[\w.-]+\.png", url.path):

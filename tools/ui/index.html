@@ -188,15 +188,22 @@
   </div></div>
   <div class="row">
     <div>
+      <label>Target</label>
+      <div class="seg" id="sp-target">
+        <button class="on" data-v="30b">Qwen3-30B-A3B q8</button>
+        <button data-v="0.6b">Qwen3-0.6B</button>
+      </div>
+    </div>
+    <div>
       <label>Drafter</label>
       <div class="seg" id="sp-drafter">
-        <button class="on" data-v="lookup">prompt lookup</button>
-        <button data-v="model">draft model (0.6B q4)</button>
+        <button class="on" data-v="model">draft model</button>
+        <button data-v="lookup">prompt lookup</button>
       </div>
     </div>
     <div>
       <label>Draft length</label>
-      <select id="sp-k"><option>2</option><option selected>4</option><option>8</option></select>
+      <select id="sp-k"><option value="auto" selected>auto</option><option>2</option><option>4</option><option>8</option></select>
     </div>
     <div>
       <label>Max tokens</label>
@@ -205,6 +212,7 @@
     <button class="go" id="sp-run">Run both</button>
     <span id="sp-badge"></span>
   </div>
+  <div class="cmd" id="sp-who"></div>
   <div class="out spec-out" id="sp-out"></div>
   <p class="note">Each shaded block is one step of the loop: the token the previous pass decided,
      then the <span style="color:#9fd0ff;text-decoration:underline">underlined drafts</span> this
@@ -216,12 +224,23 @@
     <div class="card"><div class="k">Speedup</div><div class="v" id="sp-x">&mdash;</div><div class="u">same loop, same GPU</div></div>
     <div class="card"><div class="k">Tokens per pass</div><div class="v" id="sp-pp">&mdash;</div><div class="u" id="sp-acc">drafts accepted</div></div>
   </div>
+  <p class="note" id="sp-lengths"></p>
 </section>
 
 <section class="panel" id="p4">
   <p class="lead">Measured on this machine today. Every number comes from a CSV in <code>bench/</code>;
      the story behind each is in <code>docs/devlog.md</code>.</p>
   <div class="cards" id="p4-cards"></div>
+
+  <h2 class="sec">Speculative decoding on Qwen3-30B-A3B, drafted by Qwen3-0.6B</h2>
+  <p class="lead">Speedup over plain decoding, median of 3 runs, 128 tokens. Every run's output is identical
+     to plain greedy. <b>auto</b> chooses the draft length before every pass from measured cost and acceptance.</p>
+  <div class="chart"><table class="t" id="p4-spec"></table></div>
+
+  <h2 class="sec">How the trained router routes consecutive tokens</h2>
+  <p class="lead">Distinct experts per layer touched by w consecutive tokens of real text, against uniform routing.
+     Fewer distinct experts means a cheaper verify.</p>
+  <div class="chart" id="p4-overlap"></div>
 
   <h2 class="sec">What verifying one Qwen3-30B-A3B MoE layer costs</h2>
   <p class="lead">One layer at the real shapes, routing forced: priced by distinct experts, almost not by tokens.
@@ -231,9 +250,8 @@
   <h2 class="sec">Where a Qwen3-0.6B decode step goes (GPU timestamps, depth 512)</h2>
   <div class="chart" id="p4-profile"></div>
 
-  <h2 class="sec">A full-depth 30B-shaped model (48 layers, random q8_row weights, 31 GB)</h2>
-  <p class="lead">Decode is exact for the shapes. Verify times are optimistic: random weights route
-     every token to the same ~10 experts, far fewer than a trained router would.</p>
+  <h2 class="sec">Qwen3-30B-A3B q8_row on the GPU, cache depth 512</h2>
+  <p class="lead">One decode step and verifies of 2..32 tokens, with the distinct experts each touched.</p>
   <div class="chart"><table class="t" id="p4-e2e"></table></div>
 </section>
 
@@ -318,17 +336,20 @@ const PRESETS = {
   poem: CHAT('Write a short poem about the sea.'),
 };
 document.querySelectorAll('.presets button').forEach(b => b.onclick = () => $('#sp-prompt').value = PRESETS[b.dataset.p]);
-let drafter = 'lookup';
-$('#sp-drafter').querySelectorAll('button').forEach(b => b.onclick = () => {
-  drafter = b.dataset.v;
-  $('#sp-drafter').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+let drafter = 'model', target = '30b';
+const segPick = (id, set) => $(id).querySelectorAll('button').forEach(b => b.onclick = () => {
+  set(b.dataset.v);
+  $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
 });
+segPick('#sp-drafter', v => drafter = v);
+segPick('#sp-target', v => target = v);
 const esc = t => t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 $('#sp-run').onclick = async () => {
   const btn = $('#sp-run'); btn.disabled = true;
-  $('#sp-out').textContent = 'running the engine three times (reference, plain, speculative)…';
-  $('#sp-badge').innerHTML = '';
-  const p = new URLSearchParams({prompt: $('#sp-prompt').value, drafter, k: $('#sp-k').value, max: $('#sp-max').value});
+  $('#sp-out').textContent = 'running the engine three times (reference, plain, speculative)' +
+    (target === '30b' ? ' on a 31 GB model — about 20 seconds…' : '…');
+  $('#sp-badge').innerHTML = ''; $('#sp-lengths').textContent = ''; $('#sp-who').textContent = '';
+  const p = new URLSearchParams({prompt: $('#sp-prompt').value, drafter, target, k: $('#sp-k').value, max: $('#sp-max').value});
   try {
     const d = await (await fetch('/api/speculate?' + p)).json();
     if (d.error) throw new Error(d.error);
@@ -347,6 +368,8 @@ $('#sp-run').onclick = async () => {
     $('#sp-x').textContent = (d.spec.tok_s / d.plain.tok_s).toFixed(2) + '×';
     $('#sp-pp').textContent = d.spec.per_pass.toFixed(2);
     $('#sp-acc').textContent = `${d.spec.accepted}/${d.spec.drafted} drafts accepted`;
+    $('#sp-who').textContent = `target ${d.target} · drafter ${d.drafter}`;
+    if (d.draft_lengths) $('#sp-lengths').textContent = 'draft lengths chosen, pass by pass: ' + d.draft_lengths;
   } catch (e) { $('#sp-out').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   btn.disabled = false;
 };
@@ -357,13 +380,18 @@ async function drawPhase4() {
   if (!p4) p4 = await (await fetch('/api/phase4')).json();
   const card = (k, v, u) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="u">${u}</div></div>`;
   const e2e = p4.moe_e2e, dec = e2e.find(r => r.regime === 'decode'), v8 = e2e.find(r => +r.n === 8);
+  const gm = c => { const v = p4.spec.filter(r => r.config === c).map(r => Math.log(+r.speedup));
+                    return v.length ? Math.exp(v.reduce((a, b) => a + b, 0) / v.length) : null; };
+  const ov8 = p4.overlap.find(r => +r.window === 8);
   const tile = p4.tile.filter(r => r.regime === 'decode');
   const q8 = p4.moe_cost.filter(r => r.format === 'q8_row' && +r.n === 8);
   let slope = null;
   if (q8.length > 1) { const a = q8[0], b = q8[q8.length - 1];
     slope = (b.median_s - a.median_s) / (b.distinct_experts - a.distinct_experts) * 1e6; }
   $('#p4-cards').innerHTML =
-    (dec ? card('30B-shaped decode', (+dec.tok_s).toFixed(1), 'tok/s · q8_row · synthetic · depth 512') : '') +
+    (gm('model-auto') ? card('Adaptive speculation', gm('model-auto').toFixed(2) + '×', 'geomean decode speedup, 30B, lossless') : '') +
+    (dec ? card('Qwen3-30B-A3B decode', (+dec.tok_s).toFixed(1), 'tok/s · q8_row · depth 512') : '') +
+    (ov8 ? card('Router locality', Math.round(ov8.mean_distinct_experts / ov8.uniform_expectation * 100) + '%', 'of uniform experts, 8 consecutive tokens') : '') +
     (v8 ? card('Verify 8 tokens', (+v8.x_decode).toFixed(2) + '×', 'the cost of one decode step') : '') +
     (slope ? card('One more q8 expert', slope.toFixed(0) + ' µs', 'per MoE layer, verify ≤ 8 tokens') : '') +
     (tile.length === 2 ? card('8-row tiles', '+' + ((tile[0].median_s / tile[1].median_s - 1) * 100).toFixed(1) + '%', 'Qwen3-0.6B decode, bit-identical') : '');
@@ -378,6 +406,30 @@ async function drawPhase4() {
          <i style="display:block;height:100%;width:${r.median_s / max * 100}%;background:var(--tensor);border-radius:3px"></i></div>
        <div style="width:80px;text-align:right;font-family:var(--mono)">${(r.median_s * 1e3).toFixed(2)} ms</div></div>`).join('') +
     (total ? `<p class="note">whole pass, uncut: ${(total.median_s * 1e3).toFixed(2)} ms</p>` : '');
+
+  const prompts = [...new Set(p4.spec.map(r => r.prompt))];
+  const cfgs = ['model-2', 'model-3', 'model-4', 'model-6', 'model-8', 'model-auto', 'lookup-4', 'lookup-auto'];
+  $('#p4-spec').innerHTML = '<tr><th>draft</th>' + prompts.map(p => `<th>${p}</th>`).join('') + '<th>geomean</th></tr>' +
+    cfgs.map(c => {
+      const auto = c === 'model-auto';
+      const cell = v => `<td style="${auto ? 'color:var(--tensor);font-weight:600' : ''}${v < 1 ? ';color:var(--naive)' : ''}">${v.toFixed(2)}×</td>`;
+      return `<tr><td style="${auto ? 'color:var(--tensor);font-weight:600' : ''}">${c.replace('model-', 'draft model, k=').replace('lookup-', 'prompt lookup, k=')}</td>` +
+        prompts.map(p => cell(+p4.spec.find(r => r.prompt === p && r.config === c).speedup)).join('') + cell(gm(c)) + '</tr>';
+    }).join('');
+
+  const W = 640, H = 220, L = 44, B = 30, T = 14, n = p4.overlap.length;
+  const ymax = Math.max(...p4.overlap.map(r => +r.uniform_expectation)) * 1.05;
+  const bw = (W - L - 10) / n;
+  let g = `<svg viewBox="0 0 ${W} ${H}" width="100%">`;
+  for (let i = 0; i <= 4; i++) { const y = H - B - (H - T - B) * i / 4;
+    g += `<line x1="${L}" y1="${y}" x2="${W - 10}" y2="${y}" stroke="#232c3a"/><text x="${L - 6}" y="${y + 4}" fill="#8b98ab" font-size="10" text-anchor="end">${Math.round(ymax * i / 4)}</text>`; }
+  p4.overlap.forEach((r, i) => {
+    const x = L + i * bw + bw * 0.18, w = bw * 0.3, h = v => (H - T - B) * v / ymax;
+    g += `<rect x="${x}" y="${H - B - h(+r.uniform_expectation)}" width="${w}" height="${h(+r.uniform_expectation)}" rx="3" fill="#3a4658"><title>uniform: ${(+r.uniform_expectation).toFixed(1)}</title></rect>`;
+    g += `<rect x="${x + w + 3}" y="${H - B - h(+r.mean_distinct_experts)}" width="${w}" height="${h(+r.mean_distinct_experts)}" rx="3" fill="#4a9eff"><title>measured: ${(+r.mean_distinct_experts).toFixed(1)}</title></rect>`;
+    g += `<text x="${x + w + 1}" y="${H - B + 14}" fill="#8b98ab" font-size="10" text-anchor="middle">w=${r.window}</text>`;
+  });
+  $('#p4-overlap').innerHTML = g + '</svg><div class="legend"><span><i style="background:#3a4658"></i>uniform routing</span><span><i style="background:#4a9eff"></i>Qwen3-30B-A3B, measured</span></div>';
 
   $('#p4-e2e').innerHTML = '<tr><th>pass</th><th>tokens</th><th>median ms</th><th>tok/s</th><th>× decode</th><th>experts / layer</th></tr>' +
     e2e.map(r => `<tr><td>${r.regime}</td><td>${r.n}</td><td>${(r.median_s * 1e3).toFixed(1)}</td><td>${(+r.tok_s).toFixed(1)}</td><td>${(+r.x_decode).toFixed(2)}</td><td>${(+r.mean_distinct_experts).toFixed(1)}</td></tr>`).join('');
