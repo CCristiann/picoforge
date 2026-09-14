@@ -376,8 +376,13 @@ int main(int argc, char **argv) {
             fputc('\n', f);
             char piece[512];
             for (int i = 0; i < got; i++) {
-                const int len = tokenizer_decode(&tok, &ids[i], 1, piece, (int)sizeof piece);
                 if (i) fputc(' ', f);
+                /* The embedding is padded past the tokenizer (151936 rows, 151669
+                 * tokens), and a model with random weights does emit padding ids.
+                 * They have no text: written as '-', not decoded (decode dies). */
+                bool text = ids[i] >= 0 && ids[i] < tok.n_tokens;
+                for (int k = 0; !text && k < tok.n_specials; k++) text = tok.specials[k].id == ids[i];
+                const int len = text ? tokenizer_decode(&tok, &ids[i], 1, piece, (int)sizeof piece) : 0;
                 for (int b = 0; b < len; b++) fprintf(f, "%02x", (unsigned char)piece[b]);
                 if (len == 0) fputc('-', f);
             }
