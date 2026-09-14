@@ -75,7 +75,7 @@ test-forward-moe-quant: picoforge build/tiny-qwen3-moe-q8_row
 	@./tools/venv/bin/python tests/test_forward_quant.py build/tiny-qwen3-moe-q8_row
 
 # Phase 4: speculative decoding emits exactly what plain greedy emits.
-test-speculate: picoforge
+test-speculate: picoforge quant-models build/tiny-qwen3-moe
 	@./tools/venv/bin/python tests/test_speculate.py
 
 # Phase 3: the quantisers keep the bounds formats.py promises.

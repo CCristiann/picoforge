@@ -14,6 +14,10 @@ argmax. A difference here is a bug in the accept loop or the cache rollback.
 
 The prompts mix text that repeats its context -- where the prompt-lookup
 drafter should win -- with text that does not, where it should cost nothing.
+Then the same check with a draft MODEL: Qwen3-0.6B-q4_g32 drafting for the bf16
+0.6B (a pair that mostly agrees, so drafts are long and rollbacks of both
+caches are exercised), and the 0.6B drafting for the tiny random MoE (a pair
+that never agrees, so every pass rolls back, and the target is a MoE).
 Timings are printed for orientation only: one run each, not the protocol.
 
 Run:  make test-speculate
@@ -42,9 +46,9 @@ PROMPTS = [
 ]
 
 
-def run(args: list[str]) -> tuple[list[int], str]:
+def run(args: list[str], model: Path | None = None) -> tuple[list[int], str]:
     with tempfile.NamedTemporaryFile(suffix=".txt") as tmp:
-        proc = subprocess.run([str(ROOT / "picoforge"), str(MODEL), *args, tmp.name],
+        proc = subprocess.run([str(ROOT / "picoforge"), str(model or MODEL), *args, tmp.name],
                               capture_output=True, text=True, cwd=ROOT)
         if proc.returncode != 0:
             sys.exit(f"picoforge {args[0]} failed:\n{proc.stdout}\n{proc.stderr}")
@@ -54,6 +58,9 @@ def run(args: list[str]) -> tuple[list[int], str]:
 
 
 MODEL = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "models/Qwen3-0.6B"
+MODEL_PAIRS = [(ROOT / "models/Qwen3-0.6B", ROOT / "models/Qwen3-0.6B-q4_g32"),
+               (ROOT / "build/tiny-qwen3-moe", ROOT / "models/Qwen3-0.6B")]
+MODEL_DRAFTS = [3, 8]
 
 
 def main() -> None:
@@ -75,10 +82,23 @@ def main() -> None:
             else:
                 print(f"  draft {k:2d} : identical   {stats.removeprefix('spec: ')}")
 
+    for target, draft in MODEL_PAIRS:
+        print(f"\n##### target {target.name}, drafted by {draft.name} #####")
+        for prompt in PROMPTS:
+            ref, _ = run(["--gpu-greedy", prompt, str(MAX_NEW)], target)
+            for k in MODEL_DRAFTS:
+                ids, stats = run(["--spec-model", str(draft), prompt, str(MAX_NEW), str(k)], target)
+                if ids != ref:
+                    failures += 1
+                    print(f"  {prompt[-30:]!r:34} draft {k}: DIFFERS from greedy")
+                else:
+                    print(f"  {prompt[-30:]!r:34} draft {k}: identical  {stats.removeprefix('spec: ')}")
+
     print()
+    runs = len(PROMPTS) * (len(DRAFTS) + len(MODEL_PAIRS) * len(MODEL_DRAFTS))
     if failures:
-        sys.exit(f"FAIL: {failures} speculative runs changed the output")
-    print(f"PASS: {len(PROMPTS)} prompts x {len(DRAFTS)} draft lengths, "
+        sys.exit(f"FAIL: {failures} of {runs} speculative runs changed the output")
+    print(f"PASS: {runs} speculative runs (prompt lookup and two draft models), "
           f"every sequence identical to plain greedy")
 
 

@@ -244,6 +244,27 @@ cost model, for the scheduler to use: **per MoE layer, ~0.35-0.6 ms + 22 us
 per distinct q8_row expert** (44 us bf16), almost independent of how many
 tokens share them.
 
+### Step 4.8a — a draft model in the speculative loop
+
+`--spec-model DRAFT_DIR`: a second GPU model over the same vocabulary proposes
+k tokens of its own greedy continuation. It keeps its own K/V cache, which
+rolls back as freely as the target's: after a verify accepts i drafts, the
+drafter's valid prefix is cut to the accepted text, and what it has not seen
+goes in as one catch-up pass next step.
+
+`make test-speculate` now holds 40 runs to plain greedy, all identical: the
+five prompts under prompt lookup, under Qwen3-0.6B-q4_g32 drafting for the
+bf16 0.6B (drafts 3 and 8), and under the 0.6B drafting for the tiny random MoE
+-- a pair that never agrees, so every pass rolls back both caches and the
+target is a MoE split across chunks.
+
+Two numbers for the plan, one run each (orientation):
+- q4 drafting for bf16 is accepted 55-100% of the time, 2.7-8.5 tokens per pass.
+- **A draft token costs the 0.6B about 10 ms** (378 drafts in 3.87 s). Against
+  the 30B's estimated decode that is the drafter/target cost ratio every
+  speculative speedup is divided by; the 0.6B's attention (35% of its decode at
+  depth 512) is where that ratio can still move.
+
 **Next:** the 30B checkpoint (a download that needs the human's yes): sharded
 safetensors, parity, and the routing-overlap measurement that turns this cost
 model into a draft scheduler.

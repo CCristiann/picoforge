@@ -274,30 +274,46 @@ int main(int argc, char **argv) {
      * tests/test_speculate.py can hold the second to the first token for
      * token. --gpu-greedy goes through generate(), NOT the speculative loop:
      * the reference must not share the code it is judging. */
-    if (argc > 5 && (strcmp(argv[2], "--gpu-greedy") == 0 ||
-                     (argc > 6 && strcmp(argv[2], "--spec-greedy") == 0))) {
-        const bool spec = strcmp(argv[2], "--spec-greedy") == 0;
-        const int max_new = atoi(argv[4]), draft = spec ? atoi(argv[5]) : 0;
-        const char *out_path = argv[spec ? 6 : 5];
+    /* --spec-model DRAFT_DIR TEXT MAX_NEW DRAFT OUT.txt : the same, drafted by
+     * a second model over the same vocabulary instead of by prompt lookup. */
+    const bool spec_model = argc > 7 && strcmp(argv[2], "--spec-model") == 0;
+    if (spec_model || (argc > 5 && (strcmp(argv[2], "--gpu-greedy") == 0 ||
+                     (argc > 6 && strcmp(argv[2], "--spec-greedy") == 0)))) {
+        const char **a = spec_model ? (const char **)argv + 1 : (const char **)argv;
+        const bool spec = spec_model || strcmp(argv[2], "--spec-greedy") == 0;
+        const int max_new = atoi(a[4]), draft = spec ? atoi(a[5]) : 0;
+        const char *out_path = a[spec ? 6 : 5];
         MetalContext *mtl = metal_init("picoforge.metallib");
         GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, 1024, 32);
+        SafeTensors dst;
+        Qwen3Config dcfg;
+        GpuModel *drafter = NULL;
+        if (spec_model) {
+            config_load(argv[3], &dcfg);
+            if (dcfg.vocab_size != cfg.vocab_size)
+                die("the drafter's vocabulary (%d) is not the target's (%d)", dcfg.vocab_size, cfg.vocab_size);
+            st_open(argv[3], &dst);
+            drafter = gpu_model_create(mtl, &dst, &dcfg, 1024, 1);
+        }
         int *ids = malloc((size_t)max_new * sizeof *ids);
         if (!ids) die("out of memory for %d generated ids", max_new);
 
         int got;
         if (spec) {
             SpecStats ss;
-            got = generate_speculative(&tok, &cfg, gpu, 1024, 32, argv[3], max_new, draft, ids, &ss);
+            got = generate_speculative(&tok, &cfg, gpu, drafter, 1024, 32, a[3], max_new, draft,
+                                       ids, &ss);
             printf("spec: %d tokens in %d passes (%.2f per pass), %d/%d drafts accepted, "
-                   "decode %.3f s (%.1f tok/s)\n", got, ss.passes,
-                   ss.passes ? (double)(got - 1) / ss.passes : 0.0, ss.accepted, ss.drafted,
-                   ss.decode_s, ss.decode_s > 0 ? (got - 1) / ss.decode_s : 0.0);
+                   "decode %.3f s (%.1f tok/s; drafting %.3f s, verifying %.3f s)\n", got,
+                   ss.passes, ss.passes ? (double)(got - 1) / ss.passes : 0.0, ss.accepted,
+                   ss.drafted, ss.decode_s, ss.decode_s > 0 ? (got - 1) / ss.decode_s : 0.0,
+                   ss.draft_s, ss.verify_s);
         } else {
             Weights w;
             weights_bind(&st, &cfg, &w);
             RunState state;
             state_alloc(&state, &cfg, 1024, 1);
-            got = generate(&tok, &w, &cfg, &state, gpu, argv[3], max_new, 0.0f, 1.0f, 0, 0, ids, true);
+            got = generate(&tok, &w, &cfg, &state, gpu, a[3], max_new, 0.0f, 1.0f, 0, 0, ids, true);
             state_free(&state);
             weights_free(&w);
         }
@@ -307,6 +323,7 @@ int main(int argc, char **argv) {
         fputc('\n', f);
         fclose(f);
         free(ids);
+        if (drafter) { gpu_model_free(drafter); st_close(&dst); }
         gpu_model_free(gpu);
         metal_shutdown(mtl);
     }

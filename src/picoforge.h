@@ -394,9 +394,12 @@ int  generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
 typedef struct {
     int    generated, passes, drafted, accepted;
     double decode_s;          /* wall time after prefill                    */
+    double draft_s, verify_s; /* of which drafting, and the target's passes  */
 } SpecStats;
+/* drafter NULL: prompt lookup. Otherwise a draft model sharing the target's
+ * vocabulary, with a context of at least max_seq. */
 int  generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
-                          int max_seq, int max_rows, const char *prompt, int max_new,
-                          int max_draft, int *out_ids, SpecStats *stats);
+                          GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
+                          int max_new, int max_draft, int *out_ids, SpecStats *stats);
 
 #endif /* PICOFORGE_H */

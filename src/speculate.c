@@ -13,15 +13,16 @@
  * token is the model's own argmax -- the drafts only decide how many arrive
  * per pass, never which.
  *
- * The drafter costs nothing: prompt lookup. Find the most recent earlier place
- * where the last few tokens occurred and propose what followed them there. It
- * wins on text that repeats its context (code, lists, quoting, rewriting) and
- * proposes nothing otherwise. It is a stand-in: in step 4.8 Qwen3-0.6B drafts
- * for Qwen3-30B-A3B through this same loop.
+ * Two drafters. Prompt lookup costs nothing: find the most recent earlier
+ * place where the last few tokens occurred and propose what followed. It wins
+ * on text that repeats its context and proposes nothing otherwise. A draft
+ * MODEL (Qwen3-0.6B for Qwen3-30B-A3B: same tokenizer) proposes k tokens of
+ * its own greedy continuation, paying k of its own decode steps for them.
  *
- * Rejected drafts leave K/V rows past the accepted position. Nothing reads
- * them -- attention at position p reads rows <= p -- and the next pass writes
- * over them, so rolling back is free: the cache is indexed by position.
+ * Rejected drafts leave K/V rows past the accepted position, in the target's
+ * cache and in the drafter's. Nothing reads them -- attention at position p
+ * reads rows <= p -- and the next pass writes over them, so rolling back is
+ * free in both: the caches are indexed by position.
  */
 #include "picoforge.h"
 
@@ -67,9 +68,22 @@ static int lookup_draft(const int *ctx, int n, int max_draft, int *draft) {
     return 0;
 }
 
+/* k greedy tokens from the draft model continuing ctx[0..n), written to
+ * ctx[n..n+k). The drafter's cache holds ctx[0..*dpos); what it has not seen
+ * of the accepted text goes in first as one pass. It is fed its own drafts
+ * 1..k-1 to produce 2..k, so afterwards its cache holds ctx[0..n+k-1). */
+static void model_draft(GpuModel *d, int *ctx, int n, int *dpos, int k, float *logits, int V) {
+    gpu_forward(d, ctx + *dpos, n - *dpos, *dpos, n - *dpos - 1, logits);
+    for (int j = 0; j < k; j++) {
+        ctx[n + j] = argmax(logits, V);
+        if (j + 1 < k) gpu_forward(d, ctx + n + j, 1, n + j, 0, logits);
+    }
+    *dpos = n + (k > 0 ? k - 1 : 0);
+}
+
 int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
-                         int max_seq, int max_rows, const char *prompt, int max_new,
-                         int max_draft, int *out_ids, SpecStats *stats) {
+                         GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
+                         int max_new, int max_draft, int *out_ids, SpecStats *stats) {
     if (max_draft + 1 > max_rows)
         die("a draft of %d needs %d logit rows; the GPU model has %d", max_draft,
             max_draft + 1, max_rows);
@@ -81,6 +95,7 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     int pos = tokenizer_encode(tok, prompt, (int)strlen(prompt), tokens, max_seq);
     if (pos >= max_seq - 1) die("prompt fills the whole %d-position context", max_seq);
     gpu_forward(gpu, tokens, pos, 0, pos - 1, logits);
+    int dpos = 0;                 /* tokens[0..dpos) are in the drafter's cache */
 
     /* Invariant: tokens[0..pos) are in the cache; `next` is decided and not. */
     int next = argmax(logits, cfg->vocab_size);
@@ -98,9 +113,19 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         int room = max_seq - pos - 2;
         int budget = max_draft < max_new - generated ? max_draft : max_new - generated;
         if (budget > room) budget = room;
-        const int k = budget > 0 ? lookup_draft(tokens, pos + 1, budget, tokens + pos + 1) : 0;
+        double t1 = now();
+        int k = 0;
+        if (budget > 0 && drafter) {
+            model_draft(drafter, tokens, pos + 1, &dpos, budget, logits, cfg->vocab_size);
+            k = budget;
+        } else if (budget > 0) {
+            k = lookup_draft(tokens, pos + 1, budget, tokens + pos + 1);
+        }
+        double t2 = now();
+        s.draft_s += t2 - t1;
 
         gpu_forward(gpu, tokens + pos, k + 1, pos, 0, logits);
+        s.verify_s += now() - t2;
         s.passes++;
         s.drafted += k;
 
@@ -113,6 +138,8 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
             out_ids[generated++] = t;
         }
         s.accepted += i;
+        /* The drafter's rows past the accepted text hold rejected drafts. */
+        if (dpos > pos + 1 + i) dpos = pos + 1 + i;
         if (stop) break;
         next = argmax(logits + (size_t)i * V, cfg->vocab_size);
         pos += 1 + i;
