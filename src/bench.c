@@ -530,13 +530,31 @@ void bench_moe(const char *model_dir, const char *csv_path) {
     MetalContext *mtl = metal_init("picoforge.metallib");
     GpuModel *g = gpu_model_create(mtl, &st, &cfg, 64, 1);
     const int k = cfg.num_experts_per_tok, E = cfg.num_experts;
-    const double expert_bytes = 3.0 * cfg.hidden_size * cfg.moe_intermediate_size * 2.0;
 
-    FILE *csv = fopen(csv_path, "wb");
-    if (!csv) die("cannot write %s", csv_path);
-    fprintf(csv, "n,distinct_experts,median_s,p10_s,p90_s,expert_gb_read,layers,est_all_layers_s\n");
-    printf("\n=== one MoE block: %d experts, top-%d, %dx%d (%.1f s warm-up + %d reps) ===\n",
-           E, k, cfg.hidden_size, cfg.moe_intermediate_size, WARM_SECONDS, REPS);
+    /* What one expert weighs in THIS file, counted from the tensors the kernel
+     * reads -- codes and scales when quantised -- not from the config. */
+    double expert_bytes = 0;
+    const char *format = "bf16";
+    static const char *projs[3] = {"gate_proj", "up_proj", "down_proj"};
+    for (int p = 0; p < 3; p++) {
+        static const char *parts[3] = {"weight", "qweight", "scales"};
+        for (int i = 0; i < 3; i++) {
+            char name[128];
+            snprintf(name, sizeof name, "model.layers.0.mlp.experts.0.%s.%s", projs[p], parts[i]);
+            const Tensor *t = st_try(&st, name);
+            if (!t) continue;
+            expert_bytes += (double)t->nelem * (t->dtype == DT_BF16 ? 2.0 : 1.0);
+            if (i == 1) format = t->dtype == DT_I8 ? "q8_row" : "q4";
+        }
+    }
+
+    FILE *csv = fopen(csv_path, "ab");
+    if (!csv) die("cannot append to %s", csv_path);
+    fseek(csv, 0, SEEK_END);
+    if (ftell(csv) == 0)
+        fprintf(csv, "format,n,distinct_experts,median_s,p10_s,p90_s,expert_gb_read,layers,est_all_layers_s\n");
+    printf("\n=== one MoE block: %d %s experts (%.2f MB each), top-%d (%.1f s warm-up + %d reps) ===\n",
+           E, format, expert_bytes / 1e6, k, WARM_SECONDS, REPS);
     printf("   n  experts   GB read   median ms  [p10, p90]      x%d layers (estimate)\n", 48);
 
     int experts[64 * PF_MAX_TOPK];
@@ -557,7 +575,7 @@ void bench_moe(const char *model_dir, const char *csv_path) {
             const double med = pct(ts, REPS, 0.5);
             /* x48 is arithmetic, not a measurement: the real model's layers
              * route differently from one another, and attention is not here. */
-            fprintf(csv, "%d,%d,%.9f,%.9f,%.9f,%.4f,48,%.6f\n", n, D, med, pct(ts, REPS, 0.1),
+            fprintf(csv, "%s,%d,%d,%.9f,%.9f,%.9f,%.4f,48,%.6f\n", format, n, D, med, pct(ts, REPS, 0.1),
                     pct(ts, REPS, 0.9), D * expert_bytes / 1e9, med * 48);
             printf("  %2d  %7d   %7.2f   %9.3f  [%.3f, %.3f]   %8.1f ms\n", n, D,
                    D * expert_bytes / 1e9, med * 1e3, pct(ts, REPS, 0.1) * 1e3,

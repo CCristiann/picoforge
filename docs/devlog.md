@@ -202,9 +202,36 @@ Every expert two drafts share saves 43 us x 48 = 2 ms. How much real
 consecutive tokens share is a property of the trained router, and the one
 number here that cannot be synthesised: it needs the 30B.
 
-**Next:** the 30B checkpoint (a download that needs the human's yes): sharded
-safetensors, layer-by-layer oracle parity, and the routing-overlap measurement
-that turns this cost model into a draft scheduler.
+### Step 4.6b — q8_row experts on the GPU, and a limit that sets the format
+
+A probe of the device before anything else: `maxBufferLength` is **41.75 GB**
+and the recommended working set 55.7 GB. The engine binds the checkpoint as
+ONE no-copy buffer, and the 30B in bf16 is 61 GB -- it cannot run on this GPU
+unquantised, whatever else is done. q8_row (free in quality in Phase 3) puts it
+near 31 GB, inside one buffer. So the GPU gained grouped q8_row expert kernels:
+the op on the int8 codes, then the per-row scales applied inside the tile.
+
+`make test-forward-moe-quant`: the quantised tiny MoE (48 expert projections
+as int8, router and untied head kept bf16) against the oracle on dequantised
+weights, strict budgets, GPU batch and incremental: worst relative 1.7e-6,
+KL 9e-12. A kernel with the scales removed fails all six GPU cases.
+
+The verify-cost surface, both formats measured in one session
+(`bench/moe_verify_cost_m5pro.csv` now carries a format column):
+
+                 <= 8 tokens (8-row tile)          32 tokens (32-row tile)
+  bf16           0.36 ms + 44 us/expert  216 GB/s   0.49 ms + 47 us/expert  202 GB/s
+  q8_row         0.35 ms + 22 us/expert  218 GB/s   0.57 ms + 38 us/expert  125 GB/s
+
+- **Half the bytes, half the marginal expert** -- 44 -> 22 us at <= 8 tokens,
+  at the same ~217 GB/s. The byte model holds across formats.
+- **The 32-row tile throws that away.** Past 8 tokens the q8 kernel pays nearly
+  bf16's price per expert, because the 32-row op computes rows that are not
+  there. The obvious test: 8-row tiles for groups of any size.
+
+**Next:** that test, then the 30B checkpoint (a download that needs the human's
+yes): sharded safetensors, parity, and the routing-overlap measurement that
+turns this cost model into a draft scheduler.
 
 ## 2026-09-12 (later that night) — Phase 3: quantisation, designed around the matrix units
 

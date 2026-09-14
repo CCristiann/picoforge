@@ -27,7 +27,8 @@
 enum { K_MATMUL_NAIVE, K_MATMUL_SIMD, K_MATMUL_TENSOR, K_EMBED, K_RMSNORM,
        K_QKROPE, K_ATTN, K_SWIGLU, K_RESIDUAL, K_NARROW, K_EMBED_Q,
        K_Q8_ROW, K_Q8_G32, K_Q4_ROW, K_Q4_G32, K_Q4_G64, K_MATMUL_TENSOR_8X32,
-       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM8, K_MOE_MM32, K_MOE_SCATTER, K_COUNT };
+       K_MOE_ROUTE, K_MOE_GROUP, K_MOE_GATHER, K_MOE_MM8, K_MOE_MM32, K_MOE_SCATTER,
+       K_MOE_Q8_8, K_MOE_Q8_32, K_COUNT };
 
 static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_naive", "matmul_simdgroup", "matmul_tensorops", "embed_lookup",
@@ -36,6 +37,7 @@ static const char *gpu_kernel_names[K_COUNT] = {
     "matmul_q8_row", "matmul_q8_g32", "matmul_q4_row", "matmul_q4_g32", "matmul_q4_g64",
     "matmul_tensorops_8x32",
     "moe_route", "moe_group", "moe_gather", "moe_matmul_8", "moe_matmul_32", "moe_scatter",
+    "moe_matmul_q8row_8", "moe_matmul_q8row_32",
 };
 
 /* A MoE pass takes at most one tile of rows per expert group (kernels.metal). */
@@ -48,7 +50,7 @@ typedef struct { size_t w, q, d; int bits, group, kernel; } GLinear;
 
 typedef struct { size_t input_ln, q_norm, k_norm, post_attn_ln;
                  GLinear q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj;
-                 bool moe; GLinear router; } LayerOffsets;
+                 bool moe; bool moe_q8; GLinear router; } LayerOffsets;
 
 struct GpuModel {
     MetalContext      *ctx;
@@ -65,7 +67,8 @@ struct GpuModel {
     void *x, *xb, *q, *attout, *hb, *hb2, *kcache, *vcache, *logits, *tokens;
     void *act16;                         /* bf16 activations for Q4 matmuls   */
 
-    /* MoE: expert weight offsets in bfloats, [layer][gate, up, down][expert],
+    /* MoE: expert weight offsets, [layer][gate, up, down][expert][weights or
+     * codes, scales] -- bfloats for bf16 and scales, bytes for 8-bit codes --
      * and the routing and packed-row buffers of one <= 32-token pass. */
     void *moe_offs, *moe_logits, *moe_idx, *moe_wt, *moe_rop, *moe_tor, *moe_groups,
          *moe_ng, *moe_a, *moe_g, *moe_u, *moe_d;
@@ -145,7 +148,7 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     uint64_t *offs = NULL;
     if (E) {
         g->moe_offs = (__bridge_retained void *)[dev newBufferWithLength:
-            (size_t)cfg->num_hidden_layers * 3 * E * sizeof(uint64_t) options:MTLResourceStorageModeShared];
+            (size_t)cfg->num_hidden_layers * 3 * E * 2 * sizeof(uint64_t) options:MTLResourceStorageModeShared];
         offs = ((__bridge id<MTLBuffer>)g->moe_offs).contents;
     }
     g->layer = calloc((size_t)cfg->num_hidden_layers, sizeof *g->layer);
@@ -163,8 +166,9 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
         o->v_proj    = to_glinear(st, &L->v_proj, Hd);
         o->o_proj    = to_glinear(st, &L->o_proj, qd);
         if (L->experts) {
-            /* The grouped kernel reads bf16 experts by offset; quantised experts
-             * and routers are a later step, refused rather than misread. */
+            /* The grouped kernels read experts by offset: bf16, or q8_row. A
+             * layer's experts must share one format, since one dispatch runs
+             * them all; anything else is refused rather than misread. */
             o->moe = true;
             o->router = to_glinear(st, &L->router, Hd);
             if (o->router.kernel >= 0) die("layer %d: a quantised router is not on the GPU yet", l);
@@ -173,8 +177,14 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
                                        &L->experts[e].down_proj};
                 for (size_t p = 0; p < 3; p++) {
                     GLinear gl = to_glinear(st, pr[p], p == 2 ? cfg->moe_intermediate_size : Hd);
-                    if (gl.kernel >= 0) die("layer %d: quantised experts are not on the GPU yet", l);
-                    offs[((size_t)l * 3 + p) * E + e] = gl.w / 2;
+                    const bool q8 = gl.kernel == K_Q8_ROW;
+                    if (gl.kernel >= 0 && !q8)
+                        die("layer %d: only bf16 and q8_row experts run on the GPU", l);
+                    if (e == 0 && p == 0) o->moe_q8 = q8;
+                    if (q8 != o->moe_q8) die("layer %d mixes expert formats", l);
+                    const size_t at = (((size_t)l * 3 + p) * E + e) * 2;
+                    offs[at]     = q8 ? gl.q : gl.w / 2;
+                    offs[at + 1] = q8 ? gl.d / 2 : 0;
                 }
             }
             if (o->k_proj.bits != o->q_proj.bits || o->v_proj.bits != o->q_proj.bits)
@@ -341,10 +351,13 @@ static void pso_set(GpuModel *g, id<MTLComputeCommandEncoder> enc, int kernel, v
 static void encode_moe_matmul(GpuModel *g, id<MTLComputeCommandEncoder> enc, void *C, void *A,
                               int layer, int proj, int n, int N, int K) {
     const int E = g->cfg.num_experts, pairs = n * g->cfg.num_experts_per_tok;
+    const bool q8 = g->layer[layer].moe_q8;
     void *bufs[] = {C, A, g->weights, g->moe_offs, g->moe_groups, g->moe_ng};
-    pso_set(g, enc, n <= 8 ? K_MOE_MM8 : K_MOE_MM32, bufs, 6);
+    pso_set(g, enc, q8 ? (n <= 8 ? K_MOE_Q8_8 : K_MOE_Q8_32) : (n <= 8 ? K_MOE_MM8 : K_MOE_MM32),
+            bufs, 6);
+    if (q8) [enc setBuffer:(__bridge id<MTLBuffer>)g->weights offset:0 atIndex:7];
     [enc setBuffer:(__bridge id<MTLBuffer>)g->moe_offs
-            offset:((NSUInteger)layer * 3 + (NSUInteger)proj) * (NSUInteger)E * sizeof(uint64_t) atIndex:3];
+            offset:((NSUInteger)layer * 3 + (NSUInteger)proj) * (NSUInteger)E * 2 * sizeof(uint64_t) atIndex:3];
     struct MatmulDimsC d = {(uint32_t)n, (uint32_t)N, (uint32_t)K};
     [enc setBytes:&d length:sizeof d atIndex:6];
     [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32), (NSUInteger)(pairs < E ? pairs : E), 1)
