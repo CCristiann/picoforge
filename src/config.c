@@ -207,8 +207,9 @@ void config_print(const Qwen3Config *cfg) {
      * so that `./picoforge DIR | diff - <(oracle DIR)` is EMPTY. The summary
      * is not decoration: it is the cheapest regression test in the project,
      * and it only works if both sides are byte-identical. */
-    printf("tied embeddings       : %s (no separate lm_head tensor in the weights)\n",
-           cfg->tie_word_embeddings ? "True" : "False");
+    printf("tied embeddings       : %s\n", cfg->tie_word_embeddings
+           ? "True (the LM head reuses the embedding matrix)"
+           : "False (lm_head.weight is its own matrix)");
     printf("weights dtype         : %s (oracle computes in fp32)\n", cfg->torch_dtype);
     printf("bos / eos             : %d / %d\n", cfg->bos_token_id, cfg->eos_token_id);
     printf("stop tokens           :");

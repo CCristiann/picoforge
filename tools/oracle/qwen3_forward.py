@@ -97,8 +97,9 @@ def print_summary(cfg: Qwen3Config) -> None:
     print(f"rope_theta            : {cfg.rope_theta:g}")
     print(f"max positions         : {cfg.max_position_embeddings}")
     print(f"rms_norm_eps          : {cfg.rms_norm_eps:g}")
-    print(f"tied embeddings       : {cfg.tie_word_embeddings} "
-          f"(no separate lm_head tensor in the weights)")
+    print("tied embeddings       : " + ("True (the LM head reuses the embedding matrix)"
+                                         if cfg.tie_word_embeddings
+                                         else "False (lm_head.weight is its own matrix)"))
     print(f"weights dtype         : {cfg.torch_dtype} (oracle computes in fp32)")
     print(f"bos / eos             : {cfg.bos_token_id} / {cfg.eos_token_id}")
 

@@ -281,16 +281,15 @@ void st_summary(const SafeTensors *st) {
         bytes   += st->tensors[i].nelem * dtype_size(st->tensors[i].dtype);
     }
 
-    /* tie_word_embeddings means lm_head.weight is a byte-for-byte copy of the
-     * embedding matrix that the config tells us to ignore. Counting it would
-     * inflate "parameters" by 155.6 M — a quarter of this model. */
+    /* Qwen3-0.6B ships lm_head.weight as a byte-for-byte copy of the embedding
+     * the config tells us to reuse; counting it would inflate "parameters" by
+     * 155.6 M. Qwen3-30B-A3B ships a head that is its own matrix. Which one a
+     * file holds is checked on the bytes, not assumed from the name. */
     size_t unique = on_disk;
-    bool tied_copy = false;
-    for (int i = 0; i < st->n_tensors; i++)
-        if (strcmp(st->tensors[i].name, "lm_head.weight") == 0) {
-            unique -= st->tensors[i].nelem;
-            tied_copy = true;
-        }
+    const Tensor *head = st_try(st, "lm_head.weight"), *emb = st_try(st, "model.embed_tokens.weight");
+    const bool tied_copy = head && emb && head->dtype == emb->dtype && head->nelem == emb->nelem &&
+                           memcmp(head->data, emb->data, head->nelem * dtype_size(head->dtype)) == 0;
+    if (tied_copy) unique -= head->nelem;
 
     printf("\n=== checkpoint ===\n");
     double mapped = 0;
