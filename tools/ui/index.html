@@ -171,7 +171,7 @@
 
 <section class="panel" id="bench">
   <div class="charts" id="charts"></div>
-  <p class="note">Median of 25 runs after 5 warmups, timed by the GPU itself. Raw CSV in
+  <p class="note">GPU kernel timings: median of 25 runs; see docs/BENCHMARKS.md for each run's warmup protocol. Raw CSV in
      <code>bench/matmul_m5pro.csv</code>; protocol in <code>docs/BENCHMARKS.md</code>.</p>
 </section>
 
@@ -389,7 +389,7 @@ async function drawPhase4() {
   if (q8.length > 1) { const a = q8[0], b = q8[q8.length - 1];
     slope = (b.median_s - a.median_s) / (b.distinct_experts - a.distinct_experts) * 1e6; }
   $('#p4-cards').innerHTML =
-    (gm('model-auto') ? card('Adaptive speculation', gm('model-auto').toFixed(2) + '×', 'geomean decode speedup, 30B, lossless') : '') +
+    (gm('model-auto') ? card('Adaptive speculation', gm('model-auto').toFixed(2) + '×', 'historical pilot: 5 prompts, 3 runs, versus no draft') : '') +
     (dec ? card('Qwen3-30B-A3B decode', (+dec.tok_s).toFixed(1), 'tok/s · q8_row · depth 512') : '') +
     (ov8 ? card('Router locality', Math.round(ov8.mean_distinct_experts / ov8.uniform_expectation * 100) + '%', 'of uniform experts, 8 consecutive tokens') : '') +
     (v8 ? card('Verify 8 tokens', (+v8.x_decode).toFixed(2) + '×', 'the cost of one decode step') : '') +

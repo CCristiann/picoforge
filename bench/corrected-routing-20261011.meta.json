@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-11",
+  "description": "Corrected routing trace and 30B GPU profile after the attention bound fix.",
+  "commit": "a84285362236a2768a6d69b232e06f837385b68b",
+  "source_sha256": {
+    "src/bench.c": "f0c9dab7224e77bcde92423570734f40b41e513b81f06cf7a21e4ffa019b722b",
+    "src/config.c": "716938164461f229144b7b5a45371e26ae540bcedc2093bafec6bc2cbef97a52",
+    "src/eval.c": "5b09e643dd2492cfbf7e13ccd001d855550d3ccc97a5c9ea338b883fd1d2fbea",
+    "src/generate.c": "838dfeaf06f8978d228cf80b384cb026dadde60e484710771cf2d3d8bb5e8528",
+    "src/gpu_forward.m": "c3940273888c73be21c83689b53e1139c9196a9c30d301a76aaedf0545f39e32",
+    "src/json.c": "6abb52eab58ba757e35c46f6dc7570a87b6fc200b3d183530143f027a63a1c08",
+    "src/kernels.metal": "17c2c5d627306cc097576c3b436c6a8a5417070abbccc5fdc7c2d378d21a1c06",
+    "src/main.c": "654c97574cd8d3f86b18706a541ba9954831bbc4aaa304e3a551f378d2da13d1",
+    "src/metal.m": "8759e26ff9bf785129a34b968203cd6d577f73360bd8dfca69f1219b9e56102d",
+    "src/model.c": "efec5604c44f014be01157469c31ed258382c53f41ff79aab9dbf5c4e982a471",
+    "src/normalize.c": "1780aa14d89a674c898e14a28abc646ed0d6c8d09817040db62e25230b3592cd",
+    "src/ops.c": "cf689e983663e0ffe24386dde367f0c8d9b8bea0874213458c06d714ba7b3ce6",
+    "src/picoforge.h": "54074d8651ae299fd55c4161f4ea7b3af84517e59d891f05c324f4cedbeb07c4",
+    "src/quant.c": "906192f1dd25b4a46eb9309e446cc188f0ff2be22196d44e91d1b553f445be6d",
+    "src/safetensors.c": "3b636812c31e6674052291821f44e8255ab8857d81a6e27aeb681c0936cfd607",
+    "src/speculate.c": "4e7b7e1d411a458a431f17b6e63ddcbaf92fc0908f2321d6a16d02745cf7e519",
+    "src/tokenizer.c": "df1aeb98450e6b2bb763e07477712c848fbc7437198c4e29646757bbe52ed1c6",
+    "src/unicode_tables.c": "2d7374077b7e94c7df54a49d6a6d899ad842d1793876b0a79553f553ed5b5e09",
+    "src/util.c": "e7721cda029534186d144dcbb75621fb01056443f4bc16953ba3b70dc3e537ef"
+  },
+  "engine_sha256": "9966a0964858195728d36d33744c538bf6b70519f37e6aa7d1e1654422076481",
+  "metallib_sha256": "f5ceb84754061234f6b5c821b09400cf8e74bae2b3fb91a10efe779a03859703",
+  "hardware": "Mac17,9\n68719476736\nApple M5 Pro",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "metal_toolchain": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.109.0.9Co0H3/Metal.xctoolchain/usr/metal/current/bin",
+  "target": "Qwen3-30B-A3B-q8_row",
+  "target_files": {
+    "config.json": {
+      "bytes": 963,
+      "sha256": "2850ddb3bf7aecad20b611e2d44f3077fc8193f4827c93beddd4c02ad63c2297"
+    },
+    "tokenizer.json": {
+      "bytes": 11422654,
+      "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    "model.safetensors": {
+      "bytes": 31216612800,
+      "sha256": "ca2be5cbe733ec4de0739a98b7f415bf01878351ea1c705f09e3e67b461391f5"
+    },
+    "generation_config.json": {
+      "bytes": 239,
+      "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+    },
+    "tokenizer_config.json": {
+      "bytes": 9732,
+      "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    },
+    "vocab.json": {
+      "bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    "merges.txt": {
+      "bytes": 1671853,
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    }
+  },
+  "corpus": {
+    "bytes": 270921,
+    "sha256": "ffde2116596be2bc1224e95deec3ee6e2e5bbb68096942b3805b5761dcaf64c6"
+  },
+  "corpus_source_commit": "8697213",
+  "trace": {
+    "bytes": 3145744,
+    "sha256": "0316746837f97cd8b1b26bef92639ddf5284ccf9da4f22ce8cf3e3f170691b36"
+  },
+  "files": {
+    "bench/routing_overlap_qwen3_30b_20261011.csv": {
+      "bytes": 351,
+      "sha256": "24c6fea96d64a12c85d6f2d91db8b1a6f9c6b5d4568ad3459ead1bc950547f02"
+    },
+    "bench/profile_qwen3_30b_20261011.csv": {
+      "bytes": 3908,
+      "sha256": "b146403aa9e31dc6367871b27224e6bcf516fc2eaae22ba73278777a60f9e44c"
+    }
+  },
+  "routing_tool": {
+    "bytes": 3635,
+    "sha256": "d14c1ff6015fb39b855e945fe2f1e92462ad907b9147e5bbef9d3a9419d1430d"
+  },
+  "cost_surface": {
+    "bytes": 3938,
+    "sha256": "2c5ef7d32be4843edd994081940fc115bfa2ff4a483f51c56cde7683af432319"
+  },
+  "commands": [
+    "make",
+    "tools/venv/bin/python tools/eval/build_local_corpus.py 8697213",
+    "./picoforge models/Qwen3-30B-A3B-q8_row --routing-trace build/corpus_local.txt 4096 build/trace_30b_20261011.bin",
+    "tools/venv/bin/python tools/eval/routing_overlap.py build/trace_30b_20261011.bin bench/routing_overlap_qwen3_30b_20261011.csv",
+    "./picoforge models/Qwen3-30B-A3B-q8_row --profile bench/profile_qwen3_30b_20261011.csv"
+  ],
+  "limitations": [
+    "Trace uses reference text, not proposed or rejected speculative drafts.",
+    "Estimated MoE costs use the older synthetic q8_row cost surface; these are not measured full-pass latencies.",
+    "Profile uses 0.5 s warmup and 25 measured GPU passes per cell; it retains aggregate quantiles, not per-pass samples.",
+    "No other test or benchmark GPU workload ran concurrently."
+  ]
+}

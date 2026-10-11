@@ -505,16 +505,15 @@ kernel void qk_norm_rope(device float        *x [[buffer(0)]],
  * barriers bought independence with memory traffic, and lost at every size
  * (4.69 -> 6.08 ms at decode depth 512). */
 #define ATTN_THREADS 128
-#define ATTN_MAX_CTX 2048
 
 kernel void attention(device float        *out [[buffer(0)]],
                       device const float  *q   [[buffer(1)]],
                       device const float  *kc  [[buffer(2)]],
                       device const float  *vc  [[buffer(3)]],
                       constant AttnDims   &d   [[buffer(4)]],
+                      threadgroup float  *score [[threadgroup(0)]],
                       uint2 tgid [[threadgroup_position_in_grid]],
                       uint  tid  [[thread_index_in_threadgroup]]) {
-    threadgroup float score[ATTN_MAX_CTX];
     threadgroup float part[ATTN_THREADS];
     threadgroup float shared_max, shared_sum;
 

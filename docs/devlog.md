@@ -2,6 +2,31 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-10-11 — attention bounds and reproducible request timings
+
+Attention score storage now follows the active context, with a GPU-capacity
+check. Tests cover 2,048, 2,049 and 4,096 positions and compare the tiny MoE's
+full 4,096-token routing trace with Transformers. Generation accepts
+`--context N`; ordinary and speculative greedy agree at the cache boundary.
+
+The request runner now keeps raw runs, warmups, shuffled configuration order,
+hashes, peak process RSS and separate prefill/decode/process timers. No runtime
+dependency was added. The old adaptive result was 2.3% ahead of fixed `k=2`,
+which needs a stronger comparison before it can support a performance claim.
+
+**Correction to step 4.8b below:** the old 4,096-token routing result crossed
+a 2,048-entry attention buffer. Its 39% locality figure is invalid. The corrected
+trace gives 29.8 distinct experts for eight tokens, or 58% of uniform routing.
+Historical text is retained below; the corrected CSV and current protocol take
+precedence.
+
+The new ten-prompt pilot completed 150 measurements and 30 warmups with exact
+greedy parity. Adaptive decode reached 1.427x versus no draft, fixed `k=2`
+1.412x; full-process speedups were 1.131x and 1.099x. The first target forward
+accounts for most of the gap, so separating first-use cost from warmed prefill
+comes before another scheduler change. Process RSS does not capture the full
+GPU memory footprint; see `BENCHMARKS.md` before interpreting that field.
+
 ## 2026-09-14 — Phase 3 merged; Phase 4 aimed at a gap
 
 `make test-all` re-run: green. Repository published to
@@ -402,6 +427,7 @@ argmax 40/40. "The capital of France is" -> " Paris" at 74.7%.
 
 `--routing-trace` over the first 4096 tokens of `build/corpus_local.txt`, then
 `tools/eval/routing_overlap.py`, `bench/routing_overlap_qwen3_30b_corpus.csv`:
+**Superseded: see the October 11 correction above.**
 distinct experts per MoE layer touched by w consecutive tokens, against
 w independent uniformly routed tokens.
 

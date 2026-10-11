@@ -407,6 +407,8 @@ int  generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
  * how many passes that took. max_rows must be at least max_draft + 1. */
 typedef struct {
     int    generated, passes, drafted, accepted;
+    int    prompt_tokens;
+    double prefill_s, draft_prefill_s;
     double decode_s;          /* wall time after prefill                    */
     double draft_s, verify_s; /* of which drafting, and the target's passes  */
     int    k_hist[33];        /* passes that verified k drafts, k = 0..32    */

@@ -3,6 +3,12 @@
 Written 2026-09-14. A plan, not a result: every claim below marked
 *expected* is arithmetic waiting for a measurement.
 
+October 11 update: the [project review](project-review-2026-10-11.md) is the
+current work order. The original novelty hypothesis below is unproven. The
+existing scheduler adapts to measured time, without predicting experts. The
+old 4,096-token routing measurement crossed the attention buffer limit and is
+superseded by `bench/routing_overlap_qwen3_30b_20261011.csv`.
+
 ## Where the gap is
 
 A literature search on 2026-09-14 found three pieces of work that each hold

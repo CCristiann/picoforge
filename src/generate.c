@@ -127,6 +127,7 @@ int generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
     if (!tokens) die("out of memory for %d tokens", cap);
 
     int n = tokenizer_encode(tok, prompt, (int)strlen(prompt), tokens, cap);
+    if (n == 0) die("prompt must contain at least one token");
     if (n >= cap) die("prompt fills the whole %d-position context", cap);
 
     /* One row of logits is all generation ever reads. On the GPU path it has

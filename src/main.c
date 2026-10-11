@@ -8,6 +8,18 @@
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
+#include <limits.h>
+#include <errno.h>
+#include <sys/resource.h>
+
+static int integer_arg(const char *text, int min, int max, const char *name) {
+    char *end;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if (errno || end == text || *end || value < min || value > max)
+        die("%s must be an integer in [%d, %d]", name, min, max);
+    return (int)value;
+}
 
 /* The config and the checkpoint are two files that can disagree. Nothing
  * downstream re-checks them, so every dimension the forward pass will index
@@ -36,10 +48,19 @@ static void fingerprint(const SafeTensors *st, const char *name, int n) {
 }
 
 int main(int argc, char **argv) {
+    int context = 1024;
+    if (argc > 1 && strcmp(argv[1], "--context") == 0) {
+        if (argc < 4) die("usage: picoforge --context N MODEL [command]");
+        context = integer_arg(argv[2], 2, INT_MAX, "context");
+        argv += 2;
+        argc -= 2;
+    }
     const char *model_dir = (argc > 1) ? argv[1] : "models/Qwen3-0.6B";
 
     Qwen3Config cfg;
     config_load(model_dir, &cfg);
+    if (context > cfg.max_position_embeddings)
+        die("context %d exceeds the model limit %d", context, cfg.max_position_embeddings);
     config_print(&cfg);
 
     SafeTensors st;
@@ -153,7 +174,7 @@ int main(int argc, char **argv) {
     if (argc > 5 && strcmp(argv[2], "--routing-trace") == 0) {
         size_t len;
         char *text = slurp(argv[3], &len);
-        const int max_tokens = atoi(argv[4]);
+        const int max_tokens = integer_arg(argv[4], 1, cfg.max_position_embeddings, "max tokens");
         /* Encode the whole text (a token is at least one byte), then keep the
          * first MAX_TOKENS: the encoder refuses to truncate mid-text itself. */
         int *ids = malloc((len + 16) * sizeof *ids);
@@ -293,11 +314,11 @@ int main(int argc, char **argv) {
      * can be compared token for token — with sampling on, matching output
      * would only prove the two RNGs agree. */
     if (argc > 5 && strcmp(argv[2], "--greedy") == 0) {
-        int max_new = atoi(argv[4]);
+        int max_new = integer_arg(argv[4], 1, context, "max new tokens");
         Weights w;
         weights_bind(&st, &cfg, &w);
         RunState state;
-        state_alloc(&state, &cfg, 1024, 1);
+        state_alloc(&state, &cfg, context, 1);
 
         int *ids = malloc((size_t)max_new * sizeof *ids);
         if (!ids) die("out of memory for %d generated ids", max_new);
@@ -330,12 +351,17 @@ int main(int argc, char **argv) {
         const char **a = spec_model ? (const char **)argv + 1 : (const char **)argv;
         const bool spec = spec_model || strcmp(argv[2], "--spec-greedy") == 0;
         /* DRAFT as "auto" or "auto:K" chooses the length per pass, up to K (8). */
-        const int max_new = atoi(a[4]);
-        int draft = spec ? atoi(a[5]) : 0;
-        if (spec && strncmp(a[5], "auto", 4) == 0) draft = -(a[5][4] == ':' ? atoi(a[5] + 5) : 8);
+        const int max_new = integer_arg(a[4], 1, context, "max new tokens");
+        int draft = 0;
+        if (spec) {
+            if (strcmp(a[5], "auto") == 0) draft = -8;
+            else if (strncmp(a[5], "auto:", 5) == 0)
+                draft = -integer_arg(a[5] + 5, 1, 31, "automatic draft limit");
+            else draft = integer_arg(a[5], 0, 31, "draft length");
+        }
         const char *out_path = a[spec ? 6 : 5];
         MetalContext *mtl = metal_init("picoforge.metallib");
-        GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, 1024, 32);
+        GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, context, 32);
         SafeTensors dst;
         Qwen3Config dcfg;
         GpuModel *drafter = NULL;
@@ -344,7 +370,7 @@ int main(int argc, char **argv) {
             if (dcfg.vocab_size != cfg.vocab_size)
                 die("the drafter's vocabulary (%d) is not the target's (%d)", dcfg.vocab_size, cfg.vocab_size);
             st_open(argv[3], &dst);
-            drafter = gpu_model_create(mtl, &dst, &dcfg, 1024, 1);
+            drafter = gpu_model_create(mtl, &dst, &dcfg, context, 1);
         }
         int *ids = malloc((size_t)max_new * sizeof *ids);
         if (!ids) die("out of memory for %d generated ids", max_new);
@@ -353,22 +379,31 @@ int main(int argc, char **argv) {
         static SpecStats last_stats;
         if (spec) {
             SpecStats ss;
-            got = generate_speculative(&tok, &cfg, gpu, drafter, 1024, 32, a[3], max_new, draft,
+            got = generate_speculative(&tok, &cfg, gpu, drafter, context, 32, a[3], max_new, draft,
                                        ids, &ss);
             printf("spec: %d tokens in %d passes (%.2f per pass), %d/%d drafts accepted, "
                    "decode %.3f s (%.1f tok/s; drafting %.3f s, verifying %.3f s)\n", got,
-                   ss.passes, ss.passes ? (double)(got - 1) / ss.passes : 0.0, ss.accepted,
-                   ss.drafted, ss.decode_s, ss.decode_s > 0 ? (got - 1) / ss.decode_s : 0.0,
+                   ss.passes, ss.passes && got > 1 ? (double)(got - 1) / ss.passes : 0.0, ss.accepted,
+                   ss.drafted, ss.decode_s, ss.decode_s > 0 && got > 1 ? (got - 1) / ss.decode_s : 0.0,
                    ss.draft_s, ss.verify_s);
             printf("draft lengths:");
             for (int k = 0; k < 33; k++) if (ss.k_hist[k]) printf(" k=%d x%d", k, ss.k_hist[k]);
             printf("\n");
+            struct rusage usage;
+            if (getrusage(RUSAGE_SELF, &usage)) die("cannot read process memory usage");
+            printf("metrics: {\"prompt_tokens\":%d,\"generated\":%d,\"passes\":%d,"
+                   "\"drafted\":%d,\"accepted\":%d,\"prefill_s\":%.9f,\"draft_prefill_s\":%.9f,"
+                   "\"decode_s\":%.9f,\"draft_s\":%.9f,\"verify_s\":%.9f,\"peak_rss_bytes\":%ld,\"k_hist\":[",
+                   ss.prompt_tokens, got, ss.passes, ss.drafted, ss.accepted,
+                   ss.prefill_s, ss.draft_prefill_s, ss.decode_s, ss.draft_s, ss.verify_s, usage.ru_maxrss);
+            for (int k = 0; k < 33; k++) printf(k ? ",%d" : "%d", ss.k_hist[k]);
+            printf("]}\n");
             last_stats = ss;
         } else {
             Weights w;
             weights_bind(&st, &cfg, &w);
             RunState state;
-            state_alloc(&state, &cfg, 1024, 1);
+            state_alloc(&state, &cfg, context, 1);
             got = generate(&tok, &w, &cfg, &state, gpu, a[3], max_new, 0.0f, 1.0f, 0, 0, ids, true);
             state_free(&state);
             weights_free(&w);
@@ -417,7 +452,7 @@ int main(int argc, char **argv) {
                   || strcmp(argv[2], "--gpu-chat") == 0)) {
         bool templated = strcmp(argv[2], "--complete") != 0;
         bool on_gpu = strncmp(argv[2], "--gpu-", 6) == 0;
-        int max_new = (argc > 4) ? atoi(argv[4]) : 128;
+        int max_new = (argc > 4) ? integer_arg(argv[4], 1, context, "max new tokens") : 128;
         uint64_t seed = (argc > 5) ? strtoull(argv[5], NULL, 10) : 20260912ULL;
 
         char prompt[16384];
@@ -431,13 +466,13 @@ int main(int argc, char **argv) {
         RunState state;
         /* One row of logits is all generation ever looks at: 0.6 MB instead
          * of the 311 MB a full prompt's worth would cost. */
-        state_alloc(&state, &cfg, 1024, 1);
+        state_alloc(&state, &cfg, context, 1);
 
         MetalContext *mtl = NULL;
         GpuModel *gpu = NULL;
         if (on_gpu) {
             mtl = metal_init("picoforge.metallib");
-            gpu = gpu_model_create(mtl, &st, &cfg, 1024, 1);
+            gpu = gpu_model_create(mtl, &st, &cfg, context, 1);
             /* Optional 6th argument picks the matmul kernel: 0 naive,
              * 1 simdgroup, 2 TensorOps. The benchmark says the answer is not
              * obvious at M=1, so it is a knob and not a constant. */
@@ -449,8 +484,8 @@ int main(int argc, char **argv) {
         printf("sampling              : temperature %.2f, top_p %.2f, top_k %d, seed %llu\n",
                (double)cfg.gen_temperature, (double)cfg.gen_top_p, cfg.gen_top_k,
                (unsigned long long)seed);
-        printf("context               : 1024 positions (%.0f MB of K/V cache)\n",
-               (double)cfg.num_hidden_layers * 1024.0 *
+        printf("context               : %d positions (%.0f MB of K/V cache)\n", context,
+               (double)cfg.num_hidden_layers * context *
                (double)(cfg.num_key_value_heads * cfg.head_dim) * 8.0 / 1e6);
         printf("---\n");
 

@@ -47,8 +47,21 @@ ui: picoforge
 
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
-test-all: test test-nfc test-tokenizer test-encode test-forward test-generate \
+test-all: test test-bench-speculate test-attention test-context test-nfc test-tokenizer test-encode test-forward test-generate \
           test-quant-formats test-quant-kernels test-forward-quant test-speculate test-oracle-moe test-forward-moe test-forward-moe-quant test-shards test-routing-trace
+
+build/test_attention: tests/test_attention.m src/metal.o src/util.o src/picoforge.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fobjc-arc -Isrc -o $@ tests/test_attention.m src/metal.o src/util.o $(LDFLAGS) $(FRAMEWORKS)
+
+test-attention: build/test_attention $(METALLIB)
+	@./build/test_attention
+
+test-context: picoforge build/tiny-qwen3-moe
+	@./tools/venv/bin/python tests/test_context.py
+
+test-bench-speculate:
+	@./tools/venv/bin/python tests/test_bench_speculate.py
 
 # Phase 4: a tiny random Qwen3-MoE (same architecture and on-disk layout as
 # Qwen3-30B-A3B, 3 layers), and the NumPy oracle verified against it.
@@ -130,5 +143,5 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops $(METALLIB) build/*.air
 
-.PHONY: clean test test-all ui test-forward test-tokenizer test-encode test-nfc test-generate \
+.PHONY: clean test test-all test-bench-speculate test-attention test-context ui test-forward test-tokenizer test-encode test-nfc test-generate \
         test-quant-formats test-quant-kernels test-forward-quant quant-models

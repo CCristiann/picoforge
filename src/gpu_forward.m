@@ -113,6 +113,9 @@ static GLinear to_glinear(const SafeTensors *st, const Linear *l, int n_in) {
 
 GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
                            const Qwen3Config *cfg, int max_seq, int max_rows) {
+    if (max_seq < 1 || max_seq > cfg->max_position_embeddings || max_rows < 1)
+        die("invalid GPU capacity: context %d, logit rows %d (model context limit %d)",
+            max_seq, max_rows, cfg->max_position_embeddings);
     /* Every weight is an offset into ONE buffer over the mapping, and Metal
      * caps a buffer at maxBufferLength (41.75 GB here). A sharded checkpoint
      * is quantised into one file first (tools/quant/quantize.py). */
@@ -128,6 +131,15 @@ GpuModel *gpu_model_create(MetalContext *ctx, const SafeTensors *st,
     id<MTLDevice> dev = (__bridge id<MTLDevice>)metal_device(ctx);
     for (int i = 0; i < K_COUNT; i++)
         g->pso[i] = metal_pipeline(ctx, gpu_kernel_names[i]);
+
+    /* Attention keeps one score per context position in threadgroup memory.
+     * Include the shader's static reductions and Metal's 16-byte alignment. */
+    id<MTLComputePipelineState> attn = (__bridge id<MTLComputePipelineState>)g->pso[K_ATTN];
+    const size_t score_bytes = ((size_t)max_seq * sizeof(float) + 15u) & ~(size_t)15u;
+    if (score_bytes + attn.staticThreadgroupMemoryLength > dev.maxThreadgroupMemoryLength)
+        die("attention context %d needs %zu bytes of threadgroup memory; GPU limit is %lu",
+            max_seq, score_bytes + attn.staticThreadgroupMemoryLength,
+            (unsigned long)dev.maxThreadgroupMemoryLength);
 
     /* The zero-copy binding. mmap hands back a page-aligned base and rounds
      * the length up to a page, which is exactly what the no-copy path
@@ -579,8 +591,10 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
     const int q_dim = n_head * hd, kv_dim = n_kv * hd, I = cfg->intermediate_size;
     const float eps = cfg->rms_norm_eps;
 
-    if (pos + n > g->max_seq)
+    if (n < 1 || pos < 0 || pos > g->max_seq || n > g->max_seq - pos)
         die("context overflow: %d tokens at position %d exceeds %d", n, pos, g->max_seq);
+    if (logits_from < 0 || logits_from >= n || (logits_out && n - logits_from > g->max_rows))
+        die("invalid logit range: %d tokens, first row %d, capacity %d", n, logits_from, g->max_rows);
 
     id<MTLBuffer> tokbuf = (__bridge id<MTLBuffer>)g->tokens;
     memcpy(tokbuf.contents, tokens, (size_t)n * sizeof *tokens);
@@ -654,8 +668,11 @@ static double gpu_pass(GpuModel *g, const int *tokens, int n, int pos, int logit
                                (uint32_t)pos, (uint32_t)g->max_seq,
                                1.0f / sqrtf((float)hd)};
         [enc setBytes:&ad length:sizeof ad atIndex:4];
+        [enc setThreadgroupMemoryLength:(((size_t)(pos + n) * sizeof(float) + 15u) & ~(size_t)15u)
+                               atIndex:0];
         [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)n_head, (NSUInteger)n, 1)
             threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        [enc setThreadgroupMemoryLength:0 atIndex:0];
 
         enc = prof_next(prof, cb, enc, 2);
         input_for(g, enc, &o->o_proj, g->attout, 0, (size_t)n * (size_t)q_dim, &in, &in_off);

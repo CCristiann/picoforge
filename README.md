@@ -1,116 +1,117 @@
 # picoforge
 
-A single-model LLM inference engine for Apple Silicon, in C11 and Metal.
+A small Qwen3 inference engine in C11 and Metal, built and tested on an Apple
+M5 Pro. It includes a tokenizer, CPU reference path, GPU forward pass, weight
+quantisation, MoE routing and greedy speculative decoding. The engine has no
+Python or ML framework dependency.
 
-picoforge runs Qwen3 end to end — tokenizer, forward pass, K/V cache, sampling,
-quantised weights, mixture-of-experts routing and speculative decoding — with no
-ML framework inside the engine. The matrix multiplications run on the M5's GPU
-Neural Accelerators through Metal 4 tensor operations. Every component is
-verified against a reference implementation, and every performance number is
-measured on one reference machine by a written protocol.
+This is a working inference engine and a place to study its costs. The code
+keeps one model family and one GPU backend. Performance claims refer to the
+local measurements linked below; there is no measured lead over other runtimes.
 
-## Highlights
+## Build and run
 
-Measured on an Apple M5 Pro (64 GB, 307 GB/s). Raw data in [`bench/`](bench/),
-protocol in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-
-- **Qwen3-30B-A3B on one laptop GPU:** q8_row (31.2 GB), 21.0 tok/s decode at
-  cache depth 512, verified against the CPU path, which is verified against
-  the NumPy oracle and transformers on the real weights.
-- **Adaptive, lossless speculative decoding for MoE:** Qwen3-0.6B drafts for the
-  30B; the draft length is chosen before every pass from measured acceptance
-  and measured drafting and verification cost. 1.44x geometric-mean decode
-  speedup over five prompts (1.11x-1.67x), output identical to greedy in every
-  run, and better than any fixed draft length.
-- **Qwen3-0.6B on the GPU:** 4490 tok/s prefill (512 tokens), 75.9 tok/s decode
-  at cache depth 512, bf16.
-- **Lossless speculative decoding:** greedy verification with a prompt-lookup
-  or draft-model drafter; output identical to plain greedy, token for token,
-  across the test suite. Up to 1.64x decode on text that repeats its context.
-- **Mixture of experts on the GPU:** Qwen3-MoE routing, grouping and expert
-  products run inside one command buffer — nine dispatches per layer regardless
-  of the routing. bf16 and q8_row experts.
-- **A measured verify-cost model for MoE on this machine:** one Qwen3-30B-A3B
-  layer costs ~0.35 ms + 22 µs per distinct q8 expert touched, nearly
-  independent of how many tokens share them
-  ([plot](bench/moe_verify_cost.png)); and the trained router's locality keeps
-  that union small: eight consecutive tokens of real text touch 39% of the
-  experts uniform routing would.
-- **Quantisation:** q8_row (no measurable perplexity cost) and q4_g32 formats,
-  consumed natively by the matrix units.
-
-## Status
-
-| milestone | scope | status |
-|---|---|---|
-| 0 | NumPy reference implementation matched against transformers | done |
-| 1 | C engine on CPU: safetensors, byte-level BPE, forward pass, K/V cache, sampling | done |
-| 2 | Metal: naive, simdgroup and TensorOps kernels; full forward pass on GPU | done |
-| 3 | Quantisation: q8 / q4 formats, perplexity evaluation | done |
-| 4 | Qwen3-30B-A3B: GPU MoE, expert-cost-aware speculative decoding | in progress |
-
-Details and the reasoning behind each result are in
-[`docs/devlog.md`](docs/devlog.md); the Phase 4 plan and related work are in
-[`docs/phase4-plan.md`](docs/phase4-plan.md).
-
-## Requirements
-
-- macOS 26.2 or later with Xcode and the Metal 4 toolchain.
-- An M5-family Mac for the TensorOps kernels (the default GPU path).
-- Python 3 for the reference implementation, tests and tools (not needed by
-  the engine itself).
-
-## Quick start
+You need an M5-family Mac, macOS 26.2 or later, Xcode and the Metal 4 toolchain.
+The default GPU kernels use Metal TensorOps. Python 3.12 or later is needed
+for the pinned tooling dependencies; tests here use Python 3.14.2. Python is
+used for model download, conversion, tests and the optional local UI.
 
 ```sh
-make                                   # engine + Metal library
-
+make
 python3 -m venv tools/venv
 tools/venv/bin/pip install -r tools/requirements.txt
 tools/venv/bin/hf download Qwen/Qwen3-0.6B --local-dir models/Qwen3-0.6B
 
-./picoforge models/Qwen3-0.6B --gpu-chat "Why is decoding limited by memory bandwidth?"
+./picoforge models/Qwen3-0.6B --gpu-chat "Why does a cache help?"
 ```
 
-Other entry points:
+Run commands from the repository root. Weights stay in `models/` and are not
+included in the repository. To choose a larger context, put the option before
+the model directory:
 
 ```sh
-./picoforge models/Qwen3-0.6B --spec-greedy "def fibonacci(n):" 128 4 out.txt   # speculative decoding
-make quant-models                       # q8_row and q4_g32 checkpoints
-make ui                                 # local web UI on http://127.0.0.1:8000
-make test-all                           # every correctness harness
+./picoforge --context 4096 models/Qwen3-0.6B --gpu-chat "Explain memory bandwidth." 128
+make test-all
+make ui                       # http://127.0.0.1:8000
 ```
 
-## How correctness is established
+The context includes prompt and output. Its default is 1,024 tokens. Attention
+is tested through 4,096 tokens; larger requests are checked against the model
+limit and the GPU's threadgroup-memory capacity before dispatch.
 
-A chain of references, each link tested:
+## Supported paths
 
-1. `tools/oracle/` — a NumPy implementation, matched against HuggingFace
-   transformers (fp32, eager attention).
-2. The C CPU path, matched against the NumPy oracle on logits, and against
-   transformers on generated tokens.
-3. The Metal kernels and GPU forward pass, matched against the CPU path.
+| Area | Current support |
+|---|---|
+| Models tested | Qwen3-0.6B dense, Qwen3-30B-A3B MoE; synthetic MoE for regression tests |
+| Dense GPU weights | bf16, q8_row/q8_g32, q4_row/q4_g32/q4_g64 |
+| MoE GPU experts | bf16 or q8_row; Q4 experts are not implemented |
+| Checkpoints | Hugging Face safetensors; GPU needs a single file, CPU accepts shards |
+| Generation | Single-turn chat, sampling, greedy, prompt-lookup or model-based speculation |
+| Adaptive drafting | Selects draft length from observed acceptance and timings; no expert predictor |
+| Local UI | Python standard-library server; loads a new engine process for each request |
 
-Tolerances are calibrated on measured values, and verifiers are themselves
-tested by injecting deliberate bugs. See [`docs/DESIGN.md`](docs/DESIGN.md).
+For the 30B, the local q8_row checkpoint occupies about 31 GB. Conversion from
+its original checkpoint is handled by `tools/quant/quantize.py`. A 64 GB machine
+was used for the measurements; smaller memory configurations have not been tested.
 
-## Repository layout
+## Measurements
 
+The October 11 pilot used ten prompts, five repetitions per configuration and
+up to 128 output tokens. All 180 measured and warmup outputs matched ordinary
+greedy generation. Geometric-mean speedups over the same loop with no draft:
+
+| Drafting | Decode | Full process |
+|---|---:|---:|
+| Fixed k=2 | 1.412x | 1.099x |
+| Adaptive | 1.427x | 1.131x |
+
+Adaptive is only **1.1% ahead of k=2 in decode** and wins on five of ten prompts.
+That margin needs more evidence. The first target forward pass accounts for
+much of the difference between decode and request time. See [the CSV](bench/spec_qwen3_30b_20261011_pilot.csv)
+and [run notes](docs/BENCHMARKS.md#october-11-pilot).
+
+The [older five-prompt result](bench/spec_qwen3_30b_m5pro.csv) used three
+repetitions and retained no individual timings. It remains available as a
+historical pilot.
+
+The current runner saves every request, checks token identity against plain
+greedy, shuffles configuration order and reports prefill, decode, process time
+and peak process RSS separately. Run a comparison with existing checkpoints:
+
+```sh
+tools/venv/bin/python tools/eval/bench_speculate.py \
+  models/Qwen3-30B-A3B-q8_row models/Qwen3-0.6B \
+  bench/my-run.csv 25
 ```
-src/        engine (C11), Metal glue (Objective-C), kernels.metal
-tools/      reference implementation, quantisers, synthetic checkpoints, UI
-tests/      correctness harnesses
-bench/      benchmark CSVs and plots
-docs/       design, benchmark protocol, development log
-```
 
-## Acknowledgements
+It writes a summary CSV, raw `.runs.jsonl` and `.meta.json` containing hashes
+and run settings. Existing results are never overwritten. Details, timing
+boundaries and limitations are in [the benchmark protocol](docs/BENCHMARKS.md).
 
-The Qwen3 models are released by the Qwen team under Apache-2.0. The engine's
-narrow, single-model design is inspired by antirez's DwarfStar. Related work
-on Apple Silicon and MoE speculative decoding is cited in
-[`docs/phase4-plan.md`](docs/phase4-plan.md).
+A 4,096-token routing measurement published earlier crossed a fixed-size
+attention buffer. It has been replaced by a tested run. For eight consecutive
+tokens the corrected trace touches **29.8 distinct experts per layer**, against
+51.6 under uniform routing. See [the corrected CSV](bench/routing_overlap_qwen3_30b_20261011.csv).
 
-## License
+## Correctness and next steps
 
-MIT — see [`LICENSE`](LICENSE).
+Tests compare Transformers with a NumPy reference, then the C path with NumPy,
+then Metal with the C path. Speculative tests compare complete token sequences
+with ordinary greedy generation. Long-context tests also compare attention
+with an fp64 reference and all router choices with Transformers on the tiny MoE.
+
+The next performance work is to separate first-use costs from warmed prompt
+processing, then improve the decode path using the 30B profile. An expert-cost
+predictor is a later experiment: it must improve on
+both fixed drafting and the existing scheduler after its own cost is included.
+The [project review](docs/project-review-2026-10-11.md) records the scope and
+related work. [DESIGN.md](docs/DESIGN.md) explains the implementation.
+
+## Layout and license
+
+`src/` contains the engine; `tools/` the reference, conversion and UI tools;
+`tests/` the checks; `bench/` the measured data; `docs/` the design and run notes.
+
+MIT; see [LICENSE](LICENSE). Qwen3 weights have their own Apache-2.0 license.
+The small-runtime approach was inspired by [DwarfStar](https://github.com/antirez/ds4).

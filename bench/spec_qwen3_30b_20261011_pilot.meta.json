@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "complete": true,
+  "started_utc": "2026-10-11T19:15:07.849016+00:00",
+  "commit": "a84285362236a2768a6d69b232e06f837385b68b",
+  "tracked_diff_sha256": "cf6c36cdf6c46345fd8d3c82c82ca8407731320505cb54bdec1225d0467450a1",
+  "source_sha256": {
+    "src/bench.c": "f0c9dab7224e77bcde92423570734f40b41e513b81f06cf7a21e4ffa019b722b",
+    "src/config.c": "716938164461f229144b7b5a45371e26ae540bcedc2093bafec6bc2cbef97a52",
+    "src/eval.c": "5b09e643dd2492cfbf7e13ccd001d855550d3ccc97a5c9ea338b883fd1d2fbea",
+    "src/generate.c": "838dfeaf06f8978d228cf80b384cb026dadde60e484710771cf2d3d8bb5e8528",
+    "src/gpu_forward.m": "c3940273888c73be21c83689b53e1139c9196a9c30d301a76aaedf0545f39e32",
+    "src/json.c": "6abb52eab58ba757e35c46f6dc7570a87b6fc200b3d183530143f027a63a1c08",
+    "src/kernels.metal": "17c2c5d627306cc097576c3b436c6a8a5417070abbccc5fdc7c2d378d21a1c06",
+    "src/main.c": "654c97574cd8d3f86b18706a541ba9954831bbc4aaa304e3a551f378d2da13d1",
+    "src/metal.m": "8759e26ff9bf785129a34b968203cd6d577f73360bd8dfca69f1219b9e56102d",
+    "src/model.c": "efec5604c44f014be01157469c31ed258382c53f41ff79aab9dbf5c4e982a471",
+    "src/normalize.c": "1780aa14d89a674c898e14a28abc646ed0d6c8d09817040db62e25230b3592cd",
+    "src/ops.c": "cf689e983663e0ffe24386dde367f0c8d9b8bea0874213458c06d714ba7b3ce6",
+    "src/picoforge.h": "54074d8651ae299fd55c4161f4ea7b3af84517e59d891f05c324f4cedbeb07c4",
+    "src/quant.c": "906192f1dd25b4a46eb9309e446cc188f0ff2be22196d44e91d1b553f445be6d",
+    "src/safetensors.c": "3b636812c31e6674052291821f44e8255ab8857d81a6e27aeb681c0936cfd607",
+    "src/speculate.c": "4e7b7e1d411a458a431f17b6e63ddcbaf92fc0908f2321d6a16d02745cf7e519",
+    "src/tokenizer.c": "df1aeb98450e6b2bb763e07477712c848fbc7437198c4e29646757bbe52ed1c6",
+    "src/unicode_tables.c": "2d7374077b7e94c7df54a49d6a6d899ad842d1793876b0a79553f553ed5b5e09",
+    "src/util.c": "e7721cda029534186d144dcbb75621fb01056443f4bc16953ba3b70dc3e537ef"
+  },
+  "engine_sha256": "9966a0964858195728d36d33744c538bf6b70519f37e6aa7d1e1654422076481",
+  "metallib_sha256": "f5ceb84754061234f6b5c821b09400cf8e74bae2b3fb91a10efe779a03859703",
+  "runner_sha256": "dbb4b294528aa3a52e7b766ec6864f2b7b7d960ef6d5ee8f484d7729e8b54c84",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "hardware": "Mac17,9\n68719476736\nApple M5 Pro",
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+  "target": "Qwen3-30B-A3B-q8_row",
+  "target_files": {
+    "config.json": {
+      "bytes": 963,
+      "sha256": "2850ddb3bf7aecad20b611e2d44f3077fc8193f4827c93beddd4c02ad63c2297"
+    },
+    "tokenizer.json": {
+      "bytes": 11422654,
+      "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    "model.safetensors": {
+      "bytes": 31216612800,
+      "sha256": "ca2be5cbe733ec4de0739a98b7f415bf01878351ea1c705f09e3e67b461391f5"
+    },
+    "generation_config.json": {
+      "bytes": 239,
+      "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+    },
+    "tokenizer_config.json": {
+      "bytes": 9732,
+      "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    },
+    "vocab.json": {
+      "bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    "merges.txt": {
+      "bytes": 1671853,
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    }
+  },
+  "draft": "Qwen3-0.6B",
+  "draft_files": {
+    "config.json": {
+      "bytes": 726,
+      "sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd"
+    },
+    "tokenizer.json": {
+      "bytes": 11422654,
+      "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    "model.safetensors": {
+      "bytes": 1503300328,
+      "sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b"
+    },
+    "generation_config.json": {
+      "bytes": 239,
+      "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+    },
+    "tokenizer_config.json": {
+      "bytes": 9732,
+      "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+    },
+    "vocab.json": {
+      "bytes": 2776833,
+      "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    },
+    "merges.txt": {
+      "bytes": 1671853,
+      "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+    }
+  },
+  "prompts_sha256": "de6c2e6978e9a171c18327c9f455fe337706d6c0b031e37c1429e1d9518431dd",
+  "prompts": [
+    {
+      "id": "explain",
+      "text": "Explain in a short paragraph why the sky is blue."
+    },
+    {
+      "id": "code",
+      "text": "Write a Python function that returns the n-th Fibonacci number iteratively, with a docstring."
+    },
+    {
+      "id": "list",
+      "text": "List ten European capitals and their countries, one per line."
+    },
+    {
+      "id": "rewrite",
+      "text": "Rewrite this function with type hints and a docstring:\n\ndef area(width, height):\n    return width * height\n"
+    },
+    {
+      "id": "story",
+      "text": "Write the opening three sentences of a mystery novel."
+    },
+    {
+      "id": "italian",
+      "text": "Spiega in italiano, in quattro frasi, perch\u00e9 una cache pu\u00f2 rendere un programma pi\u00f9 veloce e quando non aiuta."
+    },
+    {
+      "id": "code-edge-cases",
+      "text": "Write a Python function that merges two sorted lists without changing its inputs. Include tests for empty lists and duplicate values."
+    },
+    {
+      "id": "repeat",
+      "text": "Repeat this list exactly, one item per line: apple, banana, cherry, dragonfruit, elderberry, fig, grape, honeydew, kiwi, lemon."
+    },
+    {
+      "id": "mixed",
+      "text": "First write a Python function that squares a number. Then explain in Italian why its result is non-negative for real inputs. End with one sentence of a detective story."
+    },
+    {
+      "id": "reasoning",
+      "text": "A box has three red balls and two blue balls. Two balls are drawn without replacement. Explain how to compute the probability they have the same colour."
+    }
+  ],
+  "configs": [
+    "plain",
+    "model-2",
+    "model-auto"
+  ],
+  "reps": 5,
+  "warmup": 1,
+  "max_new": 128,
+  "context": 1024,
+  "seed": 20261011,
+  "timing": "decode excludes both prefills; generation includes both; process includes startup and teardown",
+  "memory": "macOS process ru_maxrss in bytes; may omit GPU-resident mapped weights and driver allocations; not total unified-memory use",
+  "finished_utc": "2026-10-11T19:45:52.183241+00:00",
+  "thermal_after": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded",
+  "runner_source": "\"\"\"Compare greedy, fixed and adaptive drafting; retain every run.\n\nUsage: bench_speculate.py TARGET DRAFT OUT.csv [REPS]\nRun --help for prompt files, context length and configuration selection.\n\"\"\"\n\nimport argparse\nimport csv\nimport hashlib\nimport json\nimport math\nimport platform\nimport random\nimport statistics\nimport subprocess\nimport tempfile\nimport time\nfrom datetime import datetime, timezone\nfrom pathlib import Path\n\nROOT = Path(__file__).resolve().parents[2]\nCHAT = \"<|im_start|>user\\n{}<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n\"\nDEFAULT_PROMPTS = Path(__file__).with_name(\"prompts.jsonl\")\n\n\ndef sha256(path):\n    with open(path, \"rb\") as f:\n        return hashlib.file_digest(f, \"sha256\").hexdigest()\n\n\ndef command_output(args):\n    p = subprocess.run(args, cwd=ROOT, capture_output=True, text=True, check=True)\n    return p.stdout.strip()\n\n\ndef fingerprint(model):\n    # Read once before timing; this also makes the checkpoint identity explicit.\n    paths = [model / \"config.json\", model / \"tokenizer.json\"]\n    paths += sorted(model.glob(\"*.safetensors\"))\n    return {p.name: {\"bytes\": p.stat().st_size, \"sha256\": sha256(p)} for p in paths}\n\n\ndef configuration(name, draft, prompt, count):\n    if name == \"plain\":\n        return [\"--spec-greedy\", prompt, str(count), \"0\"]\n    kind, sep, length = name.partition(\"-\")\n    if not sep or kind not in (\"model\", \"lookup\"):\n        raise ValueError(f\"unknown configuration: {name}\")\n    if length != \"auto\" and (not length.isdigit() or not 1 <= int(length) <= 31):\n        raise ValueError(f\"draft length must be auto or 1..31: {name}\")\n    return ([\"--spec-model\", str(draft)] if kind == \"model\" else [\"--spec-greedy\"]) + [prompt, str(count), length]\n\n\ndef engine(model, args, context):\n    with tempfile.NamedTemporaryFile(suffix=\".txt\") as out:\n        cmd = [str(ROOT / \"picoforge\"), \"--context\", str(context), str(model), *args, out.name]\n        start = time.perf_counter()\n        p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, timeout=600)\n        wall_s = time.perf_counter() - start\n        if p.returncode:\n            raise RuntimeError(f\"engine failed: {p.stderr}\\n{p.stdout[-2000:]}\")\n        ids = [int(t) for t in Path(out.name).read_text().splitlines()[0].split()]\n    lines = [line.removeprefix(\"metrics: \") for line in p.stdout.splitlines() if line.startswith(\"metrics: \")]\n    metrics = json.loads(lines[0]) if lines else None\n    if metrics is not None:\n        if metrics[\"generated\"] != len(ids):\n            raise RuntimeError(\"metrics and output disagree on the token count\")\n        metrics[\"process_s\"] = wall_s\n        metrics[\"generation_s\"] = metrics[\"prefill_s\"] + metrics[\"draft_prefill_s\"] + metrics[\"decode_s\"]\n        metrics[\"tok_s\"] = max(0, len(ids) - 1) / metrics[\"decode_s\"] if metrics[\"decode_s\"] else 0.0\n    return ids, metrics\n\n\ndef percentile(values, p):\n    values = sorted(values)\n    return values[int(p * (len(values) - 1) + 0.5)]\n\n\ndef summarize(records, names):\n    rows = []\n    for prompt in dict.fromkeys(r[\"prompt\"] for r in records):\n        grouped = {name: [r for r in records if r[\"prompt\"] == prompt and r[\"config\"] == name]\n                   for name in names}\n        base = statistics.median(r[\"tok_s\"] for r in grouped[\"plain\"])\n        for name, runs in grouped.items():\n            med = lambda k: statistics.median(r[k] for r in runs)\n            drafted = sum(r[\"drafted\"] for r in runs)\n            row = {\"prompt\": prompt, \"config\": name, \"reps\": len(runs),\n                   \"tokens\": runs[0][\"generated\"], \"prompt_tokens\": runs[0][\"prompt_tokens\"],\n                   \"median_tok_s\": med(\"tok_s\"),\n                   \"p10_tok_s\": percentile([r[\"tok_s\"] for r in runs], .1),\n                   \"p90_tok_s\": percentile([r[\"tok_s\"] for r in runs], .9),\n                   \"speedup\": med(\"tok_s\") / base if base else 0.0,\n                   \"tokens_per_pass\": statistics.median(max(0, r[\"generated\"] - 1) / max(1, r[\"passes\"]) for r in runs),\n                   \"acceptance\": sum(r[\"accepted\"] for r in runs) / drafted if drafted else 0.0,\n                   \"median_prefill_s\": med(\"prefill_s\"), \"median_draft_prefill_s\": med(\"draft_prefill_s\"),\n                   \"median_draft_s\": med(\"draft_s\"), \"median_verify_s\": med(\"verify_s\"),\n                   \"median_generation_s\": med(\"generation_s\"), \"median_process_s\": med(\"process_s\"),\n                   \"p90_process_s\": percentile([r[\"process_s\"] for r in runs], .9),\n                   \"peak_rss_bytes\": max(r[\"peak_rss_bytes\"] for r in runs),\n                   \"identical_to_greedy\": all(r[\"identical_to_greedy\"] for r in runs)}\n            rows.append(row)\n    return rows\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n    parser.add_argument(\"target\", type=Path)\n    parser.add_argument(\"draft\", type=Path)\n    parser.add_argument(\"out\", type=Path)\n    parser.add_argument(\"reps\", type=int, nargs=\"?\", default=25)\n    parser.add_argument(\"--prompts\", type=Path, default=DEFAULT_PROMPTS)\n    parser.add_argument(\"--configs\", nargs=\"+\", default=[\"plain\", \"model-2\", \"model-auto\"])\n    parser.add_argument(\"--max-new\", type=int, default=128)\n    parser.add_argument(\"--context\", type=int, default=1024)\n    parser.add_argument(\"--warmup\", type=int, default=1, help=\"discarded requests per prompt and configuration\")\n    parser.add_argument(\"--seed\", type=int, default=20261011, help=\"configuration order only; generation is greedy\")\n    args = parser.parse_args()\n    args.target = args.target.resolve()\n    args.draft = args.draft.resolve()\n    if args.reps < 1 or args.warmup < 1 or not 1 <= args.max_new <= args.context:\n        parser.error(\"use positive repeats, at least one warmup, and 1 <= max-new <= context\")\n    if \"plain\" not in args.configs or len(set(args.configs)) != len(args.configs):\n        parser.error(\"configs must contain plain and have no duplicates\")\n    try:\n        for name in args.configs:\n            configuration(name, args.draft, \"test\", args.max_new)\n    except ValueError as e:\n        parser.error(str(e))\n    prompts = [json.loads(line) for line in args.prompts.read_text().splitlines() if line.strip()]\n    if not prompts or len({p[\"id\"] for p in prompts}) != len(prompts):\n        parser.error(\"prompt ids must be nonempty and unique\")\n    for p in prompts:\n        if not isinstance(p[\"id\"], str) or not p[\"id\"] or not isinstance(p[\"text\"], str) or not p[\"text\"]:\n            parser.error(\"each prompt needs an id and nonempty text\")\n    if args.out.suffix != \".csv\":\n        parser.error(\"output must end in .csv\")\n    raw_path = args.out.with_suffix(\".runs.jsonl\")\n    meta_path = args.out.with_suffix(\".meta.json\")\n    for p in (args.out, raw_path, meta_path):\n        if p.exists():\n            parser.error(f\"refusing to overwrite {p}; choose a new output name\")\n    args.out.parent.mkdir(parents=True, exist_ok=True)\n    print(\"Hashing checkpoints before measurement...\", flush=True)\n    meta = {\"schema\": 1, \"complete\": False, \"started_utc\": datetime.now(timezone.utc).isoformat(),\n            \"commit\": command_output([\"git\", \"rev-parse\", \"HEAD\"]),\n            \"tracked_diff_sha256\": hashlib.sha256(command_output([\"git\", \"diff\", \"HEAD\"]).encode()).hexdigest(),\n            \"source_sha256\": {str(p.relative_to(ROOT)): sha256(p) for p in\n                              sorted((ROOT / \"src\").glob(\"*\"))\n                              if p.suffix in (\".c\", \".h\", \".m\", \".metal\")},\n            \"engine_sha256\": sha256(ROOT / \"picoforge\"), \"metallib_sha256\": sha256(ROOT / \"picoforge.metallib\"),\n            \"runner_sha256\": sha256(Path(__file__)), \"platform\": platform.platform(),\n            \"hardware\": command_output([\"sysctl\", \"-n\", \"hw.model\", \"hw.memsize\", \"machdep.cpu.brand_string\"]),\n            \"thermal_before\": command_output([\"pmset\", \"-g\", \"therm\"]),\n            \"target\": args.target.name, \"target_files\": fingerprint(args.target),\n            \"draft\": args.draft.name, \"draft_files\": fingerprint(args.draft),\n            \"prompts_sha256\": sha256(args.prompts), \"prompts\": prompts,\n            \"configs\": args.configs, \"reps\": args.reps, \"warmup\": args.warmup,\n            \"max_new\": args.max_new, \"context\": args.context, \"seed\": args.seed,\n            \"timing\": \"decode excludes both prefills; generation includes both; process includes startup and teardown\",\n            \"memory\": \"macOS process ru_maxrss in bytes; includes shared/mapped pages, not an additive GPU allocation\"}\n    meta_path.write_text(json.dumps(meta, indent=2) + \"\\n\")\n    rng = random.Random(args.seed)\n    measured = []\n    with open(raw_path, \"w\") as raw:\n        for item in prompts:\n            prompt = CHAT.format(item[\"text\"]) if item.get(\"chat\", True) else item[\"text\"]\n            ref, _ = engine(args.target, [\"--gpu-greedy\", prompt, str(args.max_new)], args.context)\n            if len(ref) < 2:\n                raise RuntimeError(f\"{item['id']}: fewer than two output tokens; decode throughput is undefined\")\n            for rep in range(-args.warmup, args.reps):\n                order = args.configs.copy()\n                rng.shuffle(order)\n                for name in order:\n                    ids, metrics = engine(args.target, configuration(name, args.draft, prompt, args.max_new), args.context)\n                    if metrics is None:\n                        raise RuntimeError(\"engine did not emit JSON metrics; rebuild it\")\n                    record = {\"prompt\": item[\"id\"], \"config\": name, \"rep\": rep,\n                              \"phase\": \"warmup\" if rep < 0 else \"measure\", \"ids\": ids,\n                              \"identical_to_greedy\": ids == ref, **metrics}\n                    raw.write(json.dumps(record, separators=(\",\", \":\")) + \"\\n\")\n                    raw.flush()\n                    if ids != ref:\n                        raise RuntimeError(f\"{item['id']} {name}: output differs from greedy; run saved in {raw_path}\")\n                    if rep >= 0:\n                        measured.append(record)\n                    print(f\"{item['id']:16s} {name:12s} run {rep + 1:2d}  {metrics['tok_s']:7.2f} tok/s  \"\n                          f\"request {metrics['process_s']:.3f}s\", flush=True)\n    rows = summarize(measured, args.configs)\n    with open(args.out, \"w\", newline=\"\") as f:\n        writer = csv.DictWriter(f, fieldnames=list(rows[0]))\n        writer.writeheader()\n        writer.writerows(rows)\n    meta.update(complete=True, finished_utc=datetime.now(timezone.utc).isoformat(),\n                thermal_after=command_output([\"pmset\", \"-g\", \"therm\"]))\n    meta_path.write_text(json.dumps(meta, indent=2) + \"\\n\")\n    for name in args.configs:\n        ratios = [r[\"speedup\"] for r in rows if r[\"config\"] == name]\n        print(f\"{name}: geomean {math.exp(statistics.mean(map(math.log, ratios))):.3f}x; worst {min(ratios):.3f}x\")\n    print(f\"Saved {args.out}, {raw_path}, {meta_path}\")\n\n\nif __name__ == \"__main__\":\n    main()\n",
+  "additional_input_hashes_captured_utc": "2026-10-11T19:29:14.006440+00:00",
+  "metadata_note": "Tokenizer and generation-config hashes were supplemented during the run. runner_source preserves the executed script; the current runner adds these hashes automatically. Engine and timing code were unchanged. The memory note was clarified after inspecting the RSS values; raw measurements are unchanged.",
+  "metal_toolchain": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.109.0.9Co0H3/Metal.xctoolchain/usr/metal/current/bin"
+}

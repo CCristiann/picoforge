@@ -1,0 +1,10 @@
+{"id":"explain","text":"Explain in a short paragraph why the sky is blue."}
+{"id":"code","text":"Write a Python function that returns the n-th Fibonacci number iteratively, with a docstring."}
+{"id":"list","text":"List ten European capitals and their countries, one per line."}
+{"id":"rewrite","text":"Rewrite this function with type hints and a docstring:\n\ndef area(width, height):\n    return width * height\n"}
+{"id":"story","text":"Write the opening three sentences of a mystery novel."}
+{"id":"italian","text":"Spiega in italiano, in quattro frasi, perché una cache può rendere un programma più veloce e quando non aiuta."}
+{"id":"code-edge-cases","text":"Write a Python function that merges two sorted lists without changing its inputs. Include tests for empty lists and duplicate values."}
+{"id":"repeat","text":"Repeat this list exactly, one item per line: apple, banana, cherry, dragonfruit, elderberry, fig, grape, honeydew, kiwi, lemon."}
+{"id":"mixed","text":"First write a Python function that squares a number. Then explain in Italian why its result is non-negative for real inputs. End with one sentence of a detective story."}
+{"id":"reasoning","text":"A box has three red balls and two blue balls. Two balls are drawn without replacement. Explain how to compute the probability they have the same colour."}

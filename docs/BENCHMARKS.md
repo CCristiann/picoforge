@@ -1,20 +1,104 @@
 # Benchmark protocol
 
-Every performance number in this repository was produced by the procedure
-below, on the machine below, and the raw CSV is committed next to the plot.
-A number without those three things is not a result.
+Kernel timings and complete generation requests use different protocols.
+Keep their timing boundaries separate. Historical files are retained; corrections
+and newer runs are identified in `bench/README.md`.
+
+## Generation requests
+
+`tools/eval/bench_speculate.py` compares no draft, fixed `k=2`, and adaptive
+model drafting by default. It uses ten local prompts in `prompts.jsonl`, the
+same Qwen3 single-turn template with thinking disabled, and greedy decoding.
+This suite covers prose, code, Italian, repetition and a domain switch. It is
+a pilot suite, not a standard benchmark or an independent evaluation set.
+
+```sh
+tools/venv/bin/python tools/eval/bench_speculate.py \
+  models/Qwen3-30B-A3B-q8_row models/Qwen3-0.6B bench/my-run.csv 25
+```
+
+- One discarded warmup per prompt and configuration; 25 measured requests by
+  default. Use fewer only for a labelled pilot. Order is shuffled within each
+  repetition with a recorded seed. Prompts stay in file order.
+- Every request starts a fresh process. Model hashing and a separate ordinary
+  greedy reference run happen before measurement for each prompt. These warm
+  the file cache; this is not a cold-start storage benchmark.
+- `plain` uses the speculative loop with zero drafts. Its output, and every
+  other output, must equal the independent `--gpu-greedy` loop token for token.
+  A mismatch aborts the run and retains the raw evidence.
+- `prefill_s` and `draft_prefill_s` are wall times around the two prompt passes.
+  `decode_s` starts after prefill and ends when generation stops. Decode
+  throughput is `(generated - 1) / decode_s`: the first token comes from prefill.
+- `generation_s` is the sum of those three timers. `process_s` is wall time
+  around process launch and completion, including model setup and teardown.
+  Neither describes a resident serving process. Time to first streamed token
+  is not measured by this runner.
+- `peak_rss_bytes` is macOS `ru_maxrss`. It can omit GPU-resident mapped weights
+  and driver allocations. The October pilot reported only 38–45 MB despite a
+  31.2 GB target checkpoint: this metric does **not** measure the engine's full
+  unified-memory requirement. Checkpoint bytes are recorded separately in metadata.
+- The CSV reports medians, p10/p90 throughput, p90 process time, acceptance,
+  tokens per pass and parity. Percentiles select the nearest sorted sample;
+  they are not confidence intervals. Speedups divide per-prompt median
+  throughputs; the aggregate is their geometric mean. Report the worst prompt too.
+- `.runs.jsonl` retains all warmup and measured runs, IDs and draft-length
+  histograms. `.meta.json` records source, binary, kernel, checkpoint and prompt
+  hashes, the runner source, settings, OS/hardware and thermal warnings. `complete: false` means
+  the run did not finish. Existing output files are refused.
+
+Keep the machine plugged in and idle during measurement. Do not run tests or
+another GPU workload alongside it. OS thermal warnings are recorded but are
+not a clock or power trace. No independent machine has reproduced these results.
+
+The historical `spec_qwen3_30b_m5pro.csv` used five prompts, three repetitions,
+fixed configuration order and no retained individual timings. Its adaptive
+1.44x result is a pilot and does not follow the new protocol.
+
+### October 11 pilot
+
+`bench/spec_qwen3_30b_20261011_pilot.*`: ten prompts, five measured repetitions
+per configuration, one warmup, up to 128 output tokens, context 1,024. All
+150 measured and 30 warmup outputs matched the separate ordinary greedy runs.
+The run took 30.7 minutes. No OS thermal/performance warning was recorded.
+
+| Configuration | Decode speedup | Generation speedup | Process speedup | Worst decode speedup |
+|---|---:|---:|---:|---:|
+| No draft | 1.000x | 1.000x | 1.000x | 1.000x |
+| Model, k=2 | 1.412x | 1.102x | 1.099x | 1.117x |
+| Model, adaptive | 1.427x | 1.136x | 1.131x | 1.073x |
+
+Each aggregate is the geometric mean of the ten per-prompt ratios. Generation
+and process ratios divide the baseline's median time by the configuration's
+median time. Decode ratios divide median throughput by baseline throughput.
+
+Adaptive drafting is 1.09% ahead of fixed `k=2` on aggregate decode throughput,
+and wins on five of ten prompts. Five repetitions do not establish that this
+small difference is stable.
+
+Most of the gap between decode and full-request speedups falls inside the
+**first target forward pass**, recorded as prefill. For `explain`, the no-draft
+median prefill was 6.065 s, generation 9.288 s and process 9.458 s. The prefill
+timer includes first-use and memory-residency costs; it is not a measurement
+of prompt computation in a resident engine. Separately time first and warmed
+forwards before deciding how to reduce this cost.
+
+The pilot metadata archives the exact executed runner. Additional tokenizer
+input hashes were captured during the run; the current runner collects them
+automatically. These metadata changes do not change the timing loop.
 
 ## The machine
 
 MacBook Pro 14", Apple **M5 Pro**: 18-core CPU (6 performance + 12 efficiency),
 20-core GPU with one Neural Accelerator per core, 64 GB unified memory,
-**307 GB/s** memory bandwidth. macOS 26.5.1, Metal toolchain 32023.883.
+**307 GB/s** memory bandwidth. Historical runs used macOS 26.5.1 and Metal
+toolchain 32023.883. The October 11 rerun uses macOS 27.0.1; current generation
+metadata records the environment for each run.
 
 That bandwidth figure is the ceiling every decode measurement is reported
 against. It is the theoretical peak, not an achievable one; treat 80% of it
 as excellent and anything above it as a bug in the measurement.
 
-## Procedure
+## GPU kernel and forward-pass procedure
 
 - **0.5 s of warm-up per cell, discarded.** The first dispatch of a pipeline
   pays for shader caches, page faults on freshly allocated buffers, and a GPU

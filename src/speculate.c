@@ -172,6 +172,10 @@ static void sched_update(Scheduler *sc, int k, int accepted, double pass_s, doub
 int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
                          GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
                          int max_new, int max_draft, int *out_ids, SpecStats *stats) {
+    const bool adaptive = max_draft < 0;
+    if (max_draft < -31 || max_draft > 31 || max_new < 1)
+        die("speculation needs 0..31 drafts and at least one output token");
+    if (adaptive) max_draft = -max_draft;
     if (max_draft + 1 > max_rows)
         die("a draft of %d needs %d logit rows; the GPU model has %d", max_draft,
             max_draft + 1, max_rows);
@@ -180,38 +184,46 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     if (!tokens || !logits) die("out of memory for speculative decoding");
     const size_t V = (size_t)cfg->vocab_size;
 
+    SpecStats s = {0};
     int pos = tokenizer_encode(tok, prompt, (int)strlen(prompt), tokens, max_seq);
-    if (pos >= max_seq - 1) die("prompt fills the whole %d-position context", max_seq);
+    if (pos == 0) die("prompt must contain at least one token");
+    if (pos >= max_seq) die("prompt fills the whole %d-position context", max_seq);
+    s.prompt_tokens = pos;
+    double prefill_start = now();
     gpu_forward(gpu, tokens, pos, 0, pos - 1, logits);
+    s.prefill_s = now() - prefill_start;
     /* The drafter reads the prompt up front, as the target just did: a prefill
      * is not a draft, and timing it as one inflates what drafting costs. */
     int dpos = 0;                 /* tokens[0..dpos) are in the drafter's cache */
     if (drafter) {
         /* NULL: `logits` still holds the target's prediction for `next`. Writing
          * the drafter's there made its guess the first emitted token. */
+        prefill_start = now();
         gpu_forward(drafter, tokens, pos, 0, pos - 1, NULL);
+        s.draft_prefill_s = now() - prefill_start;
         dpos = pos;
     }
-    const bool adaptive = max_draft < 0;
-    if (adaptive) max_draft = -max_draft;
     Scheduler sched;
     sched_init(&sched);
 
     /* Invariant: tokens[0..pos) are in the cache; `next` is decided and not. */
     int next = argmax(logits, cfg->vocab_size);
     int generated = 0;
-    SpecStats s = {0};
     double t0 = now();
 
-    while (generated < max_new && !is_eos(cfg, next) && pos + 1 < max_seq) {
+    while (generated < max_new && !is_eos(cfg, next) && pos < max_seq) {
         tokens[pos] = next;
         out_ids[generated++] = next;
-        if (s.groups < (int)(sizeof s.group_len / sizeof s.group_len[0])) s.group_len[s.groups++] = 1;
-        if (generated == max_new) break;
+        int group = -1;
+        if (s.groups < (int)(sizeof s.group_len / sizeof s.group_len[0])) {
+            group = s.groups++;
+            s.group_len[group] = 1;
+        }
+        if (generated == max_new || pos + 1 == max_seq) break;
 
         /* Drafts go straight into tokens[] after `next`, so the verify pass
          * is one contiguous slice: [next, d_1 .. d_k] at position pos. */
-        int room = max_seq - pos - 2;
+        int room = max_seq - pos - 1;
         int budget = max_draft < max_new - generated ? max_draft : max_new - generated;
         if (budget > room) budget = room;
         if (adaptive && budget > 0) budget = sched_choose(&sched, budget);
@@ -245,8 +257,7 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         s.accepted += i;
         /* Prompt lookup drafts in microseconds; its pass cost is the clock's. */
         if (adaptive) sched_update(&sched, k, i, drafter ? pass_s : (k ? (t2 - t1) / k : -1.0), t3 - t2);
-        if (s.groups > 0 && s.groups <= (int)(sizeof s.group_len / sizeof s.group_len[0]))
-            s.group_len[s.groups - 1] = (short)(s.group_len[s.groups - 1] + i);
+        if (group >= 0) s.group_len[group] = (short)(s.group_len[group] + i);
         /* The drafter's rows past the accepted text hold rejected drafts. */
         if (dpos > pos + 1 + i) dpos = pos + 1 + i;
         if (stop) break;

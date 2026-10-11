@@ -1,0 +1,41 @@
+model,regime,n,pos,group,median_s,p10_s,p90_s
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"embed",0.000002916,0.000002792,0.000003000
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"rmsnorm",0.000620328,0.000597879,0.000659123
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"attn proj (q k v o)",0.012780743,0.012716126,0.012870544
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"qk-norm + rope",0.000329371,0.000289460,0.000376256
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"attention",0.000730043,0.000722671,0.000762168
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"mlp proj (gate up down)",0.025649784,0.025476585,0.025884498
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"elementwise (swiglu, residual, narrow)",0.000116958,0.000105667,0.000146997
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"lm head",0.002933083,0.002827958,0.003033000
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"TOTAL, cut into encoders",0.044442000,0.044213458,0.044634708
+models/Qwen3-30B-A3B-q8_row,decode,1,16,"TOTAL, uncut",0.042489958,0.042269125,0.042810875
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"embed",0.000002833,0.000002667,0.000003041
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"rmsnorm",0.000617463,0.000585666,0.000650127
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"attn proj (q k v o)",0.012845167,0.012710877,0.013053252
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"qk-norm + rope",0.000335792,0.000292960,0.000366126
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"attention",0.007991000,0.007956666,0.008089414
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"mlp proj (gate up down)",0.025609373,0.025491662,0.025860415
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"elementwise (swiglu, residual, narrow)",0.000114090,0.000099248,0.000146503
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"lm head",0.002960000,0.002848875,0.003055625
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"TOTAL, cut into encoders",0.051680833,0.051420417,0.052018792
+models/Qwen3-30B-A3B-q8_row,decode,1,512,"TOTAL, uncut",0.049773542,0.049546375,0.050175083
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"embed",0.000003083,0.000003000,0.000003292
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"rmsnorm",0.000639420,0.000584503,0.000678038
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"attn proj (q k v o)",0.013010586,0.012901663,0.013120833
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"qk-norm + rope",0.000368166,0.000329125,0.000438283
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"attention",0.010064669,0.010012336,0.010147878
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"mlp proj (gate up down)",0.044995455,0.044610044,0.045463292
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"elementwise (swiglu, residual, narrow)",0.000169998,0.000136417,0.000224252
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"lm head",0.003003292,0.002931000,0.003056083
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"TOTAL, cut into encoders",0.073436083,0.073004000,0.074248750
+models/Qwen3-30B-A3B-q8_row,verify8,8,512,"TOTAL, uncut",0.071537917,0.071220958,0.072799625
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"embed",0.000003875,0.000003667,0.000012125
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"rmsnorm",0.000650373,0.000622961,0.000706469
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"attn proj (q k v o)",0.012956705,0.012870205,0.013115377
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"qk-norm + rope",0.000582124,0.000525457,0.000651164
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"attention",0.025918797,0.025573788,0.026172920
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"mlp proj (gate up down)",0.074653042,0.073709582,0.075163918
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"elementwise (swiglu, residual, narrow)",0.000204958,0.000174040,0.000261210
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"lm head",0.003370417,0.003289083,0.003490375
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"TOTAL, cut into encoders",0.119360917,0.118628167,0.120273667
+models/Qwen3-30B-A3B-q8_row,verify32,32,512,"TOTAL, uncut",0.117642375,0.117105500,0.118892167
