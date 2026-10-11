@@ -6,6 +6,15 @@ no external runtime or independent machine has been measured with this protocol.
 
 ## October 11, 2026
 
+- `spec_experts_qwen3_30b_20261011_pilot.*`: six separate evaluation prompts,
+  five selected measurements per configuration, up to 96 tokens. The opt-in
+  expert-cost scheduler reaches 1.009x decode and 0.988x process speed versus
+  the unchanged `auto`; it does not meet the 10% adoption threshold. All
+  selected outputs match ordinary greedy. Raw data preserves an interrupted
+  run and an entire repeated prompt after timer disagreement; metadata records
+  the exact selection. See the [experiment report](../docs/phase4-expert-experiment.md)
+  for all regressions, prediction error and limitations. The PNG is generated
+  by `tools/plot_experts.py`.
 - `spec_qwen3_30b_20261011_pilot.csv`: ten prompts, five measured requests per
   configuration, up to 128 tokens. `.runs.jsonl` includes 150 measurements and
   30 warmups; `.meta.json` records the exact runner and inputs. Adaptive decode

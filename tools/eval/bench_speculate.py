@@ -48,17 +48,19 @@ def configuration(name, draft, prompt, count):
     kind, sep, length = name.partition("-")
     if not sep or kind not in ("model", "lookup"):
         raise ValueError(f"unknown configuration: {name}")
-    if length != "auto" and (not length.isdigit() or not 1 <= int(length) <= 31):
-        raise ValueError(f"draft length must be auto or 1..31: {name}")
+    if length not in ("auto", "auto-experts") and (not length.isdigit() or not 1 <= int(length) <= 31):
+        raise ValueError(f"draft length must be auto, auto-experts or 1..31: {name}")
     return (["--spec-model", str(draft)] if kind == "model" else ["--spec-greedy"]) + [prompt, str(count), length]
 
 
 def engine(model, args, context):
     with tempfile.NamedTemporaryFile(suffix=".txt") as out:
         cmd = [str(ROOT / "picoforge"), "--context", str(context), str(model), *args, out.name]
-        start = time.perf_counter()
+        # Match src/speculate.c's clock. macOS perf_counter uses a different
+        # clock, which can disagree with internal timers across interruptions.
+        start = time.clock_gettime(time.CLOCK_MONOTONIC)
         p = subprocess.run(cmd, capture_output=True, text=True, cwd=ROOT, timeout=600)
-        wall_s = time.perf_counter() - start
+        wall_s = time.clock_gettime(time.CLOCK_MONOTONIC) - start
         if p.returncode:
             raise RuntimeError(f"engine failed: {p.stderr}\n{p.stdout[-2000:]}")
         ids = [int(t) for t in Path(out.name).read_text().splitlines()[0].split()]
@@ -71,6 +73,15 @@ def engine(model, args, context):
         metrics["generation_s"] = metrics["prefill_s"] + metrics["draft_prefill_s"] + metrics["decode_s"]
         metrics["tok_s"] = max(0, len(ids) - 1) / metrics["decode_s"] if metrics["decode_s"] else 0.0
     return ids, metrics
+
+
+def timing_consistent(metrics):
+    timers = ("prefill_s", "draft_prefill_s", "decode_s", "draft_s", "verify_s",
+              "generation_s", "process_s")
+    return (all(math.isfinite(metrics[k]) and metrics[k] >= 0 for k in timers)
+            and metrics["process_s"] > 0
+            and metrics["generation_s"] <= metrics["process_s"] + .1
+            and metrics["draft_s"] + metrics["verify_s"] <= metrics["decode_s"] + .1)
 
 
 def percentile(values, p):
@@ -101,6 +112,13 @@ def summarize(records, names):
                    "p90_process_s": percentile([r["process_s"] for r in runs], .9),
                    "peak_rss_bytes": max(r["peak_rss_bytes"] for r in runs),
                    "identical_to_greedy": all(r["identical_to_greedy"] for r in runs)}
+            # Missing fields in historical raw runs mean the predictor was off.
+            predictions = sum(r.get("expert_predictions", 0) for r in runs)
+            row.update(median_expert_cost_s=statistics.median(r.get("expert_cost_s", 0.0) for r in runs),
+                       expert_predictions=predictions,
+                       expert_mae_ms=sum(r.get("expert_abs_error_s", 0.0) for r in runs) * 1000 / predictions if predictions else 0.0,
+                       baseline_mae_ms=sum(r.get("baseline_abs_error_s", 0.0) for r in runs) * 1000 / predictions if predictions else 0.0,
+                       route_mae=sum(r.get("route_abs_error", 0.0) for r in runs) / max(1, sum(r["passes"] for r in runs)))
             rows.append(row)
     return rows
 
@@ -112,7 +130,8 @@ def main():
     parser.add_argument("out", type=Path)
     parser.add_argument("reps", type=int, nargs="?", default=25)
     parser.add_argument("--prompts", type=Path, default=DEFAULT_PROMPTS)
-    parser.add_argument("--configs", nargs="+", default=["plain", "model-2", "model-auto"])
+    parser.add_argument("--configs", nargs="+", default=["plain", "model-2", "model-auto"],
+                        help="plain, model-N, model-auto, model-auto-experts, or lookup variants")
     parser.add_argument("--max-new", type=int, default=128)
     parser.add_argument("--context", type=int, default=1024)
     parser.add_argument("--warmup", type=int, default=1, help="discarded requests per prompt and configuration")
@@ -160,6 +179,7 @@ def main():
             "prompts_sha256": sha256(args.prompts), "prompts": prompts,
             "configs": args.configs, "reps": args.reps, "warmup": args.warmup,
             "max_new": args.max_new, "context": args.context, "seed": args.seed,
+            "process_clock": "CLOCK_MONOTONIC, matching the engine's internal timers",
             "timing": "decode excludes both prefills; generation includes both; process includes startup and teardown",
             "memory": "macOS process ru_maxrss in bytes; may omit GPU-resident mapped weights and driver allocations; not total unified-memory use"}
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
@@ -185,6 +205,8 @@ def main():
                     raw.flush()
                     if ids != ref:
                         raise RuntimeError(f"{item['id']} {name}: output differs from greedy; run saved in {raw_path}")
+                    if not timing_consistent(metrics):
+                        raise RuntimeError(f"{item['id']} {name}: inconsistent timing boundaries; run saved in {raw_path}")
                     if rep >= 0:
                         measured.append(record)
                     print(f"{item['id']:16s} {name:12s} run {rep + 1:2d}  {metrics['tok_s']:7.2f} tok/s  "

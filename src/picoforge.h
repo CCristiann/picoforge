@@ -405,12 +405,33 @@ int  generate(const Tokenizer *tok, const Weights *w, const Qwen3Config *cfg,
  * Greedy speculative decoding on the GPU with a prompt-lookup drafter
  * (speculate.c). Emits exactly what greedy generate() emits; the stats say
  * how many passes that took. max_rows must be at least max_draft + 1. */
+/* Accepted-route predictor, CPU only. Trace layout is gpu_routing_trace's.
+ * Predict BEFORE observing a verify; only its accepted input rows enter history.
+ * seconds() returns -1 until the observed cost curve is identifiable. */
+typedef struct ExpertCost ExpertCost;
+ExpertCost *expert_cost_create(const Qwen3Config *cfg);
+void expert_cost_free(ExpertCost *ec);
+void expert_cost_predict(const ExpertCost *ec, int max_n, double *distinct);
+double expert_cost_distinct(ExpertCost *ec, const uint32_t *trace, int n);
+void expert_cost_accept(ExpertCost *ec, const uint32_t *trace, int accepted_rows);
+void expert_cost_observe(ExpertCost *ec, double distinct, double seconds);
+double expert_cost_seconds(const ExpertCost *ec, double distinct);
+
+typedef struct {
+    bool expert_cost;             /* experimental scheduler; MoE target only */
+    const char *trace_path;       /* optional per-pass JSONL, refuses overwrite */
+} SpecOptions;
+
 typedef struct {
     int    generated, passes, drafted, accepted;
     int    prompt_tokens;
     double prefill_s, draft_prefill_s;
     double decode_s;          /* wall time after prefill                    */
     double draft_s, verify_s; /* of which drafting, and the target's passes  */
+    double expert_cost_s;     /* CPU route accounting/prediction, inside decode_s */
+    int    expert_predictions;
+    double expert_abs_error_s, baseline_abs_error_s;
+    double route_abs_error;  /* sum of absolute errors in mean distinct experts */
     int    k_hist[33];        /* passes that verified k drafts, k = 0..32    */
     int    groups;            /* entries used in group_len                   */
     short  group_len[2048];   /* tokens emitted per loop step: the token the
@@ -422,6 +443,7 @@ typedef struct {
  * draft length before every pass, up to -max_draft (speculate.c, adaptive). */
 int  generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
                           GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
-                          int max_new, int max_draft, int *out_ids, SpecStats *stats);
+                          int max_new, int max_draft, int *out_ids, SpecStats *stats,
+                          const SpecOptions *options);
 
 #endif /* PICOFORGE_H */

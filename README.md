@@ -48,7 +48,7 @@ limit and the GPU's threadgroup-memory capacity before dispatch.
 | MoE GPU experts | bf16 or q8_row; Q4 experts are not implemented |
 | Checkpoints | Hugging Face safetensors; GPU needs a single file, CPU accepts shards |
 | Generation | Single-turn chat, sampling, greedy, prompt-lookup or model-based speculation |
-| Adaptive drafting | Selects draft length from observed acceptance and timings; no expert predictor |
+| Adaptive drafting | Default uses acceptance and timings; optional `auto-experts` forecasts cost from accepted routes |
 | Local UI | Python standard-library server; loads a new engine process for each request |
 
 For the 30B, the local q8_row checkpoint occupies about 31 GB. Conversion from
@@ -74,6 +74,12 @@ and [run notes](docs/BENCHMARKS.md#october-11-pilot).
 The [older five-prompt result](bench/spec_qwen3_30b_m5pro.csv) used three
 repetitions and retained no individual timings. It remains available as a
 historical pilot.
+
+The separate [expert-cost experiment](docs/phase4-expert-experiment.md) adds
+an opt-in `auto-experts` mode. Its six-prompt pilot reached only 1.009x decode
+speed and 0.988x full-process speed versus `auto`, below the 10% adoption
+threshold. It remains experimental; the report retains per-prompt regressions
+and the timing-recovery audit trail.
 
 The current runner saves every request, checks token identity against plain
 greedy, shuffles configuration order and reports prefill, decode, process time
@@ -101,10 +107,11 @@ then Metal with the C path. Speculative tests compare complete token sequences
 with ordinary greedy generation. Long-context tests also compare attention
 with an fp64 reference and all router choices with Transformers on the tiny MoE.
 
-The next performance work is to separate first-use costs from warmed prompt
-processing, then improve the decode path using the 30B profile. An expert-cost
-predictor is a later experiment: it must improve on
-both fixed drafting and the existing scheduler after its own cost is included.
+The next latency work is to separate first-use costs from warmed prompt
+processing, then improve the decode path using the 30B profile. An opt-in
+expert-cost experiment now forecasts how many distinct experts a verify may
+touch from recent accepted routes. Its pilot does not justify replacing the
+default scheduler. See [the experiment and commands](docs/phase4-expert-experiment.md).
 The [project review](docs/project-review-2026-10-11.md) records the scope and
 related work. [DESIGN.md](docs/DESIGN.md) explains the implementation.
 

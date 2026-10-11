@@ -141,15 +141,17 @@ static double sched_verify(const Scheduler *sc, int n) {
     return -1.0;
 }
 
-static int sched_choose(Scheduler *sc, int max_k) {
+static int sched_choose(Scheduler *sc, int max_k, const double *expert_seconds) {
     const double alpha = (sc->acc + 1.0) / (sc->acc + sc->rej + 2.0);
-    const double v1 = sched_verify(sc, 1);
+    const double v1 = expert_seconds && expert_seconds[1] > 0 ? expert_seconds[1] : sched_verify(sc, 1);
     if (v1 < 0 || sc->draft_s < 0) return max_k < 2 ? max_k : 2;   /* nothing measured: probe */
     int best = 0;
     double best_rate = 1.0 / v1;
     for (int k = 1; k <= max_k; k++) {
         const double tokens = (1.0 - pow(alpha, k + 1)) / (1.0 - alpha);
-        const double rate = tokens / (k * sc->draft_s + sched_verify(sc, k + 1));
+        const double verify = expert_seconds && expert_seconds[k + 1] > 0
+                            ? expert_seconds[k + 1] : sched_verify(sc, k + 1);
+        const double rate = tokens / (k * sc->draft_s + verify);
         if (rate > best_rate) { best_rate = rate; best = k; }
     }
     /* Never stop measuring: after 8 plain steps, try one draft so that a text
@@ -171,8 +173,13 @@ static void sched_update(Scheduler *sc, int k, int accepted, double pass_s, doub
 
 int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel *gpu,
                          GpuModel *drafter, int max_seq, int max_rows, const char *prompt,
-                         int max_new, int max_draft, int *out_ids, SpecStats *stats) {
+                         int max_new, int max_draft, int *out_ids, SpecStats *stats,
+                         const SpecOptions *options) {
     const bool adaptive = max_draft < 0;
+    const bool experts = options && options->expert_cost;
+    const char *trace_path = options ? options->trace_path : NULL;
+    if (experts && !adaptive) die("expert cost requires adaptive drafting");
+    if ((experts || trace_path) && !cfg->num_experts) die("expert cost and spec trace need a MoE target");
     if (max_draft < -31 || max_draft > 31 || max_new < 1)
         die("speculation needs 0..31 drafts and at least one output token");
     if (adaptive) max_draft = -max_draft;
@@ -188,6 +195,8 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     int pos = tokenizer_encode(tok, prompt, (int)strlen(prompt), tokens, max_seq);
     if (pos == 0) die("prompt must contain at least one token");
     if (pos >= max_seq) die("prompt fills the whole %d-position context", max_seq);
+    FILE *trace_file = trace_path ? fopen(trace_path, "wx") : NULL;
+    if (trace_path && !trace_file) die("cannot create spec trace %s (must not exist)", trace_path);
     s.prompt_tokens = pos;
     double prefill_start = now();
     gpu_forward(gpu, tokens, pos, 0, pos - 1, logits);
@@ -205,6 +214,11 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     }
     Scheduler sched;
     sched_init(&sched);
+    ExpertCost *cost = (experts || trace_file) ? expert_cost_create(cfg) : NULL;
+    /* Start tracing after prefill: its chunked passes retain only the last
+     * chunk, and prompt first-use time is not a decode cost observation. */
+    if (cost) gpu_set_routing_trace(gpu, true);
+    int history_tokens = 0;
 
     /* Invariant: tokens[0..pos) are in the cache; `next` is decided and not. */
     int next = argmax(logits, cfg->vocab_size);
@@ -226,7 +240,16 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         int room = max_seq - pos - 1;
         int budget = max_draft < max_new - generated ? max_draft : max_new - generated;
         if (budget > room) budget = room;
-        if (adaptive && budget > 0) budget = sched_choose(&sched, budget);
+        double predicted_experts[33] = {0}, predicted_seconds[33] = {0};
+        double prediction_start = cost ? now() : 0.0;
+        if (cost) {
+            expert_cost_predict(cost, budget + 1, predicted_experts);
+            for (int n = 1; n <= budget + 1; n++)
+                predicted_seconds[n] = expert_cost_seconds(cost, predicted_experts[n]);
+        }
+        if (adaptive && budget > 0)
+            budget = sched_choose(&sched, budget, experts ? predicted_seconds : NULL);
+        double prediction_s = cost ? now() - prediction_start : 0.0;
         double t1 = now();
         int k = 0;
         double pass_s = -1.0;
@@ -238,6 +261,7 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         }
         double t2 = now();
         s.draft_s += t2 - t1;
+        const double baseline_prediction = cost ? sched_verify(&sched, k + 1) : -1.0;
 
         gpu_forward(gpu, tokens + pos, k + 1, pos, 0, logits);
         const double t3 = now();
@@ -256,7 +280,50 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
         }
         s.accepted += i;
         /* Prompt lookup drafts in microseconds; its pass cost is the clock's. */
-        if (adaptive) sched_update(&sched, k, i, drafter ? pass_s : (k ? (t2 - t1) / k : -1.0), t3 - t2);
+        if (adaptive || cost) sched_update(&sched, k, i, drafter ? pass_s : (k ? (t2 - t1) / k : -1.0), t3 - t2);
+        if (cost) {
+            prediction_start = now();
+            const uint32_t *routes = gpu_routing_trace(gpu);
+            const double actual_experts = expert_cost_distinct(cost, routes, k + 1);
+            const double predicted = predicted_seconds[k + 1];
+            s.route_abs_error += fabs(predicted_experts[k + 1] - actual_experts);
+            if (predicted > 0 && baseline_prediction > 0) {
+                s.expert_predictions++;
+                s.expert_abs_error_s += fabs(predicted - (t3 - t2));
+                s.baseline_abs_error_s += fabs(baseline_prediction - (t3 - t2));
+            }
+            /* Price the ENTIRE verify, including rejected drafts; retain only
+             * next + accepted drafts as history for the following prediction. */
+            expert_cost_observe(cost, actual_experts, t3 - t2);
+            expert_cost_accept(cost, routes, i + 1);
+            prediction_s += now() - prediction_start;
+            s.expert_cost_s += prediction_s;
+            if (trace_file) {
+                fprintf(trace_file, "{\"pass\":%d,\"position\":%d,\"k\":%d,\"accepted\":%d,"
+                        "\"history_tokens\":%d,\"predicted_experts\":%.9f,\"actual_experts\":%.9f,"
+                        "\"predicted_verify_s\":%.9f,\"baseline_verify_s\":%.9f,"
+                        "\"verify_s\":%.9f,\"predictor_s\":%.9f,\"routes\":[",
+                        s.passes, pos, k, i, history_tokens, predicted_experts[k + 1], actual_experts,
+                        predicted, baseline_prediction, t3 - t2, prediction_s);
+                for (int l = 0; l < cfg->num_hidden_layers; l++) {
+                    fprintf(trace_file, l ? ",[" : "[");
+                    if (config_is_moe_layer(cfg, l)) {
+                        for (int t = 0; t <= k; t++) {
+                            fprintf(trace_file, t ? ",[" : "[");
+                            for (int j = 0; j < cfg->num_experts_per_tok; j++)
+                                fprintf(trace_file, j ? ",%u" : "%u", routes[
+                                    ((size_t)l * 32 + (size_t)t) * (size_t)cfg->num_experts_per_tok + (size_t)j]);
+                            fputc(']', trace_file);
+                        }
+                    }
+                    fputc(']', trace_file);
+                }
+                fputs("]}\n", trace_file);
+                if (ferror(trace_file)) die("cannot write spec trace %s", trace_path);
+            }
+            history_tokens += i + 1;
+            if (history_tokens > 32) history_tokens = 32;
+        }
         if (group >= 0) s.group_len[group] = (short)(s.group_len[group] + i);
         /* The drafter's rows past the accepted text hold rejected drafts. */
         if (dpos > pos + 1 + i) dpos = pos + 1 + i;
@@ -275,6 +342,9 @@ int generate_speculative(const Tokenizer *tok, const Qwen3Config *cfg, GpuModel 
     s.decode_s = now() - t0;
     s.generated = generated;
     if (stats) *stats = s;
+    if (trace_file && fclose(trace_file)) die("cannot finish spec trace %s", trace_path);
+    if (cost) gpu_set_routing_trace(gpu, false);
+    expert_cost_free(cost);
     free(tokens);
     free(logits);
     return generated;

@@ -1,0 +1,6 @@
+{"id":"cache-analogy","text":"Explain to a new programmer how a library desk can illustrate a computer cache. Use three short sentences."}
+{"id":"deduplicate","text":"Write a Python function that removes duplicate items from a list while preserving their order. Include a short usage example."}
+{"id":"italian-directions","text":"Scrivi in italiano cinque istruzioni brevi per preparare una valigia per un fine settimana piovoso."}
+{"id":"dialogue","text":"Write a short dialogue between a lighthouse keeper and a visitor who has arrived with a mysterious letter."}
+{"id":"copy-edit","text":"Return the following labels in the same order, changing only spaces to underscores: red apple, blue door, quiet lake, long road, warm bread, green hill."}
+{"id":"switch-task","text":"Write a Python function that converts Celsius to Fahrenheit. Then give a one-sentence explanation in Italian. Finish with a short sentence about a night train."}

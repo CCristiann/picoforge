@@ -105,9 +105,11 @@ def speculate(prompt: str, drafter: str, k: str, max_new: int, target: str) -> d
     """Three runs of the real engine on the GPU: plain greedy through generate()
     (the reference), the speculative loop with no drafts (the same loop's own
     speed), and the speculative loop with the chosen drafter. k is a number or
-    "auto" (the length chosen before every pass)."""
+    "auto" or the opt-in MoE experiment "auto-experts"."""
     model, draft_model = TARGETS[target]
-    k = k if k == "auto" else str(int(k))
+    if k == "auto-experts" and target != "30b":
+        raise ValueError("Expert prediction needs the Qwen3-30B-A3B target.")
+    k = k if k in ("auto", "auto-experts") else str(int(k))
     n = str(max_new)
     ref, _ = engine_file(["--gpu-greedy", prompt, n], model)
     plain_lines, plain_out = engine_file(["--spec-greedy", prompt, n, "0"], model)
@@ -123,7 +125,7 @@ def speculate(prompt: str, drafter: str, k: str, max_new: int, target: str) -> d
     return {"identical": ref[0] == lines[0] == plain_lines[0],
             "groups": [int(x) for x in lines[1].split()] if len(lines) > 1 else [],
             "tokens": pieces, "plain": spec_stats(plain_out), "spec": spec_stats(out),
-            "draft_lengths": lengths.group(1).strip() if lengths else "",
+            "draft_lengths": lengths.group(1).strip() if lengths else "", "scheduler": k,
             "target": model.name, "drafter": draft_model.name if drafter == "model" else "prompt lookup"}
 
 
@@ -131,9 +133,13 @@ def phase4() -> dict:
     def rows(name: str) -> list[dict]:
         path = ROOT / "bench" / name
         return list(csv.DictReader(open(path))) if path.exists() else []
+    expert_name = "spec_experts_qwen3_30b_20261011_pilot"
+    expert_meta = ROOT / "bench" / (expert_name + ".meta.json")
+    expert_complete = expert_meta.exists() and json.loads(expert_meta.read_text()).get("complete", False)
     return {"profile": rows("profile_m5pro.csv"), "moe_cost": rows("moe_verify_cost_m5pro.csv"),
             "moe_e2e": rows("moe_e2e_qwen3_30b_q8_m5pro.csv"), "tile": rows("e2e_tile_m5pro.csv"),
             "spec": rows("spec_qwen3_30b_m5pro.csv"),
+            "expert_spec": rows(expert_name + ".csv") if expert_complete else [],
             "overlap": rows("routing_overlap_qwen3_30b_20261011.csv")}
 
 

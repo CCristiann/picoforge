@@ -47,8 +47,8 @@ ui: picoforge
 
 # Everything, in dependency order: primitives, then the tables they feed,
 # then the pipelines built on those.
-test-all: test test-bench-speculate test-attention test-context test-nfc test-tokenizer test-encode test-forward test-generate \
-          test-quant-formats test-quant-kernels test-forward-quant test-speculate test-oracle-moe test-forward-moe test-forward-moe-quant test-shards test-routing-trace
+test-all: test test-expert-cost test-bench-speculate test-attention test-context test-nfc test-tokenizer test-encode test-forward test-generate \
+          test-quant-formats test-quant-kernels test-forward-quant test-speculate test-spec-experts test-oracle-moe test-forward-moe test-forward-moe-quant test-shards test-routing-trace
 
 build/test_attention: tests/test_attention.m src/metal.o src/util.o src/picoforge.h
 	@mkdir -p build
@@ -62,6 +62,16 @@ test-context: picoforge build/tiny-qwen3-moe
 
 test-bench-speculate:
 	@./tools/venv/bin/python tests/test_bench_speculate.py
+
+build/test_expert_cost: tests/test_expert_cost.c src/expert_cost.o src/config.o src/json.o src/util.o src/picoforge.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_expert_cost.c src/expert_cost.o src/config.o src/json.o src/util.o $(LDFLAGS)
+
+test-expert-cost: build/test_expert_cost
+	@./build/test_expert_cost
+
+test-spec-experts: picoforge build/tiny-qwen3-moe
+	@./tools/venv/bin/python tests/test_spec_experts.py
 
 # Phase 4: a tiny random Qwen3-MoE (same architecture and on-disk layout as
 # Qwen3-30B-A3B, 3 layers), and the NumPy oracle verified against it.
@@ -143,5 +153,5 @@ test-forward: picoforge
 clean:
 	rm -f src/*.o picoforge tests/test_ops $(METALLIB) build/*.air
 
-.PHONY: clean test test-all test-bench-speculate test-attention test-context ui test-forward test-tokenizer test-encode test-nfc test-generate \
+.PHONY: clean test test-all test-expert-cost test-spec-experts test-bench-speculate test-attention test-context ui test-forward test-tokenizer test-encode test-nfc test-generate \
         test-quant-formats test-quant-kernels test-forward-quant quant-models

@@ -203,7 +203,7 @@
     </div>
     <div>
       <label>Draft length</label>
-      <select id="sp-k"><option value="auto" selected>auto</option><option>2</option><option>4</option><option>8</option></select>
+      <select id="sp-k"><option value="auto" selected>auto</option><option value="auto-experts">auto + experts (experimental)</option><option>2</option><option>4</option><option>8</option></select>
     </div>
     <div>
       <label>Max tokens</label>
@@ -213,6 +213,7 @@
     <span id="sp-badge"></span>
   </div>
   <div class="cmd" id="sp-who"></div>
+  <p class="note" id="sp-expert-note" hidden>Experimental: uses recent expert choices to estimate the cost of each draft length. Compare with auto; a speed gain is not guaranteed.</p>
   <div class="out spec-out" id="sp-out"></div>
   <p class="note">Each shaded block is one step of the loop: the token the previous pass decided,
      then the <span style="color:#9fd0ff;text-decoration:underline">underlined drafts</span> this
@@ -228,12 +229,23 @@
 </section>
 
 <section class="panel" id="p4">
-  <p class="lead">Measured on this machine today. Every number comes from a CSV in <code>bench/</code>;
+  <p class="lead">Local measurements, with historical results retained for comparison. Every number comes from a CSV in <code>bench/</code>;
      the story behind each is in <code>docs/devlog.md</code>.</p>
   <div class="cards" id="p4-cards"></div>
 
-  <h2 class="sec">Speculative decoding on Qwen3-30B-A3B, drafted by Qwen3-0.6B</h2>
-  <p class="lead">Speedup over plain decoding, median of 3 runs, 128 tokens. Every run's output is identical
+  <div id="p4-experiment" hidden>
+    <h2 class="sec">Expert-cost scheduler — experimental pilot, October 11</h2>
+    <p class="lead">Six separate evaluation prompts, five measured runs, up to 96 output tokens.
+      Speedups compare decode throughput with no draft. The last two columns compare the experiment with auto.
+      Values below 1 mean slower. This pilot shows no clear improvement over auto, which remains the default.</p>
+    <div class="chart" style="overflow-x:auto"><table class="t" id="p4-expert-spec"></table></div>
+    <p class="note">In the plot, the dashed line is auto. Points to its right are faster; points to its left are slower.</p>
+    <img class="plot" src="/bench/spec_experts_qwen3_30b_20261011_pilot.png" loading="lazy"
+      alt="Pilot comparison with auto: expert prediction reaches 1.009 times decode speed and 0.988 times full-request speed">
+  </div>
+
+  <h2 class="sec">Speculative decoding on Qwen3-30B-A3B, drafted by Qwen3-0.6B — historical pilot</h2>
+  <p class="lead">Speedup over plain decoding, median of 3 runs, up to 128 tokens. Every run's output is identical
      to plain greedy. <b>auto</b> chooses the draft length before every pass from measured cost and acceptance.</p>
   <div class="chart"><table class="t" id="p4-spec"></table></div>
 
@@ -342,7 +354,15 @@ const segPick = (id, set) => $(id).querySelectorAll('button').forEach(b => b.onc
   $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
 });
 segPick('#sp-drafter', v => drafter = v);
-segPick('#sp-target', v => target = v);
+const syncExpertMode = () => {
+  const option = $('#sp-k').querySelector('option[value="auto-experts"]');
+  option.disabled = target !== '30b';
+  if (option.disabled && $('#sp-k').value === 'auto-experts') $('#sp-k').value = 'auto';
+  $('#sp-expert-note').hidden = $('#sp-k').value !== 'auto-experts';
+};
+segPick('#sp-target', v => { target = v; syncExpertMode(); });
+$('#sp-k').onchange = syncExpertMode;
+syncExpertMode();
 const esc = t => t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 $('#sp-run').onclick = async () => {
   const btn = $('#sp-run'); btn.disabled = true;
@@ -368,7 +388,7 @@ $('#sp-run').onclick = async () => {
     $('#sp-x').textContent = (d.spec.tok_s / d.plain.tok_s).toFixed(2) + '×';
     $('#sp-pp').textContent = d.spec.per_pass.toFixed(2);
     $('#sp-acc').textContent = `${d.spec.accepted}/${d.spec.drafted} drafts accepted`;
-    $('#sp-who').textContent = `target ${d.target} · drafter ${d.drafter}`;
+    $('#sp-who').textContent = `target ${d.target} · drafter ${d.drafter} · draft length ${d.scheduler}`;
     if (d.draft_lengths) $('#sp-lengths').textContent = 'draft lengths chosen, pass by pass: ' + d.draft_lengths;
   } catch (e) { $('#sp-out').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   btn.disabled = false;
@@ -378,6 +398,23 @@ $('#sp-run').onclick = async () => {
 let p4 = null;
 async function drawPhase4() {
   if (!p4) p4 = await (await fetch('/api/phase4')).json();
+  const experiment = p4.expert_spec || [];
+  if (experiment.length) {
+    $('#p4-experiment').hidden = false;
+    const ids = [...new Set(experiment.map(r => r.prompt))];
+    const configs = ['model-2', 'model-auto', 'model-auto-experts'];
+    const comparisons = ids.map(id => {
+      const rows = configs.map(config => experiment.find(r => r.prompt === id && r.config === config));
+      return {id, values: [...rows.map(r => +r.speedup),
+        rows[2].median_tok_s / rows[1].median_tok_s,
+        rows[1].median_process_s / rows[2].median_process_s]};
+    });
+    comparisons.push({id: 'geomean', values: comparisons[0].values.map((_, i) =>
+      Math.exp(comparisons.reduce((sum, r) => sum + Math.log(r.values[i]), 0) / comparisons.length))});
+    $('#p4-expert-spec').innerHTML = '<tr><th>prompt</th><th>fixed k=2</th><th>auto</th><th>auto + experts</th><th>experts / auto: decode</th><th>experts / auto: request</th></tr>' +
+      comparisons.map(r => `<tr><td>${esc(r.id)}</td>${r.values.map(v =>
+        `<td${v < 1 ? ' style="color:var(--naive)"' : ''}>${v.toFixed(3)}×</td>`).join('')}</tr>`).join('');
+  }
   const card = (k, v, u) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="u">${u}</div></div>`;
   const e2e = p4.moe_e2e, dec = e2e.find(r => r.regime === 'decode'), v8 = e2e.find(r => +r.n === 8);
   const gm = c => { const v = p4.spec.filter(r => r.config === c).map(r => Math.log(+r.speedup));

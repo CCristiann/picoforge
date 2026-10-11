@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <errno.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 
 static int integer_arg(const char *text, int min, int max, const char *name) {
     char *end;
@@ -350,16 +351,29 @@ int main(int argc, char **argv) {
                      (argc > 6 && strcmp(argv[2], "--spec-greedy") == 0)))) {
         const char **a = spec_model ? (const char **)argv + 1 : (const char **)argv;
         const bool spec = spec_model || strcmp(argv[2], "--spec-greedy") == 0;
-        /* DRAFT as "auto" or "auto:K" chooses the length per pass, up to K (8). */
+        /* auto[:K] is the existing scheduler; auto-experts[:K] is opt-in.
+         * An optional TRACE.jsonl after OUT.txt records per-pass diagnostics. */
         const int max_new = integer_arg(a[4], 1, context, "max new tokens");
         int draft = 0;
+        SpecOptions spec_options = {0};
         if (spec) {
-            if (strcmp(a[5], "auto") == 0) draft = -8;
+            if (strcmp(a[5], "auto-experts") == 0) { draft = -8; spec_options.expert_cost = true; }
+            else if (strncmp(a[5], "auto-experts:", 13) == 0) {
+                draft = -integer_arg(a[5] + 13, 1, 31, "automatic draft limit");
+                spec_options.expert_cost = true;
+            } else if (strcmp(a[5], "auto") == 0) draft = -8;
             else if (strncmp(a[5], "auto:", 5) == 0)
                 draft = -integer_arg(a[5] + 5, 1, 31, "automatic draft limit");
             else draft = integer_arg(a[5], 0, 31, "draft length");
+            const int expected = spec_model ? 8 : 7;
+            if (argc > expected + 1) die("expected OUT.txt and optional TRACE.jsonl after draft length");
+            if (argc == expected + 1) spec_options.trace_path = a[7];
+            if ((spec_options.expert_cost || spec_options.trace_path) && !cfg.num_experts)
+                die("expert cost and spec trace need a MoE target");
         }
         const char *out_path = a[spec ? 6 : 5];
+        if (spec_options.trace_path && strcmp(out_path, spec_options.trace_path) == 0)
+            die("output and spec trace need different paths");
         MetalContext *mtl = metal_init("picoforge.metallib");
         GpuModel *gpu = gpu_model_create(mtl, &st, &cfg, context, 32);
         SafeTensors dst;
@@ -380,7 +394,7 @@ int main(int argc, char **argv) {
         if (spec) {
             SpecStats ss;
             got = generate_speculative(&tok, &cfg, gpu, drafter, context, 32, a[3], max_new, draft,
-                                       ids, &ss);
+                                       ids, &ss, &spec_options);
             printf("spec: %d tokens in %d passes (%.2f per pass), %d/%d drafts accepted, "
                    "decode %.3f s (%.1f tok/s; drafting %.3f s, verifying %.3f s)\n", got,
                    ss.passes, ss.passes && got > 1 ? (double)(got - 1) / ss.passes : 0.0, ss.accepted,
@@ -397,7 +411,10 @@ int main(int argc, char **argv) {
                    ss.prompt_tokens, got, ss.passes, ss.drafted, ss.accepted,
                    ss.prefill_s, ss.draft_prefill_s, ss.decode_s, ss.draft_s, ss.verify_s, usage.ru_maxrss);
             for (int k = 0; k < 33; k++) printf(k ? ",%d" : "%d", ss.k_hist[k]);
-            printf("]}\n");
+            printf("],\"expert_cost_s\":%.9f,\"expert_predictions\":%d,"
+                   "\"expert_abs_error_s\":%.9f,\"baseline_abs_error_s\":%.9f,\"route_abs_error\":%.9f}\n",
+                   ss.expert_cost_s, ss.expert_predictions, ss.expert_abs_error_s,
+                   ss.baseline_abs_error_s, ss.route_abs_error);
             last_stats = ss;
         } else {
             Weights w;
@@ -411,6 +428,12 @@ int main(int argc, char **argv) {
         /* OUT: the ids on line 1 (what the tests compare); for speculative
          * runs, the tokens emitted per step on line 2 and each token's bytes
          * in hex on line 3, for tools/ui to show which tokens arrived together. */
+        if (spec_options.trace_path) {
+            struct stat output_stat, trace_stat;
+            if (stat(out_path, &output_stat) == 0 && stat(spec_options.trace_path, &trace_stat) == 0 &&
+                output_stat.st_dev == trace_stat.st_dev && output_stat.st_ino == trace_stat.st_ino)
+                die("output and spec trace need different paths");
+        }
         FILE *f = fopen(out_path, "wb");
         if (!f) die("cannot write %s", out_path);
         for (int i = 0; i < got; i++) fprintf(f, i ? " %d" : "%d", ids[i]);

@@ -3,11 +3,13 @@
 Written 2026-09-14. A plan, not a result: every claim below marked
 *expected* is arithmetic waiting for a measurement.
 
-October 11 update: the [project review](project-review-2026-10-11.md) is the
-current work order. The original novelty hypothesis below is unproven. The
-existing scheduler adapts to measured time, without predicting experts. The
-old 4,096-token routing measurement crossed the attention buffer limit and is
-superseded by `bench/routing_overlap_qwen3_30b_20261011.csv`.
+October 11 update: the original novelty hypothesis below is unproven. The
+default scheduler adapts to measured time and acceptance. An optional
+[accepted-route cost experiment](phase4-expert-experiment.md) now forecasts
+expert reuse; its report separates implementation from measured benefit.
+The [project review](project-review-2026-10-11.md) records earlier findings.
+The old 4,096-token routing measurement crossed the attention buffer limit
+and is superseded by `bench/routing_overlap_qwen3_30b_20261011.csv`.
 
 ## Where the gap is
 
@@ -68,7 +70,7 @@ Each one is small, verified against an oracle, and committed on its own.
 | 4.5 | Qwen3-30B-A3B: download (61 GB), quantise, layer-by-layer parity -- **done** | yes |
 | 4.6 | MoE on the GPU: routed expert matmuls grouped per expert on TensorOps -- **done**, bf16 and q8_row experts, verified on the real 30B | no |
 | 4.7 | The verify cost surface on this machine: time(k tokens, distinct experts) -- **done**, synthetic layer and real routing overlap | partly |
-| 4.8 | Expert-cost-aware draft selection, training-free, 0.6B drafting; speedup vs plain speculation vs none -- **cost-aware draft length done** (1.44x geomean); expert-level prediction next | yes |
+| 4.8 | Expert-cost-aware draft selection, training-free, 0.6B drafting; speedup vs plain speculation vs none -- **adaptive draft length implemented**; [opt-in expert prediction experiment](phase4-expert-experiment.md) implemented and measured separately | yes |
 
 Correctness rule for 4.2 and 4.8: speculative decoding with greedy
 acceptance must not change a single output token. Any difference is a bug.

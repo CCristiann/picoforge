@@ -2,6 +2,23 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-10-11 — accepted-route cost predictor, opt-in experiment
+
+`auto-experts` forecasts verify cost from the last 32 accepted input routes,
+then learns time versus distinct experts online. Rejected drafts contribute
+to observed cost, not accepted history. CLI diagnostics, CPU/unit and greedy
+integration tests, benchmark metrics and the local UI are included.
+
+The six-prompt pilot gives 1.009x decode speed and 0.988x process speed versus
+`auto`, with all selected outputs identical to greedy. The cost forecast is
+less accurate than the existing estimate (2.459 vs 1.909 ms mean absolute
+error). The 10% adoption threshold is not met; the default stays unchanged.
+The [report](phase4-expert-experiment.md) retains every prompt, graph and the
+audit trail for an interrupted run and a repeated prompt with invalid timers.
+The benchmark runner now matches the engine's clock and rejects inconsistent
+timing boundaries. `make test-all`, final targeted integration tests, timer
+validation and CPU sanitizers passed. First-use latency remains separate work.
+
 ## 2026-10-11 — attention bounds and reproducible request timings
 
 Attention score storage now follows the active context, with a GPU-capacity

@@ -1,6 +1,7 @@
 """Check benchmark aggregation with deliberately uneven timings and draft counts."""
 
 import importlib.util
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,15 @@ spec.loader.exec_module(bench)
 
 
 class SummaryTests(unittest.TestCase):
+    def test_inconsistent_timers_are_rejected(self):
+        metrics = {"prefill_s": 6.0, "draft_prefill_s": .1, "decode_s": 3.0,
+                   "draft_s": .3, "verify_s": 2.5, "generation_s": 9.1, "process_s": 9.3}
+        self.assertTrue(bench.timing_consistent(metrics))
+        self.assertFalse(bench.timing_consistent({**metrics, "generation_s": 346.1, "process_s": 16.6}))
+        self.assertFalse(bench.timing_consistent({**metrics, "verify_s": 4.0}))
+        for bad in (-1.0, math.inf, math.nan):
+            self.assertFalse(bench.timing_consistent({**metrics, "decode_s": bad}))
+
     def test_fingerprints_include_engine_tokenizer_inputs(self):
         names = ("config.json", "generation_config.json", "tokenizer.json",
                  "tokenizer_config.json", "vocab.json", "merges.txt", "model.safetensors")
@@ -47,6 +57,14 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(model["median_process_s"], 2)
         self.assertEqual(model["p90_process_s"], 3)
         self.assertEqual(model["reps"], 3)
+        self.assertEqual(model["expert_predictions"], 0)
+        self.assertEqual(model["median_expert_cost_s"], 0.0)
+        records[-1].update(expert_predictions=2, expert_cost_s=.001,
+                           expert_abs_error_s=.006, baseline_abs_error_s=.010, route_abs_error=4.0)
+        expert = bench.summarize(records, ["plain", "model-2"])[1]
+        self.assertEqual(expert["expert_mae_ms"], 3.0)
+        self.assertEqual(expert["baseline_mae_ms"], 5.0)
+        self.assertAlmostEqual(expert["route_mae"], 4.0 / 15)
         records[-1]["identical_to_greedy"] = False
         self.assertFalse(bench.summarize(records, ["plain", "model-2"])[1]["identical_to_greedy"])
 
@@ -59,6 +77,8 @@ class SummaryTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 bench.configuration(name, Path("draft"), "prompt", 128)
         self.assertEqual(bench.configuration("model-31", Path("draft"), "prompt", 128)[-1], "31")
+        self.assertEqual(bench.configuration("model-auto-experts", Path("draft"), "prompt", 128),
+                         ["--spec-model", "draft", "prompt", "128", "auto-experts"])
 
 
 if __name__ == "__main__":

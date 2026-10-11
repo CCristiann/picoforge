@@ -33,6 +33,11 @@ tools/venv/bin/python tools/eval/bench_speculate.py \
   around process launch and completion, including model setup and teardown.
   Neither describes a resident serving process. Time to first streamed token
   is not measured by this runner.
+- Process and internal timers use `CLOCK_MONOTONIC`. The runner saves the raw
+  record, then aborts on negative/nonfinite times or phases that exceed their
+  enclosing timer by more than 100 ms. Earlier archived runners used Python's
+  `perf_counter` for process time; a clock disagreement discovered in the
+  expert pilot prompted this correction.
 - `peak_rss_bytes` is macOS `ru_maxrss`. It can omit GPU-resident mapped weights
   and driver allocations. The October pilot reported only 38–45 MB despite a
   31.2 GB target checkpoint: this metric does **not** measure the engine's full
@@ -85,6 +90,20 @@ forwards before deciding how to reduce this cost.
 The pilot metadata archives the exact executed runner. Additional tokenizer
 input hashes were captured during the run; the current runner collects them
 automatically. These metadata changes do not change the timing loop.
+
+### Expert-cost pilot
+
+The separate six-prompt experiment compares `plain`, `model-2`, `model-auto`
+and opt-in `model-auto-experts`, with five measured requests each and up to
+96 tokens. Decode speedups over no draft are 1.277x, 1.294x and 1.307x; process
+speedups are 1.015x, 1.041x and 1.029x. The expert predictor does not meet its
+adoption threshold. See the [full report](phase4-expert-experiment.md) for
+per-prompt regressions, CPU overhead, forecast errors and exact artifacts.
+
+The raw file retains an interrupted schedule and a whole prompt repeated
+after two internal/process clock disagreements. Metadata specifies which
+records enter the final 120-measurement summary, and archives both runners.
+This is a labelled pilot with an audit trail, not evidence of stable gains.
 
 ## The machine
 
