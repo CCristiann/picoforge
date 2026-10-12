@@ -504,6 +504,108 @@ letto, modello caricato, benchmark, test GPU, aggiornamento dipendenze o
 modifica condivisa. Verifiche documentali finali: `git diff --check` e
 controllo che il commit contenga esclusivamente `docs/specs/qwen38/F.md`.
 
+## ESEGUI v1 — base consolidata e risultati
+
+Base `c674b23bd1377b2ce0acef2d06fac8b160809446`, branch `impl/qwen38-f-v1`,
+worktree `../picoforge-f-v1`; il precedente `../picoforge-f-oracle` è preservato.
+L'[integrazione](integration.md) e gli header v1 prevalgono su tutte le proposte
+precedenti: stride/capacità **in byte**, errori `Qwen38Status`, tie su probabilità
+FP32 con ID minore, e down con **640 input logici letti da B**, senza scratch
+di attivazioni padded a 768. Il bound dei prodotti è quello di B consolidato.
+
+Recuperati soltanto tooling e test dai commit oracle F `d1a2788`, `9668aa9`,
+`a779e7c`, rispettivamente in `a4ddfca`, `ad98fc4`, `222a91a`. Non riacquisite
+spec, modifiche condivise o implementazioni altrui. I corpi delle quattro
+classi upstream hash-pinnate e la licenza sono riusati nella cache locale di
+build; il venv rimane quello principale (torch 2.13.0, NumPy 2.5.1).
+I 16 test oracle sono ripassati su questa base.
+
+Primo incremento C11: `qwen38_moe_route` implementa l'header pubblico immutato,
+senza dipendere da A/B/C. Softmax FP32, selezione sulle probabilità (inclusi
+pareggi dovuti all'arrotondamento), K distinti, rinormalizzazione configurata.
+Nessuna allocazione. Scratch `[T,E]` del caller; logits, probabilità, ID e pesi
+disgiunti. Preflight di config/shape/stride/capacità/overflow/allineamento e
+alias prima delle scritture; scansione di finitezza di tutti i logits prima
+del calcolo. Su questi errori output e guard rimangono invariati. T=0 valida
+struttura/config senza dereferenziare dati. La differenza negativa overflow
+tra logits finiti estremi può essere -Inf: `exp(-Inf)=0` è ammesso.
+
+**20 test passati** con il harness C compilato ASan/UBSan e warning come errori.
+Fixture E=1/4/17/512/513/1025, K=1/K=E/top-10, T fino a 1024; controllati
+guard delle righe strided, output immutati su errori, NaN/Inf, ±3e38,
+probabilità uniformi e quasi-pareggi, norm sì/no. Quattro seed di proiezioni
+floating point upstream E=512 alimentano lo stesso routing C: tutti gli ID
+coincidono e i pesi rispettano atol=2e-6/rtol=2e-5; somma entro2e-6.
+Logits arbitrari sono confrontati anche con softmax torch e riferimento NumPy.
+Chunk 1/7/32 e append conservano bitwise probabilità/ID/pesi a logits identici.
+
+Comandi effettivi dal worktree, senza modificare Makefile:
+
+```sh
+mkdir -p build/qwen38-f
+clang -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fsanitize=address,undefined -fno-omit-frame-pointer -Isrc \
+  tests/test_qwen38_moe.c src/qwen38_moe.c -lm -o build/qwen38-f/test_moe
+./build/qwen38-f/test_moe
+Q38_F_NATIVE="$PWD/build/qwen38-f/test_moe" OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  ../picoforge/tools/venv/bin/python tests/test_qwen38_moe.py
+```
+
+Se manca la cache upstream, prepararla esplicitamente con
+`../picoforge/tools/venv/bin/python tools/oracle/qwen38_moe.py --prepare-upstream`;
+i test non fanno download. Senza `Q38_F_NATIVE` i test nativi sono marcati
+SKIP, non PASS. Le fixture numeriche native usano un protocollo binario locale
+little-endian nel harness (`--route`), solo per test, non un ABI dell'engine.
+
+Dipendenze residue: create/work/forward attendono B scalar e attivazioni C;
+il percorso packed attende IQ2_XXS/Q2_K/Q8_0 reali. Nessun fallback/stub o
+decoder locale. API GPU pubbliche di composizione non ancora materializzate;
+nessun test GPU, carico sul checkpoint o benchmark in questo incremento.
+Piccoli test CPU bounded eseguiti senza lock, come consentito dal §9;
+qualsiasi futuro GPU/workload pesante userà `tools/qwen38_gpu_lock.py`.
+
+### Secondo incremento: grouping CPU delle coppie
+
+`q38_moe_group_pairs` è un helper **privato** di F, dichiarato soltanto in
+`src/qwen38_f_internal.h`. I contratti pubblici restano immutati. Data la
+coppia `pair=t*K+slot`, ordina per esperto crescente e poi pair crescente:
+`row_to_pair[row]=pair`, `pair_to_row[pair]=row`. Il gruppo e occupa
+`[offsets[e],offsets[e+1])`. Counting/prefix/scatter, senza scartare token,
+imporre capacità per esperto o cambiare pesi. Per la futura riduzione si
+torna alle coppie originali, nell'ordine slot stabilito dall'integrazione.
+
+ID strided `[T,K]` in sola lettura logica; quattro array caller-owned,
+allineati a size_t e disgiunti: offsets `[E+1]`, cursors scratch `[E]`,
+due permutazioni `[T*K]`. Tutte le capacità sono in byte e la durata è quella
+della chiamata sincrona. Nessuna allocazione o stato persistente. Validazione
+di shape, stride, capacità, alias, overflow, ID fuori range e duplicati nel
+medesimo token prima delle scritture. T=0 permette puntatori NULL per ID e
+permutazioni, ma richiede offsets/cursors e li azzera. I gruppi vuoti hanno
+offset consecutivi identici. Non è un nuovo ABI di composizione MoE.
+
+**23 test passati** con lo stesso comando ASan/UBSan riportato sopra, nessuno
+saltato. Il grouping C è confrontato con `np.argsort(kind="stable")` e
+`bincount`, indipendenti dall'implementazione counting/scatter nativa:
+28 casi comprendono E=1/4/17/512/513, T=0/1/7/33/65/1024, K=1/4/5/10/11,
+carico concentrato sugli stessi esperti, gruppi vuoti e K=E. Verificata
+identità esatta delle permutazioni e degli inversi; guard di righe e array
+intatti e output invariati sui nove errori del harness C.
+Quattro fixture floating point del riferimento già confrontato con upstream
+verificano route C → grouping C → ripristino bitwise degli output per coppia
+→ somma pesata entro atol=2e-5/rtol=2e-4, anche a chunk 1/7/25.
+Quest'ultimo test usa i prodotti dell'oracle: **non certifica un forward C**.
+
+Budget runtime routing: logits+probabilità `8*T*E` byte, ID+pesi `8*T*K`;
+grouping `sizeof(size_t)*(2*E+1+2*T*K)`. Con T=1024/E=512/K=10 su macchina
+64-bit, totale 4.45 MB decimali (4.24 MiB), esclusi pesi e guard di test;
+solo grouping 172040 byte. Il routing corrente è scalare e privilegia la
+verifica: ricerca top-k O(T*E*K²); non è una misura prestazionale.
+Il grouping impiega O(E+T*K²) tempo, inclusa la verifica dei duplicati.
+Le API create/work/forward restano dichiarazioni senza stub: B scalar/F32
+e C attivazioni non sono implementati nella base di questo worktree.
+I successivi incrementi richiedono quei commit reali dal coordinatore,
+poi IQ2_XXS/Q2_K/Q8_0 per pesi compressi e binding/slice da A.
+
 [config]: https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json
 [hf-model]: https://github.com/huggingface/transformers/blob/812a950d7037ba93bb624b154030e9068afdce4d/src/transformers/models/qwen4_exp/modeling_qwen4_exp.py#L895-L991
 [hf-config]: https://github.com/huggingface/transformers/blob/812a950d7037ba93bb624b154030e9068afdce4d/src/transformers/models/qwen4_exp/configuration_qwen4_exp.py#L162
