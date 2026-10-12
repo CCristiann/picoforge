@@ -120,6 +120,7 @@ test-qwen38-gpu:
 	$(MAKE) test-qwen38-c-gpu
 	$(MAKE) test-qwen38-d-gpu
 	$(MAKE) test-qwen38-f-gpu
+	$(MAKE) test-qwen38-g0
 
 test-qwen38:
 	$(MAKE) test-qwen38-cpu

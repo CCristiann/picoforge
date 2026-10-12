@@ -27,6 +27,8 @@ Nessun merge/push su main e nessuna modifica negli altri worktree.
 
 ## G0 — coordinatore, lifecycle GPU comune (prima integrazione)
 
+**Stato:** consegnato come BASE_GPU_CONTRATTI, vedi integration.md §13.
+
 Branch `coord/qwen38-gpu-lifecycle`, worktree `../picoforge-gpu-lifecycle`.
 Ownership: `src/qwen38_gpu.h`, nuovi `src/qwen38_gpu.m`,
 `tests/test_qwen38_gpu_lifecycle.m`, target/coordinamento e integration.md.

@@ -678,3 +678,65 @@ selezione D, prodotto indicizzato B e routing F; grafo GPU e infine checkpoint
 completo. E Metal privato, selezione D, routing F e grafo CPU bounded possono
 iniziare subito. Ownership, dipendenze e incarichi concreti in
 [resume-v3.md](resume-v3.md). Non ripartire dai prompt v2 storici.
+
+## 13. BASE_GPU_CONTRATTI — G0, lifecycle GPU comune (2026-10-12)
+
+Parte da BASE_INTEGRATA_V2 (`a84c249`), branch `coord/qwen38-gpu-lifecycle`,
+worktree `../picoforge-gpu-lifecycle`. Il commit che introduce questa sezione
+è BASE_GPU_CONTRATTI; lo SHA completo è nella consegna. Formule, ABI dei §2–7,
+precisione, tolleranze e ownership restano invariati: le dichiarazioni aggiunte
+a `src/qwen38_gpu.h` sono solo additive. Nessun merge/push su main.
+
+**Contratto.** `Qwen38GpuSession` possiede coda, command buffer e parola
+d'errore; i componenti ricevono soltanto il `Qwen38GpuCommand` restituito da
+`qwen38_gpu_session_begin` e codificano, senza commit/wait. Sotto c'è
+`Qwen38GpuLedger`, pura contabilità senza Metal, testabile da sola.
+
+| Passo | Effetto |
+|---|---|
+| `begin(model,start,count)` | Ammette solo da IDLE/VALID con `start==next_pos` e capacità sufficiente (T=0 ammesso, non pubblica nulla); azzera **la** parola d'errore; apre l'encoder; ticket `(model,epoch,start,count)`. |
+| `claim(ticket,span,READ/WRITE)` | Solo in ENCODING. Trattiene il buffer fino a fine comando; rifiuta ogni sovrapposizione con un claim WRITE, parola d'errore inclusa, anche tra viste no-copy dello stesso indirizzo; READ/READ ammesso (pesi condivisi). |
+| `submit(ticket)` | Validato dal ledger **prima** del commit: un secondo submit non raggiunge mai Metal. Chiude l'encoder. |
+| `abort(ticket, mutated)` | Solo prima di submit. `mutated=false` lascia la sessione com'era; `true` la invalida. Nessun commit. |
+| `finish(ticket)` | Attende, legge errore Metal **e** parola d'errore; solo se entrambi puliti pubblica `next_pos`. Altrimenti INVALID e `Q38_GPU_ERROR` (detail: bit e testo Metal). Rilascia i claim solo qui. |
+| `reset(model)` | Non con comando aperto (BUSY). Nuovo epoch (overflow rifiutato), `next_pos=0`: ogni ticket precedente diventa STALE. Unica uscita da INVALID. |
+| `destroy` | BUSY lascia vivi sessione e risorse. |
+
+Un errore dopo scritture GPU invalida l'intera sessione: nessun rollback
+implicito, nessuna history parziale considerata valida. Per i componenti:
+dopo `finish == Q38_OK` il grafo chiama i `finish(ticket, true)` di D/E e
+avanza lo stato di C; in ogni altro caso `finish(..., false)` e replay dopo
+`reset` con l'epoch di `qwen38_gpu_session_info`. Il grafo non pubblica
+posizioni per conto proprio. IDLE = creata/resettata, VALID = ultimo comando
+riuscito; un comando T=0 non cambia mai lo stato.
+
+**Verifica.** `make test-qwen38-g0 PYTHON=<venv>` (lock comune, Metal API
+validation, ASan/UBSan fatali, `-Werror`; incluso in `test-qwen38-gpu`).
+11 gruppi: 6 sul ledger (posizioni/capacità, T=0, guasto prima del submit,
+errore dopo le scritture, ticket/owner/doppio submit e finish, epoch) e 5
+sulla sessione Metal (un kernel che scrive e poi segnala errore: le scritture
+arrivano, nulla viene pubblicato, il replay dopo reset parte pulito; abort;
+BUSY e stale; alias; lifetime dei buffer). Ogni regola è stata anche rotta di
+proposito nell'implementazione: 19 mutanti su 20 scoperti dal test; l'unico
+sopravvissuto è il limite (1) qui sotto. Il test ha anche trovato un errore
+mio, `contents` chiesto a un buffer privato. Log in `bench/qwen38_gpu_lifecycle_20261012/test.log`.
+`picoforge` e tutti gli harness dei componenti si ricompilano e collegano
+con il nuovo header; `test-qwen38-contracts` passa.
+
+**Limiti.** (1) Il ramo "errore Metal del command buffer" non è riprodotto: non
+si innesca un guasto reale senza rischi per la macchina condivisa; la sua
+conseguenza è coperta a livello ledger (`command_ok=false`), ma la riga che
+calcola `ok` dal command buffer resta non esercitata (un mutante che la
+sostituisce con `true` sopravvive). (2) Il rifiuto di un buffer di un altro
+device non è testabile su un Mac con una sola GPU. (3) I claim non impediscono
+a una CPU di scrivere in un buffer Shared mentre la GPU lavora: lo scratch
+immutabile fino all'ultimo lettore resta un obbligo del chiamante. (4) Gli
+alias tra buffer Private sono rilevati solo dentro lo stesso buffer; gli alias
+via `MTLHeap` non sono modellati. (5) I componenti C/D/E/F **non** sono ancora
+collegati alla sessione: G0 offre il contratto, non gli adattatori. (6) Non ho
+rieseguito la suite completa v2 (richiede la preparazione degli asset del
+checkpoint): G0 aggiunge file nuovi e dichiarazioni additive, verificate a
+livello di compilazione/collegamento dei consumatori.
+
+**Ordine successivo:** adattatori C/E sul ticket comune, selezione D, prodotto
+indicizzato B e routing F come in [resume-v3.md](resume-v3.md); poi G2.
