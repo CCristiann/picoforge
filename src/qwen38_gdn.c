@@ -166,3 +166,98 @@ nonfinite:
     s->base.info.valid=false; s->base.info.busy=false;
     return q38c_error(e,Q38_NONFINITE,"GDN accumulation overflow; reset/replay required");
 }
+
+static bool key_same(Qwen38StateKey a, Qwen38StateKey b) {
+    return a.model==b.model && a.layer==b.layer && a.epoch==b.epoch;
+}
+static Qwen38Status block_states(const Q38CBlockState *s, bool valid, Qwen38Error *e) {
+    if (!s || !s->owner || !s->conv || !s->gdn) return q38c_error(e,Q38_INVALID_ARGUMENT,"missing C block state");
+    if (s->busy) return q38c_error(e,Q38_BUSY,"C block in use");
+    if (valid && !s->valid) return q38c_error(e,Q38_BAD_STATE,"C block requires reset/replay");
+    Q38C_TRY(q38c_state_check((const Q38CState *)s->conv,Q38C_CONV_MAGIC,valid,e));
+    Q38C_TRY(q38c_state_check((const Q38CState *)s->gdn,Q38C_GDN_MAGIC,valid,e));
+    Qwen38StateInfo c=qwen38_conv_state_info(s->conv), g=qwen38_gdn_state_info(s->gdn);
+    const Q38CState *cc=(const Q38CState *)s->conv, *gg=(const Q38CState *)s->gdn;
+    Qwen38Memory backings[]={cc->metadata,cc->payload,gg->metadata,gg->payload};
+    for (size_t i=0;i<4;++i) {
+        if (q38c_overlap(backings[i].data,backings[i].bytes,s,sizeof(*s)) ||
+            q38c_overlap(backings[i].data,backings[i].bytes,s->owner,sizeof(*s->owner)))
+            return q38c_error(e,Q38_INVALID_ARGUMENT,"C state aliases composition metadata");
+        if (q38c_overlap(backings[i].data,backings[i].bytes,s->owner->constant_memory.data,s->owner->constant_memory.bytes))
+            return q38c_error(e,Q38_INVALID_ARGUMENT,"C state aliases decoded constants");
+        for (size_t j=0;j<i;++j)
+            if (q38c_overlap(backings[i].data,backings[i].bytes,backings[j].data,backings[j].bytes))
+                return q38c_error(e,Q38_INVALID_ARGUMENT,"C state backings overlap");
+        for (size_t j=0;j<Q38CW_COUNT;++j)
+            if (q38c_overlap(backings[i].data,backings[i].bytes,s->owner->weight[j].span.data,s->owner->weight[j].span.bytes))
+                return q38c_error(e,Q38_INVALID_ARGUMENT,"C state aliases packed weights");
+    }
+    if (!key_same(c.key,s->key) || !key_same(g.key,s->key) || s->key.model!=s->owner->model || s->key.layer!=s->owner->layer)
+        return q38c_error(e,Q38_STALE,"C block key/epoch differs");
+    return Q38_OK;
+}
+Qwen38Status q38c_block_init(const Q38CLayer *l, Qwen38ConvState *c, Qwen38GdnState *g,
+        Q38CBlockState *out, Qwen38Error *e) {
+    if (!out) return q38c_error(e,Q38_INVALID_ARGUMENT,"missing C block output");
+    *out=(Q38CBlockState){0};
+    if (!l || !l->bound) return q38c_error(e,Q38_BAD_STATE,"unbound C layer");
+    Q38CBlockState next={.owner=l,.conv=c,.gdn=g,.key=qwen38_conv_state_info(c).key,.valid=true};
+    Q38C_TRY(block_states(&next,true,e));
+    if (qwen38_conv_state_info(c).next_pos!=qwen38_gdn_state_info(g).next_pos)
+        return q38c_error(e,Q38_BAD_STATE,"C histories have different positions");
+    *out=next; return q38c_error(e,Q38_OK,NULL);
+}
+Qwen38Status q38c_block_reset(Q38CBlockState *s, uint64_t epoch, Qwen38Error *e) {
+    Q38C_TRY(block_states(s,false,e));
+    if (s->key.epoch==UINT64_MAX) return q38c_error(e,Q38_OVERFLOW,"C block epoch exhausted");
+    if (epoch<=s->key.epoch) return q38c_error(e,Q38_STALE,"C block reset needs newer epoch");
+    Q38C_TRY(qwen38_conv_state_reset(s->conv,epoch,e));
+    Q38C_TRY(qwen38_gdn_state_reset(s->gdn,epoch,e));
+    s->key.epoch=epoch; s->valid=true; return q38c_error(e,Q38_OK,NULL);
+}
+Qwen38Status q38c_block_cpu(const Q38CLayer *l, Q38CWork *w, Qwen38F32Mut residual,
+        Q38CBlockState *s, uint64_t start, Qwen38Error *e) {
+    Qwen38F32 r=q38c_ro(residual); Q38C_TRY(q38c_work_check(l,w,r,e));
+    Q38C_TRY(block_states(s,true,e));
+    if (s->owner!=l) return q38c_error(e,Q38_OWNER,"foreign C block");
+    size_t t=r.dim[0], hv=l->config.gdn.value_heads, dv=l->config.gdn.value_dim;
+    if (t>UINT64_MAX-start) return q38c_error(e,Q38_OVERFLOW,"C block position overflow");
+    for (size_t j=0;j<2;++j) {
+        const Q38CState *state=j ? (const Q38CState *)s->gdn : (const Q38CState *)s->conv;
+        Q38C_TRY(q38c_state_alias(state,r,e));
+        for (size_t i=0;i<Q38CT_COUNT;++i) Q38C_TRY(q38c_state_alias(state,q38c_ro(q38c_trace(w,(Q38CStage)i,t)),e));
+        for (size_t i=0;i<Q38CW_COUNT;++i) Q38C_TRY(q38c_state_alias(state,l->constant[i],e));
+    }
+    /* Public zero-token calls check both opaque shapes and exact positions,
+     * without touching activations/history; no duplicate state admission. */
+    Q38C_TRY(qwen38_conv_causal(&l->conv,q38c_ro(q38c_trace(w,Q38CT_QKV,0)),l->constant[Q38CW_CONV],
+        q38c_trace(w,Q38CT_CONV,0),s->conv,start,e));
+    Q38C_TRY(qwen38_gdn_scan(&l->config.gdn,q38c_ro(q38c_trace(w,Q38CT_PREP,0)),
+        q38c_ro(q38c_trace(w,Q38CT_LOGG,0)),q38c_ro(q38c_trace(w,Q38CT_BETA,0)),
+        q38c_group(q38c_trace(w,Q38CT_SCAN,0),hv,dv),s->gdn,start,e));
+    if (!t) return q38c_error(e,Q38_OK,NULL);
+    Q38C_TRY(q38c_finite(r,e)); s->busy=true; Qwen38Status rc;
+#define STEP(call) do { rc=(call); if (rc!=Q38_OK) goto failed; } while (0)
+#define V(stage) q38c_trace(w,Q38CT_##stage,t)
+#define R(stage) q38c_ro(V(stage))
+    STEP(q38c_hc_cpu(l,w,r,e));
+    STEP(q38_packed_matmul(&l->weight[Q38CW_QKV],0,R(MIX),V(QKV),e));
+    STEP(q38_packed_matmul(&l->weight[Q38CW_Z],0,R(MIX),V(Z),e));
+    STEP(q38_packed_matmul(&l->weight[Q38CW_AP],0,R(MIX),V(ALPHA),e));
+    STEP(q38_packed_matmul(&l->weight[Q38CW_BP],0,R(MIX),V(BR),e));
+    STEP(qwen38_conv_causal(&l->conv,R(QKV),l->constant[Q38CW_CONV],V(CONV),s->conv,start,e));
+    STEP(qwen38_gdn_prepare(&l->config.gdn,R(CONV),R(ALPHA),R(BR),l->constant[Q38CW_A],l->constant[Q38CW_DT],
+        V(PREP),V(LOGG),V(BETA),e));
+    STEP(qwen38_gdn_scan(&l->config.gdn,R(PREP),R(LOGG),R(BETA),q38c_group(V(SCAN),hv,dv),s->gdn,start,e));
+    STEP(qwen38_gdn_norm_gate(&l->config.gdn,q38c_ro(q38c_group(V(SCAN),hv,dv)),q38c_ro(q38c_group(V(Z),hv,dv)),
+        l->constant[Q38CW_GN],q38c_group(V(NORM),hv,dv),e));
+    STEP(q38_packed_matmul(&l->weight[Q38CW_OUT],0,R(NORM),V(OUT),e));
+    STEP(qwen38_hc_add(&l->config.hc,residual,R(OUT),R(INJECT),e));
+#undef STEP
+#undef V
+#undef R
+    s->busy=false; return q38c_error(e,Q38_OK,NULL);
+failed:
+    s->valid=false; s->busy=false; /* Includes a conv advanced before a later stage failed. */
+    return rc;
+}

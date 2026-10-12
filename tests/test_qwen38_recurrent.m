@@ -5,6 +5,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
 static id<MTLDevice> device;
 static id<MTLCommandQueue> queue;
 static id<MTLCommandBuffer> command;
@@ -361,8 +363,134 @@ static void shared_aliases(void) {
     assert(q38c_gpu_encode(gpu,cmd,Q38C_ACT,&spec,views,2,NULL)==Q38_INVALID_ARGUMENT);
     finish(0); a=nil; b=nil; free(memory);
 }
+static FILE *compose_file(const char *dir, const char *name, const char *mode) {
+    char path[4096]; int n=snprintf(path,sizeof(path),"%s/%s",dir,name);
+    assert(n>0 && (size_t)n<sizeof(path)); FILE *f=fopen(path,mode); assert(f); return f;
+}
+static void compose_read(const char *dir, const char *name, View v) {
+    FILE *f=compose_file(dir,name,"rb"); size_t bytes=q38c_count(q38c_ro(v.cpu))*4;
+    assert(fread(v.cpu.data,1,bytes,f)==bytes && fgetc(f)==EOF && !ferror(f)); assert(!fclose(f));
+}
+static void compose_write(const char *dir, const char *name, View v) {
+    guards(v); FILE *f=compose_file(dir,name,"wb"); size_t bytes=q38c_count(q38c_ro(v.cpu))*4;
+    assert(fwrite(v.cpu.data,1,bytes,f)==bytes); assert(!fclose(f));
+}
+/* Real bounded store, as in B's harness: only the selected tensor payloads.
+ * Preserve A's names/types/shapes; relocate offsets in this fixture transport.
+ * Never pass the original checkpoint to gpu_weights_open. */
+static GpuWeightStore *compose_store(const Q38CLayer *l, const char *dir, Gguf *g, GgufTensor tensors[Q38CW_COUNT]) {
+    size_t page=(size_t)sysconf(_SC_PAGESIZE), offset=page;
+    char path[]="build/qwen38-c/weights-XXXXXX"; g->fd=mkstemp(path); assert(g->fd>=0 && !unlink(path));
+    for (size_t i=0;i<Q38CW_COUNT;++i) {
+        tensors[i]=l->tensor[i].storage; tensors[i].file_offset=offset;
+        offset=(offset+tensors[i].bytes+page-1)&~(page-1);
+    }
+    assert(offset<=96*1024*1024); g->file_size=offset; g->tensor_count=Q38CW_COUNT; g->tensors=tensors;
+    assert(!ftruncate(g->fd,(off_t)offset));
+    for (size_t i=0;i<Q38CW_COUNT;++i) {
+        char name[64]; snprintf(name,sizeof(name),"weight-%zu.bin",i); FILE *f=compose_file(dir,name,"rb");
+        unsigned char bytes[65536]; size_t done=0;
+        while (done<tensors[i].bytes) {
+            size_t n=MIN(sizeof(bytes),tensors[i].bytes-done); assert(fread(bytes,1,n,f)==n);
+            size_t written=0;
+            while (written<n) {
+                ssize_t rc=pwrite(g->fd,bytes+written,n-written,(off_t)(tensors[i].file_offset+done+written));
+                if (rc<0 && errno==EINTR) continue;
+                assert(rc>0); written+=(size_t)rc;
+            }
+            done+=n;
+        }
+        assert(fgetc(f)==EOF && !ferror(f)); assert(!fclose(f));
+    }
+    return gpu_weights_open((__bridge void *)device,g,32*1024*1024);
+}
+static Qwen38GpuF32 subview(Qwen38GpuF32 v, size_t pos, size_t count) {
+    size_t skip=pos*v.stride_bytes[0]; assert(skip<=v.span.bytes);
+    v.span.offset_bytes+=skip; v.span.bytes-=skip; v.dim[0]=count; return v;
+}
+static void composed(id<MTLLibrary> lib, const char *source, uint32_t index, const char *dir,
+        const char *output, size_t tokens, size_t chunk) {
+    assert(tokens && tokens<=129 && chunk<=129); size_t initial=gpu_weights_live_mapped_bytes();
+    Gguf original; gguf_open(source,&original); Qwen38Config *config=NULL; Qwen38Weights *catalog=NULL;
+    assert(qwen38_config_load(&original,&config,NULL)==Q38_OK);
+    assert(qwen38_weights_describe(&original,config,&catalog,NULL)==Q38_OK);
+    Q38CLayer l; assert(q38c_layer_plan(config,catalog,index,&l,NULL)==Q38_OK);
+    Gguf transport={0}; GgufTensor tensors[Q38CW_COUNT]; GpuWeightStore *store=compose_store(&l,dir,&transport,tensors);
+    const GgufBinding *binding[Q38CW_COUNT]; Qwen38CpuSpan spans[Q38CW_COUNT];
+    for (size_t i=0;i<Q38CW_COUNT;++i) {
+        binding[i]=gpu_weights_find(store,l.tensor[i].storage.name); assert(binding[i]);
+        assert(qwen38_weights_cpu_span(store,binding[i],&spans[i],NULL)==Q38_OK);
+    }
+    size_t cb=(l.constant_bytes+63)&~(size_t)63; void *constants=aligned_alloc(64,cb); assert(constants);
+    assert(q38c_layer_bind(&l,spans,(Qwen38Memory){constants,cb},NULL)==Q38_OK);
+    size_t wb; assert(q38c_work_size(&l,tokens,&wb,NULL)==Q38_OK); void *wm=aligned_alloc(64,wb); assert(wm);
+    Q38CWork cpu; assert(q38c_work_init(&l,tokens,(Qwen38Memory){wm,wb},&cpu,NULL)==Q38_OK);
+    View trace[Q38CT_COUNT], fixed[Q38CW_COUNT]={0}; Q38CGpuWork w={0};
+    for (size_t i=0;i<Q38CT_COUNT;++i) { trace[i]=view(2,cpu.trace[i].dim,0); w.trace[i]=trace[i].gpu; }
+    const size_t slots[]={Q38CW_HN,Q38CW_A,Q38CW_DT,Q38CW_CONV,Q38CW_GN};
+    for (size_t i=0;i<5;++i) {
+        size_t slot=slots[i]; Qwen38F32 k=l.constant[slot]; fixed[slot]=view(k.rank,k.dim,0);
+        memcpy(fixed[slot].cpu.data,k.data,q38c_count(k)*4); w.constant[slot]=fixed[slot].gpu;
+    }
+    w.constant[Q38CW_HN].rank=2; w.constant[Q38CW_HN].dim[0]=l.config.hc.streams;
+    w.constant[Q38CW_HN].dim[1]=l.config.hidden_size; w.constant[Q38CW_HN].stride_bytes[0]=l.config.hidden_size*4;
+    w.constant[Q38CW_HN].stride_bytes[1]=4;
+    View residual=view(3,(size_t[]){tokens,l.config.hc.streams,l.config.hidden_size},0);
+    View history=view(2,(size_t[]){l.conv.kernel-1,l.conv.channels},0);
+    View state=view(3,(size_t[]){l.config.gdn.value_heads,l.config.gdn.value_dim,l.config.gdn.key_dim},0);
+    w.residual=residual.gpu; w.history=history.gpu; w.state=state.gpu;
+    Q38PackedGpu *packed=NULL; assert(q38_packed_gpu_create((__bridge void *)device,(__bridge void *)lib,&packed,NULL)==Q38_OK);
+    compose_read(dir,"input.f32",residual); memset(history.cpu.data,0,history.cpu.capacity_bytes); memset(state.cpu.data,0,state.cpu.capacity_bytes);
+    Q38CGpuWork bad=w; bad.trace[Q38CT_LOW].span=w.trace[Q38CT_N].span;
+    assert(q38c_block_encode(gpu,packed,begin(0),&l,store,binding,&bad,NULL)==Q38_INVALID_ARGUMENT);
+    [encoder endEncoding]; encoder=nil; command=nil; /* Discard failed encode. */
+    bad=w; bad.trace[Q38CT_OUT].dim[1]--;
+    assert(q38c_block_encode(gpu,packed,begin(0),&l,store,binding,&bad,NULL)==Q38_SHAPE);
+    [encoder endEncoding]; encoder=nil; command=nil; /* Earlier stages were encoded, never submitted. */
+    for (size_t i=0;i<q38c_count(q38c_ro(state.cpu));++i) assert(state.cpu.data[i]==0);
+    Qwen38GpuCommand rejected=begin(Q38_GPU_STATE);
+    assert(q38c_block_encode(gpu,packed,rejected,&l,store,binding,&w,NULL)==Q38_OK); finish(Q38_GPU_STATE);
+    for (size_t i=0;i<q38c_count(q38c_ro(state.cpu));++i) assert(state.cpu.data[i]==0);
+    /* Numerical failure after histories can advance; reset both raw buffers. */
+    float old_gain=fixed[Q38CW_GN].cpu.data[0]; fixed[Q38CW_GN].cpu.data[0]=NAN;
+    bad=w; bad.residual=subview(w.residual,0,1);
+    for (size_t i=0;i<Q38CT_COUNT;++i) bad.trace[i]=subview(w.trace[i],0,1);
+    assert(q38c_block_encode(gpu,packed,begin(0),&l,store,binding,&bad,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
+    fixed[Q38CW_GN].cpu.data[0]=old_gain;
+    float *snapshots[Q38CT_COUNT+3]={0}; View outputs[Q38CT_COUNT+3];
+    for (size_t i=0;i<Q38CT_COUNT;++i) outputs[i]=trace[i];
+    outputs[Q38CT_COUNT]=residual; outputs[Q38CT_COUNT+1]=history; outputs[Q38CT_COUNT+2]=state;
+    for (size_t replay=0;replay<2;++replay) {
+        compose_read(dir,"input.f32",residual); memset(history.cpu.data,0,history.cpu.capacity_bytes); memset(state.cpu.data,0,state.cpu.capacity_bytes);
+        Qwen38GpuCommand cmd=begin(0);
+        for (size_t pos=0;pos<tokens;) {
+            size_t n=chunk ? 1+pos%chunk : tokens; if (n>tokens-pos) n=tokens-pos;
+            Q38CGpuWork part=w; part.residual=subview(w.residual,pos,n);
+            for (size_t i=0;i<Q38CT_COUNT;++i) part.trace[i]=subview(w.trace[i],pos,n);
+            Qwen38Error error; Qwen38Status rc=q38c_block_encode(gpu,packed,cmd,&l,store,binding,&part,&error);
+            if (rc) fprintf(stderr,"C4 GPU: %s\n",error.detail); assert(rc==Q38_OK);
+            pos+=n;
+            part.residual=subview(w.residual,pos,0);
+            for (size_t i=0;i<Q38CT_COUNT;++i) part.trace[i]=subview(w.trace[i],pos,0);
+            assert(q38c_block_encode(gpu,packed,cmd,&l,store,binding,&part,NULL)==Q38_OK);
+        }
+        finish(0); /* One command for ALL chunks/stages; no per-operator wait. */
+        for (size_t i=0;i<Q38CT_COUNT+3;++i) {
+            guards(outputs[i]);
+            if (!replay) snapshots[i]=expected(outputs[i]);
+            else assert(!memcmp(snapshots[i],outputs[i].cpu.data,outputs[i].cpu.capacity_bytes));
+        }
+    }
+    for (size_t i=0;i<Q38CT_COUNT;++i) { char name[64]; snprintf(name,sizeof(name),"%s.f32",q38c_stage_names[i]); compose_write(output,name,trace[i]); }
+    compose_write(output,"residual.f32",residual); compose_write(output,"history.f32",history); compose_write(output,"state.f32",state);
+    printf("{\"tokens\":%zu,\"metal_peak_bytes\":%zu,\"mapped_bytes\":%zu,\"reset_replay_bitwise\":true,\"commands_per_run\":1}\n",tokens,peak_metal_bytes,gpu_weights_live_mapped_bytes()-initial);
+    for (size_t i=0;i<Q38CT_COUNT+3;++i) { free(snapshots[i]); release_view(outputs[i]); }
+    for (size_t i=0;i<5;++i) release_view(fixed[slots[i]]);
+    q38_packed_gpu_free(packed);gpu_weights_close(store);assert(!close(transport.fd));
+    free(wm);free(constants);qwen38_weights_free(catalog);qwen38_config_free(config);gguf_close(&original);
+}
 int main(int argc, char **argv) {
-    assert(argc==2);
+    assert(argc==2 || (argc==9 && !strcmp(argv[2],"--compose")));
     @autoreleasepool {
         device=MTLCreateSystemDefaultDevice(); assert(device); queue=[device newCommandQueue];
         NSError *error=nil;
@@ -370,10 +498,14 @@ int main(int argc, char **argv) {
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
         assert(q38c_gpu_create((__bridge void *)device,(__bridge void *)lib,&gpu,NULL)==Q38_OK);
         error_buffer=[device newBufferWithLength:4 options:MTLResourceStorageModeShared];
+        if (argc==9) composed(lib,argv[3],(uint32_t)strtoul(argv[4],NULL,10),argv[5],argv[6],
+            strtoul(argv[7],NULL,10),strtoul(argv[8],NULL,10));
+        else {
         shared_aliases(); activations(); norms(); hc(); convolutions(); gdn_preparation(); gdn_scans(); admission(); state_errors();
-        q38c_gpu_destroy(gpu);
         printf("PASS: Metal C stages; max scaled error %.9g; observed Metal allocation peak %zu bytes\n",maximum_error,peak_metal_bytes);
-        error_buffer=nil; queue=nil; device=nil;
+        }
+        q38c_gpu_destroy(gpu); error_buffer=nil; queue=nil; device=nil;
     }
+    assert(gpu_weights_live_mapped_bytes()==0);
     return 0;
 }

@@ -4,6 +4,8 @@
 #ifndef __METAL_VERSION__
 #include "qwen38_ops.h"
 #include "qwen38_gpu.h"
+#include "qwen38.h"
+#include "qwen38_packed.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -164,6 +166,59 @@ static inline Qwen38Status q38c_state_reset(Q38CState *s, uint64_t magic, uint64
     s->info.key.epoch=epoch; s->info.next_pos=0; s->info.valid=true;
     return q38c_error(e, Q38_OK, NULL);
 }
+/* C4 private composition. A resolves roles; B owns every decode and product.
+ * Catalog/config, packed spans and all backings remain borrowed by the caller. */
+typedef enum { Q38CW_HN, Q38CW_HD, Q38CW_HU, Q38CW_HI, Q38CW_QKV, Q38CW_Z,
+    Q38CW_AP, Q38CW_BP, Q38CW_A, Q38CW_DT, Q38CW_CONV, Q38CW_GN, Q38CW_OUT, Q38CW_COUNT } Q38CWeight;
+extern const Qwen38Role q38c_layer_roles[Q38CW_COUNT];
+typedef struct {
+    Qwen38ConfigView config;
+    Qwen38ConvShape conv;
+    const void *model;
+    uint32_t layer;
+    bool bound;
+    size_t constant_bytes;
+    Qwen38Tensor tensor[Q38CW_COUNT];
+    Q38PackedCpuView weight[Q38CW_COUNT];
+    Qwen38F32 constant[Q38CW_COUNT]; /* only HN/A/DT/CONV/GN, decoded by B */
+    Qwen38Memory constant_memory;
+} Q38CLayer;
+Qwen38Status q38c_layer_plan(const Qwen38Config *, const Qwen38Weights *, uint32_t,
+    Q38CLayer *, Qwen38Error *);
+Qwen38Status q38c_layer_bind(Q38CLayer *, const Qwen38CpuSpan[Q38CW_COUNT], Qwen38Memory, Qwen38Error *);
+typedef enum { Q38CT_N, Q38CT_LOW, Q38CT_ACT, Q38CT_HG, Q38CT_IL, Q38CT_INJECT,
+    Q38CT_MIX, Q38CT_QKV, Q38CT_CONV, Q38CT_PREP, Q38CT_Z, Q38CT_ALPHA, Q38CT_BR,
+    Q38CT_LOGG, Q38CT_BETA, Q38CT_SCAN, Q38CT_NORM, Q38CT_OUT, Q38CT_COUNT } Q38CStage;
+extern const char *const q38c_stage_names[Q38CT_COUNT];
+typedef struct {
+    const Q38CLayer *owner;
+    size_t capacity_tokens;
+    Qwen38Memory memory;
+    Qwen38F32Mut trace[Q38CT_COUNT]; /* flat [T,features], token pitch retained */
+} Q38CWork;
+Qwen38Status q38c_work_size(const Q38CLayer *, size_t tokens, size_t *, Qwen38Error *);
+Qwen38Status q38c_work_init(const Q38CLayer *, size_t tokens, Qwen38Memory, Q38CWork *, Qwen38Error *);
+Qwen38Status q38c_work_check(const Q38CLayer *, const Q38CWork *, Qwen38F32 residual, Qwen38Error *);
+Qwen38Status q38c_hc_cpu(const Q38CLayer *, Q38CWork *, Qwen38F32 residual, Qwen38Error *);
+static inline Qwen38F32Mut q38c_trace(const Q38CWork *w, Q38CStage stage, size_t tokens) {
+    Qwen38F32Mut v=w->trace[stage]; v.dim[0]=tokens; return v;
+}
+static inline Qwen38F32Mut q38c_group(Qwen38F32Mut flat, size_t groups, size_t width) {
+    flat.rank=3; flat.dim[1]=groups; flat.dim[2]=width;
+    flat.stride_bytes[1]=width*4; flat.stride_bytes[2]=4; return flat;
+}
+typedef struct {
+    const Q38CLayer *owner;
+    Qwen38ConvState *conv;
+    Qwen38GdnState *gdn;
+    Qwen38StateKey key;
+    bool valid, busy;
+} Q38CBlockState;
+Qwen38Status q38c_block_init(const Q38CLayer *, Qwen38ConvState *, Qwen38GdnState *, Q38CBlockState *, Qwen38Error *);
+Qwen38Status q38c_block_reset(Q38CBlockState *, uint64_t epoch, Qwen38Error *);
+Qwen38Status q38c_block_cpu(const Q38CLayer *, Q38CWork *, Qwen38F32Mut residual,
+    Q38CBlockState *, uint64_t start, Qwen38Error *);
+
 /* Private harness interface only; session lifecycle remains in the CPU API.
  * Caller owns command completion, error checking and all resource lifetimes. */
 typedef struct Q38CGpu Q38CGpu;
@@ -183,6 +238,16 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Erro
 void q38c_gpu_destroy(Q38CGpu *);
 Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,
     const Q38CGpuSpec *, const Qwen38GpuF32 *, size_t count, Qwen38Error *);
+/* C4 raw-buffer composition, deliberately private. On ANY encode failure,
+ * discard the unsubmitted command. On completion error discard/reset both
+ * histories and replay. No lifecycle/epoch/position ABI is introduced here. */
+typedef struct {
+    Qwen38GpuF32 residual, history, state;
+    Qwen38GpuF32 trace[Q38CT_COUNT], constant[Q38CW_COUNT];
+} Q38CGpuWork;
+Qwen38Status q38c_block_encode(Q38CGpu *, Q38PackedGpu *, Qwen38GpuCommand,
+    const Q38CLayer *, const GpuWeightStore *, const GgufBinding *const[Q38CW_COUNT],
+    const Q38CGpuWork *, Qwen38Error *);
 typedef uint32_t Q38CUint;
 #else
 typedef uint Q38CUint;

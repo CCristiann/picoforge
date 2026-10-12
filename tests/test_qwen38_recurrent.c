@@ -210,7 +210,140 @@ static void test_admission_and_guards(void) {
     assert(qwen38_conv_state_reset(state,1,&e)==Q38_OVERFLOW);
     free(m.data);free(p.data);
 }
-int main(void) {
+/* This CLI exposes A's catalog to the Python fixture builder, never re-parses
+ * model dimensions or tensor names in C4. No tensor payload is mapped here. */
+static int describe_layer(const char *path, uint32_t index) {
+    Gguf g; gguf_open(path,&g); Qwen38Config *config=NULL; Qwen38Weights *weights=NULL;
+    assert(qwen38_config_load(&g,&config,NULL)==Q38_OK);
+    assert(qwen38_weights_describe(&g,config,&weights,NULL)==Q38_OK);
+    Q38CLayer layer; assert(q38c_layer_plan(config,weights,index,&layer,NULL)==Q38_OK);
+    const Qwen38ConfigView *c=&layer.config;
+    printf("{\"layer\":%u,\"hidden\":%u,\"streams\":%zu,\"rank\":%zu,"
+        "\"hk\":%zu,\"hv\":%zu,\"dk\":%zu,\"dv\":%zu,\"kernel\":%u,\"eps\":%.9g,\"weights\":[",
+        index,c->hidden_size,c->hc.streams,c->hc.low_rank,c->gdn.key_heads,c->gdn.value_heads,
+        c->gdn.key_dim,c->gdn.value_dim,c->gdn_conv_kernel,(double)c->hc.rms_eps);
+    for (size_t i=0;i<Q38CW_COUNT;++i) {
+        GgufTensor *t=&layer.tensor[i].storage; Q38PackedLayout *p=&layer.weight[i].layout;
+        printf("%s{\"slot\":%zu,\"role\":%u,\"name\":\"%s\",\"type\":%u,\"columns\":%zu,"
+            "\"rows\":%zu,\"offset\":%zu,\"bytes\":%zu}",i ? "," : "",i,(unsigned)q38c_layer_roles[i],
+            t->name,t->type,p->k_storage,p->n_out,t->file_offset,t->bytes);
+    }
+    puts("]}"); qwen38_weights_free(weights); qwen38_config_free(config); gguf_close(&g); return 0;
+}
+/* Bounded fixture transport. Packed data stays borrowed until A/C are released. */
+static FILE *fixture_file(const char *directory, const char *name, const char *mode) {
+    char path[4096]; int n=snprintf(path,sizeof(path),"%s/%s",directory,name);
+    assert(n>0 && (size_t)n<sizeof(path)); FILE *f=fopen(path,mode); assert(f); return f;
+}
+static void fixture_read(const char *directory, const char *name, void *data, size_t bytes) {
+    FILE *f=fixture_file(directory,name,"rb"); assert(fread(data,1,bytes,f)==bytes);
+    assert(fgetc(f)==EOF && !ferror(f)); assert(!fclose(f));
+}
+static void fixture_write(const char *directory, const char *name, const void *data, size_t bytes) {
+    FILE *f=fixture_file(directory,name,"wb"); assert(fwrite(data,1,bytes,f)==bytes); assert(!fclose(f));
+}
+static void compose_ok(Qwen38Status rc, Qwen38Error *e) {
+    if (rc!=Q38_OK) fprintf(stderr,"C4 status=%d: %s\n",rc,e->detail);
+    assert(rc==Q38_OK);
+}
+static int compose_layer(const char *path, uint32_t index, const char *input,
+        const char *output, size_t tokens, size_t chunk) {
+    assert(tokens && tokens<=129 && chunk<=129); Qwen38Error e;
+    Gguf gguf; gguf_open(path,&gguf); Qwen38Config *config=NULL; Qwen38Weights *weights=NULL;
+    compose_ok(qwen38_config_load(&gguf,&config,&e),&e);
+    compose_ok(qwen38_weights_describe(&gguf,config,&weights,&e),&e);
+    Q38CLayer l; compose_ok(q38c_layer_plan(config,weights,index,&l,&e),&e);
+    Qwen38CpuSpan packed[Q38CW_COUNT]; size_t total=0;
+    for (size_t i=0;i<Q38CW_COUNT;++i) {
+        size_t bytes=l.weight[i].layout.tensor_bytes; total+=bytes; assert(total<=96*1024*1024);
+        void *p=malloc(bytes); assert(p); char name[64]; snprintf(name,sizeof(name),"weight-%zu.bin",i);
+        fixture_read(input,name,p,bytes); packed[i]=(Qwen38CpuSpan){p,bytes};
+    }
+    Qwen38Memory constants=backing((l.constant_bytes+63)&~(size_t)63);
+    compose_ok(q38c_layer_bind(&l,packed,constants,&e),&e);
+    assert(q38c_layer_bind(&l,packed,constants,&e)==Q38_BUSY);
+    size_t work_bytes; compose_ok(q38c_work_size(&l,tokens,&work_bytes,&e),&e);
+    Qwen38Memory memory=backing(work_bytes); Q38CWork work;
+    compose_ok(q38c_work_init(&l,tokens,memory,&work,&e),&e);
+    Qwen38StateSize cs,gs; compose_ok(qwen38_conv_state_bytes(&l.conv,&cs,&e),&e);
+    compose_ok(qwen38_gdn_state_bytes(&l.config.gdn,&gs,&e),&e);
+    Qwen38Memory cm=backing(cs.metadata_bytes),cp=backing(cs.payload_bytes),gm=backing(gs.metadata_bytes),gp=backing(gs.payload_bytes);
+    Qwen38ConvState *conv; Qwen38GdnState *gdn; Qwen38StateKey key={.model=config,.layer=index,.epoch=1};
+    compose_ok(qwen38_conv_state_init(&l.conv,key,cm,cp,&conv,&e),&e);
+    compose_ok(qwen38_gdn_state_init(&l.config.gdn,key,gm,gp,&gdn,&e),&e);
+    Q38CBlockState state; compose_ok(q38c_block_init(&l,conv,gdn,&state,&e),&e);
+    size_t h=l.config.hc.streams, width=l.config.hidden_size, bytes=tokens*h*width*4;
+    float *r=malloc(bytes),*saved=malloc(bytes); assert(r && saved);
+    Qwen38F32Mut residual=view(r,bytes,3,(size_t[]){tokens,h,width});
+    Qwen38F32Mut empty=residual; empty.dim[0]=0;
+    assert(q38c_block_cpu(&l,&work,empty,&state,1,&e)==Q38_BAD_STATE);
+    compose_ok(q38c_block_cpu(&l,&work,empty,&state,0,&e),&e);
+    state.busy=true; assert(q38c_block_cpu(&l,&work,empty,&state,0,&e)==Q38_BUSY); state.busy=false;
+    Qwen38F32Mut original=work.trace[Q38CT_LOW]; work.trace[Q38CT_LOW].data=r;
+    assert(q38c_block_cpu(&l,&work,residual,&state,0,&e)==Q38_INVALID_ARGUMENT); work.trace[Q38CT_LOW]=original;
+    assert(qwen38_conv_state_info(conv).next_pos==0 && qwen38_gdn_state_info(gdn).next_pos==0);
+    for (size_t replay=0;replay<2;++replay) {
+        fixture_read(input,"input.f32",r,bytes); FILE *files[Q38CT_COUNT];
+        for (size_t j=0;j<Q38CT_COUNT;++j) {
+            char name[64]; snprintf(name,sizeof(name),"%s.f32",q38c_stage_names[j]);
+            files[j]=fixture_file(output,name,replay ? "rb" : "wb");
+        }
+        for (size_t pos=0;pos<tokens;) {
+            size_t n=chunk ? 1+(pos%chunk) : tokens; if (n>tokens-pos) n=tokens-pos;
+            Qwen38F32Mut part=residual; part.data=r+pos*h*width; part.capacity_bytes=bytes-pos*h*width*4; part.dim[0]=n;
+            compose_ok(q38c_block_cpu(&l,&work,part,&state,pos,&e),&e);
+            empty.dim[0]=0; compose_ok(q38c_block_cpu(&l,&work,empty,&state,pos+n,&e),&e);
+            for (size_t j=0;j<Q38CT_COUNT;++j) {
+                size_t count=n*work.trace[j].dim[1];
+                if (!replay) assert(fwrite(work.trace[j].data,4,count,files[j])==count);
+                else for (size_t k=0;k<count;++k) { float old; assert(fread(&old,4,1,files[j])==1); assert(!memcmp(&old,work.trace[j].data+k,4)); }
+            }
+            pos+=n;
+        }
+        for (size_t j=0;j<Q38CT_COUNT;++j) assert(!fclose(files[j]));
+        assert(qwen38_conv_state_info(conv).next_pos==tokens && qwen38_gdn_state_info(gdn).next_pos==tokens);
+        if (!replay) { memcpy(saved,r,bytes); compose_ok(q38c_block_reset(&state,2,&e),&e); }
+        else assert(!memcmp(saved,r,bytes));
+    }
+    fixture_write(output,"residual.f32",r,bytes);
+    size_t history_n=(l.conv.kernel-1)*l.conv.channels;
+    size_t state_n=l.config.gdn.value_heads*l.config.gdn.value_dim*l.config.gdn.key_dim;
+    float *history=malloc(history_n*4),*final=malloc(state_n*4); assert(history && final);
+    compose_ok(qwen38_conv_state_export(conv,view(history,history_n*4,2,(size_t[]){l.conv.kernel-1,l.conv.channels}),&e),&e);
+    compose_ok(qwen38_gdn_state_export(gdn,view(final,state_n*4,3,(size_t[]){l.config.gdn.value_heads,l.config.gdn.value_dim,l.config.gdn.key_dim}),&e),&e);
+    fixture_write(output,"history.f32",history,history_n*4); fixture_write(output,"state.f32",final,state_n*4);
+    /* Cross-component alias admission: each backing is legal in isolation,
+     * but state must not overlap another state's payload or decoded weights. */
+    Q38CState *conv_header=(Q38CState *)conv; Qwen38Memory true_payload=conv_header->payload;
+    conv_header->payload=gp; assert(q38c_block_reset(&state,3,&e)==Q38_INVALID_ARGUMENT);
+    conv_header->payload=constants; assert(q38c_block_reset(&state,3,&e)==Q38_INVALID_ARGUMENT);
+    conv_header->payload=true_payload;
+    assert(q38c_block_reset(&state,2,&e)==Q38_STALE); compose_ok(q38c_block_reset(&state,3,&e),&e);
+    /* Fault after conv/scan advanced: reject continuation until a newer reset. */
+    fixture_read(input,"input.f32",r,bytes); float *gain=(float *)l.constant[Q38CW_GN].data, old_gain=*gain; *gain=NAN;
+    Qwen38F32Mut one=residual; one.dim[0]=1;
+    assert(q38c_block_cpu(&l,&work,one,&state,0,&e)==Q38_NONFINITE && !state.valid); *gain=old_gain;
+    assert(qwen38_conv_state_info(conv).next_pos==1 && qwen38_gdn_state_info(gdn).next_pos==1);
+    assert(q38c_block_cpu(&l,&work,empty,&state,1,&e)==Q38_BAD_STATE);
+    compose_ok(q38c_block_reset(&state,4,&e),&e);
+    compose_ok(qwen38_gdn_state_export(gdn,view(final,state_n*4,3,(size_t[]){l.config.gdn.value_heads,l.config.gdn.value_dim,l.config.gdn.key_dim}),&e),&e);
+    for (size_t i=0;i<state_n;++i) assert(final[i]==0);
+    printf("{\"tokens\":%zu,\"workspace_bytes\":%zu,\"packed_bytes\":%zu,\"state_bytes\":%zu,\"reset_replay_bitwise\":true,\"post_update_error_reset\":true}\n",
+        tokens,work_bytes,total,cp.bytes+gp.bytes);
+    free(history);free(final);free(r);free(saved);free(cm.data);free(cp.data);free(gm.data);free(gp.data);free(memory.data);free(constants.data);
+    for (size_t i=0;i<Q38CW_COUNT;++i) free((void *)packed[i].data);
+    qwen38_weights_free(weights);qwen38_config_free(config);gguf_close(&gguf);return 0;
+}
+int main(int argc, char **argv) {
+    if (argc==4 && !strcmp(argv[1],"--describe")) {
+        char *end; unsigned long layer=strtoul(argv[3],&end,10);
+        assert(*argv[3] && !*end && layer<=UINT32_MAX);
+        return describe_layer(argv[2],(uint32_t)layer);
+    }
+    if (argc==8 && !strcmp(argv[1],"--compose"))
+        return compose_layer(argv[2],(uint32_t)strtoul(argv[3],NULL,10),argv[4],argv[5],
+            strtoul(argv[6],NULL,10),strtoul(argv[7],NULL,10));
+    assert(argc==1);
     test_views(); test_conv_lifecycle(); test_conv_values(); test_norm_activation();
     test_hc(); test_gdn_lifecycle(); test_gdn_prepare(); test_gdn_scan();
     test_admission_and_guards();
