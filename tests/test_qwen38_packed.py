@@ -26,6 +26,22 @@ NATIVE = None
 PRODUCT_METRICS = []
 SLICE_DIRECTORIES = []
 SLICE_RESULTS = []
+METAL = False
+EXCEPTIONAL_RESULTS = []
+
+
+def lock_fds():
+    value = oracle.os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    return (int(value),) if value else ()
+
+
+def check_native_stderr(data):
+    # The API validation layer announces itself once per child process.
+    banner = (rb"(?m)^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ " +
+              re.escape(NATIVE.name.encode()) + rb"\[\d+:\d+\] )?Metal API Validation Enabled\r?\n") if METAL else None
+    cleaned = re.sub(banner,b"",data) if METAL else data
+    if cleaned:
+        raise AssertionError(f"native diagnostics: {cleaned!r}")
 
 
 def packed_fixture(kind, columns, count, rng):
@@ -51,8 +67,9 @@ def native_product(packed, kind, physical, logical, n, experts, expert, x):
     args = [str(NATIVE), "matmul", str(kind), str(physical), str(logical),
             str(n), str(experts), str(expert), str(len(x))]
     result = subprocess.run(args, input=packed + x.astype("<f4").tobytes(),
-                            capture_output=True, check=True, timeout=30)
-    if result.stderr or len(result.stdout) != len(x) * n * 4:
+                            capture_output=True, check=True, timeout=30, pass_fds=lock_fds())
+    check_native_stderr(result.stderr)
+    if len(result.stdout) != len(x) * n * 4:
         raise AssertionError(f"invalid native product transport: {result.stderr!r}")
     return np.frombuffer(result.stdout, dtype="<f4").reshape(len(x), n)
 
@@ -80,6 +97,39 @@ def check_product(actual, weights, x, logical, label):
 
 
 class PackedReferenceTests(unittest.TestCase):
+    def test_native_exceptional_arithmetic_and_empty_batch(self):
+        if NATIVE is None:
+            self.skipTest("native harness not requested")
+        for weight, input_values in [([np.nan],[1]), ([1],[np.inf]),
+                                     ([2**127],[4]), ([2**127,2**127],[1,1])]:
+            raw=np.array(weight,dtype="<f4").tobytes()
+            x=np.array([input_values],dtype=np.float32)
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                native_product(raw,0,len(weight),len(weight),1,1,0,x)
+            self.assertEqual(caught.exception.returncode,16) # NONFINITE, including intermediate overflow
+            self.assertFalse(caught.exception.stdout)
+        # Zero tokens must not examine even a NaN weight or touch activations.
+        actual=native_product(np.array([np.nan],dtype="<f4").tobytes(),0,1,1,1,1,0,np.empty((0,1),dtype=np.float32))
+        self.assertEqual(actual.shape,(0,1))
+        raw=np.array([2**-126],dtype="<f4").tobytes()
+        result=native_product(raw,0,1,1,1,1,0,np.array([[0.5]],dtype=np.float32))[0,0]
+        # This case is outside the no-underflow gamma bound. Record the actual
+        # backend policy; only IEEE preservation or FTZ is admitted for Metal.
+        expected=np.float32(2**-127)
+        self.assertIn(result,(np.float32(0),expected) if METAL else (expected,))
+        EXCEPTIONAL_RESULTS.append(dict(case="normal operands, subnormal FP32 product",
+            output_bits=int(result.view(np.uint32)),policy="preserved" if result==expected else "FTZ",
+            outside_gamma_domain=True))
+        if METAL:
+            with patch.dict(oracle.os.environ,{"Q38_PACKED_STICKY":"1"}):
+                actual=native_product(np.array([2],dtype="<f4").tobytes(),0,1,1,1,1,0,np.array([[3]],dtype=np.float32))
+                self.assertEqual(actual[0,0],6) # Harness also checks preserved STATE flag and guards.
+            with patch.dict(oracle.os.environ,{"Q38_PACKED_BOUNDS":"1"}):
+                result=subprocess.run([str(NATIVE),"0","1","1"],input=np.array([2],dtype="<f4").tobytes(),
+                    capture_output=True,timeout=30,pass_fds=lock_fds())
+                self.assertEqual(result.returncode,20) # GPU_ERROR from asynchronous BOUNDS flag
+                self.assertFalse(result.stdout)
+
     def test_native_real_slices(self):
         if NATIVE is None or not SLICE_DIRECTORIES:
             self.skipTest("native harness and explicit slice directories required")
@@ -136,10 +186,10 @@ class PackedReferenceTests(unittest.TestCase):
         expected = oracle.decode(REFERENCE, data, kind, columns, rows)
         if NATIVE is not None:
             result = subprocess.run([str(NATIVE), str(kind), str(columns), str(rows)],
-                                    input=data, capture_output=True, timeout=30)
+                                    input=data, capture_output=True, timeout=30, pass_fds=lock_fds())
             if np.isfinite(expected).all():
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
-                self.assertFalse(result.stderr, result.stderr.decode())
+                check_native_stderr(result.stderr)
                 self.assertEqual(len(result.stdout), expected.nbytes)
                 self.assert_bits(np.frombuffer(result.stdout, dtype="<f4").reshape(expected.shape), expected)
             else:
@@ -395,11 +445,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--native", type=Path, help="also check the native CPU harness")
+    parser.add_argument("--metal", action="store_true", help="native transport is Metal; common lock required")
     parser.add_argument("--slices", type=Path, action="append", default=[])
     parser.add_argument("--report", type=Path)
     args, remaining = parser.parse_known_args()
     REFERENCE = args.reference.resolve()
     NATIVE = args.native.resolve() if args.native else None
+    METAL = args.metal
+    if METAL and (NATIVE is None or not lock_fds() or oracle.os.environ.get("MTL_DEBUG_LAYER") != "1"):
+        parser.error("Metal requires --native, MTL_DEBUG_LAYER=1 and the shared GPU lock wrapper")
     SLICE_DIRECTORIES = [p.resolve() for p in args.slices]
     program = unittest.main(argv=[sys.argv[0], *remaining], exit=False)
     result = program.result
@@ -414,12 +468,22 @@ if __name__ == "__main__":
                                      [Path(__file__).resolve(), Path(oracle.__file__), oracle.ADAPTER]})
         if NATIVE:
             report["native"] = dict(path=str(NATIVE), sha256=oracle.digest(NATIVE.read_bytes()))
+            report["backend"] = "metal" if METAL else "cpu"
+            if METAL:
+                library=Path(oracle.os.environ.get("Q38_PACKED_LIBRARY","build/qwen38-b/packed.metallib"))
+                report["metallib_sha256"] = oracle.digest(library.read_bytes())
+                report["gpu_lock"] = oracle.os.environ["PICOFORGE_GPU_LOCK_PATH"]
+                report["metal_api_validation"] = True
             report["source_sha256"].update({str(p.relative_to(ROOT)): oracle.digest(p.read_bytes())
                 for p in [ROOT / "src/qwen38_packed.c", ROOT / "src/qwen38_b_internal.h",
                           ROOT / "tests/test_qwen38_packed.c", ROOT / "src/qwen38_packed.h"]})
             report["source_sha256"]["src/qwen38_iq2_grid.inc"] = oracle.digest((ROOT / "src/qwen38_iq2_grid.inc").read_bytes())
+            if METAL:
+                report["source_sha256"].update({name:oracle.digest((ROOT/name).read_bytes()) for name in
+                    ["src/qwen38_packed_gpu.m","src/qwen38_packed.metal","tests/test_qwen38_packed_gpu.m"]})
             report["product_metrics"] = PRODUCT_METRICS
             report["real_slices"] = SLICE_RESULTS
+            report["exceptional_results"] = EXCEPTIONAL_RESULTS
         with args.report.open("x") as output:
             output.write(json.dumps(report, indent=2) + "\n")
     sys.exit(0 if result.wasSuccessful() else 1)
