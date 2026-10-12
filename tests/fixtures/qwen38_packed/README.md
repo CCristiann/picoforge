@@ -1,5 +1,9 @@
 # Oracle CPU dei formati Qwen3.8
 
+Stato successivo alla BASE_CONCORDATA: [implementazione C11/Metal e verifiche](native.md).
+Il resto di questo documento e `manifest.json` conservano il checkpoint
+dell'oracle indipendente precedente al consolidamento.
+
 Risultati del 2026-10-12, perimetro B indipendente dalla BASE_CONCORDATA.
 Questo incremento verifica la decodifica del checkpoint Q2; non implementa
 operatori del runtime, API condivise o Metal e non misura perdita rispetto a BF16.

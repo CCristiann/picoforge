@@ -1,7 +1,7 @@
-"""Check the external CPU reference against analytical packed-weight fixtures.
+"""Check analytical fixtures, the independent reference and native CPU/Metal.
 
-No native picoforge decoder exists in this increment. A missing/unverified
-reference fails the suite; these tests never silently replace the oracle.
+--native selects the implementation under test; --metal also requires the
+shared GPU lock and API validation. A missing/unverified oracle fails.
 """
 import argparse
 import importlib.util
