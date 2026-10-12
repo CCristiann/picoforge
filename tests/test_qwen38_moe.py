@@ -444,5 +444,107 @@ class NativeGroupingTests(unittest.TestCase):
             self.assertIsNone(value)
 
 
+def forward_weights(c, weights):
+    gu = weights["experts.gate_up_proj"]
+    return [weights["gate.weight"], gu[:,:c.moe_intermediate_size], gu[:,c.moe_intermediate_size:],
+            weights["experts.down_proj"], weights["shared_expert.gate_proj.weight"],
+            weights["shared_expert.up_proj.weight"], weights["shared_expert.down_proj.weight"],
+            weights["shared_expert_gate.weight"]]
+
+
+def native_forward(c, x, matrices, payloads=None, trace=True):
+    physical = matrices[3].shape[-1]
+    payload = struct.pack("<9I",c.hidden_size,c.num_experts,c.num_experts_per_tok,
+                          c.moe_intermediate_size,c.shared_expert_intermediate_size,physical,
+                          int(c.norm_topk_prob),len(x),int(trace))
+    for j, matrix in enumerate(matrices):
+        experts = matrix.shape[0] if matrix.ndim == 3 else 1
+        kind, data = (0,matrix.astype("<f4").tobytes()) if payloads is None else payloads[j]
+        payload += struct.pack("<4I",kind,matrix.shape[-1],matrix.shape[-2],experts) + data
+    payload += x.astype("<f4").tobytes()
+    proc = subprocess.run([os.environ["Q38_F_NATIVE"],"--forward"],input=payload,
+                          capture_output=True,check=True,timeout=60)
+    if proc.stderr:
+        raise AssertionError(proc.stderr.decode())
+    blob, offset, records = proc.stdout,0,[]
+    while struct.unpack_from("<Q",blob,offset)[0] != 2**64-1:
+        stage, expert, token, rows, cols, outputs = struct.unpack_from("<6Q",blob,offset)
+        offset += 48
+        a = np.frombuffer(blob,"<f4",rows*cols,offset).reshape(rows,cols); offset += rows*cols*4
+        b = np.frombuffer(blob,"<f4",rows*outputs,offset).reshape(rows,outputs); offset += rows*outputs*4
+        records.append((stage,expert,token,a,b))
+    _, status, budget = struct.unpack_from("<3Q",blob,offset); offset += 24
+    if status:
+        assert offset == len(blob)
+        return status,{},records,budget
+    t,h,k = len(x),c.hidden_size,c.num_experts_per_tok
+    result = {}
+    for key, dtype, shape in (("y","<f4",(t,h)),("ids","<u4",(t,k)),("weights","<f4",(t,k))):
+        count = np.prod(shape).item()
+        result[key] = np.frombuffer(blob,dtype,count,offset).reshape(shape); offset += count*4
+    assert offset == len(blob)
+    return status,result,records,budget
+
+
+@unittest.skipUnless(os.environ.get("Q38_F_NATIVE"), "requires F native harness")
+class NativeForwardTests(unittest.TestCase):
+    def verify(self,c,x,weights,matrices=None,payloads=None):
+        matrices = forward_weights(c,weights) if matrices is None else matrices
+        status,actual,records,budget = native_forward(c,x,matrices,payloads)
+        self.assertEqual(status,0); self.assertLessEqual(budget,32*1024*1024)
+        expected = moe.numpy_forward(c,x,weights)
+        upstream = moe.upstream_forward(c,x,weights)
+        np.testing.assert_array_equal(actual["ids"],expected["ids"])
+        for reference in (expected,upstream):
+            np.testing.assert_allclose(actual["weights"],reference["weights"],atol=2e-6,rtol=2e-5)
+            np.testing.assert_allclose(actual["y"],reference["y"],atol=2e-5,rtol=2e-4)
+            self.assertLessEqual(moe.error_metrics(actual["y"],reference["y"])["nrmse"],1e-4)
+        previous_activation = None
+        for stage,expert,token,a,b in records:
+            if stage < 8:
+                matrix = matrices[stage][expert] if matrices[stage].ndim==3 else matrices[stage]
+                matrix = matrix[:,:a.shape[1]].astype(np.float64)
+                reference = a.astype(np.float64) @ matrix.T
+                magnitude = np.abs(a.astype(np.float64)) @ np.abs(matrix.T)
+                nu = (2*a.shape[1]+8)*2**-24
+                bound = nu/(1-nu)*magnitude + 2*np.abs(np.spacing(reference.astype(np.float32)))
+                self.assertTrue(np.all(np.abs(b-reference)<=bound),f"B bound stage {stage}")
+            elif stage in (8,10):
+                at = torch.from_numpy(a.copy()).to(torch.float64)
+                reference = (torch.nn.functional.silu(at) if stage==8 else torch.sigmoid(at)).numpy()
+                np.testing.assert_allclose(b,reference,atol=2e-6,rtol=2e-5)
+                if stage==8: previous_activation=b
+            elif stage==9:
+                np.testing.assert_array_equal(b,previous_activation*a)
+            elif stage in (11,12):
+                key = "routed" if stage==11 else "y"
+                np.testing.assert_allclose(b,expected[key][token:token+len(b)],atol=2e-5,rtol=2e-4)
+        return actual,records
+
+    def test_float_composed_stages_chunks_and_shared(self):
+        for t in (0,1,2,31,32,33,65,1024):
+            for k in (1,2,4):
+                c = replace(moe.FixtureConfig(),num_experts_per_tok=k)
+                x, weights = moe.synthetic(c,tokens=t,seed=3813+t+k)
+                with self.subTest(t=t,k=k): self.verify(c,x,weights)
+        c=moe.FixtureConfig(); x,weights=moe.synthetic(c,tokens=65,seed=44)
+        full,_ = self.verify(c,x,weights)
+        parts = [self.verify(c,x[a:b],weights)[0] for a,b in ((0,1),(1,8),(8,40),(40,65))]
+        for key in full: np.testing.assert_array_equal(full[key],np.concatenate([p[key] for p in parts]))
+        for name in ("experts.down_proj","shared_expert.down_proj.weight","shared_expert_gate.weight"):
+            changed={n:v.copy() for n,v in weights.items()}; changed[name][:]=0
+            self.verify(c,x,changed)
+
+    def test_float_nonfinite_and_zero_input(self):
+        c=moe.FixtureConfig(); x,weights=moe.synthetic(c,tokens=2,seed=44)
+        self.verify(c,x*0,weights)
+        for value in (np.nan,np.inf):
+            broken=x.copy(); broken[-1,-1]=value
+            self.assertNotEqual(native_forward(c,broken,forward_weights(c,weights))[0],0)
+        for name in ("gate.weight","shared_expert.down_proj.weight"):
+            changed={n:v.copy() for n,v in weights.items()}; changed[name][:]=np.nan
+            self.assertNotEqual(native_forward(c,x,forward_weights(c,changed))[0],0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

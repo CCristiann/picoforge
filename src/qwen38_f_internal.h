@@ -3,6 +3,14 @@
 #define PICOFORGE_QWEN38_F_INTERNAL_H
 #include "qwen38_moe.h"
 
+/* Optional synchronous diagnostics, private to F tests. Never substitutes an
+ * operator. Views are borrowed only during the call; observers must not mutate
+ * data or reenter/destroy the workspace. Projection stages are weight indices
+ * 0..7; stage 8=SiLU, 9=product, 10=sigmoid, 11=routed, 12=Y. */
+typedef void (*Q38MoeObserver)(void *, size_t stage, size_t expert, size_t token,
+                             Qwen38F32 input, Qwen38F32 output);
+void q38_moe_observe(Qwen38MoeWork *, Q38MoeObserver, void *);
+
 typedef struct {
     size_t *offsets;                 /* [experts+1], group [offsets[e],offsets[e+1]) */
     size_t offsets_capacity_bytes;

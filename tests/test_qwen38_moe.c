@@ -219,9 +219,133 @@ static void stream_group(void) {
     free(r2p); free(p2r); free(cur); free(off); free(ids);
 }
 
+static Q38PackedCpuView float_weight(float *p,size_t in,size_t out,size_t experts) {
+    Q38PackedCpuView v={.span={(const unsigned char *)p,in*out*experts*4}};
+    GgufTensor t={.type=0,.rank=3,.shape={in,out,experts,1},.bytes=v.span.bytes};
+    assert(q38_packed_layout_init(&t,in,&v.layout,NULL)==Q38_OK); return v;
+}
+static void lifecycle_tests(void) {
+    float data[512]={0};
+    Qwen38MoeConfig c={8,4,2,5,3,5,true};
+    Qwen38MoeWeights v={float_weight(data,8,4,1),float_weight(data,8,5,4),
+        float_weight(data,8,5,4),float_weight(data,5,8,4),float_weight(data,8,3,1),
+        float_weight(data,8,3,1),float_weight(data,3,8,1),float_weight(data,8,1,1)};
+    Qwen38Moe *m=NULL; Qwen38MoeWork *w=NULL; Qwen38Error err; size_t bytes=0,big=0;
+    assert(qwen38_moe_create(&c,&v,&m,&err)==Q38_OK);
+    c.hidden_size=99; /* config copied, not borrowed */
+    assert(qwen38_moe_work_size(m,32,&bytes,&err)==Q38_OK && bytes>0);
+    assert(qwen38_moe_work_size(m,1024,&big,&err)==Q38_OK && bytes==big);
+    assert(qwen38_moe_work_create(m,1024,bytes-1,&w,&err)==Q38_CAPACITY && !w);
+    assert(qwen38_moe_work_create(m,1024,bytes,&w,&err)==Q38_OK);
+    assert(qwen38_moe_work_reset(w,&err)==Q38_OK);
+    float input[16]={0},output[16];
+    for (size_t j=0;j<16;j++) output[j]=-99;
+    Qwen38F32 in=readonly(view(input,sizeof input,2,8,32));
+    Qwen38F32Mut out=view(output,sizeof output,2,8,32);
+    Qwen38F32Mut alias=out; alias.data=input;
+    assert(qwen38_moe_forward(m,in,alias,NULL,w,&err)==Q38_INVALID_ARGUMENT);
+    alias=out; alias.capacity_bytes=63;
+    assert(qwen38_moe_forward(m,in,alias,NULL,w,&err)==Q38_CAPACITY);
+    alias=out; alias.stride_bytes[0]=28;
+    assert(qwen38_moe_forward(m,in,alias,NULL,w,&err)==Q38_STRIDE);
+    alias=out; alias.data=data;
+    assert(qwen38_moe_forward(m,in,alias,NULL,w,&err)==Q38_INVALID_ARGUMENT);
+    for (size_t j=0;j<16;j++) assert(output[j]==-99);
+    assert(qwen38_moe_forward(m,in,out,NULL,w,&err)==Q38_OK);
+    for (size_t j=0;j<16;j++) assert(output[j]==0);
+    data[0]=NAN; /* borrowed bytes are not copied by create */
+    assert(qwen38_moe_forward(m,in,out,NULL,w,&err)==Q38_NONFINITE);
+    data[0]=0;
+    assert(qwen38_moe_forward(m,in,out,NULL,w,&err)==Q38_BAD_STATE);
+    assert(qwen38_moe_work_reset(w,&err)==Q38_OK);
+    assert(qwen38_moe_forward(m,in,out,NULL,w,&err)==Q38_OK);
+    qwen38_moe_destroy(m); /* retained metadata makes work cleanup safe */
+    assert(qwen38_moe_work_reset(w,&err)==Q38_BAD_STATE);
+    qwen38_moe_work_destroy(w); m=NULL; w=NULL; c.hidden_size=8;
+    v.down.layout.k_logical=4;
+    assert(qwen38_moe_create(&c,&v,&m,&err)==Q38_SHAPE && !m);
+    v.down.layout.k_logical=5; v.up.span.bytes--;
+    assert(qwen38_moe_create(&c,&v,&m,&err)==Q38_CAPACITY && !m);
+    v.up.span.bytes++; v.gate.layout.row_bytes++;
+    assert(qwen38_moe_create(&c,&v,&m,&err)==Q38_FORMAT && !m);
+    v.gate.layout.row_bytes--;
+    assert(qwen38_moe_create(&c,&v,&m,&err)==Q38_OK);
+    assert(qwen38_moe_work_size(m,0,&bytes,&err)==Q38_OK);
+    assert(qwen38_moe_work_create(m,0,bytes,&w,&err)==Q38_OK);
+    assert(qwen38_moe_forward(m,in,out,NULL,w,&err)==Q38_CAPACITY);
+    in.data=NULL; in.dim[0]=0; out.data=NULL; out.dim[0]=0;
+    assert(qwen38_moe_forward(m,in,out,NULL,w,&err)==Q38_OK);
+    qwen38_moe_work_destroy(w); qwen38_moe_destroy(m);
+    puts("F lifecycle: copied config, budget, shapes, borrowed weights, retained owner OK");
+}
+
+static void emit_matrix(Qwen38F32 v) {
+    for (size_t j=0;j<v.dim[0];j++)
+        assert(fwrite(v.data+j*(v.stride_bytes[0]/4),4,v.dim[1],stdout)==v.dim[1]);
+}
+static void emit_trace(void *ctx,size_t stage,size_t expert,size_t token,Qwen38F32 in,Qwen38F32 out) {
+    (void)ctx;
+    uint64_t h[]={stage,expert,token,in.dim[0],in.dim[1],out.dim[1]};
+    assert(fwrite(h,8,6,stdout)==6); emit_matrix(in); emit_matrix(out);
+}
+/* Fixture-only bounded transport. 9 uint32 config/T/trace, eight descriptors
+ * (type,Kphysical,N,E) + packed bytes, then X. Pitches exercise real strides. */
+static void stream_forward(void) {
+    uint32_t h[9]; assert(fread(h,4,9,stdin)==9);
+    Qwen38MoeConfig c={h[0],h[1],h[2],h[3],h[4],h[5],h[6]!=0};
+    size_t t=h[7], width=h[0],k=h[2];
+    assert(t<=1024 && width>0 && width<=2560 && h[1]<=512 && k>0 && k<=h[1]);
+    assert(h[3]<=640 && h[4]<=640 && h[5]<=768 && h[6]<=1 && h[8]<=1);
+    Q38PackedCpuView v[8]; void *storage[8]; size_t total=0;
+    for (size_t j=0;j<8;j++) {
+        uint32_t d[4]; assert(fread(d,4,4,stdin)==4);
+        const GgufFormat *f=gguf_format(d[0]); assert(f);
+        size_t bytes=(size_t)d[1]/f->block*f->bytes*d[2]*d[3];
+        total+=bytes; assert(total<=64*1024*1024);
+        storage[j]=malloc(bytes); assert(storage[j]); assert(fread(storage[j],1,bytes,stdin)==bytes);
+        GgufTensor tensor={.type=d[0],.rank=3,.shape={d[1],d[2],d[3],1},.bytes=bytes};
+        size_t logical=j==3?c.intermediate:d[1];
+        v[j].span=(Qwen38CpuSpan){storage[j],bytes};
+        assert(q38_packed_layout_init(&tensor,logical,&v[j].layout,NULL)==Q38_OK);
+    }
+    size_t pitch=width+3;
+    float *x=malloc((t*pitch+1)*4),*y=malloc((t*pitch+1)*4),*scores=malloc((t*(k+2)+1)*4);
+    uint32_t *ids=malloc((t*(k+3)+1)*4); assert(x && y && scores && ids);
+    for (size_t j=0;j<t*pitch+1;j++) x[j]=y[j]=-99.0f;
+    for (size_t j=0;j<t*(k+2)+1;j++) scores[j]=-99.0f;
+    for (size_t j=0;j<t*(k+3)+1;j++) ids[j]=UINT32_MAX;
+    for (size_t j=0;j<t;j++) assert(fread(x+j*pitch,4,width,stdin)==width);
+    Qwen38MoeWeights weights={v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]};
+    Qwen38Moe *m=NULL; Qwen38MoeWork *w=NULL; Qwen38Error error; size_t budget=0;
+    Qwen38Status st=qwen38_moe_create(&c,&weights,&m,&error);
+    if (!st) st=qwen38_moe_work_size(m,t,&budget,&error);
+    assert(budget<=32*1024*1024);
+    if (!st) st=qwen38_moe_work_create(m,t,budget,&w,&error);
+    if (!st && h[8]) q38_moe_observe(w,emit_trace,NULL);
+    Qwen38MoeRoutes routes={{ids,t*(k+3)*4,t,k,(k+3)*4},view(scores,t*(k+2)*4,t,k,(k+2)*4)};
+    if (!st) st=qwen38_moe_forward(m,readonly(view(x,t*pitch*4,t,width,pitch*4)),
+                                   view(y,t*pitch*4,t,width,pitch*4),&routes,w,&error);
+    assert(error.code==st);
+    uint64_t end[]={UINT64_MAX,(uint64_t)st,budget}; assert(fwrite(end,8,3,stdout)==3);
+    if (!st) {
+        emit_matrix(readonly(view(y,t*pitch*4,t,width,pitch*4)));
+        for (size_t j=0;j<t;j++) assert(fwrite(ids+j*(k+3),4,k,stdout)==k);
+        emit_matrix(readonly(routes.weights));
+    }
+    for (size_t j=0;j<t;j++) {
+        for (size_t a=width;a<pitch;a++) assert(y[j*pitch+a]==-99 && x[j*pitch+a]==-99);
+        for (size_t a=k;a<k+2;a++) assert(scores[j*(k+2)+a]==-99);
+        for (size_t a=k;a<k+3;a++) assert(ids[j*(k+3)+a]==UINT32_MAX);
+    }
+    assert(y[t*pitch]==-99 && x[t*pitch]==-99 && scores[t*(k+2)]==-99 && ids[t*(k+3)]==UINT32_MAX);
+    qwen38_moe_work_destroy(w); qwen38_moe_destroy(m);
+    free(ids); free(scores); free(y); free(x); for (size_t j=0;j<8;j++) free(storage[j]);
+}
+
 int main(int argc, char **argv) {
     if (argc==2 && strcmp(argv[1],"--route")==0) stream_route();
     else if (argc==2 && strcmp(argv[1],"--group")==0) stream_group();
-    else { assert(argc==1); unit_tests(); group_tests(); }
+    else if (argc==2 && strcmp(argv[1],"--forward")==0) stream_forward();
+    else { assert(argc==1); unit_tests(); group_tests(); lifecycle_tests(); }
     return 0;
 }
