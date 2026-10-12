@@ -16,7 +16,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/oracle"))
-from qwen38_ngram import IdOracle, SOURCE, fixture, verified_source, validate
+from qwen38_ngram import IdOracle, GateOracle, SOURCE, fixture, verified_source, validate
 
 GOLDEN = json.loads((ROOT / "tests/fixtures/qwen38/ngram.json").read_text())
 BINARY = ROOT / "build/qwen38-e/test_ngram"
@@ -134,6 +134,21 @@ class NativeTests(unittest.TestCase):
 
 
 class OracleTests(unittest.TestCase):
+    def test_gate_upstream_analytical_cases(self):
+        oracle = GateOracle()
+        for case in GOLDEN["gate_cases"]:
+            inputs = [torch.tensor(case[k], dtype=torch.float32) for k in ("key", "query", "value")]
+            dot, gate, output = oracle.gate(*inputs)
+            self.assertEqual(dot.tolist(), case["dot"])
+            self.assertEqual(gate.tolist(), case["gate"])
+            self.assertEqual(output.tolist(), case["output"])
+        # The signed root has sign(0)=0, unlike copysign(sqrt(eps), 0).
+        first = GOLDEN["gate_cases"][0]
+        self.assertEqual(first["gate"][0][0], 0.5)
+        self.assertGreater(first["gate"][0][1], 0.5)
+        self.assertLess(first["gate"][0][2], 0.5)
+        self.assertAlmostEqual(first["gate"][0][3], 1/(1+__import__("math").exp(-2)), places=7)
+
     def test_frozen_provenance_and_golden(self):
         actual = fixture()
         # Library version is recorded, but source and all outputs must match.

@@ -6,7 +6,9 @@ See docs/specs/qwen38/E.md for the derivation and checkpoint provenance.
 """
 import ast
 import hashlib
+import math
 from pathlib import Path
+from types import SimpleNamespace
 import urllib.request
 
 import torch
@@ -19,6 +21,9 @@ URL = (f"https://raw.githubusercontent.com/huggingface/transformers/{REVISION}/"
        "src/transformers/models/qwen4_exp/modeling_qwen4_exp.py")
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "build/qwen38-e/modeling_qwen4_exp.py"
+# The cached upstream file retains its original copyright/license notice:
+# Copyright 2026 The Qwen Team and The HuggingFace Inc. team.
+# Apache License 2.0, http://www.apache.org/licenses/LICENSE-2.0
 
 
 def verified_source(path=SOURCE, *, fetch=False):
@@ -114,6 +119,44 @@ class IdOracle:
         return result[0, -len(tokens):].tolist()
 
 
+class GateOracle:
+    """Execute only the original three PLE gate assignments, bodies unchanged.
+
+    Inputs have already been projected/normalized. This does not replace the
+    C/B oracle or emulate conv. Additional assignments only capture intermediates.
+    """
+    def __init__(self, source=SOURCE):
+        raw = verified_source(source)
+        cls = next(n for n in ast.parse(raw).body
+                   if isinstance(n, ast.ClassDef) and n.name == "Qwen4ExpTextPLELayer")
+        forward = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "forward")
+        nodes = forward.body[4:7]
+        if [n.targets[0].id for n in nodes] != ["gate", "gate", "gated_value"]:
+            raise ValueError("upstream gate allowlist changed")
+        self.expression_sha256 = hashlib.sha256(
+            "\n".join(ast.get_source_segment(raw, n) for n in nodes).encode()).hexdigest()
+        function = ast.parse("def evaluate(self, key_normed, query_normed, value): pass").body[0]
+        capture = ast.parse("dot = gate").body[0]
+        # Reuse upstream's actual sigmoid expression for the observable gate.
+        result = ast.Return(value=ast.Tuple(elts=[ast.Name(id="dot", ctx=ast.Load()),
+            nodes[2].value.left, ast.Name(id="gated_value", ctx=ast.Load())], ctx=ast.Load()))
+        function.body = [nodes[0], capture, nodes[1], nodes[2], result]
+        module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+        scope = {"torch": torch, "math": math}
+        exec(compile(module, str(source), "exec"), scope)
+        self.evaluate = scope["evaluate"]
+
+    def gate(self, key, query, value):
+        if key.ndim != 3 or query.shape != key.shape or value.shape != (key.shape[0], key.shape[2]):
+            raise ValueError("gate expects key/query[T,S,D], value[T,D]")
+        if any(x.dtype != torch.float32 or x.device.type != "cpu" or not torch.isfinite(x).all()
+               for x in (key, query, value)) or not all(key.shape[1:]):
+            raise ValueError("finite CPU FP32 inputs required")
+        with torch.no_grad():
+            dot, gate, output = self.evaluate(SimpleNamespace(hidden_size=key.shape[-1]), key, query, value)
+        return dot.squeeze(-1), gate.squeeze(-1), output
+
+
 def fixture():
     import json
     config = dict(ngram_size=3, heads_per_ngram=2, vocab=100, eos=99,
@@ -130,11 +173,24 @@ def fixture():
     for name, cfg, tokens in (("synthetic", config, [1, 2, 99, 3, 4, 99, 99, 5]),
                               ("checkpoint_metadata", real, [1, 2, 248044, 3, 4])):
         cases.append(dict(name=name, config=cfg, tokens=tokens, ids=IdOracle(cfg).ids(tokens)))
-    return dict(schema_version=1, upstream_revision=REVISION, source_sha256=SOURCE_SHA256,
+    gate_oracle = GateOracle()
+    gate_cases = []
+    for name, key, query, value in (
+        ("signed_zero_and_clamp", [[[0.], [1.], [-1.], [1.], [-1.]]],
+         [[[1.], [1.e-8], [1.e-8], [4.], [4.]]], [[-2.]]),
+        ("cancellation", [[[1., 1., 1., 1.], [1., 1., 1., 1.]]],
+         [[[1., -1., 2., -2.], [1., -1., 2., -1.9999998807907104]]],
+         [[-1., 0., 0.5, 2.]])):
+        tensors = [torch.tensor(x, dtype=torch.float32) for x in (key, query, value)]
+        dot, gate, output = gate_oracle.gate(*tensors)
+        gate_cases.append(dict(name=name, key=key, query=query, value=value,
+                               dot=dot.tolist(), gate=gate.tolist(), output=output.tolist()))
+    return dict(schema_version=2, upstream_revision=REVISION, source_sha256=SOURCE_SHA256,
                 class_sha256=CLASS_SHA256, torch_version=torch.__version__,
                 inventory_sha256=hashlib.sha256(inventory.read_bytes()).hexdigest(),
                 cases=cases, bf16_bits=[0, 32768, 1, 32769, 127, 128, 16256, 49024, 32639],
-                nonfinite_bf16_bits=[32640, 65408, 32704, 32641])
+                nonfinite_bf16_bits=[32640, 65408, 32704, 32641],
+                gate_expression_sha256=gate_oracle.expression_sha256, gate_cases=gate_cases)
 
 
 if __name__ == "__main__":
