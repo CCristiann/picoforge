@@ -1,0 +1,61 @@
+{
+  "command": [
+    "/Users/cristiancirje/Desktop/Dev/picoforge/build/test_gpu_weights",
+    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+  ],
+  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge",
+  "pilot": true,
+  "complete": true,
+  "executable_sha256": "a2ef0902cc80cb70a3abeb3fc549568e8182febe9476d6c3dbcfa042253ebff6",
+  "environment": {
+    "DS4_METAL_MEMORY_REPORT": "1"
+  },
+  "removed_environment_names": [],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "sample_interval_s": 1.0,
+  "system_before": {
+    "pid": 42672,
+    "monotonic_s": 1576.732311,
+    "resident_bytes": 1785856,
+    "phys_footprint_bytes": 1360208,
+    "lifetime_peak_phys_footprint_bytes": 1392976,
+    "disk_read_bytes": 36864,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 5767168,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 200,
+    "system_swapouts_pages": 352,
+    "page_bytes": 16384,
+    "system_wired_pages": 248029,
+    "system_compressor_pages": 53324
+  },
+  "guard": "stop after 3 samples: critical pressure or swap growth > 2 GiB",
+  "pid": 42674,
+  "start_monotonic_s": 1576.743371,
+  "process_s": 0.7389239999999972,
+  "returncode": 0,
+  "stop_reason": null,
+  "first_stream_bytes_s": {
+    "stderr": 0.11690599999997175,
+    "stdout": 0.7370189999999184
+  },
+  "system_after": {
+    "pid": 42691,
+    "monotonic_s": 1577.485842,
+    "resident_bytes": 1785856,
+    "phys_footprint_bytes": 1360208,
+    "lifetime_peak_phys_footprint_bytes": 1392976,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 5767168,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 200,
+    "system_swapouts_pages": 352,
+    "page_bytes": 16384,
+    "system_wired_pages": 248047,
+    "system_compressor_pages": 53324
+  },
+  "samples": 1,
+  "sampled_peak_footprint_bytes": 1966488,
+  "lifetime_peak_footprint_bytes": 1999256
+}

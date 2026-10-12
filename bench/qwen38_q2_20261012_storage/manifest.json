@@ -1,0 +1,46 @@
+{
+  "scope": "Native GGUF inventory and Metal storage; Qwen3.8 inference not implemented",
+  "updated_utc": "2026-10-12T08:15:53.753398+00:00",
+  "picoforge_base_revision": "7e3156a93503eb0785004993ece4d32278a7167d",
+  "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+  "all_1256_descriptors_match_independent_inventory": true,
+  "full_project_build_exit": 0,
+  "full_project_test_all_exit": 0,
+  "targeted_storage_tests": "7 CPU/ASan/UBSan tests, Metal byte/lifetime test, bad-owner/cap/truncation cases",
+  "real_gpu_probe": "metal-check-final/",
+  "gpu_probe_environment": {
+    "MTL_DEBUG_LAYER": "1"
+  },
+  "source_sha256": {
+    "src/gguf_reader.c": "d28a7a4dda2f8c51fe7694fa8d0881cf96729a9c461e1ae617e4c580b4654ce8",
+    "src/gguf_plan.c": "2bbddde0511dc8287c4cfe5a336fb8d98e70983c5fcb7c11ad4be4d8c8beb63a",
+    "src/gguf.c": "953fdb77fb4e0349ff02bcddb099c6c69642ef70f3ab1be5611721198cf803a5",
+    "src/gguf.h": "0080fe1b194372f92c9a00faf19698169dd24081116d789a8652e4b5a2e868a7",
+    "src/gpu_weights.m": "9dbd483b823a24596f7e75b5530323fea836e5e2c2c17d285babf85a8b94f1d7",
+    "src/main.c": "8f11170c50b8d937dc603faa0d8f8d32a5fd5492369f293f01c66e9138e6d1ea",
+    "Makefile": "6dd00fcfa95ae325285e40960841aa69743f5a5e33fda14ad853d3c1c20881ad",
+    "tests/test_gguf_plan.c": "b9412f2b23552a865c06f4fd1a7b6093f7bda00b70ad9949f1672cbf6edf2afb",
+    "tests/test_gguf.py": "eb6ba08539c736990c32b06bc6360ab5da98217a384446e256e6795ae829c492",
+    "tests/test_gguf_reader.c": "b941949e9fd8209a693e43c06b600651e71f72f6e8b3ba07f7744e0c368249fd",
+    "tests/gguf_inspect.c": "9df13a2b5f9ddd24772bfabd9763cf5b498f3cacf298448ae0beb6d2e087a924",
+    "tests/test_gpu_weights.m": "826dfefa34cb5b3ce5a72ee2a242f3a288737e6a5f2fd899855d4b0e8ce4dce3",
+    "tests/test_gpu_weights.py": "e6dbdd9eceae7e7d9ac9d51951654e82cc0e9289b63d58f0150dd93696f5e579",
+    "tools/eval/inspect_qwen38_gguf.py": "d94c5d23690ecba4198ef0b3761e4d8d266199256b2adde7a0aa37319b696385"
+  },
+  "original_handoff_documents_preserved": true,
+  "limitations": [
+    "No native Qwen3.8 graph, dequantization, logits or recurrent-state validation.",
+    "GPU byte probes are sparse storage checks, not full-residency or inference performance.",
+    "GGUF inspection does not authenticate tensor payload; checkpoint hash is separately verified."
+  ],
+  "real_gpu_probe_result": {
+    "weights": 1255,
+    "views": 2,
+    "byte_probes": 3765,
+    "mapped_virtual_bytes": 44795625472,
+    "metal_allocated_bytes": 44796084224,
+    "byte_exact": true,
+    "survived_owner_close": true
+  },
+  "real_gpu_probe_exit": 0
+}

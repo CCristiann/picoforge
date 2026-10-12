@@ -1,0 +1,6 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/gguf.o src/gguf.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/gguf_plan.o src/gguf_plan.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/gguf_reader.o src/gguf_reader.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/main.o src/main.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -c -o src/gpu_weights.o src/gpu_weights.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o picoforge src/bench.o src/config.o src/eval.o src/expert_cost.o src/generate.o src/gguf.o src/gguf_plan.o src/gguf_reader.o src/json.o src/main.o src/model.o src/normalize.o src/ops.o src/quant.o src/safetensors.o src/speculate.o src/tokenizer.o src/unicode_tables.o src/util.o src/gpu_forward.o src/gpu_weights.o src/metal.o -lm -framework Metal -framework Foundation

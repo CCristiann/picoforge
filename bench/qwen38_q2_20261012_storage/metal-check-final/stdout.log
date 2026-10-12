@@ -1,0 +1,2 @@
+{"weights":1255,"views":2,"byte_probes":3765,"mapped_virtual_bytes":44795625472,"metal_allocated_bytes":44796084224,"byte_exact":true,"survived_owner_close":true}
+PASS: no-copy GPU bytes, disk-only exclusion, deferred unmap and complete release

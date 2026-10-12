@@ -3,6 +3,7 @@
  * Usage: ./picoforge [model_dir]
  */
 #include "picoforge.h"
+#include "gguf.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,14 @@ static void fingerprint(const SafeTensors *st, const char *name, int n) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--inspect-gguf")) {
+        if (argc != 3) die("usage: picoforge --inspect-gguf FILE");
+        Gguf g;
+        gguf_open(argv[2], &g);
+        gguf_inspect(&g);
+        gguf_close(&g);
+        return 0;
+    }
     int context = 1024;
     if (argc > 1 && strcmp(argv[1], "--context") == 0) {
         if (argc < 4) die("usage: picoforge --context N MODEL [command]");

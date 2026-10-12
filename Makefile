@@ -78,9 +78,34 @@ test-qwen38-tools: build/process_memory build/memory_budget
 	@./tools/venv/bin/python tests/test_qwen38_grading.py
 	@./tools/venv/bin/python tests/test_qwen38_evidence.py
 
-test-all: test-qwen38-tools
+src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.o src/main.o: src/gguf.h
 
-.PHONY: test-qwen38-tools
+build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/util.c src/gguf.h src/picoforge.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/test_gguf_reader.c src/gguf_reader.c src/util.c $(LDFLAGS)
+
+build/test_gguf_inspect: tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/util.c src/gguf.h src/picoforge.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/util.c $(LDFLAGS)
+
+build/test_gguf_plan: tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/util.c src/gguf.h src/picoforge.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/util.c $(LDFLAGS)
+
+build/test_gpu_weights: tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/util.c src/gguf.h src/picoforge.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fobjc-arc -Isrc -o $@ tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/util.c $(LDFLAGS) $(FRAMEWORKS)
+
+test-gguf: build/test_gguf_reader build/test_gguf_inspect build/test_gguf_plan
+	@./tools/venv/bin/python tests/test_gguf.py
+
+test-gpu-weights: build/test_gpu_weights
+	@MTL_DEBUG_LAYER=1 ./build/test_gpu_weights
+	@./tools/venv/bin/python tests/test_gpu_weights.py
+
+test-all: test-qwen38-tools test-gguf test-gpu-weights
+
+.PHONY: test-qwen38-tools test-gguf test-gpu-weights
 
 build/test_expert_cost: tests/test_expert_cost.c src/expert_cost.o src/config.o src/json.o src/util.o src/picoforge.h
 	@mkdir -p build

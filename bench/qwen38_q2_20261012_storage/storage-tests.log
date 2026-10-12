@@ -1,0 +1,16 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fsanitize=address,undefined -Isrc -o build/test_gguf_reader tests/test_gguf_reader.c src/gguf_reader.c src/util.c -lm
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fsanitize=address,undefined -Isrc -o build/test_gguf_inspect tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/util.c -lm
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fsanitize=address,undefined -Isrc -o build/test_gguf_plan tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/util.c -lm
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 12.757s
+
+OK
+2026-10-12 08:38:55.522 test_gpu_weights[45984:129859] Metal API Validation Enabled
+{"weights":3,"views":3,"byte_probes":9,"mapped_virtual_bytes":81920,"metal_allocated_bytes":540672,"byte_exact":true,"survived_owner_close":true}
+PASS: no-copy GPU bytes, disk-only exclusion, deferred unmap and complete release
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.071s
+
+OK
