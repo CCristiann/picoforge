@@ -81,7 +81,7 @@ static void put(Text *b, Qwen38Bytes s) {
     memcpy(b->data+b->len,s.data,s.len); b->len = total;
 }
 static void literal(Text *b, const char *s) { put(b,(Qwen38Bytes){(const uint8_t *)s,strlen(s)}); }
-static bool eq(Qwen38Bytes a, const char *s) { return a.len == strlen(s) && !memcmp(a.data,s,a.len); }
+static bool eq(Qwen38Bytes a, const char *s) { return a.len == strlen(s) && (!a.len || !memcmp(a.data,s,a.len)); }
 static const Qwen38Json *member(const Qwen38Json *v, const char *key) {
     if (!v || v->kind != Q38_JSON_OBJECT) return NULL;
     for (size_t i = 0; i < v->as.object.count; ++i)

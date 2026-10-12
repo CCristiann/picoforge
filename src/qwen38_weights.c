@@ -144,9 +144,12 @@ Qwen38Status qwen38_weights_describe(const Gguf *g, const Qwen38Config *c,
     if (!g || !c || !out || !g->tensors || !g->tensor_count)
         return q38a_error(e, Q38_INVALID_ARGUMENT, "catalog", "null/empty argument");
     size_t bytes, slots = ((size_t)c->view.blocks+1)*Q38_ROLE_COUNT;
+    size_t metadata = sizeof *c+(size_t)c->view.blocks*sizeof(Qwen38Layer)+
+        c->ngram.head_count*16+c->ngram.order*8+sizeof(Qwen38Weights);
     if (!q38a_mul(g->tensor_count, sizeof(Qwen38Tensor), &bytes) ||
-        bytes > 4*1024*1024 || slots*sizeof(size_t) > 4*1024*1024-bytes)
-        return q38a_error(e, Q38_CAPACITY, "catalog", "4 MiB catalog budget");
+        bytes > 4*1024*1024 || metadata > 4*1024*1024-bytes ||
+        slots*sizeof(size_t) > 4*1024*1024-bytes-metadata)
+        return q38a_error(e, Q38_RANGE, "catalog", "4 MiB config/catalog budget");
     size_t end = g->data_offset;
     for (size_t i = 0; i < g->tensor_count; ++i) {
         const GgufTensor *t = g->tensors+i;

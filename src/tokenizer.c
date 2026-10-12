@@ -413,7 +413,7 @@ Qwen38Status q38a_bpe_load(Tokenizer *t, const Qwen38Bytes *tokens, size_t count
     for (size_t i = 0; i < count; ++i) {
         int len = alphabet_bytes(tokens[i], bytes, alphabet);
         if (len <= 0) return q38a_error(e, Q38_FORMAT, "BPE", "invalid byte alphabet token");
-        if (t->offset[i] > 16*1024*1024-len) return q38a_error(e, Q38_CAPACITY, "BPE", "blob budget");
+        if (t->offset[i] > 16*1024*1024-len) return q38a_error(e, Q38_RANGE, "BPE", "blob budget");
         t->offset[i+1] = t->offset[i]+len;
     }
     t->blob = malloc((size_t)t->offset[count]);

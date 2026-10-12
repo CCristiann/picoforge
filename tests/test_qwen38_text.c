@@ -50,6 +50,11 @@ static void chat_errors(Qwen38Tokenizer *t) {
     Qwen38JsonMember fields[] = {{BYTES("role"),&role},{BYTES("content"),&text}};
     Qwen38Json message = {.kind=Q38_JSON_OBJECT,.as.object={fields,2}};
     Qwen38Json messages = {.kind=Q38_JSON_ARRAY,.as.array={&message,1}};
+    /* The public byte span explicitly permits NULL for an empty string. */
+    text.as.string = (Qwen38Bytes){NULL,0}; size_t empty_size;
+    Qwen38ChatOptions empty_opts = {.enable_thinking=Q38_FALSE};
+    assert(qwen38_chat_render(t,&messages,NULL,empty_opts,NULL,0,&empty_size,NULL) == Q38_OK);
+    text.as.string = (Qwen38Bytes)BYTES("X");
     fields[1].key = fields[0].key;
     chat_rejected(t,&messages,NULL,Q38_FORMAT); fields[1].key = (Qwen38Bytes)BYTES("content");
     fields[1].value = &messages; chat_rejected(t,&messages,NULL,Q38_FORMAT); fields[1].value = &text;

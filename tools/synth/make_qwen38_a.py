@@ -8,6 +8,9 @@ import math
 from pathlib import Path
 import struct
 import sys
+import argparse
+import os
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/oracle"))
@@ -149,7 +152,48 @@ def chat_cases():
     (ROOT / "build/qwen38-a/chat_cases.inc").write_text("\n".join(lines)+"\n")
 
 
+def verify(args):
+    """Explicit harness build until the coordinator adds Makefile targets."""
+    build = ROOT / "build/qwen38-a"
+    flags = ["clang","-std=c11","-O1","-g","-Wall","-Wextra","-Wpedantic","-Wshadow",
+             "-Wconversion","-Werror","-ffp-contract=off","-fsanitize=address,undefined","-Isrc"]
+    common = ["src/qwen38_config.c","src/gguf.c","src/gguf_reader.c","src/util.c"]
+    groups = {
+        "config": ["tests/test_qwen38_config.c"]+common,
+        "bindings": ["tests/test_qwen38_bindings.c","src/qwen38_weights.c","src/gguf_plan.c"]+common,
+        "text": ["tests/test_qwen38_text.c","src/qwen38_tokenizer.c","src/qwen38_unicode.c","src/qwen38_chat.c",
+                 "src/tokenizer.c","src/unicode_tables.c","src/normalize.c","src/json.c"]+common}
+    for name, sources in groups.items():
+        subprocess.run(flags+["-Ibuild/qwen38-a"]+sources+["-lm","-o",str(build/f"test_{name}")],cwd=ROOT,check=True)
+        paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn")]
+        if args.checkpoint: paths.append(args.checkpoint)
+        for path in paths: subprocess.run([str(build/f"test_{name}"),str(path)],cwd=ROOT,check=True)
+    if args.reference_root:
+        env = {**os.environ,"PYTHONDONTWRITEBYTECODE":"1","HF_HUB_OFFLINE":"1",
+               "QWEN38_A_REFERENCE_ROOT":str(args.reference_root),"QWEN38_A_TEXT_EXE":str(build/"test_text")}
+        if args.checkpoint:
+            env["QWEN38_A_GGUF"] = str(args.checkpoint)
+            subprocess.run(flags+["tests/gguf_inspect.c"]+common[1:]+["-lm","-o",str(build/"inspect")],cwd=ROOT,check=True)
+            path = build/"native-inventory.json"
+            with path.open("w") as f: subprocess.run([str(build/"inspect"),str(args.checkpoint)],stdout=f,check=True)
+            env["QWEN38_A_NATIVE_INVENTORY"] = str(path)
+        subprocess.run([sys.executable,"-B","tests/test_qwen38_a.py"],cwd=ROOT,env=env,check=True)
+    if args.gpu:
+        sources = groups["bindings"]+["src/gpu_weights.m","src/metal.m"]
+        exe = build/"test_storage"
+        subprocess.run(flags+["-DQ38_A_GPU","-fobjc-arc"]+sources+
+                       ["-framework","Metal","-framework","Foundation","-lm","-o",str(exe)],cwd=ROOT,check=True)
+        subprocess.run([sys.executable,"-B","tools/qwen38_gpu_lock.py","--timeout","60","--",str(exe),str(build/"small.gguf")],
+                       cwd=ROOT,env={**os.environ,"MTL_DEBUG_LAYER":"1"},check=True)
+
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verify",action="store_true")
+    parser.add_argument("--checkpoint",type=Path,help="read only GGUF header/catalog, never tensor payload")
+    parser.add_argument("--reference-root",type=Path,help="existing pinned tokenizer assets/venv")
+    parser.add_argument("--gpu",action="store_true",help="small fixture only, common lock, needs local metallib")
+    args = parser.parse_args()
     destination = ROOT / "build/qwen38-a/small.gguf"
     write_fixture(destination, small_config())
     no_mtp = small_config()
@@ -160,3 +204,4 @@ if __name__ == "__main__":
     text_cases()
     chat_cases()
     print(destination)
+    if args.verify: verify(args)

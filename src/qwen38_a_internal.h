@@ -7,6 +7,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The coordinator's header gate compiles private headers as translation
+ * units too. Keep header-only helpers without unused-function diagnostics. */
+#if defined(__clang__) || defined(__GNUC__)
+#define Q38A_INLINE static inline __attribute__((unused))
+#else
+#define Q38A_INLINE static inline
+#endif
+
 struct Qwen38Config {
     Qwen38ConfigView view;
     Qwen38Layer *layers;
@@ -14,7 +22,7 @@ struct Qwen38Config {
     uint64_t *multipliers, *offsets, *vocabs;
     uint32_t interval, inner, ple_divisor;
 };
-static inline Qwen38Status q38a_error(Qwen38Error *e, Qwen38Status s,
+Q38A_INLINE Qwen38Status q38a_error(Qwen38Error *e, Qwen38Status s,
                                      const char *subject, const char *detail) {
     if (e) {
         memset(e, 0, sizeof *e);
@@ -27,12 +35,12 @@ static inline Qwen38Status q38a_error(Qwen38Error *e, Qwen38Status s,
 /* Unlike the CLI reader these metadata helpers never abort the process. */
 Qwen38Status q38a_meta(const Gguf *, const char *, uint32_t, Qwen38Bytes *, Qwen38Error *);
 Qwen38Status q38a_array(const Gguf *, const char *, uint32_t, Qwen38Bytes *, size_t *, Qwen38Error *);
-static inline uint64_t q38a_le(const uint8_t *p, size_t n) {
+Q38A_INLINE uint64_t q38a_le(const uint8_t *p, size_t n) {
     uint64_t v = 0;
     for (size_t i = 0; i < n; ++i) v |= (uint64_t)p[i] << (8*i);
     return v;
 }
-static inline bool q38a_mul(size_t a, size_t b, size_t *r) {
+Q38A_INLINE bool q38a_mul(size_t a, size_t b, size_t *r) {
     if (a && b > SIZE_MAX/a) return false;
     *r = a*b;
     return true;
@@ -44,7 +52,7 @@ int q38a_bpe_segment(const Tokenizer *, const char *, int, int *, int *, int *, 
     unsigned (*category)(unsigned));
 unsigned q38a_category(unsigned);
 /* Return 0 for incomplete, -1 for malformed, otherwise sequence width. */
-static inline int q38a_utf8(const uint8_t *p, size_t n, unsigned *cp) {
+Q38A_INLINE int q38a_utf8(const uint8_t *p, size_t n, unsigned *cp) {
     if (!n) return 0;
     unsigned c = p[0]; size_t k = c < 128 ? 1 : c >= 194 && c <= 223 ? 2 :
         c >= 224 && c <= 239 ? 3 : c >= 240 && c <= 244 ? 4 : 0;
@@ -67,7 +75,7 @@ struct Qwen38Tokenizer {
     int32_t eos, pad;
 };
 #define Q38A_TEXT_LIMIT (4u*1024u*1024u) /* <256 MiB total per encode */
-static inline bool q38a_string(Qwen38Bytes *rest, Qwen38Bytes *out) {
+Q38A_INLINE bool q38a_string(Qwen38Bytes *rest, Qwen38Bytes *out) {
     if (rest->len < 8) return false;
     uint64_t n = q38a_le(rest->data, 8);
     if (n > rest->len-8) return false;
@@ -75,4 +83,5 @@ static inline bool q38a_string(Qwen38Bytes *rest, Qwen38Bytes *out) {
     rest->data += 8+n; rest->len -= 8+(size_t)n;
     return true;
 }
+#undef Q38A_INLINE
 #endif

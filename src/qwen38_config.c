@@ -54,6 +54,8 @@ static Qwen38Status validate_fields(Qwen38Config *c, Qwen38Error *e) {
         (v->mtp_blocks && v->hidden_size > UINT32_MAX/2))
         return q38a_error(e, Q38_OVERFLOW, "config", "derived dimension exceeds uint32");
     n->head_count = (size_t)heads; n->multiplier_count = n->order;
+    if (sizeof *c+(size_t)v->blocks*sizeof(Qwen38Layer)+n->head_count*16+n->order*8 > 4*1024*1024)
+        return q38a_error(e,Q38_RANGE,"config","4 MiB copied metadata budget");
     return Q38_OK;
 }
 static Qwen38Status known_fields(const Gguf *g, Qwen38Error *e) {
