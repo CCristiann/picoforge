@@ -61,4 +61,28 @@ Qwen38Status qwen38_gpu_ledger_complete(Qwen38GpuLedger *, const Qwen38GpuTicket
 Qwen38Status qwen38_gpu_ledger_reset(Qwen38GpuLedger *, const void *model,
     Qwen38Error *);
 Qwen38StateInfo qwen38_gpu_ledger_info(const Qwen38GpuLedger *);
+
+/* The session is the ledger plus what it protects: a command queue, one command
+ * buffer per command and the shared error word. Components receive only the
+ * Qwen38GpuCommand from begin() and encode into it; they never commit or wait. */
+typedef struct Qwen38GpuSession Qwen38GpuSession;
+/* device is a borrowed id<MTLDevice>; the session keeps its own reference. */
+Qwen38Status qwen38_gpu_session_create(void *device, const void *model,
+    uint64_t capacity, Qwen38GpuSession **, Qwen38Error *);
+/* Admits the command, zeroes the error word and opens the encoder. */
+Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *, const void *model,
+    uint64_t start_pos, uint64_t count, Qwen38GpuTicket *, Qwen38GpuCommand *,
+    Qwen38Error *);
+Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *, const Qwen38GpuTicket *,
+    Qwen38Error *);
+Qwen38Status qwen38_gpu_session_abort(Qwen38GpuSession *, const Qwen38GpuTicket *,
+    bool state_mutated, Qwen38Error *);
+/* Waits, reads the Metal error AND the error word, then publishes or poisons. */
+Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *, const Qwen38GpuTicket *,
+    Qwen38Error *);
+Qwen38Status qwen38_gpu_session_reset(Qwen38GpuSession *, const void *model,
+    Qwen38Error *);
+Qwen38StateInfo qwen38_gpu_session_info(const Qwen38GpuSession *);
+/* BUSY leaves the session and every resource alive. */
+Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *, Qwen38Error *);
 #endif
