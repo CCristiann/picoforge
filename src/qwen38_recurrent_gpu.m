@@ -20,7 +20,8 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
     Q38CGpu *g=calloc(1,sizeof(*g));
     if (!g) return q38c_error(e,Q38_OOM,"GPU context allocation failed");
     g->device=(__bridge_retained void *)dev;
-    NSString *names[]={@"q38c_activate",@"q38c_check"};
+    NSString *names[]={@"q38c_activate",@"q38c_rms",@"q38c_activate",@"q38c_activate",
+        @"q38c_hc_read",@"q38c_hc_add",@"q38c_check"};
     for (size_t i=0;i<Q38C_GPU_OPS+1;++i) {
         id<MTLFunction> fn=[lib newFunctionWithName:names[i]];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
@@ -66,6 +67,57 @@ static void dispatch(id<MTLComputeCommandEncoder> enc, void *pipeline, size_t co
 static bool gpu_same(Q38CGpuView a, Q38CGpuView b) {
     return a.rank==b.rank && !memcmp(a.dim,b.dim,a.rank*sizeof(uint32_t));
 }
+static bool gpu_dims(Q38CGpuView a, size_t rank, const size_t *dims) {
+    if (a.rank!=rank) return false;
+    for (size_t i=0;i<rank;++i) if (a.dim[i]!=dims[i]) return false;
+    return true;
+}
+static Qwen38Status stage(Q38CGpuOp op, const Q38CGpuSpec *s, Q38CGpuArgs *a,
+        size_t *work, uint32_t *writes, uint64_t *inplace, Qwen38Error *e) {
+    Q38CGpuView *v=a->v; size_t t=v[0].dim[0];
+    a->p[5]=(uint32_t)op; *work=v[0].count; *inplace=0;
+    if (op>=Q38C_HC_LOW && op<=Q38C_HC_ADD) {
+        if (!s->hc.streams || !s->hc.hidden_size || !s->hc.low_rank ||
+            s->hc.streams>UINT32_MAX || s->hc.hidden_size>UINT32_MAX || s->hc.low_rank>UINT32_MAX)
+            return q38c_error(e,Q38_SHAPE,"invalid GPU HC shape");
+        if (!isfinite(s->hc.rms_eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite HC epsilon");
+        if (s->hc.rms_eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive HC epsilon");
+        a->p[1]=(uint32_t)s->hc.streams;
+    }
+    if (op==Q38C_ACT || op==Q38C_HC_LOW || op==Q38C_HC_INJECT) {
+        if (!gpu_same(v[0],v[1])) goto shape;
+        if (op==Q38C_ACT) {
+            if (s->activation<Q38_SIGMOID || s->activation>Q38_SOFTPLUS)
+                return q38c_error(e,Q38_UNSUPPORTED,"unknown activation");
+            a->p[0]=(uint32_t)s->activation; a->p[1]=a->p[2]=1;
+        } else {
+            size_t width=op==Q38C_HC_LOW ? s->hc.low_rank : s->hc.streams;
+            if (!gpu_dims(v[0],2,(size_t[]){t,width})) goto shape;
+            a->p[0]=op==Q38C_HC_LOW ? Q38_SILU : Q38_SIGMOID;
+            a->p[2]=op==Q38C_HC_LOW ? 1 : 2; *inplace=UINT64_C(1)<<8;
+        }
+        a->read_mask=1; *writes=2;
+    } else if (op==Q38C_RMS) {
+        if (v[0].rank!=3 || !gpu_same(v[0],v[2])) goto shape;
+        size_t groups=v[0].dim[1], width=v[0].dim[2];
+        if (!(gpu_dims(v[1],1,(size_t[]){width}) || gpu_dims(v[1],2,(size_t[]){groups,width}))) goto shape;
+        if (!isfinite(s->eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite RMS epsilon");
+        if (s->eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive RMS epsilon");
+        a->eps=s->eps; a->read_mask=3; *writes=4; *inplace=UINT64_C(1)<<16; *work=t*groups;
+    } else {
+        size_t h=s->hc.streams, width=s->hc.hidden_size;
+        if (!gpu_dims(v[0],3,(size_t[]){t,h,width})) goto shape;
+        if (op==Q38C_HC_READ) {
+            if (!gpu_same(v[0],v[1]) || !gpu_dims(v[2],2,(size_t[]){t,width})) goto shape;
+            a->read_mask=3; *writes=4; *work=t*width;
+        } else {
+            if (!gpu_dims(v[1],2,(size_t[]){t,width}) || !gpu_dims(v[2],2,(size_t[]){t,h})) goto shape;
+            a->read_mask=7; *writes=1;
+        }
+    }
+    return Q38_OK;
+shape: return q38c_error(e,Q38_SHAPE,"GPU stage shape mismatch");
+}
 Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
         const Q38CGpuSpec *spec, const Qwen38GpuF32 *v, size_t count, Qwen38Error *e) {
     if (!g || !spec || !v || !cmd.compute_encoder || !cmd.device)
@@ -77,21 +129,26 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     id<MTLBuffer> error=(__bridge id<MTLBuffer>)cmd.error_word.buffer;
     if (error.storageMode!=MTLStorageModeShared || cmd.error_word.bytes<4)
         return q38c_error(e,Q38_CAPACITY,"error word needs four Shared bytes");
-    if (op!=Q38C_ACT) return q38c_error(e,Q38_UNSUPPORTED,"unknown C kernel");
-    if (count!=2) return q38c_error(e,Q38_SHAPE,"activation needs input/output");
+    if ((unsigned)op>=Q38C_GPU_OPS) return q38c_error(e,Q38_UNSUPPORTED,"unknown C kernel");
+    size_t expected_count=(op==Q38C_ACT || op==Q38C_HC_LOW || op==Q38C_HC_INJECT) ? 2 : 3;
+    if (count!=expected_count) return q38c_error(e,Q38_SHAPE,"wrong GPU view count");
     Q38CGpuArgs a={0}; size_t span[8]={0};
     for (size_t j=0;j<count;++j) {
         Q38C_TRY(gpu_view(v[j],dev,&a.v[j],&span[j],e));
         if (gpu_overlap(v[j].span,span[j],cmd.error_word,4))
             return q38c_error(e,Q38_INVALID_ARGUMENT,"view aliases GPU error word");
     }
-    if (!gpu_same(a.v[0],a.v[1])) return q38c_error(e,Q38_SHAPE,"activation shape mismatch");
-    if (gpu_overlap(v[0].span,span[0],v[1].span,span[1]))
-        return q38c_error(e,Q38_INVALID_ARGUMENT,"forbidden GPU alias");
-    if (spec->activation<Q38_SIGMOID || spec->activation>Q38_SOFTPLUS)
-        return q38c_error(e,Q38_UNSUPPORTED,"unknown activation");
-    a.p[0]=(uint32_t)spec->activation; a.read_mask=1;
-    if (!a.v[0].count) return q38c_error(e,Q38_OK,NULL);
+    size_t work, check_count=0; uint32_t writes; uint64_t inplace;
+    Q38C_TRY(stage(op,spec,&a,&work,&writes,&inplace,e));
+    for (size_t i=0;i<count;++i) {
+        if (a.read_mask&(1u<<i)) check_count=MAX(check_count,a.v[i].count);
+        for (size_t j=0;j<count;++j) if (i!=j && (writes&(1u<<i)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j])) {
+            if ((inplace&(UINT64_C(1)<<(i*8+j))) && v[i].span.offset_bytes==v[j].span.offset_bytes &&
+                gpu_same(a.v[i],a.v[j]) && !memcmp(a.v[i].stride,a.v[j].stride,sizeof(a.v[i].stride))) continue;
+            return q38c_error(e,Q38_INVALID_ARGUMENT,"forbidden GPU alias");
+        }
+    }
+    if (!work) return q38c_error(e,Q38_OK,NULL);
     /* Bind unused slots to a real buffer: no nil/unbound arguments in MSL. */
     for (size_t j=0;j<8;++j) {
         Qwen38GpuSpan s=v[j<count ? j : 0].span;
@@ -99,9 +156,9 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     }
     [enc setBytes:&a length:sizeof(a) atIndex:8];
     [enc setBuffer:error offset:cmd.error_word.offset_bytes atIndex:9];
-    dispatch(enc,g->check,a.v[0].count);
+    dispatch(enc,g->check,check_count);
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-    dispatch(enc,g->pipeline[op],a.v[0].count);
+    dispatch(enc,g->pipeline[op],work);
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     return q38c_error(e,Q38_OK,NULL);
 }

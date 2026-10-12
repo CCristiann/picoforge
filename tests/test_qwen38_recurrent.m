@@ -88,6 +88,57 @@ static void activations(void) {
     assert(q38c_gpu_encode(gpu,cmd,Q38C_ACT,&s,v,2,NULL)==Q38_CAPACITY); finish(0);
     release_view(x); release_view(y);
 }
+static void norms(void) {
+    size_t widths[]={1,3,128,2560};
+    for (size_t k=0;k<4;++k) for (size_t grouped=0;grouped<2;++grouped) for (size_t inplace=0;inplace<2;++inplace) {
+        size_t w=widths[k], gain_dims[]={3,w};
+        View x=view(3,(size_t[]){5,3,w},3), gain=view(1+grouped,gain_dims+1-grouped,5);
+        View y=view(3,(size_t[]){5,3,w},7); pattern(x,0.7f); pattern(gain,1.4f); gain.cpu.data[0]=1e-10f;
+        if (inplace) { release_view(y); y=x; }
+        float *ref=expected(y); Qwen38F32Mut out=y.cpu; out.data=ref;
+        assert(qwen38_rmsnorm_groups(q38c_ro(x.cpu),q38c_ro(gain.cpu),out,1e-6f,NULL)==Q38_OK);
+        Q38CGpuSpec spec={.eps=1e-6f}; Qwen38GpuF32 v[]={x.gpu,gain.gpu,y.gpu};
+        assert(q38c_gpu_encode(gpu,begin(0),Q38C_RMS,&spec,v,3,NULL)==Q38_OK); finish(0);
+        compare(y,ref,1e-5); guards(x); guards(gain); free(ref);
+        if (!inplace) release_view(y);
+        release_view(x); release_view(gain);
+    }
+    View x=view(3,(size_t[]){1,1,3},0), gain=view(1,(size_t[]){3},0), y=view(3,(size_t[]){1,1,3},0);
+    pattern(gain,1); x.cpu.data[0]=FLT_MAX;
+    Q38CGpuSpec s={.eps=1e-6f}; Qwen38GpuF32 v[]={x.gpu,gain.gpu,y.gpu};
+    assert(q38c_gpu_encode(gpu,begin(0),Q38C_RMS,&s,v,3,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
+    release_view(x); release_view(y);
+    x=view(3,(size_t[]){0,1,3},0); y=view(3,(size_t[]){0,1,3},0); gain.cpu.data[0]=NAN;
+    v[0]=x.gpu; v[2]=y.gpu;
+    assert(q38c_gpu_encode(gpu,begin(0),Q38C_RMS,&s,v,3,NULL)==Q38_OK); finish(0);
+    guards(x); guards(y); release_view(x); release_view(y); release_view(gain);
+}
+static void hc(void) {
+    for (size_t h=1;h<=7;h+=3) {
+        Q38CGpuSpec s={.hc={h,33,17,1e-6f}};
+        View low=view(2,(size_t[]){5,17},3), inj=view(2,(size_t[]){5,h},3);
+        View norm=view(3,(size_t[]){5,h,33},3), gate=view(3,(size_t[]){5,h,33},7);
+        View mixed=view(2,(size_t[]){5,33},9), residual=view(3,(size_t[]){5,h,33},5);
+        pattern(low,3); pattern(inj,3); pattern(norm,2); pattern(gate,3); pattern(residual,2);
+        float *lr=expected(low), *ir=expected(inj), *mr=expected(mixed), *rr=expected(residual);
+        Qwen38F32Mut lo=low.cpu, io=inj.cpu, mo=mixed.cpu, ro=residual.cpu;
+        lo.data=lr; io.data=ir; mo.data=mr; ro.data=rr;
+        assert(qwen38_hc_lowrank_activate(&s.hc,q38c_ro(low.cpu),lo,NULL)==Q38_OK);
+        assert(qwen38_hc_inject_weights(&s.hc,q38c_ro(inj.cpu),io,NULL)==Q38_OK);
+        assert(qwen38_hc_read(&s.hc,q38c_ro(norm.cpu),q38c_ro(gate.cpu),mo,NULL)==Q38_OK);
+        assert(qwen38_hc_add(&s.hc,ro,q38c_ro(mo),q38c_ro(io),NULL)==Q38_OK);
+        Qwen38GpuCommand cmd=begin(0);
+        Qwen38GpuF32 lv[]={low.gpu,low.gpu}, iv[]={inj.gpu,inj.gpu};
+        Qwen38GpuF32 mv[]={norm.gpu,gate.gpu,mixed.gpu}, rv[]={residual.gpu,mixed.gpu,inj.gpu};
+        assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_LOW,&s,lv,2,NULL)==Q38_OK);
+        assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_INJECT,&s,iv,2,NULL)==Q38_OK);
+        assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_READ,&s,mv,3,NULL)==Q38_OK);
+        assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_ADD,&s,rv,3,NULL)==Q38_OK); finish(0);
+        compare(low,lr,1e-5); compare(inj,ir,1e-5); compare(mixed,mr,2e-5); compare(residual,rr,2e-5);
+        guards(norm); guards(gate); free(lr); free(ir); free(mr); free(rr);
+        release_view(low); release_view(inj); release_view(norm); release_view(gate); release_view(mixed); release_view(residual);
+    }
+}
 int main(int argc, char **argv) {
     assert(argc==2);
     @autoreleasepool {
@@ -97,7 +148,7 @@ int main(int argc, char **argv) {
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
         assert(q38c_gpu_create((__bridge void *)device,(__bridge void *)lib,&gpu,NULL)==Q38_OK);
         error_buffer=[device newBufferWithLength:4 options:MTLResourceStorageModeShared];
-        activations(); q38c_gpu_destroy(gpu);
+        activations(); norms(); hc(); q38c_gpu_destroy(gpu);
         printf("PASS: Metal C stages; max scaled error %.9g\n",maximum_error);
         error_buffer=nil; queue=nil; device=nil;
     }

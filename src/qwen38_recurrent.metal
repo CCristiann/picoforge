@@ -34,9 +34,40 @@ kernel void q38c_check(Q38C_BUFFERS) {
 }
 kernel void q38c_activate(Q38C_BUFFERS) {
     if (i>=a.v[0].count || atomic_load_explicit(error,memory_order_relaxed)) return;
-    float x=v0[at(a.v[0],i)], y;
+    float x=v0[at(a.v[0],i)]/float(a.p[1]), y;
     if (a.p[0]==0) y=sigmoid(x);
     else if (a.p[0]==1) y=x*sigmoid(x);
     else y=softplus(x);
+    y*=float(a.p[2]);
     if (valid(y,error)) v1[at(a.v[1],i)]=y;
+}
+kernel void q38c_rms(Q38C_BUFFERS) {
+    uint width=a.v[0].dim[2], groups=a.v[0].dim[1];
+    if (i>=a.v[0].count/width || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint xi=at(a.v[0],i*width), yi=at(a.v[2],i*width);
+    uint wi=a.v[1].rank==1 ? 0 : (i%groups)*a.v[1].stride[0];
+    float sum=0;
+    for (uint j=0;j<width;++j) sum+=v0[xi+j]*v0[xi+j];
+    float variance=sum/float(width)+a.eps;
+    if (!valid(sum,error) || !valid(variance,error)) return;
+    float scale=1.0f/sqrt(variance);
+    for (uint j=0;j<width;++j) {
+        float y=(v0[xi+j]*scale)*v1[wi+j];
+        if (!valid(y,error)) return;
+        v2[yi+j]=y;
+    }
+}
+kernel void q38c_hc_read(Q38C_BUFFERS) {
+    if (i>=a.v[2].count || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint width=a.v[0].dim[2], h=a.v[0].dim[1], t=i/width, j=i%width; float sum=0;
+    for (uint k=0;k<h;++k) {
+        uint n=(t*h+k)*width+j; sum+=v0[at(a.v[0],n)]*sigmoid(v1[at(a.v[1],n)]);
+    }
+    if (valid(sum,error)) v2[at(a.v[2],i)]=sum/float(h);
+}
+kernel void q38c_hc_add(Q38C_BUFFERS) {
+    if (i>=a.v[0].count || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint width=a.v[0].dim[2], h=a.v[0].dim[1], th=i/width;
+    float y=v0[at(a.v[0],i)]+v2[at(a.v[2],th)]*v1[at(a.v[1],(th/h)*width+i%width)];
+    if (valid(y,error)) v0[at(a.v[0],i)]=y;
 }
