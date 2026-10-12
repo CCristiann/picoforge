@@ -312,6 +312,12 @@ static int compose_layer(const char *path, uint32_t index, const char *input,
     compose_ok(qwen38_conv_state_export(conv,view(history,history_n*4,2,(size_t[]){l.conv.kernel-1,l.conv.channels}),&e),&e);
     compose_ok(qwen38_gdn_state_export(gdn,view(final,state_n*4,3,(size_t[]){l.config.gdn.value_heads,l.config.gdn.value_dim,l.config.gdn.key_dim}),&e),&e);
     fixture_write(output,"history.f32",history,history_n*4); fixture_write(output,"state.f32",final,state_n*4);
+    /* Cross-component alias admission: each backing is legal in isolation,
+     * but state must not overlap another state's payload or decoded weights. */
+    Q38CState *conv_header=(Q38CState *)conv; Qwen38Memory true_payload=conv_header->payload;
+    conv_header->payload=gp; assert(q38c_block_reset(&state,3,&e)==Q38_INVALID_ARGUMENT);
+    conv_header->payload=constants; assert(q38c_block_reset(&state,3,&e)==Q38_INVALID_ARGUMENT);
+    conv_header->payload=true_payload;
     assert(q38c_block_reset(&state,2,&e)==Q38_STALE); compose_ok(q38c_block_reset(&state,3,&e),&e);
     /* Fault after conv/scan advanced: reject continuation until a newer reset. */
     fixture_read(input,"input.f32",r,bytes); float *gain=(float *)l.constant[Q38CW_GN].data, old_gain=*gain; *gain=NAN;

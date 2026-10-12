@@ -183,6 +183,8 @@ static Qwen38Status block_states(const Q38CBlockState *s, bool valid, Qwen38Erro
         if (q38c_overlap(backings[i].data,backings[i].bytes,s,sizeof(*s)) ||
             q38c_overlap(backings[i].data,backings[i].bytes,s->owner,sizeof(*s->owner)))
             return q38c_error(e,Q38_INVALID_ARGUMENT,"C state aliases composition metadata");
+        if (q38c_overlap(backings[i].data,backings[i].bytes,s->owner->constant_memory.data,s->owner->constant_memory.bytes))
+            return q38c_error(e,Q38_INVALID_ARGUMENT,"C state aliases decoded constants");
         for (size_t j=0;j<i;++j)
             if (q38c_overlap(backings[i].data,backings[i].bytes,backings[j].data,backings[j].bytes))
                 return q38c_error(e,Q38_INVALID_ARGUMENT,"C state backings overlap");
