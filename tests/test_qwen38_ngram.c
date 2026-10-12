@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "qwen38_ngram_internal.h"
+#include "qwen38.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -438,6 +439,36 @@ static int gate_cli(void) {
     return 0;
 }
 
+typedef struct { size_t calls, fail, live; } Oom;
+static void *oom_alloc(void *context, size_t n) {
+    Oom *o=context;
+    if (o->calls++==o->fail) return NULL;
+    void *p=malloc(n); assert(p); o->live++; return p;
+}
+static void oom_free(void *context, void *p) {
+    Oom *o=context; assert(o->live); o->live--; free(p);
+}
+static void lifecycle_oom(Gguf *g, Qwen38NgramConfig *c) {
+    size_t failures=0;
+    for (size_t fail=0;fail<20;fail++) {
+        Oom o={.fail=fail}; Q38eAllocator a={&o,oom_alloc,oom_free};
+        Qwen38NgramStore *s=NULL; Qwen38NgramState *state=NULL;
+        Qwen38PleWorkspace *w=NULL; Qwen38NgramJob *j=NULL; Qwen38Error e;
+        Qwen38Status code=q38e_ngram_open_test(g,c,4,1<<20,&a,&s,&e);
+        if (!code) code=qwen38_ngram_state_create(s,(Qwen38StateKey){g,c->layer,1},&state,&e);
+        if (!code) code=qwen38_ple_workspace_create(s,1<<20,&w,&e);
+        int32_t token=1;
+        if (!code) code=qwen38_ngram_prepare(s,state,&token,1,0,&j,&e);
+        assert(code==Q38_OK || code==Q38_OOM); if (code) { failures++; assert(e.code==code); }
+        if (j) assert(qwen38_ngram_job_release(j,&e)==Q38_OK);
+        if (w) assert(qwen38_ple_workspace_destroy(w,&e)==Q38_OK);
+        if (state) assert(qwen38_ngram_state_destroy(state,&e)==Q38_OK);
+        if (s) assert(qwen38_ngram_close(s,&e)==Q38_OK);
+        assert(o.live==0);
+    }
+    assert(failures==15);
+}
+
 static void lifecycle_tests(void) {
     char path[]="build/qwen38-e/lifecycle-XXXXXX";
     int fd=table_file(path,64,8,0);
@@ -445,6 +476,7 @@ static void lifecycle_tests(void) {
     Gguf gg={.fd=fd,.tensors=&table,.tensor_count=1};
     Qwen38NgramConfig c=small_config(); c.head_dim=8; c.hidden_size=8; c.streams=2;
     c.conv_kernel=4; c.rms_eps=1e-6f;
+    lifecycle_oom(&gg,&c);
     Qwen38NgramStore *store=NULL; Qwen38NgramState *state=NULL,*other=NULL;
     Qwen38Error e; Qwen38NgramJob *job=NULL,*blocked=NULL; Qwen38F32 rows;
     assert(qwen38_ngram_open(&gg,&c,32,1<<20,&store,&e)==Q38_OK);
@@ -490,7 +522,187 @@ static void lifecycle_tests(void) {
     assert(qwen38_ngram_close(store,&e)==Q38_OK); assert(unlink(path)==0);
 }
 
+
+static void *read_fixture(const char *dir, const char *name, size_t bytes) {
+    char path[1024]; assert(snprintf(path,sizeof path,"%s/%s",dir,name)>0);
+    assert(bytes<=128u*1024u*1024u);
+    FILE *f=fopen(path,"rb"); assert(f);
+    void *p=malloc(bytes ? bytes : 1); assert(p && fread(p,1,bytes,f)==bytes);
+    assert(fgetc(f)==EOF); assert(!fclose(f)); return p;
+}
+static void emit_fixture(const char *dir, const char *name, const float *p, size_t n, bool append) {
+    char path[1024]; assert(snprintf(path,sizeof path,"%s/%s",dir,name)>0);
+    FILE *f=fopen(path,append ? "ab" : "wb"); assert(f);
+    assert(fwrite(p,sizeof *p,n,f)==n && !fclose(f));
+}
+static Q38PackedCpuView fixture_matrix(const char *dir, const char *name, size_t k, size_t n, uint32_t type) {
+    size_t bytes=k*n*(type==0 ? 4 : 0);
+    if (type==8) { assert(k%32==0); bytes=k/32*n*34; }
+    GgufTensor tensor={.type=type,.rank=2,.shape={k,n},.bytes=bytes};
+    Q38PackedCpuView view={.span={read_fixture(dir,name,bytes),bytes}};
+    assert(q38_packed_layout_init(&tensor,k,&view.layout,NULL)==Q38_OK); return view;
+}
+static int ple_cli(const char *dir, size_t chunk, const char *checkpoint) {
+    char path[1024]; assert(snprintf(path,sizeof path,"%s/config.txt",dir)>0);
+    FILE *f=fopen(path,"r"); assert(f);
+    Qwen38NgramConfig c={0}; uint64_t mult[16], offsets[960], sizes[960];
+    size_t total; uint32_t type;
+    assert(fscanf(f,"%"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu64,
+        &c.order,&c.heads_per_order,&c.vocab_size,&c.eos_id,&c.row_count)==5);
+    assert(fscanf(f,"%"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" %f %zu %"SCNu32,
+        &c.head_dim,&c.hidden_size,&c.streams,&c.conv_kernel,&c.rms_eps,&total,&type)==7);
+    assert(c.order>=2 && c.order<=16 && c.heads_per_order && c.heads_per_order<=64);
+    c.head_count=(c.order-1u)*c.heads_per_order; c.multiplier_count=c.order;
+    c.multipliers=mult; c.head_offsets=offsets; c.head_vocab_sizes=sizes;
+    for (size_t i=0;i<c.order;i++) assert(fscanf(f,"%"SCNu64,mult+i)==1);
+    for (size_t i=0;i<c.head_count;i++) assert(fscanf(f,"%"SCNu64,offsets+i)==1);
+    for (size_t i=0;i<c.head_count;i++) assert(fscanf(f,"%"SCNu64,sizes+i)==1);
+    assert(!fclose(f) && total && total<=1024 && chunk && chunk<=1024);
+    assert(c.hidden_size<=2560 && c.streams<=4 && c.head_dim<=160 && c.conv_kernel<=4);
+    size_t channels=(size_t)c.streams*c.hidden_size, width=c.head_count*c.head_dim;
+    int32_t *tokens=read_fixture(dir,"tokens.bin",total*4);
+    float *residual=read_fixture(dir,"residual.bin",total*channels*4), *delta=malloc(total*channels*4);
+    assert(delta);
+    Qwen38PleWeights w={.key=fixture_matrix(dir,"key.bin",width,channels,type),
+        .value=fixture_matrix(dir,"value.bin",width,c.hidden_size,type)};
+    Qwen38F32 *gains[]={&w.gamma_key,&w.gamma_query,&w.gamma_conv};
+    const char *names[]={"gain_key.bin","gain_query.bin","gain_conv.bin"};
+    for (size_t i=0;i<3;i++) *gains[i]=gate_const(gate_view(read_fixture(dir,names[i],channels*4),2,c.streams,c.hidden_size,1,0));
+    w.taps=gate_const(gate_view(read_fixture(dir,"taps.bin",channels*c.conv_kernel*4),2,channels,c.conv_kernel,1,0));
+    assert(snprintf(path,sizeof path,"%s/table.bin",dir)>0);
+    GgufTensor table={.name="per_layer_token_embd.weight",.type=30,.rank=2,
+        .shape={c.head_dim,(size_t)c.row_count},.bytes=(size_t)c.row_count*c.head_dim*2};
+    Gguf g={.fd=checkpoint ? -1 : open(path,O_RDONLY),.tensors=&table,.tensor_count=1}; assert(checkpoint || g.fd>=0);
+    Qwen38Config *real_config=NULL;
+    if (checkpoint) {
+        gguf_open(checkpoint,&g);
+        assert(qwen38_config_load(&g,&real_config,NULL)==Q38_OK);
+        const Qwen38NgramConfig *nc=NULL;
+        for (uint32_t layer=0;layer<qwen38_config_view(real_config)->trunk_blocks;layer++)
+            if (qwen38_config_ngram(real_config,layer,&nc,NULL)==Q38_OK) break;
+        assert(nc && nc->hidden_size==c.hidden_size && nc->head_count==c.head_count && nc->head_dim==c.head_dim);
+        c=*nc;
+    }
+    Qwen38NgramStore *store=NULL; Qwen38NgramState *state=NULL; Qwen38PleWorkspace *work=NULL;
+    Qwen38Error e;
+    assert(qwen38_ngram_open(&g,&c,chunk,32<<20,&store,&e)==Q38_OK);
+    if (checkpoint) { gguf_close(&g); qwen38_config_free(real_config); c=store->config; }
+    else close(g.fd);
+    assert(qwen38_ngram_state_create(store,(Qwen38StateKey){&g,c.layer,1},&state,&e)==Q38_OK);
+    assert(qwen38_ple_workspace_create(store,224<<20,&work,&e)==Q38_OK);
+    float *history=calloc((c.conv_kernel-1u)*c.order*channels+1,4); assert(history);
+    size_t history_rows=(c.conv_kernel-1u)*c.order;
+    if (!checkpoint) {
+        Qwen38NgramJob *bad=NULL;
+        assert(qwen38_ngram_prepare(store,state,tokens,1,0,&bad,&e)==Q38_OK);
+        assert(qwen38_ngram_read(bad,&e)==Q38_OK);
+        Qwen38F32 r=gate_const(gate_view(residual,3,1,c.streams,c.hidden_size,0));
+        Qwen38F32Mut y=gate_view(delta,3,1,c.streams,c.hidden_size,0);
+        assert(qwen38_ple_cpu(bad,&w,r,gate_view(residual,3,1,c.streams,c.hidden_size,0),work,&e)==Q38_INVALID_ARGUMENT);
+        assert(bad->phase==Q38E_READY && !work->job);
+        float saved=residual[0]; residual[0]=NAN;
+        assert(qwen38_ple_cpu(bad,&w,r,y,work,&e)==Q38_NONFINITE);
+        residual[0]=saved;
+        assert(qwen38_ngram_commit(state,bad,&e)==Q38_BAD_STATE && state->info.next_pos==0);
+        assert(qwen38_ngram_job_release(bad,&e)==Q38_OK);
+    }
+    /* First pass aborts every candidate, retries, then commits. Second pass
+     * resets and replays; both must produce identical Delta and raw history. */
+    for (size_t pass=0;pass<(checkpoint ? 1u : 2u);pass++) {
+        if (pass) assert(qwen38_ngram_state_reset(state,2,&e)==Q38_OK);
+        for (size_t start=0;start<total;start+=chunk) {
+            size_t n=total-start<chunk ? total-start : chunk;
+            for (int attempt=0;attempt<(pass || checkpoint ? 1 : 2);attempt++) {
+                Qwen38NgramJob *job=NULL; Qwen38F32 rows;
+                assert(qwen38_ngram_prepare(store,state,tokens+start,n,start,&job,&e)==Q38_OK);
+                assert(qwen38_ngram_read(job,&e)==Q38_OK && qwen38_ngram_rows(job,&rows,&e)==Q38_OK);
+                Qwen38F32 r=gate_const(gate_view(residual+start*channels,3,n,c.streams,c.hidden_size,0));
+                Qwen38F32Mut y=gate_view(delta+start*channels,3,n,c.streams,c.hidden_size,0);
+                assert(qwen38_ple_cpu(job,&w,r,y,work,&e)==Q38_OK);
+                assert(qwen38_ple_workspace_destroy(work,&e)==Q38_BUSY);
+                if (!pass && !attempt && !checkpoint) {
+                    assert(qwen38_ngram_abort(job,&e)==Q38_OK && state->info.next_pos==start);
+                } else {
+                    assert(qwen38_ngram_commit(state,job,&e)==Q38_OK);
+                    if (!pass) {
+                        emit_fixture(dir,"delta.out",y.data,n*channels,start!=0);
+                        emit_fixture(dir,"z.out",work->z,n*channels,start!=0);
+                        emit_fixture(dir,"gate.out",work->gate,n*c.streams,start!=0);
+                        emit_fixture(dir,"key_norm.out",work->key,n*channels,start!=0);
+                        emit_fixture(dir,"query_norm.out",work->query,n*channels,start!=0);
+                        emit_fixture(dir,"value.out",work->value,n*c.hidden_size,start!=0);
+                        for (size_t ti=0;ti<n;ti++) for (size_t si=0;si<c.streams;si++)
+                            work->conv[ti*c.streams+si]=q38e_ple_scaled_dot(work->key+(ti*c.streams+si)*c.hidden_size,
+                                work->query+(ti*c.streams+si)*c.hidden_size,c.hidden_size);
+                        emit_fixture(dir,"dot.out",work->conv,n*c.streams,start!=0);
+                        emit_fixture(dir,"rows.out",rows.data,n*width,start!=0);
+                        assert(q38_packed_matmul(&w.key,0,rows,gate_view(work->conv,2,n,channels,1,0),&e)==Q38_OK);
+                        emit_fixture(dir,"key_proj.out",work->conv,n*channels,start!=0);
+                        assert(q38_packed_matmul(&w.value,0,rows,gate_view(work->conv,2,n,c.hidden_size,1,0),&e)==Q38_OK);
+                        emit_fixture(dir,"value_proj.out",work->conv,n*c.hidden_size,start!=0);
+                    } else emit_fixture(dir,"replay.out",y.data,n*channels,start!=0);
+                    assert(qwen38_conv_state_export(state->conv.handle,gate_view(history,2,history_rows,channels,1,0),&e)==Q38_OK);
+                    emit_fixture(dir,pass ? "replay_history.out" : "history.out",history,history_rows*channels,start!=0);
+                }
+                assert(qwen38_ngram_job_release(job,&e)==Q38_OK);
+            }
+        }
+    }
+    printf("PASS: PLE total=%zu chunk=%zu peak_bytes=%zu\n",total,chunk,store->peak);
+    assert(qwen38_ple_workspace_destroy(work,&e)==Q38_OK);
+    assert(qwen38_ngram_state_destroy(state,&e)==Q38_OK && qwen38_ngram_close(store,&e)==Q38_OK);
+    free((void *)w.key.span.data); free((void *)w.value.span.data);
+    for (size_t i=0;i<3;i++) free((void *)gains[i]->data);
+    free((void *)w.taps.data); free(tokens); free(residual); free(delta); free(history);
+    return 0;
+}
+
+static int extract_real(const char *checkpoint, const char *dir) {
+    Gguf g; gguf_open(checkpoint,&g);
+    Qwen38Config *config=NULL; Qwen38Weights *weights=NULL; const Qwen38NgramConfig *c=NULL;
+    assert(qwen38_config_load(&g,&config,NULL)==Q38_OK);
+    for (uint32_t layer=0;layer<qwen38_config_view(config)->trunk_blocks;layer++)
+        if (qwen38_config_ngram(config,layer,&c,NULL)==Q38_OK) break;
+    assert(c && c->order<=16 && c->head_count<=960);
+    assert(qwen38_weights_describe(&g,config,&weights,NULL)==Q38_OK);
+    const Qwen38Tensor *table=NULL;
+    assert(qwen38_weights_get(weights,QWEN38_GLOBAL_LAYER,Q38_PLE_TABLE,&table,NULL)==Q38_OK);
+    printf("{\"layer\":%u,\"table_offset\":%zu,\"row_bytes\":%llu,\"files\":[",
+        c->layer,table->storage.file_offset,(unsigned long long)table->row_bytes);
+    const Qwen38Role roles[]={Q38_PLE_KEY,Q38_PLE_VALUE,Q38_PLE_KEY_NORM,Q38_PLE_QUERY_NORM,Q38_PLE_CONV_NORM,Q38_PLE_CONV};
+    const char *names[]={"key.bin","value.bin","gain_key.bin","gain_query.bin","gain_conv.bin","taps.bin"};
+    size_t total=0;
+    for (size_t i=0;i<6;i++) {
+        const Qwen38Tensor *tensor=NULL;
+        assert(qwen38_weights_get(weights,c->layer,roles[i],&tensor,NULL)==Q38_OK);
+        size_t bytes=tensor->storage.bytes; total+=bytes; assert(total<=36u*1024u*1024u);
+        unsigned char *raw=malloc(bytes); assert(raw);
+        size_t done=0;
+        while (done<bytes) {
+            ssize_t got=pread(g.fd,raw+done,bytes-done,(off_t)(tensor->storage.file_offset+done));
+            if (got<0 && errno==EINTR) continue;
+            assert(got>0); done+=(size_t)got;
+        }
+        char path[1024]; assert(snprintf(path,sizeof path,"%s/%s",dir,names[i])>0);
+        FILE *f=fopen(path,"wb"); assert(f && fwrite(raw,1,bytes,f)==bytes && !fclose(f)); free(raw);
+        printf("%s{\"name\":\"%s\",\"offset\":%zu,\"bytes\":%zu,\"type\":%u}",i ? "," : "",
+            names[i],tensor->storage.file_offset,bytes,tensor->storage.type);
+    }
+    puts("]}");
+    char path[1024]; assert(snprintf(path,sizeof path,"%s/config.txt",dir)>0);
+    FILE *f=fopen(path,"w"); assert(f);
+    fprintf(f,"%u %u %u %u %llu %u %u %u %u %.9g 2 8\n",c->order,c->heads_per_order,c->vocab_size,
+        c->eos_id,(unsigned long long)c->row_count,c->head_dim,c->hidden_size,c->streams,c->conv_kernel,(double)c->rms_eps);
+    for (size_t i=0;i<c->order;i++) fprintf(f,"%llu ",(unsigned long long)c->multipliers[i]);
+    for (size_t i=0;i<c->head_count;i++) fprintf(f,"%llu ",(unsigned long long)c->head_offsets[i]);
+    for (size_t i=0;i<c->head_count;i++) fprintf(f,"%llu ",(unsigned long long)c->head_vocab_sizes[i]);
+    assert(!fclose(f));
+    qwen38_weights_free(weights); qwen38_config_free(config); gguf_close(&g); return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc==4 && !strcmp(argv[1],"--extract-real")) return extract_real(argv[2],argv[3]);
+    if ((argc==4 || argc==5) && !strcmp(argv[1],"--ple")) return ple_cli(argv[2],(size_t)strtoul(argv[3],NULL,10),argc==5 ? argv[4] : NULL);
     if (argc == 2 && !strcmp(argv[1], "--gate")) return gate_cli();
     if (argc == 2 && !strcmp(argv[1], "--hash")) return hash_cli();
     if (argc == 3 && !strcmp(argv[1], "--lookup")) return lookup_cli(argv[2]);

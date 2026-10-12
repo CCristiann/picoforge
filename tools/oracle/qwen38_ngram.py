@@ -13,6 +13,7 @@ import urllib.request
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 REVISION = "db2304e8694db3ecd6f39d353beba361688afe97"
 SOURCE_SHA256 = "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa"
@@ -155,6 +156,62 @@ class GateOracle:
         with torch.no_grad():
             dot, gate, output = self.evaluate(SimpleNamespace(hidden_size=key.shape[-1]), key, query, value)
         return dot.squeeze(-1), gate.squeeze(-1), output
+
+
+class PleOracle:
+    """Original PLE forward and dilated conv, on bounded caller-supplied weights.
+
+    GGUF gains are already folded. A norm adapter uses upstream _norm and
+    applies the direct gain (avoids lossy un-fold/re-fold of stored FP32 gains).
+    No custom cache algorithm: evaluate the whole small prefix, slice afterwards.
+    """
+    def __init__(self, config, table, key, value, gains, taps, eps=1e-6):
+        raw = verified_source()
+        names = {"Qwen4ExpTextRMSNorm", "Qwen4ExpTextPLELayer"}
+        nodes = [n for n in ast.parse(raw).body if isinstance(n, ast.ClassDef) and n.name in names]
+        future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
+        module = ast.fix_missing_locations(ast.Module(body=[future, *nodes], type_ignores=[]))
+        scope = {"torch": torch, "nn": nn, "F": F, "math": math}
+        exec(compile(module, str(SOURCE), "exec"), scope)
+        cls, norm_cls = scope["Qwen4ExpTextPLELayer"], scope["Qwen4ExpTextRMSNorm"]
+        obj = cls.__new__(cls)
+        nn.Module.__init__(obj)
+        channels, width = key.shape[0], value.shape[0]
+        obj.hidden_size, obj.hc_count, obj.layer_idx = width, channels//width, config.get("layer", 0)
+        obj.short_conv_state_len = (taps.shape[-1]-1)*config["ngram_size"]
+        obj.ple_embedding = IdOracle(config).model
+        obj.ple_embedding.ngram_embedding = nn.Embedding.from_pretrained(table.float(), freeze=True)
+        obj.key_proj = nn.Linear(key.shape[1], channels, bias=False)
+        obj.value_proj = nn.Linear(value.shape[1], width, bias=False)
+        obj.key_proj.weight = nn.Parameter(key.float(), requires_grad=False)
+        obj.value_proj.weight = nn.Parameter(value.float(), requires_grad=False)
+
+        class FoldedNorm(nn.Module):
+            def __init__(self, gain):
+                super().__init__()
+                self.norm = norm_cls(channels, group_size=width, eps=eps)
+                self.register_buffer("gain", gain.float().flatten())
+            def forward(self, x):
+                return self.norm._norm(x.float()) * self.gain
+
+        obj.norm_key, obj.norm_query, obj.norm_conv = [FoldedNorm(g) for g in gains]
+        obj.conv1d = nn.Conv1d(channels, channels, taps.shape[-1], groups=channels,
+                              dilation=config["ngram_size"], bias=False)
+        obj.conv1d.weight = nn.Parameter(taps.float().unsqueeze(1), requires_grad=False)
+        self.model, self.trace = obj, {}
+        for name in ("key_proj", "value_proj", "norm_key", "norm_query", "norm_conv"):
+            getattr(obj, name).register_forward_hook(
+                lambda module, inputs, output, name=name: self.trace.__setitem__(name, output.detach().clone()))
+
+    def run(self, tokens, residual):
+        with torch.no_grad():
+            delta = self.model(residual.flatten(-2).unsqueeze(0),
+                               torch.tensor([tokens], dtype=torch.int64), None).squeeze(0)
+        trace = {k: v.squeeze(0) for k, v in self.trace.items()}
+        z = trace["norm_conv"]
+        length = self.model.short_conv_state_len
+        history = F.pad(z, (0, 0, max(0, length-z.shape[0]), 0))[-length:] if length else z[:0]
+        return delta.reshape(residual.shape), history, trace
 
 
 def fixture():
