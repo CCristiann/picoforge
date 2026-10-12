@@ -1,6 +1,7 @@
 """Small CPU-only oracle checks; no models, Metal, MPS or network access."""
 
 import argparse
+import ctypes as ct
 import hashlib
 import json
 from pathlib import Path
@@ -17,6 +18,7 @@ import qwen38_recurrent as oracle
 
 SOURCE = ROOT / oracle.UPSTREAM_DEFAULT
 FIXTURES = ROOT / "tests/fixtures/qwen38/c"
+CPU_LIB = None
 
 
 class ReferenceTests(unittest.TestCase):
@@ -455,12 +457,134 @@ class ReferenceTests(unittest.TestCase):
         self.assertGreater(result[0, 0, 0].item(), 0.)
 
 
+class CView(ct.Structure):
+    _fields_ = [("data", ct.POINTER(ct.c_float)), ("capacity_bytes", ct.c_size_t), ("rank", ct.c_size_t),
+                ("dim", ct.c_size_t * 4), ("stride_bytes", ct.c_size_t * 4)]
+
+
+class CMemory(ct.Structure):
+    _fields_ = [("data", ct.c_void_p), ("bytes", ct.c_size_t)]
+
+
+class CKey(ct.Structure):
+    _fields_ = [("model", ct.c_void_p), ("layer", ct.c_uint32), ("epoch", ct.c_uint64)]
+
+
+class CInfo(ct.Structure):
+    _fields_ = [("key", CKey), ("next_pos", ct.c_uint64), ("valid", ct.c_bool), ("busy", ct.c_bool)]
+
+
+class CSize(ct.Structure):
+    _fields_ = [(name, ct.c_size_t) for name in ("metadata_bytes", "payload_bytes", "alignment")]
+
+
+class CError(ct.Structure):
+    _fields_ = [("code", ct.c_int), ("os_errno", ct.c_int), ("file_offset", ct.c_uint64), ("row", ct.c_uint64),
+                ("requested_bytes", ct.c_size_t), ("completed_bytes", ct.c_size_t),
+                ("subject", ct.c_char * 128), ("detail", ct.c_char * 256)]
+
+
+class CConv(ct.Structure):
+    _fields_ = [(name, ct.c_size_t) for name in ("channels", "kernel", "dilation")] + [("apply_silu", ct.c_bool)]
+
+
+def c_view(array):
+    """Test-side ABI mirror of the frozen header; capacity includes row padding."""
+    assert array.dtype == np.float32 and 1 <= array.ndim <= 4 and all(s >= 0 for s in array.strides)
+    strides = list(array.strides)
+    if not array.size:  # NumPy's zero strides for empty allocations are not a valid C descriptor.
+        stride = 4
+        for axis in range(array.ndim - 1, -1, -1):
+            strides[axis] = stride
+            stride *= array.shape[axis]
+    span = 4 + sum((d - 1) * s for d, s in zip(array.shape, strides)) if array.size else 0
+    return CView(array.ctypes.data_as(ct.POINTER(ct.c_float)), span, array.ndim,
+                 (ct.c_size_t * 4)(*array.shape), (ct.c_size_t * 4)(*strides))
+
+
+class NativeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if CPU_LIB is None:
+            raise unittest.SkipTest("native comparisons require --cpu-lib; oracle-only run")
+        cls.lib = ct.CDLL(str(CPU_LIB.resolve()))
+        cls.ref = oracle.load_upstream(SOURCE)
+        error = ct.POINTER(CError)
+        cls.lib.qwen38_conv_state_bytes.argtypes = [ct.POINTER(CConv), ct.POINTER(CSize), error]
+        cls.lib.qwen38_conv_state_init.argtypes = [ct.POINTER(CConv), CKey, CMemory, CMemory, ct.POINTER(ct.c_void_p), error]
+        cls.lib.qwen38_conv_state_reset.argtypes = [ct.c_void_p, ct.c_uint64, error]
+        cls.lib.qwen38_conv_state_export.argtypes = [ct.c_void_p, CView, error]
+        cls.lib.qwen38_conv_state_copy.argtypes = [ct.c_void_p, ct.c_void_p, error]
+        cls.lib.qwen38_conv_state_info.argtypes = [ct.c_void_p]
+        cls.lib.qwen38_conv_state_info.restype = CInfo
+        cls.lib.qwen38_conv_causal.argtypes = [ct.POINTER(CConv), CView, CView, CView, ct.c_void_p, ct.c_uint64, error]
+
+    def invoke(self, name, *args):
+        error = CError()
+        status = getattr(self.lib, "qwen38_" + name)(*args, ct.byref(error))
+        self.assertEqual(status, 0, (name, status, error.detail.decode()))
+        self.assertEqual(error.code, 0)
+
+    def new_state(self, shape, kind="conv"):
+        size = CSize()
+        self.invoke(kind + "_state_bytes", ct.byref(shape), ct.byref(size))
+        buffers, memory = [], []
+        for length in (size.metadata_bytes, size.payload_bytes):
+            raw = ct.create_string_buffer(length + size.alignment)
+            address = (ct.addressof(raw) + size.alignment - 1) // size.alignment * size.alignment
+            buffers.append(raw)
+            memory.append(CMemory(address, length))
+        handle = ct.c_void_p()
+        self.invoke(kind + "_state_init", ct.byref(shape), CKey(1, 0, 1), *memory, ct.byref(handle))
+        # Retain caller-owned backings for the entire test; no C allocation/free.
+        if not hasattr(self, "state_buffers"):
+            self.state_buffers = []
+        self.state_buffers.extend(buffers)
+        return handle
+
+    def test_conv_against_oracle_with_strides_and_append(self):
+        gen = torch.Generator(device="cpu").manual_seed(3822)
+        for channels in (1, 31, 33):
+            for kernel in (1, 2, 4):
+                for dilation in (1, 3):
+                    for activation in (False, True):
+                        shape = CConv(channels, kernel, dilation, activation)
+                        halo, tokens = (kernel - 1) * dilation, 13
+                        taps = torch.randn(channels, kernel, generator=gen)
+                        initial = torch.randn(halo, channels, generator=gen)
+                        x = torch.randn(tokens, channels, generator=gen)
+                        expected, history = oracle.conv_reference(x, taps, initial, dilation, activation)
+                        padded_x = np.full((tokens, channels + 2), np.nan, np.float32)
+                        padded_x[:, :channels] = x.numpy()
+                        state = self.new_state(shape)
+                        # Warm the public state using exactly the raw initial history.
+                        warm = np.empty((halo, channels), np.float32)
+                        self.invoke("conv_causal", ct.byref(shape), c_view(initial.numpy()), c_view(taps.numpy()),
+                                    c_view(warm), state, 0)
+                        pieces, position = [], 0
+                        for count in (0, 1, 3, 0, 2, 7):
+                            output = np.full((count, channels + 2), -123., np.float32)
+                            self.invoke("conv_causal", ct.byref(shape), c_view(padded_x[position:position + count, :channels]),
+                                        c_view(taps.numpy()), c_view(output[:, :channels]), state, halo + position)
+                            self.assertTrue(np.all(output[:, channels:] == -123))
+                            pieces.append(output[:, :channels].copy())
+                            position += count
+                        got = torch.from_numpy(np.concatenate(pieces))
+                        self.assertLessEqual(oracle.error_metrics(got, expected)["scaled_inf"], 1e-5)
+                        final = np.empty((halo, channels), np.float32)
+                        self.invoke("conv_state_export", state, c_view(final))
+                        np.testing.assert_array_equal(final, history.numpy())
+                        self.assertEqual(self.lib.qwen38_conv_state_info(state).next_pos, halo + tokens)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--cpu-lib", type=Path)
     args, remaining = parser.parse_known_args()
     SOURCE = args.source
+    CPU_LIB = args.cpu_lib
     torch.set_num_threads(1)
     result = unittest.main(argv=[sys.argv[0], *remaining], exit=False).result
     if args.report:
