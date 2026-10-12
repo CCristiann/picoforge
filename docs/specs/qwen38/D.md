@@ -1,5 +1,89 @@
 # D — Qwen3.8 QSA, indexer e attention tiled
 
+## Evidenza ESEGUI — 2026-10-12
+
+Base effettiva `c674b23bd1377b2ce0acef2d06fac8b160809446`, branch
+`impl/qwen38-d-cpu`, worktree `/Users/cristiancirje/Desktop/Dev/picoforge-d-cpu`.
+`integration.md` e gli header v1 prevalgono sulle proposte storiche sotto.
+Il precedente worktree oracle è preservato; recuperati solo i quattro commit
+oracle completati, senza riacquisire la spec:
+
+| Sorgente oracle | Cherry-pick sulla base |
+|---|---|
+| `4bb32c2297771b4f914c730bc659da95fb47a2e4` | `259b24f12d98651bbe6f1e58fddab49e262960d7` |
+| `9d3df0c2643fcccf503a6aeaf756a9f96de8c659` | `22c20548c3352e9189a0fff55b9159663df0620d` |
+| `26406c1412a387d2f9aeb83fa26f74069aba7bd1` | `7f2bf3d573c68246dff98bb202ec8f69e62f123d` |
+| `5e365779e8238cae29e9d412e7673b34cd32377a` | `47fb7c79db49b7be125ca481d1a3da68b43fe3f5` |
+
+Implementati in `src/qwen38_attention.c`, con dichiarazioni private in
+`src/qwen38_d_internal.h`:
+
+- RoPE parziale FP32, pooling IKraw, score indexer non scalato, heap top-k
+  con tie ID minore e serializzazione temporale; niente cast half.
+- Softmax online con tile da 16 token, GQA e moltiplicazione del fattore gate
+  dopo la divisione globale; scratch O(D), niente matrice attention densa.
+- API pubbliche plan/create/state_info/begin/finish/reset/destroy: budget e
+  overflow controllati, identità workspace, un ticket in volo, pubblicazione
+  della lunghezza solo al finish, invalidazione e reset/replay.
+- Append **privato su dati preparati**: Q/K/IQ dopo norm/RoPE, gate dopo
+  sigmoid, IKraw e soli blocchi appena completati già normalizzati/ruotati.
+  Cache K/V/IKraw/blocchi persistenti, maschera causale per ciascuna query,
+  tail obbligatorio, pitch token ammesso e alias vietati.
+
+Questo confine privato è un harness del core, non una seconda API pubblica
+né una simulazione di C2. **`qwen38_attention_cpu` non è ancora definita**:
+deve chiamare le vere `qwen38_rmsnorm_groups` e `qwen38_activate` di C2.
+RMS e sigmoid non sono replicate in D. Il pooling nativo è testato
+separatamente; nell'append di questi test le chiavi complete provengono
+dall'oracle. Mancano quindi ancora prep composta, proiezioni/slice A+B,
+Metal e integrazione del grafo. Nessuna generazione Qwen3.8 dichiarata.
+
+Verifica ripetibile dal nuovo worktree, con il venv esistente:
+
+```sh
+mkdir -p build/qwen38-d build/qwen38-attention
+# Riutilizzo bounded del solo sorgente upstream già verificato, non dei pesi:
+cp ../picoforge-d-oracle/build/qwen38-attention/modeling_qwen4_exp.py \
+   build/qwen38-attention/modeling_qwen4_exp.py
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fsanitize=address,undefined -Isrc \
+  tests/test_qwen38_attention.c src/qwen38_attention.c -lm \
+  -o build/qwen38-d/test_attention
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python \
+  tests/test_qwen38_attention.py --native build/qwen38-d/test_attention -v
+make -j4
+```
+
+Esito: **40 test passati**, harness C con ASan/UBSan e warning come errori;
+build completa riuscita. Senza `--native` i test C sono esplicitamente SKIP,
+non PASS. Verificati prefill/decode/chunk/append vuoti e non allineati,
+posizione sparsa 2051, reset con byte vecchi ancora residenti, errori dopo
+mutazione, shape/stride/capacità/alias e guard, pooling prima della norma,
+RoPE reale a 0/2051/8192/32768, dimensioni indexer 4×128, GQA 24/2×256.
+Sulle fixture a selezione stabile, prefill e chunk C sono bit-identici;
+l'output è confrontato con SDPA FP64 al gate consolidato 3e-5/2e-4.
+Score al gate 2e-4/2e-5, prep al gate 2e-5/2e-5. Per top-k: confronto esatto
+su score FP32 identici, e controllo del margine `gap > 2*errore` rispetto
+al riferimento FP64 quando il confine non è un tie. I tie HF restano
+distinti dal tie-break nativo; near-tie non certificati end-to-end.
+
+Piano misurato tramite chiamata C, senza allocare il modello: a L=8192,
+Tmax=1024, per layer reale cache **38 797 504 byte** (37 MiB più metadata),
+workspace **75 388 byte**, allineamento 16. Non comprende i buffer del grafo,
+input/output del caller, pesi o eventuali copie dell'oracle; non è un picco
+fisico né una misura di velocità. Nessuna allocazione per append nel core.
+
+Per il coordinatore: collegare C2 prima di implementare la prep pubblica;
+aggiungere il target del harness e compilare l'oggetto D con
+`-ffp-contract=off`, senza fast-math, prima delle prove di composizione.
+`make` verifica attualmente solo build/link, non usa il nuovo percorso.
+Header pubblici e Makefile sono rimasti invariati. `make test-all` non
+eseguito: il wiring completo e le regressioni GPU sono del coordinatore.
+Nessun test GPU, benchmark o accesso al payload del checkpoint; quindi
+nessun workload che richiedesse il lock condiviso è stato avviato.
+I ticket scadono al finish: essendo metadata riusabile, un vecchio puntatore
+non può essere usato dopo un nuovo begin (nessuna garanzia contro ABA).
+
 Stato: **SPEC**, 2026-10-12. Nessun operatore implementato o test numerico
 eseguito da questa sessione. `BASE_CONCORDATA`: da fissare in consolidamento.
 Base ispezionata: `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.

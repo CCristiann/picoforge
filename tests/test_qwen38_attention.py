@@ -632,6 +632,53 @@ class NativeAttentionTests(unittest.TestCase):
         code, _ = self.call("pool", (4, 2, 0, 0), np.full((4, 2), np.finfo(np.float32).max, np.float32))
         self.assertEqual(code, 16)
 
+    def test_native_real_index_dimensions_and_selection_margin(self):
+        rng = np.random.default_rng(3811)
+        iq = rng.uniform(-1, 1, (4, 128)).astype(np.float32)
+        blocks = rng.uniform(-1, 1, (513, 128)).astype(np.float32)
+        code, scores = self.call("scores", (4, 128, 513, 0), iq, blocks)
+        self.assertEqual(code, 0)
+        expected = np.maximum(iq.astype(np.float64) @ blocks.astype(np.float64).T, 0).sum(0)
+        np.testing.assert_allclose(scores, expected, atol=2e-4, rtol=2e-5)
+        for budget in (1, 10, 512):
+            code, ids = self.call("select", (513, budget, 0, 0), scores, dtype=np.uint32)
+            self.assertEqual(code, 0)
+            order = np.lexsort((np.arange(513), -scores))
+            np.testing.assert_array_equal(ids, np.sort(order[:budget]))
+            ref_order = np.lexsort((np.arange(513), -expected))
+            gap = expected[ref_order[budget - 1]] - expected[ref_order[budget]]
+            error = np.max(np.abs(scores - expected))
+            # Zero-score ties are deliberate contract tie tests, not HF
+            # end-to-end parity. Otherwise demand a measured stable margin.
+            if gap > 0:
+                self.assertGreater(gap, 2 * error)
+                np.testing.assert_array_equal(ids, np.sort(ref_order[:budget]))
+
+    def test_native_append_crosses_first_sparse_position(self):
+        cfg = oracle.Config(budget=2048)
+        x = oracle.synthetic(cfg, 2053)
+        x.iq.fill(0); x.iq[..., -1] = 1
+        x.ik.fill(0)
+        coordinates = np.linspace(.1, .9, 514, dtype=np.float32).repeat(4)[:2053]
+        x.ik[:, -1] = coordinates; x.ik[:, -2] = np.sqrt(1 - coordinates ** 2)
+        x.gamma_iq.fill(1); x.gamma_ik.fill(1)
+        pieces = []
+        # Bounded independent oracle; never materialize the full T*T mask.
+        for start in range(0, 2053, 128):
+            end = min(start + 128, 2053)
+            pieces.append(oracle.evaluate(self.hf, cfg, prefix(x, end), start))
+        result = dict(pieces[-1])
+        for name in ("q", "iq", "gate", "gated_fp64"):
+            result[name] = np.concatenate([part[name] for part in pieces])
+        self.assertGreater(float(np.diff(result["indexer_scores_fp64_unscaled"][-1]).min()), 4e-4)
+        outputs = []
+        for ends in ([2053], [0, 1, 1023, 1024, 1025, 2047, 2048, 2051, 2052, 2053]):
+            code, y = self.append(cfg, x, result, ends)
+            self.assertEqual(code, 0)
+            np.testing.assert_allclose(y, result["gated_fp64"], atol=3e-5, rtol=2e-4)
+            outputs.append(y)
+        np.testing.assert_array_equal(*outputs)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

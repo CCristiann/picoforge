@@ -59,11 +59,12 @@
     "tests": "PYTHON tests/test_qwen38_attention.py -v",
     "fixture": "PYTHON tools/oracle/qwen38_attention.py --case CASE --output build/qwen38-attention/NEW_DIRECTORY",
     "notes": "Replace PYTHON with the existing absolute interpreter path and CASE with a recipe name. Never overwrite output; tests do not fetch implicitly. No Makefile changes required.",
-    "native_tests": "PYTHON tests/test_qwen38_attention.py --native build/qwen38-d/test_attention -v"
+    "native_tests": "PYTHON tests/test_qwen38_attention.py --native build/qwen38-d/test_attention -v",
+    "native_build": "clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fsanitize=address,undefined -Isrc tests/test_qwen38_attention.c src/qwen38_attention.c -lm -o build/qwen38-d/test_attention"
   },
   "verification": {
     "date": "2026-10-12",
-    "test_count": 38,
+    "test_count": 40,
     "device": "CPU only, one torch thread",
     "packages": {
       "numpy": "2.5.1",
@@ -95,13 +96,21 @@
       "Native C11 tiled global softmax, gate factors, GQA, real shapes, masked poison and invalid selected IDs under ASan/UBSan",
       "Native lifecycle: budget/overflow, owner, epoch, busy, zero-token, reset/replay and invalidation after numerical failure",
       "Native cache and outputs: padded token pitch, guards, no alias, exact cache copies and prefill/decode/chunk equivalence",
-      "Native raw pooling and full-size partial RoPE at positions 0/2051/8192/32768"
+      "Native raw pooling and full-size partial RoPE at positions 0/2051/8192/32768",
+      "Native 2053-token append across 1024/2048/2051/2052, stable analytical selection and exact prefill/chunk equality",
+      "Real indexer 4x128: score tolerance, exact FP32 top-k and measured FP64 boundary margins"
     ],
     "online_fp64_tolerance": {
       "atol": 1e-12,
       "rtol": 1e-12
     },
-    "native": "C11 clang -O2 -ffp-contract=off -fsanitize=address,undefined; warnings as errors"
+    "native": "C11 clang -O2 -ffp-contract=off -fsanitize=address,undefined; warnings as errors",
+    "build": "make -j4 passed; no runtime wiring, GPU test or test-all",
+    "plan_8192_1024_bytes_per_layer": {
+      "cache": 38797504,
+      "workspace": 75388,
+      "alignment": 16
+    }
   },
   "limits": [
     "No Metal execution, checkpoint payload read or benchmark; native core tested on synthetic prepared inputs",
