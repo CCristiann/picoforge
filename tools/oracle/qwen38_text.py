@@ -10,6 +10,8 @@ import importlib.metadata
 import json
 from pathlib import Path
 import random
+import math
+import struct
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/fixtures/qwen38/a"
@@ -217,6 +219,35 @@ def extended_cases(reference_root):
         value = tokenizer.decode(ids,skip_special_tokens=False)
         decodes.append(dict(ids=ids,keep=value,skip=value))
     return dict(schema_version=1,encodes=encodes,decodes=decodes)
+
+
+def extended_chat_cases(reference_root):
+    _, chat = load_reference(reference_root)
+    rng = random.Random(3813)
+    numbers = [0.0,-0.0,1.0,1e-4,1e-5,1e15,1e16,1.0000000000000002,5e-324,1.7976931348623157e308]
+    while len(numbers) < 266:
+        x = struct.unpack("<d", rng.getrandbits(64).to_bytes(8,"little"))[0]
+        if math.isfinite(x): numbers.append(x)
+    user = {"role":"user", "content":"  A\0B\u0085 \u2003"}
+    call = {"name":"fn<&>","arguments":{"text":"\"\\\n\0è<&>\u2028", "bool":False, "null":None,
+            "ordered":{"z":1,"a":2}, "integers":[-2**63,2**63-1],"floats":numbers}}
+    msgs = [user,{"role":"assistant","tool_calls":[call],"content":None,"reasoning_content":None},
+            {"role":"tool","content":[{"text":" A "},{"type":"text","text":"\0B "}]}]
+    tool = {"type":"function","function":{"name":"fn<&>","description":"x\0y\"\\",
+            "parameters":{"enum":[None,True,1,1.0,"<&>\u2028"]},"strict":True}}
+    cases = []
+    for thinking in (None,False,True):
+        for preserve in (None,False,True):
+            options = {"tools":[tool],"add_generation_prompt":False}
+            if thinking is not None: options["enable_thinking"] = thinking
+            if preserve is not None: options["preserve_thinking"] = preserve
+            # Exercise the long numeric vector once; other combinations stay small.
+            selected = msgs if not cases else [user,{"role":"assistant","content":"X","reasoning_content":"R"},user]
+            rendered = chat.apply_chat_template(selected,tokenize=False,**options)
+            ids = chat.apply_chat_template(selected,tokenize=True,return_dict=False,**options)
+            cases.append(dict(name=f"extended-{len(cases)}",messages=selected,options=options,
+                              expected=dict(rendered=rendered,ids=ids)))
+    return cases
 
 
 if __name__ == "__main__":

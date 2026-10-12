@@ -128,6 +128,8 @@ class TextReferenceTests(unittest.TestCase):
     def test_extended_cases_reproduce(self):
         self.assertEqual(text_oracle.extended_cases(self.reference_root),
                          json.loads((FIXTURES / "text_extended.json").read_text()))
+        self.assertEqual(text_oracle.extended_chat_cases(self.reference_root),
+                         json.loads((FIXTURES / "chat_extended.json").read_text()))
 
     @unittest.skipUnless(os.environ.get("QWEN38_A_TEXT_EXE"), "native text harness not supplied")
     def test_native_nfc_all_unicode_scalars(self):

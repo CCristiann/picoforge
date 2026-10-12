@@ -104,8 +104,54 @@ def text_cases():
     (ROOT / "build/qwen38-a/text_cases.inc").write_text("\n".join(lines)+"\n")
 
 
+def chat_cases():
+    cases = json.loads((ROOT / "tests/fixtures/qwen38/a/text.json").read_text())["templates"]
+    extra = ROOT / "tests/fixtures/qwen38/a/chat_extended.json"
+    if extra.exists(): cases += json.loads(extra.read_text())
+    lines, records = [], []
+
+    def data(text):
+        raw = text.encode()
+        return "{(const uint8_t[]) {"+",".join(map(str,raw or b'\0'))+"},"+str(len(raw))+"}"
+
+    def node(value):
+        if value is None: return "{.kind=Q38_JSON_NULL}"
+        if type(value) is bool: return "{.kind=Q38_JSON_BOOL,.as.boolean="+str(value).lower()+"}"
+        if type(value) is int:
+            num = "(-INT64_C(9223372036854775807)-1)" if value == -2**63 else f"INT64_C({value})"
+            return "{.kind=Q38_JSON_INT,.as.integer="+num+"}"
+        if type(value) is float: return "{.kind=Q38_JSON_FLOAT,.as.number="+repr(value)+"}"
+        if type(value) is str: return "{.kind=Q38_JSON_STRING,.as.string="+data(value)+"}"
+        if type(value) is list:
+            array = "(const Qwen38Json[]){"+",".join(node(v) for v in value)+"}" if value else "NULL"
+            return "{.kind=Q38_JSON_ARRAY,.as.array={"+array+","+str(len(value))+"}}"
+        members = ["{"+data(k)+",&(const Qwen38Json)"+node(v)+"}" for k, v in value.items()]
+        obj = "(const Qwen38JsonMember[]){"+",".join(members)+"}" if value else "NULL"
+        return "{.kind=Q38_JSON_OBJECT,.as.object={"+obj+","+str(len(value))+"}}"
+
+    for i, case in enumerate(cases):
+        opt, result = case["options"], case["expected"]
+        lines.append(f"static const Qwen38Json chat{i} = "+node(case["messages"])+";")
+        tools = "NULL"
+        if "tools" in opt:
+            lines.append(f"static const Qwen38Json tools{i} = "+node(opt["tools"])+";")
+            tools = f"&tools{i}"
+        opts = ["Q38_OMITTED" if k not in opt else "Q38_TRUE" if opt[k] else "Q38_FALSE"
+                for k in ("enable_thinking", "preserve_thinking")]
+        opts += [{None:"Q38_EFFORT_OMITTED", "low":"Q38_EFFORT_LOW", "medium":"Q38_EFFORT_MEDIUM",
+                  "xhigh":"Q38_EFFORT_XHIGH"}.get(opt.get("reasoning_effort"), "99"),
+                 str(opt.get("add_generation_prompt",False)).lower()]
+        ids = result.get("ids",[])
+        lines.append(f"static const int32_t chat_ids{i}[] = {{"+",".join(map(str,ids or [0]))+"};")
+        records.append(f"{{&chat{i},{tools},{{"+",".join(opts)+"},"+data(result.get("rendered",""))+","+
+                       str("error_type" in result).lower()+f",chat_ids{i},{len(ids)}}}")
+    lines.append("static const ChatCase chats[] = {"+",\n".join(records)+"};")
+    (ROOT / "build/qwen38-a/chat_cases.inc").write_text("\n".join(lines)+"\n")
+
+
 if __name__ == "__main__":
     destination = ROOT / "build/qwen38-a/small.gguf"
     write_fixture(destination, small_config())
     text_cases()
+    chat_cases()
     print(destination)
