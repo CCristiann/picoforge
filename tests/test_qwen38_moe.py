@@ -5,8 +5,11 @@ The hash-pinned source cache must be prepared explicitly; tests never fetch.
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
+import struct
+import subprocess
 import tempfile
 import unittest
 
@@ -300,6 +303,76 @@ class FixtureExportTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 moe.export_fixtures(folder, cache=Path(tmp) / "missing")
             self.assertFalse(json.loads((folder / "manifest.json").read_text())["complete"])
+
+
+@unittest.skipUnless(os.environ.get("Q38_F_NATIVE"), "set Q38_F_NATIVE to the isolated ASan/UBSan harness")
+class NativeRoutingTests(unittest.TestCase):
+    def route(self, logits, k, normalize=True):
+        t, e = logits.shape
+        payload = struct.pack("<4I", t, e, k, int(normalize)) + logits.astype("<f4").tobytes()
+        proc = subprocess.run([os.environ["Q38_F_NATIVE"], "--route"], input=payload,
+                              capture_output=True, check=True)
+        status, = struct.unpack_from("<I", proc.stdout)
+        if status:
+            self.assertEqual(len(proc.stdout), 4)
+            return status, None
+        self.assertEqual(len(proc.stdout), 4 + 4*t*(e+2*k))
+        probabilities = np.frombuffer(proc.stdout, "<f4", t*e, 4).reshape(t, e)
+        ids = np.frombuffer(proc.stdout, "<u4", t*k, 4+4*t*e).reshape(t, k)
+        scores = np.frombuffer(proc.stdout, "<f4", t*k, 4+4*t*(e+k)).reshape(t, k)
+        return status, (probabilities, ids, scores)
+
+    def test_native_shape_stride_errors(self):
+        proc = subprocess.run([os.environ["Q38_F_NATIVE"]], capture_output=True, text=True, check=True)
+        self.assertIn("routing:", proc.stdout)
+
+    def test_native_differential_and_ties(self):
+        rng = np.random.default_rng(3811)
+        for t, e, k in ((0,4,2), (1,1,1), (7,4,1), (7,4,4), (33,512,10),
+                         (3,513,11), (2,1025,3), (1024,17,5)):
+            logits = rng.normal(0, 3, (t,e)).astype(np.float32)
+            for norm in (False, True):
+                with self.subTest(t=t, e=e, k=k, norm=norm):
+                    status, actual = self.route(logits, k, norm)
+                    self.assertEqual(status, 0)
+                    expected = moe.route_logits(logits, k, norm)
+                    np.testing.assert_array_equal(actual[1], expected[1])
+                    for j in (0,2):
+                        np.testing.assert_allclose(actual[j], expected[j], atol=2e-6, rtol=2e-5)
+                    hp = torch.softmax(torch.from_numpy(logits), dim=-1).numpy()
+                    np.testing.assert_allclose(actual[0], hp, atol=2e-6, rtol=2e-5)
+                    if norm:
+                        np.testing.assert_allclose(actual[2].sum(-1), 1, atol=2e-6, rtol=0)
+        for logits, k in ((np.zeros((3,512), np.float32),10),
+                           (np.array([[0,1e-9,0,-1e-9]],np.float32),2),
+                           (np.array([[-3e38,3e38,0,-1]],np.float32),4)):
+            status, actual = self.route(logits, k)
+            self.assertEqual(status,0)
+            expected = moe.route_logits(logits, k)
+            np.testing.assert_array_equal(actual[1], expected[1])
+            np.testing.assert_allclose(actual[2], expected[2], atol=2e-6, rtol=2e-5)
+
+    def test_native_upstream_routes_from_real_projection_formula(self):
+        for seed in range(4):
+            c = replace(moe.FixtureConfig(), num_experts=512, num_experts_per_tok=10,
+                        moe_intermediate_size=2)
+            x, weights = moe.synthetic(c, tokens=7, seed=seed)
+            expected = moe.upstream_forward(c, x, weights)
+            status, actual = self.route(expected["logits"], 10)
+            self.assertEqual(status, 0)
+            np.testing.assert_array_equal(actual[1], expected["ids"])
+            np.testing.assert_allclose(actual[2], expected["weights"], atol=2e-6, rtol=2e-5)
+
+    def test_native_chunk_invariance_and_nonfinite(self):
+        logits = np.random.default_rng(48).normal(size=(65,512)).astype(np.float32)
+        _, full = self.route(logits,10)
+        parts = [self.route(logits[a:b],10)[1] for a,b in ((0,1),(1,8),(8,40),(40,65))]
+        for i in range(3):
+            np.testing.assert_array_equal(np.concatenate([p[i] for p in parts]), full[i])
+        for bad in (np.nan,np.inf,-np.inf):
+            broken=logits.copy(); broken[-1,-1]=bad
+            status, _ = self.route(broken,10)
+            self.assertNotEqual(status,0)
 
 
 if __name__ == "__main__":
