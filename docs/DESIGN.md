@@ -1,5 +1,13 @@
 # Design
 
+**Direction update, 2026-10-11:** the next objective is a substantially larger
+model for coding and reasoning on the 64 GiB M5 Pro. The
+[large-model research and work order](large-model-research-2026-10-11.md)
+recommends validating Qwen3.8-Flash-Next with compressed resident weights and
+disk-only n-gram tables. This is a planned target, not implemented support.
+The architecture and milestones below describe the existing Qwen3 engine;
+the 30B remains its regression and kernel-development model.
+
 picoforge is a single-model LLM inference engine for Apple Silicon, written in
 C11 and Metal. It is deliberately narrow — one model family at a time, no ML
 framework inside the engine — and small enough to be read end to end. Its

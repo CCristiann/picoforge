@@ -3,6 +3,12 @@
 Reviewed at `a842853`; updated with the correctness and measurement work that
 followed. This document separates implemented work from proposed experiments.
 
+**Subsequent direction change:** the user clarified that the goal is to run a
+substantially larger model on the 64 GiB M5 Pro. The
+[large-model research](large-model-research-2026-10-11.md) supersedes this
+review's work order and restriction against SSD offload for future work.
+The correctness findings and benchmark limitations below still apply.
+
 ## Direction
 
 Keep picoforge small: Qwen3, C11, Metal, one tested machine, readable code and
