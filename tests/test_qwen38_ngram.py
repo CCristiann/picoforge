@@ -29,7 +29,7 @@ class NativeTests(unittest.TestCase):
         BINARY.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["clang", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Wpedantic",
                         "-Wshadow", "-Wconversion", "-Werror", "-fsanitize=address,undefined",
-                        "-ffp-contract=off", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
+                        "-ffp-contract=off", "-fno-fast-math", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
                         "src/qwen38_ple.c", "src/qwen38_conv.c", "src/qwen38_base.c",
                         "src/qwen38_packed.c", "src/qwen38_config.c", "src/qwen38_weights.c", "src/gguf.c", "src/gguf_reader.c", "src/util.c",
                         "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
@@ -39,10 +39,16 @@ class NativeTests(unittest.TestCase):
         self.assertIn("PASS", result.stdout)
 
     def test_complete_ple_f32_q8_abort_reset_and_history(self):
+        self.check_complete_ple(23, (1, 2, 7, 9, 23), (0, 8))
+
+    def test_complete_ple_32k_history(self):
+        self.check_complete_ple(32768, (255, 1024), (8,))
+
+    def check_complete_ple(self, t, chunks, formats):
         torch.set_num_threads(1)
         rng = torch.Generator().manual_seed(3877)
         cfg = GOLDEN["cases"][0]["config"]
-        t, h, d, row_width, kernel = 23, 2, 8, 8, 4
+        h, d, row_width, kernel = 2, 8, 8, 4
         channels, width = h*d, 4*row_width
         tokens = torch.randint(0, 99, (t,), generator=rng, dtype=torch.int32)
         tokens[[0, 8, 9, 16]] = cfg["eos"]
@@ -51,7 +57,7 @@ class NativeTests(unittest.TestCase):
         gains = [torch.randint(8, 25, (channels,), generator=rng).float()/16 for _ in range(3)]
         taps = torch.randn(channels, kernel, generator=rng)*0.2
         worst = 0.0
-        for kind in (0, 8):
+        for kind in formats:
             key = torch.randint(-9, 10, (channels, width), generator=rng).float()/64
             value = torch.randint(-9, 10, (d, width), generator=rng).float()/64
             oracle = PleOracle(cfg, table, key, value, gains, taps)
@@ -75,7 +81,7 @@ class NativeTests(unittest.TestCase):
                         struct.pack("<e", 1/64)+bytes((int(v*64)&255 for v in row))
                         for row in tensor.tolist())
                     (path / name).write_bytes(payload)
-                for chunk in (1, 2, 7, 9, t):
+                for chunk in chunks:
                     run = subprocess.run([str(BINARY), "--ple", str(path), str(chunk)],
                                          capture_output=True, text=True, cwd=ROOT)
                     self.assertEqual(run.returncode, 0, run.stdout+run.stderr)
@@ -98,8 +104,10 @@ class NativeTests(unittest.TestCase):
                     history_ref=torch.stack(histories)
                     history=read("history.out",history_ref.shape)
                     torch.testing.assert_close(history, history_ref, atol=2e-4, rtol=2e-4)
+                    if torch.linalg.vector_norm(history_ref)>=1:
+                        self.assertLessEqual((torch.linalg.vector_norm(history-history_ref)/torch.linalg.vector_norm(history_ref)).item(),1e-4)
                     self.assertTrue(torch.equal(history,read("replay_history.out",history.shape)))
-        print(f"PLE composed max |Delta-ref|={worst:.9g}; F32/Q8_0, abort/retry/reset and 5 chunk sizes")
+        print(f"PLE composed T={t} max |Delta-ref|={worst:.9g}; formats={formats}, chunks={chunks}")
 
     def native_gate(self, key, query, value, pad=0):
         fields = list(key.shape) + [pad]

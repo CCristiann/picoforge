@@ -837,3 +837,150 @@ target della suite al Makefile. Restano C1 per history candidata e lifecycle
 store/state/job, C2+B Q8_0+A per PLE completo, poi kernel/staging Metal,
 commit globale, slice reali e integrazione del grafo. Nessun commit di altre
 sessioni è stato importato o dipendenza dichiarata implicitamente soddisfatta.
+
+## 12. ESEGUI v2 — store/job e PLE CPU composto
+
+Base operativa `6a6b886e985185d7c9104eda888e6a406553aedf`;
+branch `impl/qwen38-e-v2`, worktree esterno `../picoforge-e-v2`.
+Applicati `resume.md` e `integration.md` §11. Nessun cherry-pick delle
+consegne già integrate, nessuna modifica ai worktree precedenti.
+
+### Implementazione e durata
+
+Implementate tutte le API CPU di `qwen38_ngram.h`: store/state/job,
+workspace e `qwen38_ple_cpu`, oltre a hash/gate già presenti. Lo store
+copia config e array, duplica il fd tramite reader E, verifica il descrittore
+BF16 e i confini; non mappa né precarica la tabella. Lo stato possiede
+history token e backing C allineato. Il job possiede ID uint64 materializzati,
+history token candidata e un secondo backing C: init/copy/commit usano
+`qwen38_conv_state_*`, mai copie di handle opachi.
+
+Baseline sincrona, **un solo job per store**, anche tra stati distinti.
+Prepare/read non avanzano lo stato. READY richiede l'intero batch;
+COMPUTED richiede Delta finita e history C completa. Commit ricontrolla
+owner/epoch/posizione/file e pubblica history e posizione insieme. Abort
+scarta soltanto la candidata. Store/state/workspace restano BUSY finché
+referenziati: commit e abort non sostituiscono job_release. Release può
+scartare anche un job non committato. Gli handle liberati non sono più
+utilizzabili; nessuna promessa di rilevare un puntatore C dopo free.
+Le righe sono view borrowed `[T,H*d]`, valide fino a release salvo abort,
+errore o invalidazione dello store. T=0 è COMPUTED senza I/O, input o
+avanzamento. File mutato → store STALE permanente, stato info non valido,
+necessaria riapertura; un reset non recupera un file cambiato.
+
+Workspace unico allocato al setup; nessuna allocazione dentro ple_cpu.
+B esegue key/value da Q8_0 (anche F32 verificato); C RMS per gruppo D con
+gamma diretta; E gate; C conv con SiLU, dilation=N e history raw oldest-first.
+Output **Delta**, nessuna somma con R. Guadagni accettati come `[S,D]`,
+vettore folded `[S*D]` o gain condiviso `[D]`; nessun +1 nel runtime.
+Viste con stride byte verificati e buffer disgiunti; input/pesi borrowed
+per la chiamata sincrona. Identità e immutabilità degli span dei pesi
+rimangono responsabilità del chiamante, come nell'ABI B condiviso.
+Errore strutturale prima del calcolo lascia il job READY; errore numerico
+rende il job inutilizzabile. La sessione del grafo resta responsabilità
+del coordinatore: il rollback locale E non recupera mutazioni C/D/F altrove.
+
+### Evidenza numerica e fault
+
+**17 test CPU passati, nessuno skip**, clang C11 ASan/UBSan con
+`-fno-sanitize-recover=all -ffp-contract=off -fno-fast-math` e warning fatali.
+Si conservano i test ID/BF16 esatti e ogni-byte EINTR/EOF/EIO/EBADF del reader.
+Aggiunti: API pubbliche prima/dopo READY, doppio commit, owner estraneo,
+BUSY, batch vuoto anche PLE, abort/retry, reset/replay, file troncato dopo
+READY, allocazione fallita a ciascuno dei **15** punti di setup/job senza
+risorse vive residue, capacità, dimensioni, nonfinite e alias R/Delta.
+
+Oracle PLE: classi/metodi originali Transformers fissati, forward e conv
+PyTorch invariati. Adapter della norma usa `_norm` upstream e applica il
+gain GGUF già folded, evitando una sottrazione/riaddizione FP32 di 1.
+Q8 sintetico costruito da pesi dyadic noti; reale decodificato a tile tramite
+oracle indipendente B/DwarfStar, nessun decoder duplicato in E.
+
+| Prova | Risultato |
+|---|---|
+| 23 token sintetici, F32/Q8_0, chunk 1/2/7/9/23, abort/retry e reset | max abs Delta `2.38418579e-7` |
+| 32768 token sintetici, D=8/S=2, Q8_0, chunk 255/1024 | max abs Delta `7.15255737e-7` |
+| Slice reale, D=2560/S=4, 2 token, chunk 1/2 | max abs Delta `1.19209290e-7`; relativo L2 `3.27002340e-7` |
+| Proiezioni reali contro FP64, bound B per elemento | max rapporto errore/bound `0.00240521228` (<1) |
+| Storia C | bit-esatta rispetto agli z nativi; entro atol/rtol 2e-4 e L2 1e-4 rispetto all'oracle completo |
+
+Verificati anche key/query normalizzati, value, dot/segno, gate e z;
+nella slice reale gli operatori C e gate E sono confrontati con oracle
+alimentati dagli **stessi intermedi nativi**, oltre al PLE completo.
+Le tolleranze §6 non sono state allargate. Due token reali non certificano
+una conversazione reale: R è sintetico, non una cattura del layer precedente.
+Nessuna misura della perdita Q2 contro pesi BF16 originali.
+
+### Slice, memoria e riproduzione
+
+Sotto lock comune: config e ruoli risolti da A sul GGUF esistente,
+**35.102.720 byte** dei soli sei tensori PLE, 32 righe di embedding
+(10.240 byte BF16), più 38 righe di controllo ai confini delle teste e
+vicino ai boundary di pagina/intervallo (12.160 byte BF16).
+Niente checksum completo o copia del checkpoint. Il manifest registra
+artifact/revisione, stat, ID/offset, hash dei file, source/binary degli oracle
+e del harness. Output solo in `build/qwen38-e/real-ple-final/`.
+
+Contatore delle allocazioni E vive (non RSS, pesi borrowed esclusi):
+1.029.958 byte con chunk1, 1.255.638 con chunk2. Include stato persistente,
+candidata, reader, metadati e workspace. Per Tmax1024 a geometria reale il
+calcolo del medesimo layout è **231.900.598 byte** (~221.2 MiB); non è una
+misura di footprint del modello. Tutte le allocazioni aggregate E hanno
+cap 256 MiB, anche con più stati/workspace; ogni create verifica inoltre
+il proprio budget. Oracle: due matrici FP32 125 MiB, decoder a tile 512
+righe, niente dequantizzazione dell'intero modello; budget addizionale
+previsto entro 512 MiB oltre Python/Torch.
+
+```sh
+cd /Users/cristiancirje/Desktop/Dev/picoforge-e-v2
+Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+"$Q38_PY" tools/oracle/qwen38_ngram.py --fetch-source
+"$Q38_PY" tests/test_qwen38_ngram.py -v
+# Una volta, directory nuova (sorgenti DwarfStar esistenti, nessuna dipendenza):
+"$Q38_PY" -c 'import sys; sys.path.insert(0,"tools/oracle"); from qwen38_packed import build_reference; build_reference("/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline", "build/qwen38-e/packed-reference")'
+# Usare una directory --output nuova per ogni run, senza sovrascrivere evidenza.
+"$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- "$Q38_PY" \
+  tools/oracle/qwen38_ngram.py \
+  --real-checkpoint /Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
+  --native build/qwen38-e/test_ngram \
+  --packed-reference build/qwen38-e/packed-reference/reference \
+  --output build/qwen38-e/real-ple-new
+make -j4
+make PYTHON="$Q38_PY" test-qwen38-contracts test-gguf
+```
+
+Passati build, 4 test contratti/lock e 7 GGUF; harness E anche O2 senza
+sanitizer. Non eseguito make test-all, che coinvolge altri asset e GPU.
+Nessun test/kernel GPU E in questa consegna; il lock sopra protegge il
+workload CPU sul checkpoint, non indica uso GPU.
+
+### Proposta concreta di integrazione condivisa
+
+Il target `test-qwen38-e-cpu` continua a usare il runner Python E, che linka
+ora anche `qwen38_conv.c`, `qwen38_base.c`, `qwen38_packed.c`,
+`qwen38_config.c`, `qwen38_weights.c`, `gguf.c`, `gguf_reader.c`, `util.c`.
+**Il coordinatore deve aggiungere `src/qwen38_conv.c` alla lista sorgenti
+del target `build/qwen38-integration/test_links` in `tools/qwen38.mk`.**
+La regola v1 non lo include; E non modifica il Makefile condiviso.
+Verificato manualmente lo stesso harness con la dipendenza aggiunta:
+
+```sh
+clang -std=c11 -O1 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -Isrc tests/test_qwen38_integration.c \
+  src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c \
+  src/qwen38_base.c src/qwen38_conv.c src/qwen38_attention.c \
+  src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c \
+  src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm \
+  -o build/qwen38-e/test_links
+build/qwen38-e/test_links \
+  /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-a/small.gguf
+```
+
+PASS: collegamenti A→B→F, C→E e A→D/E preservati. Restano staging/kernel
+Metal E, lifecycle GPU pubblico e commit globale; catture autentiche,
+integrazione dei layer/logits e generazione del modello. Nessuna dipendenza
+CPU mancante è sostituita da stub e nessun file altrui è stato modificato.
+
+Manifest finale della slice reale (`build/qwen38-e/real-ple-final/manifest.json`),
+SHA-256: `7867992a96b012551a83751c86a338cc4cf7639ed036603dc0dd97f000ae93ae`.

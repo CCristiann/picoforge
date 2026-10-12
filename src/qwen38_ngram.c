@@ -348,17 +348,20 @@ Qwen38Status q38e_ngram_open_test(const Gguf *g, const Qwen38NgramConfig *c,
     size_t max_tokens, size_t budget, const Q38eAllocator *alloc,
     Qwen38NgramStore **out, Qwen38Error *e) {
     if (out) *out=NULL;
-    if (!out || !g || !c || !max_tokens || !g->tensors || !c->head_dim || !c->hidden_size ||
-        !c->streams || !c->conv_kernel || c->order<2 || !c->head_count ||
+    if (!out || !g || !c || !g->tensors ||
         !c->multipliers || !c->head_offsets || !c->head_vocab_sizes)
         return q38e_error(e,Q38_INVALID_ARGUMENT,"store arguments");
+    if (!max_tokens) return q38e_error(e,Q38_RANGE,"zero token capacity");
+    if (!c->head_dim || !c->hidden_size || !c->streams || !c->conv_kernel || c->order<2 || !c->head_count)
+        return q38e_error(e,Q38_SHAPE,"store dimensions");
     if (c->multiplier_count!=c->order || (uint64_t)(c->order-1)*c->heads_per_order!=c->head_count)
         return q38e_error(e,Q38_SHAPE,"hash array lengths");
     if (max_tokens>UINT32_MAX || c->head_count>UINT32_MAX/c->head_dim ||
         c->streams>UINT32_MAX/c->hidden_size || max_tokens>SIZE_MAX/c->head_count/8 ||
         c->head_count>(SIZE_MAX-c->order)/2 || (c->order+2*c->head_count)>SIZE_MAX/8)
         return q38e_error(e,Q38_OVERFLOW,"store geometry");
-    if (!isfinite(c->rms_eps) || c->rms_eps<=0) return q38e_error(e,Q38_RANGE,"RMS epsilon");
+    if (!isfinite(c->rms_eps)) return q38e_error(e,Q38_NONFINITE,"RMS epsilon");
+    if (c->rms_eps<=0) return q38e_error(e,Q38_RANGE,"RMS epsilon");
     const GgufTensor *table=NULL;
     for (size_t i=0;i<g->tensor_count;i++)
         if (!strncmp(g->tensors[i].name,"per_layer_token_embd.weight",sizeof g->tensors[i].name)) {
@@ -419,6 +422,7 @@ Qwen38Status qwen38_ngram_state_create(Qwen38NgramStore *s, Qwen38StateKey key,
     Qwen38NgramState **out, Qwen38Error *e) {
     if (out) *out=NULL;
     if (!s || !out || !key.model || !key.epoch) return q38e_error(e,Q38_INVALID_ARGUMENT,"state key");
+    if (s->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
     if (key.layer!=s->config.layer) return q38e_error(e,Q38_OWNER,"state layer");
     Qwen38NgramState *state=NULL;
     Qwen38Status code=q38e_allocate(s,sizeof *state,(void **)&state,e);
@@ -435,11 +439,14 @@ Qwen38Status qwen38_ngram_state_create(Qwen38NgramStore *s, Qwen38StateKey key,
     s->states++; *out=state; return q38e_error(e,Q38_OK,NULL);
 }
 Qwen38StateInfo qwen38_ngram_state_info(const Qwen38NgramState *s) {
-    return s ? s->info : (Qwen38StateInfo){0};
+    Qwen38StateInfo info=s ? s->info : (Qwen38StateInfo){0};
+    if (s && s->store->changed) info.valid=false;
+    return info;
 }
 Qwen38Status qwen38_ngram_state_reset(Qwen38NgramState *s, uint64_t epoch, Qwen38Error *e) {
     if (!s) return q38e_error(e,Q38_INVALID_ARGUMENT,"null state");
     if (s->info.busy) return q38e_error(e,Q38_BUSY,"state referenced");
+    if (s->store->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
     Qwen38Status code=qwen38_conv_state_reset(s->conv.handle,epoch,e);
     if (code) return code;
     s->info.key.epoch=epoch; s->info.next_pos=0; s->info.valid=true;
@@ -456,6 +463,7 @@ Qwen38Status qwen38_ngram_state_destroy(Qwen38NgramState *state, Qwen38Error *e)
 }
 Qwen38Status q38e_job_check(const Qwen38NgramJob *j, Qwen38Error *e) {
     if (!j) return q38e_error(e,Q38_INVALID_ARGUMENT,"null job");
+    if (j->store->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
     if (j->store->job!=j || j->state->store!=j->store) return q38e_error(e,Q38_OWNER,"job owner");
     Qwen38StateInfo info=j->state->info;
     if (info.key.epoch!=j->key.epoch) return q38e_error(e,Q38_STALE,"job epoch");
@@ -475,6 +483,7 @@ Qwen38Status qwen38_ngram_prepare(Qwen38NgramStore *s, Qwen38NgramState *state,
     const int32_t *tokens, size_t count, uint64_t position, Qwen38NgramJob **out, Qwen38Error *e) {
     if (out) *out=NULL;
     if (!s || !state || !out) return q38e_error(e,Q38_INVALID_ARGUMENT,"prepare arguments");
+    if (s->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
     if (state->store!=s) return q38e_error(e,Q38_OWNER,"foreign state");
     if (s->job || state->info.busy) return q38e_error(e,Q38_BUSY,"job pending release");
     if (!state->info.valid || position!=state->info.next_pos) return q38e_error(e,Q38_BAD_STATE,"append position");
@@ -501,6 +510,7 @@ Qwen38Status qwen38_ngram_read(Qwen38NgramJob *j, Qwen38Error *e) {
     code=q38e_reader_read(j->store->reader,j->ids,j->count*j->store->config.head_count,
         j->store->read_fn,j->store->read_context,&j->lease,e);
     j->phase=code ? Q38E_ABORTED : Q38E_READY;
+    if (code==Q38_STALE) j->store->changed=true;
     return code;
 }
 Qwen38Status qwen38_ngram_rows(const Qwen38NgramJob *j, Qwen38F32 *out, Qwen38Error *e) {
@@ -513,7 +523,9 @@ Qwen38Status qwen38_ngram_rows(const Qwen38NgramJob *j, Qwen38F32 *out, Qwen38Er
     if (j->count) {
         if (!r->ready || j->lease.owner!=r || j->lease.generation!=r->generation)
             return q38e_error(e,Q38_STALE,"reader lease");
-        code=unchanged(r); if (code) return reader_result(e,code,NULL,errno);
+        code=unchanged(r);
+        if (code==Q38_STALE) j->store->changed=true;
+        if (code) return reader_result(e,code,NULL,errno);
     }
     size_t width=j->store->width;
     *out=(Qwen38F32){.data=j->count ? r->values : NULL,.rank=2,.dim={j->count,width},

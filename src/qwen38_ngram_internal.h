@@ -50,6 +50,7 @@ struct Qwen38NgramStore {
     Q38eReader *reader;
     uint64_t *arrays;
     size_t max_tokens, width, channels, used, peak, states, workspaces;
+    bool changed;
     Qwen38NgramJob *job;
     Q38ePread read_fn;
     void *read_context;

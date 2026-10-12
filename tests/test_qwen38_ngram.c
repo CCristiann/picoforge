@@ -479,6 +479,11 @@ static void lifecycle_tests(void) {
     lifecycle_oom(&gg,&c);
     Qwen38NgramStore *store=NULL; Qwen38NgramState *state=NULL,*other=NULL;
     Qwen38Error e; Qwen38NgramJob *job=NULL,*blocked=NULL; Qwen38F32 rows;
+    Qwen38NgramConfig invalid=c; invalid.rms_eps=NAN;
+    assert(qwen38_ngram_open(&gg,&invalid,32,1<<20,&store,&e)==Q38_NONFINITE && !store);
+    invalid=c; invalid.hidden_size=0;
+    assert(qwen38_ngram_open(&gg,&invalid,32,1<<20,&store,&e)==Q38_SHAPE && !store);
+    assert(qwen38_ngram_open(&gg,&c,32,1,&store,&e)==Q38_CAPACITY && !store);
     assert(qwen38_ngram_open(&gg,&c,32,1<<20,&store,&e)==Q38_OK);
     assert(close(fd)==0); /* store owns its fd; no Gguf borrow */
     assert(qwen38_ngram_state_create(store,(Qwen38StateKey){&gg,0,1},&state,&e)==Q38_OK);
@@ -517,6 +522,14 @@ static void lifecycle_tests(void) {
     store->read_fn=NULL; store->read_context=NULL;
     assert(qwen38_ngram_state_reset(state,2,&e)==Q38_OK);
     assert(qwen38_ngram_state_reset(state,2,&e)==Q38_STALE);
+    assert(qwen38_ngram_prepare(store,state,tokens,4,0,&job,&e)==Q38_OK);
+    assert(qwen38_ngram_read(job,&e)==Q38_OK);
+    int changed=open(path,O_RDWR); assert(changed>=0 && ftruncate(changed,1023)==0); close(changed);
+    assert(qwen38_ngram_rows(job,&rows,&e)==Q38_STALE && !rows.data);
+    assert(!qwen38_ngram_state_info(state).valid);
+    assert(qwen38_ngram_commit(state,job,&e)==Q38_STALE);
+    assert(qwen38_ngram_job_release(job,&e)==Q38_OK);
+    assert(qwen38_ngram_prepare(store,state,tokens,4,0,&job,&e)==Q38_STALE && !job);
     assert(qwen38_ngram_state_destroy(state,&e)==Q38_OK);
     assert(qwen38_ngram_state_destroy(other,&e)==Q38_OK);
     assert(qwen38_ngram_close(store,&e)==Q38_OK); assert(unlink(path)==0);
@@ -557,7 +570,7 @@ static int ple_cli(const char *dir, size_t chunk, const char *checkpoint) {
     for (size_t i=0;i<c.order;i++) assert(fscanf(f,"%"SCNu64,mult+i)==1);
     for (size_t i=0;i<c.head_count;i++) assert(fscanf(f,"%"SCNu64,offsets+i)==1);
     for (size_t i=0;i<c.head_count;i++) assert(fscanf(f,"%"SCNu64,sizes+i)==1);
-    assert(!fclose(f) && total && total<=1024 && chunk && chunk<=1024);
+    assert(!fclose(f) && total && total<=32768 && chunk && chunk<=1024);
     assert(c.hidden_size<=2560 && c.streams<=4 && c.head_dim<=160 && c.conv_kernel<=4);
     size_t channels=(size_t)c.streams*c.hidden_size, width=c.head_count*c.head_dim;
     int32_t *tokens=read_fixture(dir,"tokens.bin",total*4);
@@ -590,6 +603,14 @@ static int ple_cli(const char *dir, size_t chunk, const char *checkpoint) {
     else close(g.fd);
     assert(qwen38_ngram_state_create(store,(Qwen38StateKey){&g,c.layer,1},&state,&e)==Q38_OK);
     assert(qwen38_ple_workspace_create(store,224<<20,&work,&e)==Q38_OK);
+    Qwen38NgramJob *empty=NULL;
+    assert(qwen38_ngram_prepare(store,state,NULL,0,0,&empty,&e)==Q38_OK);
+    assert(qwen38_ngram_read(empty,&e)==Q38_OK);
+    assert(qwen38_ple_cpu(empty,&w,gate_const(gate_view(NULL,3,0,c.streams,c.hidden_size,0)),
+        gate_view(NULL,3,0,c.streams,c.hidden_size,0),work,&e)==Q38_OK);
+    assert(qwen38_ngram_commit(state,empty,&e)==Q38_OK && !state->info.next_pos);
+    assert(qwen38_ngram_job_release(empty,&e)==Q38_OK);
+    assert(q38e_reader_stats(store->reader).calls==0);
     float *history=calloc((c.conv_kernel-1u)*c.order*channels+1,4); assert(history);
     size_t history_rows=(c.conv_kernel-1u)*c.order;
     if (!checkpoint) {
@@ -627,6 +648,7 @@ static int ple_cli(const char *dir, size_t chunk, const char *checkpoint) {
                     if (!pass) {
                         emit_fixture(dir,"delta.out",y.data,n*channels,start!=0);
                         emit_fixture(dir,"z.out",work->z,n*channels,start!=0);
+                        emit_fixture(dir,"u.out",work->u,n*channels,start!=0);
                         emit_fixture(dir,"gate.out",work->gate,n*c.streams,start!=0);
                         emit_fixture(dir,"key_norm.out",work->key,n*channels,start!=0);
                         emit_fixture(dir,"query_norm.out",work->query,n*channels,start!=0);
