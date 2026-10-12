@@ -115,8 +115,8 @@ def gate_reference(a, b, dt_bias, ssm_a):
         raise ValueError("GDN projected gates shape mismatch")
     if any(t.dtype != torch.float32 or not torch.isfinite(t).all() for t in (a, b, dt_bias, ssm_a)):
         raise ValueError("GDN projected gates require finite FP32 tensors")
-    if (ssm_a >= 0).any():
-        raise ValueError("ssm_a must contain already-negative decay coefficients")
+    if (ssm_a > 0).any():
+        raise ValueError("ssm_a must contain already-nonpositive decay coefficients")
     return ssm_a * F.softplus(a + dt_bias), torch.sigmoid(b)
 
 
@@ -272,11 +272,13 @@ def hc_reference(ref, residual, gain, down, up, inject=None, block=None, eps=1e-
     return outputs
 
 
-def affine_reference(q, k, v, log_decay, beta, state, normalize_qk=True):
+def affine_reference(q, k, v, log_decay, beta, state, normalize_qk=True, scale_q=True):
     """Small FP64 matrix-transition oracle, independent of the scalar delta loop.
 
     This intentionally materializes I-beta*k*k^T. Never use it for inference
     or real-sized heads. Input/output state uses GGUF [Hv,Dv,Dk] order.
+    For the native scan's already-prepared Q/K, disable BOTH normalization
+    and query scaling, so the comparison consumes the exact same FP32 values.
     """
     require_cpu(q, k, v, log_decay, beta, state)
     q, k, v, log_decay, beta, state = [t.detach().double().numpy().copy()
@@ -288,7 +290,8 @@ def affine_reference(q, k, v, log_decay, beta, state, normalize_qk=True):
     if normalize_qk:
         q /= np.sqrt(np.sum(q * q, axis=-1, keepdims=True) + 1e-6)
         k /= np.sqrt(np.sum(k * k, axis=-1, keepdims=True) + 1e-6)
-    q /= np.sqrt(dk)
+    if scale_q:
+        q /= np.sqrt(dk)
     output = np.empty((tokens, hv, dv), dtype=np.float64)
     for t in range(tokens):
         for h in range(hv):

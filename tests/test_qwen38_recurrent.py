@@ -492,6 +492,11 @@ class CHc(ct.Structure):
     _fields_ = [(name, ct.c_size_t) for name in ("streams", "hidden_size", "low_rank")] + [("rms_eps", ct.c_float)]
 
 
+class CGdn(ct.Structure):
+    _fields_ = [(name, ct.c_size_t) for name in ("key_heads", "value_heads", "key_dim", "value_dim")] + [
+                ("rms_eps", ct.c_float), ("l2_eps", ct.c_float)]
+
+
 def c_view(array):
     """Test-side ABI mirror of the frozen header; capacity includes row padding."""
     assert array.dtype == np.float32 and 1 <= array.ndim <= 4 and all(s >= 0 for s in array.strides)
@@ -507,6 +512,8 @@ def c_view(array):
 
 
 class NativeTests(unittest.TestCase):
+    measurements = []
+
     @classmethod
     def setUpClass(cls):
         if CPU_LIB is None:
@@ -528,6 +535,15 @@ class NativeTests(unittest.TestCase):
         cls.lib.qwen38_hc_inject_weights.argtypes = [ct.POINTER(CHc), CView, CView, error]
         cls.lib.qwen38_hc_read.argtypes = [ct.POINTER(CHc), CView, CView, CView, error]
         cls.lib.qwen38_hc_add.argtypes = [ct.POINTER(CHc), CView, CView, CView, error]
+        cls.lib.qwen38_gdn_state_bytes.argtypes = [ct.POINTER(CGdn), ct.POINTER(CSize), error]
+        cls.lib.qwen38_gdn_state_init.argtypes = [ct.POINTER(CGdn), CKey, CMemory, CMemory, ct.POINTER(ct.c_void_p), error]
+        cls.lib.qwen38_gdn_state_reset.argtypes = [ct.c_void_p, ct.c_uint64, error]
+        cls.lib.qwen38_gdn_state_export.argtypes = [ct.c_void_p, CView, error]
+        cls.lib.qwen38_gdn_state_info.argtypes = [ct.c_void_p]
+        cls.lib.qwen38_gdn_state_info.restype = CInfo
+        cls.lib.qwen38_gdn_prepare.argtypes = [ct.POINTER(CGdn), *([CView] * 8), error]
+        cls.lib.qwen38_gdn_scan.argtypes = [ct.POINTER(CGdn), *([CView] * 4), ct.c_void_p, ct.c_uint64, error]
+        cls.lib.qwen38_gdn_norm_gate.argtypes = [ct.POINTER(CGdn), *([CView] * 4), error]
 
     def invoke(self, name, *args):
         error = CError()
@@ -637,6 +653,144 @@ class NativeTests(unittest.TestCase):
         self.invoke("hc_add", ct.byref(shape), c_view(updated), c_view(block.numpy()), c_view(weights))
         torch.testing.assert_close(torch.from_numpy(updated), ref["residual"], atol=2e-5, rtol=0)
 
+    def seed_gdn(self, shape, initial):
+        """Set arbitrary S through public rank-one writes, never poke opaque memory."""
+        hk, hv, dk, dv = shape.key_heads, shape.value_heads, shape.key_dim, shape.value_dim
+        state = self.new_state(shape, "gdn")
+        warm = np.zeros((dk, 2 * hk * dk + hv * dv), np.float32)
+        for j in range(dk):
+            warm[j, hk * dk + np.arange(hk) * dk + j] = 1
+            warm[j, 2 * hk * dk:] = initial[:, :, j].reshape(-1)
+        decay, beta, output = np.zeros((dk, hv), np.float32), np.ones((dk, hv), np.float32), np.empty((dk, hv, dv), np.float32)
+        self.invoke("gdn_scan", ct.byref(shape), c_view(warm), c_view(decay), c_view(beta), c_view(output), state, 0)
+        exported = np.empty_like(initial)
+        self.invoke("gdn_state_export", state, c_view(exported))
+        np.testing.assert_array_equal(exported, initial)
+        return state, dk
+
+    def test_native_gdn_prepare_and_norm_gate(self):
+        rng = np.random.default_rng(3825)
+        for hk, hv, dk, dv in ((2, 6, 3, 5), (2, 2, 4, 7), (16, 48, 128, 128)):
+            shape = CGdn(hk, hv, dk, dv, 1e-6, 1e-6)
+            t, kw = 3, hk * dk
+            qkv = rng.normal(size=(t, 2 * kw + hv * dv)).astype(np.float32)
+            qkv[0, :2 * kw] = 0
+            qkv[1, :2 * kw] *= 1e-6
+            a, b = rng.normal(size=(t, hv)).astype(np.float32), rng.normal(size=(t, hv)).astype(np.float32)
+            dt, weight = rng.normal(size=hv).astype(np.float32), -np.abs(rng.normal(size=hv)).astype(np.float32)
+            weight[0] = 0
+            prepared, log_g, beta = np.full_like(qkv, np.nan), np.full_like(a, np.nan), np.full_like(b, np.nan)
+            self.invoke("gdn_prepare", ct.byref(shape), *map(c_view, (qkv, a, b, weight, dt, prepared, log_g, beta)))
+            reference = qkv.astype(np.float64)
+            for offset, scale in ((0, 1 / np.sqrt(dk)), (kw, 1.)):
+                group = reference[:, offset:offset + kw].reshape(t, hk, dk)
+                group *= scale / np.sqrt(np.square(group).sum(-1, keepdims=True) + shape.l2_eps)
+            metrics = oracle.error_metrics(torch.from_numpy(prepared), torch.from_numpy(reference))
+            self.assertLessEqual(metrics["scaled_inf"], 5e-5)
+            np.testing.assert_array_equal(prepared[:, 2 * kw:], qkv[:, 2 * kw:])
+            gates = oracle.gate_reference(*map(torch.from_numpy, (a, b, dt, weight)))
+            for actual, expected in zip((log_g, beta), gates):
+                torch.testing.assert_close(torch.from_numpy(actual), expected, atol=1e-5, rtol=0)
+            inplace, ag, bg = qkv.copy(), a.copy(), b.copy()
+            self.invoke("gdn_prepare", ct.byref(shape), *map(c_view, (inplace, ag, bg, weight, dt, inplace, ag, bg)))
+            for actual, expected in zip((inplace, ag, bg), (prepared, log_g, beta)):
+                np.testing.assert_array_equal(actual, expected)
+            o, z, gain = rng.normal(size=(t, hv, dv)).astype(np.float32), rng.normal(size=(t, hv, dv)).astype(np.float32), rng.normal(size=dv).astype(np.float32)
+            expected = oracle.gdn_norm_reference(self.ref, *map(torch.from_numpy, (o, z, gain)))
+            self.invoke("gdn_norm_gate", ct.byref(shape), *map(c_view, (o, z, gain, o)))
+            self.assertLessEqual(oracle.error_metrics(torch.from_numpy(o), expected)["scaled_inf"], 1e-5)
+
+    def check_numeric(self, name, got, expected, tolerance, axes=1):
+        expected = expected if isinstance(expected, torch.Tensor) else torch.from_numpy(expected)
+        metrics = oracle.error_metrics(torch.from_numpy(got), expected, axes)
+        record = dict(comparison=name, limit=tolerance, **metrics)
+        self.measurements.append(record)
+        self.assertLessEqual(metrics["scaled_inf"], tolerance, record)
+
+    def test_native_gdn_core_short_long_and_affine(self):
+        gen = torch.Generator(device="cpu").manual_seed(3826)
+        shape = CGdn(2, 6, 3, 5, 1e-6, 1e-6)
+        for tokens in (0, 1, 3, 4, 5, 63, 64, 65, 127, 128, 129, 1023, 1024, 1025, 8192, 16384, 32768):
+            q, k = (self.ref.l2norm(torch.randn(tokens, 2, 3, generator=gen)) for _ in range(2))
+            v = torch.randn(tokens, 6, 5, generator=gen)
+            decay, beta = -torch.rand(tokens, 6, generator=gen) * 1e-5, torch.rand(tokens, 6, generator=gen)
+            initial = torch.randn(6, 5, 3, generator=gen)
+            prepared = np.concatenate(((q / np.sqrt(3)).numpy().reshape(tokens, 6),
+                k.numpy().reshape(tokens, 6), v.numpy().reshape(tokens, 30)), axis=-1)
+            state, position = self.seed_gdn(shape, initial.numpy())
+            guarded = np.full((tokens, 6, 7), -123., np.float32)
+            output = guarded[:, :, :5]
+            self.invoke("gdn_scan", ct.byref(shape), c_view(prepared), c_view(decay.numpy()), c_view(beta.numpy()), c_view(output), state, position)
+            self.assertTrue(np.all(guarded[:, :, 5:] == -123.))
+            last = np.empty((6, 5, 3), np.float32)
+            self.invoke("gdn_state_export", state, c_view(last))
+            limit = 5e-5 if tokens <= 1025 else 2e-4
+            for algorithm in ("chunk", "recurrent"):
+                expected = oracle.gdn_reference(self.ref, q, k, v, decay, beta, initial, algorithm=algorithm, normalize_qk=False)
+                self.check_numeric(f"C/{algorithm}/output/T{tokens}", output, expected[0], limit)
+                self.check_numeric(f"C/{algorithm}/state/T{tokens}", last, expected[1], limit, 2)
+            if tokens <= 129:
+                # Exact prepared inputs: the affine oracle must not scale Q twice.
+                pq = torch.from_numpy(prepared[:, :6].reshape(tokens, 2, 3))
+                expected = oracle.affine_reference(pq, k, v, decay, beta, initial, False, False)
+                self.check_numeric(f"C/affine/output/T{tokens}", output, expected[0], limit)
+                self.check_numeric(f"C/affine/state/T{tokens}", last, expected[1], limit, 2)
+            self.assertEqual(self.lib.qwen38_gdn_state_info(state).next_pos, position + tokens)
+
+    def test_native_gdn_chunk_bitwise_and_interleaving(self):
+        rng = np.random.default_rng(3827)
+        shape = CGdn(2, 6, 4, 5, 1e-6, 1e-6)
+        streams = []
+        for _ in range(2):
+            raw = rng.normal(size=(129, 46)).astype(np.float32)
+            a, b = rng.normal(size=(129, 6)).astype(np.float32), rng.normal(size=(129, 6)).astype(np.float32)
+            weight, dt = np.full(6, -.5, np.float32), np.full(6, .25, np.float32)
+            self.invoke("gdn_prepare", ct.byref(shape), *map(c_view, (raw, a, b, weight, dt, raw, a, b)))
+            initial = rng.normal(size=(6, 5, 4)).astype(np.float32)
+            full_state, start = self.seed_gdn(shape, initial)
+            full, last = np.empty((129, 6, 5), np.float32), np.empty_like(initial)
+            self.invoke("gdn_scan", ct.byref(shape), *map(c_view, (raw, a, b, full)), full_state, start)
+            self.invoke("gdn_state_export", full_state, c_view(last))
+            state, _ = self.seed_gdn(shape, initial)
+            streams.append((raw, a, b, full, last, state, start))
+        pieces, pos = [[], []], 0
+        for count in (0, 1, 3, 2, 65, 0, 58):
+            for index, (raw, a, b, full, last, state, start) in enumerate(streams):
+                part = np.empty((count, 6, 5), np.float32)
+                self.invoke("gdn_scan", ct.byref(shape), *map(c_view, (raw[pos:pos+count], a[pos:pos+count], b[pos:pos+count], part)), state, start + pos)
+                pieces[index].append(part)
+            pos += count
+        for index, (raw, a, b, full, last, state, start) in enumerate(streams):
+            np.testing.assert_array_equal(np.concatenate(pieces[index]), full)
+            actual = np.empty_like(last)
+            self.invoke("gdn_state_export", state, c_view(actual))
+            np.testing.assert_array_equal(actual, last)
+            self.invoke("gdn_state_reset", state, 2)
+            self.invoke("gdn_state_export", state, c_view(actual))
+            self.assertTrue(np.all(actual == 0))
+            self.assertEqual(self.lib.qwen38_gdn_state_info(state).next_pos, 0)
+
+    def test_native_conv_candidate_copy_is_independent(self):
+        shape = CConv(2, 4, 3, True)
+        source, candidate = self.new_state(shape), self.new_state(shape)
+        taps = np.ones((2, 4), np.float32)
+        prefix, out = np.arange(22, dtype=np.float32).reshape(11, 2), np.empty((11, 2), np.float32)
+        self.invoke("conv_causal", ct.byref(shape), c_view(prefix), c_view(taps), c_view(out), source, 0)
+        self.invoke("conv_state_copy", candidate, source)
+        initial = np.empty((9, 2), np.float32)
+        copied = np.empty_like(initial)
+        self.invoke("conv_state_export", source, c_view(initial))
+        self.invoke("conv_state_export", candidate, c_view(copied))
+        np.testing.assert_array_equal(copied, initial)
+        self.assertEqual(self.lib.qwen38_conv_state_info(candidate).next_pos, 11)
+        token, result = np.full((1, 2), -7., np.float32), np.empty((1, 2), np.float32)
+        self.invoke("conv_causal", ct.byref(shape), c_view(token), c_view(taps), c_view(result), candidate, 11)
+        self.invoke("conv_state_export", source, c_view(copied))
+        np.testing.assert_array_equal(copied, initial)
+        self.assertEqual(self.lib.qwen38_conv_state_info(source).next_pos, 11)
+        self.invoke("conv_state_export", candidate, c_view(copied))
+        np.testing.assert_array_equal(copied, np.concatenate((initial[1:], token)))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
@@ -655,5 +809,6 @@ if __name__ == "__main__":
             upstream_sha256=oracle.UPSTREAM_SHA256,
             adapter_sha256=hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest(),
             tests_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            measurements=ReferenceTests.measurements), indent=2) + "\n")
+            cpu_library_sha256=hashlib.sha256(CPU_LIB.read_bytes()).hexdigest() if CPU_LIB and CPU_LIB.exists() else None,
+            measurements=ReferenceTests.measurements + NativeTests.measurements), indent=2) + "\n")
     sys.exit(not result.wasSuccessful())

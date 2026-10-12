@@ -120,7 +120,99 @@ static void test_hc(void) {
         q38c_ro(view(block,sizeof(block),2,(size_t[]){1,3})),q38c_ro(i),&e)==Q38_OK);
     assert(normed[0]==4 && normed[1]==0 && normed[2]==4 && normed[3]==13 && normed[4]==18 && normed[5]==31);
 }
+static void test_gdn_lifecycle(void) {
+    Qwen38GdnShape shape={2,6,3,5,1e-6f,1e-6f}; Qwen38StateSize size; Qwen38Error e;
+    assert(qwen38_gdn_state_bytes(&shape,&size,&e)==Q38_OK && size.payload_bytes>=90*sizeof(float));
+    Qwen38Memory m=backing(size.metadata_bytes),p=backing(size.payload_bytes);
+    Qwen38GdnState *s; Qwen38StateKey key={.model=&shape,.epoch=1};
+    assert(qwen38_gdn_state_init(&shape,key,m,p,&s,&e)==Q38_OK);
+    float out[90]; for(size_t i=0;i<90;++i) out[i]=-99;
+    assert(qwen38_gdn_state_export(s,view(out,sizeof(out),3,(size_t[]){6,5,3}),&e)==Q38_OK);
+    for(size_t i=0;i<90;++i) assert(out[i]==0);
+    assert(qwen38_gdn_state_info(s).valid && qwen38_gdn_state_info(s).next_pos==0);
+    assert(qwen38_gdn_state_reset(s,1,&e)==Q38_STALE);
+    assert(qwen38_gdn_state_reset(s,2,&e)==Q38_OK);
+    free(m.data);free(p.data);
+    shape.value_heads=5; assert(qwen38_gdn_state_bytes(&shape,&size,&e)==Q38_SHAPE && size.payload_bytes==0);
+}
+static void test_gdn_prepare(void) {
+    Qwen38GdnShape shape={1,1,2,1,1e-6f,1e-6f}; Qwen38Error e;
+    float qkv[]={3,4,0,0,7}, a[]={0}, b[]={0}, weight[]={0}, dt[]={.25f};
+    Qwen38F32Mut x=view(qkv,sizeof(qkv),2,(size_t[]){1,5});
+    Qwen38F32Mut aa=view(a,sizeof(a),2,(size_t[]){1,1}), bb=view(b,sizeof(b),2,(size_t[]){1,1});
+    Qwen38F32 ww=q38c_ro(view(weight,sizeof(weight),1,(size_t[]){1}));
+    Qwen38F32 dd=q38c_ro(view(dt,sizeof(dt),1,(size_t[]){1}));
+    assert(qwen38_gdn_prepare(&shape,q38c_ro(x),q38c_ro(aa),q38c_ro(bb),ww,dd,x,aa,bb,&e)==Q38_OK);
+    assert(fabsf(qkv[0]-3.0f/sqrtf(25.0f+1e-6f)/sqrtf(2))<1e-6f);
+    assert(qkv[2]==0 && qkv[3]==0 && qkv[4]==7 && a[0]==0 && b[0]==.5f);
+    float o[]={2}, z[]={0}, gain[]={.5f};
+    Qwen38F32Mut output=view(o,sizeof(o),3,(size_t[]){1,1,1});
+    assert(qwen38_gdn_norm_gate(&shape,q38c_ro(output),q38c_ro(view(z,sizeof(z),3,output.dim)),
+        q38c_ro(view(gain,sizeof(gain),1,(size_t[]){1})),output,&e)==Q38_OK);
+    assert(fabsf(o[0]-.25f)<1e-6f);
+}
+static void test_gdn_scan(void) {
+    Qwen38GdnShape shape={1,1,1,1,1e-6f,1e-6f}; Qwen38StateSize size; Qwen38Error e;
+    assert(qwen38_gdn_state_bytes(&shape,&size,&e)==Q38_OK);
+    Qwen38Memory m=backing(size.metadata_bytes),p=backing(size.payload_bytes);
+    Qwen38GdnState *s; Qwen38StateKey key={.model=&shape,.epoch=1};
+    assert(qwen38_gdn_state_init(&shape,key,m,p,&s,&e)==Q38_OK);
+    float x[]={0,1,2}, g[]={0}, b[]={1}, out[1]={-99}, state[1];
+    Qwen38F32 xx=q38c_ro(view(x,sizeof(x),2,(size_t[]){1,3}));
+    Qwen38F32 gg=q38c_ro(view(g,sizeof(g),2,(size_t[]){1,1}));
+    Qwen38F32 bb=q38c_ro(view(b,sizeof(b),2,gg.dim));
+    Qwen38F32Mut y=view(out,sizeof(out),3,(size_t[]){1,1,1});
+    assert(qwen38_gdn_scan(&shape,xx,gg,bb,y,s,0,&e)==Q38_OK); /* Public warmup writes S=2. */
+    x[0]=.5f; x[2]=4; g[0]=logf(.5f); b[0]=.25f;
+    assert(qwen38_gdn_scan(&shape,xx,gg,bb,y,s,1,&e)==Q38_OK && out[0]==.875f);
+    assert(qwen38_gdn_state_export(s,view(state,sizeof(state),3,y.dim),&e)==Q38_OK && state[0]==1.75f);
+    b[0]=2; out[0]=-99;
+    assert(qwen38_gdn_scan(&shape,xx,gg,bb,y,s,2,&e)==Q38_RANGE && out[0]==-99 && qwen38_gdn_state_info(s).valid);
+    b[0]=1; x[1]=FLT_MAX;
+    assert(qwen38_gdn_scan(&shape,xx,gg,bb,y,s,2,&e)==Q38_NONFINITE && !qwen38_gdn_state_info(s).valid);
+    assert(qwen38_gdn_state_reset(s,2,&e)==Q38_OK);
+    assert(qwen38_gdn_state_export(s,view(state,sizeof(state),3,y.dim),&e)==Q38_OK && state[0]==0);
+    free(m.data);free(p.data);
+}
+static void test_admission_and_guards(void) {
+    Qwen38Error e; float raw[]={1,2,3,4,5,6}, gain[]={1,1,1}, out[10];
+    for(size_t i=0;i<10;++i) out[i]=-77;
+    Qwen38F32 x=q38c_ro(view(raw,sizeof(raw),3,(size_t[]){1,2,3}));
+    Qwen38F32 w=q38c_ro(view(gain,sizeof(gain),1,(size_t[]){3}));
+    Qwen38F32Mut y=view(out+1,6*sizeof(float),3,x.dim), short_y=y;
+    short_y.capacity_bytes-=1;
+    assert(qwen38_rmsnorm_groups(x,w,short_y,1e-6f,&e)==Q38_CAPACITY);
+    short_y=y; short_y.stride_bytes[1]=1;
+    assert(qwen38_rmsnorm_groups(x,w,short_y,1e-6f,&e)==Q38_STRIDE);
+    assert(qwen38_rmsnorm_groups(x,w,y,0,&e)==Q38_RANGE);
+    assert(qwen38_rmsnorm_groups(x,w,y,NAN,&e)==Q38_NONFINITE);
+    Qwen38F32Mut alias=view(raw+1,6*sizeof(float),3,x.dim);
+    assert(qwen38_rmsnorm_groups(x,w,alias,1e-6f,&e)==Q38_INVALID_ARGUMENT);
+    for(size_t i=0;i<10;++i) assert(out[i]==-77);
+    assert(qwen38_rmsnorm_groups(x,w,y,1e-6f,&e)==Q38_OK && out[0]==-77 && out[7]==-77);
+    Qwen38F32 empty=q38c_ro(view(NULL,0,3,(size_t[]){0,2,3}));
+    gain[0]=NAN;
+    assert(qwen38_rmsnorm_groups(empty,w,view(NULL,0,3,empty.dim),1e-6f,&e)==Q38_OK);
+    Qwen38ConvShape shape={1,1,1,false}; Qwen38StateSize size;
+    assert(qwen38_conv_state_bytes(&shape,&size,&e)==Q38_OK);
+    Qwen38Memory m=backing(size.metadata_bytes),p=backing(size.payload_bytes);
+    Qwen38ConvState *state; Qwen38StateKey key={.model=&shape,.epoch=1};
+    assert(qwen38_conv_state_init(&shape,key,m,p,&state,&e)==Q38_OK);
+    /* Deliberate metadata fault injection: this private test checks admission,
+     * never seeds numerical state or introduces a production setter. */
+    Q38CState *header=m.data; header->info.next_pos=UINT64_MAX;
+    float tap=1;
+    Qwen38F32 one=q38c_ro(view(raw,sizeof(raw),2,(size_t[]){1,1}));
+    Qwen38F32 wt=q38c_ro(view(&tap,sizeof(tap),2,one.dim));
+    assert(qwen38_conv_causal(&shape,one,wt,view(out,sizeof(out),2,one.dim),state,UINT64_MAX,&e)==Q38_OVERFLOW);
+    header->info.busy=true; assert(qwen38_conv_state_reset(state,2,&e)==Q38_BUSY);
+    header->info.busy=false; header->info.key.epoch=UINT64_MAX;
+    assert(qwen38_conv_state_reset(state,1,&e)==Q38_OVERFLOW);
+    free(m.data);free(p.data);
+}
 int main(void) {
     test_views(); test_conv_lifecycle(); test_conv_values(); test_norm_activation();
-    test_hc(); puts("PASS: Qwen3.8 C conv, state, RMS, activations and HC"); return 0;
+    test_hc(); test_gdn_lifecycle(); test_gdn_prepare(); test_gdn_scan();
+    test_admission_and_guards();
+    puts("PASS: Qwen3.8 C conv, GDN, RMS, activations, HC and state"); return 0;
 }
