@@ -146,6 +146,10 @@ class AttentionOracleTests(unittest.TestCase):
         for end in boundaries:
             result = self.evaluate(prefix(self.inputs, end), start=start)
             np.testing.assert_array_equal(result["mask"], full["mask"][start:end, :end])
+            for key in ("k", "v"):
+                np.testing.assert_array_equal(result[key], full[key][:end])
+            np.testing.assert_array_equal(result["block_keys_last"], full["block_keys_last"][:end // 4])
+            np.testing.assert_array_equal(result["pooled_last"], full["pooled_last"][:end // 4])
             np.testing.assert_allclose(result["gated_eager"], full["gated_eager"][start:end],
                                        atol=3e-5, rtol=2e-4)
             start = end
@@ -210,6 +214,95 @@ class AttentionOracleTests(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(value.tobytes()).hexdigest(), meta["sha256"])
             with self.assertRaises(FileExistsError):
                 oracle.write_fixture(self.hf, SOURCE, output, "tiny")
+
+    def test_sparse_selection_matches_independent_sort_with_margin(self):
+        compared, tied = 0, 0
+        for seed in (3811, 77, 125, 902):
+            result = self.evaluate(oracle.synthetic(self.cfg, 25, seed))
+            for row, scores in enumerate(result["indexer_scores_fp64_unscaled"]):
+                visible = (row + 1) // self.cfg.ratio
+                block_ids = np.arange(visible)
+                order = np.lexsort((block_ids, -scores[:visible]))
+                budget = self.cfg.budget // self.cfg.ratio
+                if visible > budget:
+                    gap = scores[order[budget - 1]] - scores[order[budget]]
+                    if gap == 0:
+                        # ReLU legitimately produces equal zero scores. Check
+                        # the admissible top-k set without guessing HF tie order.
+                        block_mask = result["mask"][row, :visible * 4].reshape(visible, 4)
+                        np.testing.assert_array_equal(block_mask.any(-1), block_mask.all(-1))
+                        chosen = block_mask.all(-1)
+                        threshold = scores[order[budget - 1]]
+                        self.assertTrue(chosen[scores[:visible] > threshold].all())
+                        self.assertFalse(chosen[scores[:visible] < threshold].any())
+                        self.assertEqual(int(chosen.sum()), budget)
+                        tied += 1
+                        continue
+                    self.assertGreater(gap, 4e-4)
+                    compared += 1
+                selected = order[:budget]
+                expected = np.zeros(25, dtype=bool)
+                for b in selected:
+                    expected[b * 4:(b + 1) * 4] = True
+                expected[visible * 4:row + 1] = True
+                np.testing.assert_array_equal(result["mask"][row], expected)
+        self.assertGreater(compared, 10)
+        self.assertGreater(tied, 0)
+
+    def test_near_ties_are_reported_without_claiming_exact_rank_parity(self):
+        x = prefix(self.inputs, 12)
+        x.iq.fill(0)
+        x.iq[..., -1] = 1
+        x.ik.fill(0)
+        x.ik[..., -2] = .8
+        delta = np.spacing(np.float32(.6))
+        x.ik[:, -1] = np.repeat(np.array([.6 + delta, .6, .6 - delta], dtype=np.float32), 4)
+        x.gamma_iq.fill(1)
+        x.gamma_ik.fill(1)
+        result = self.evaluate(x, start=11)
+        scores = result["indexer_scores_fp64_unscaled"][0]
+        self.assertLess(float(np.ptp(scores)), 4e-4)
+        blocks = result["mask"][0].reshape(3, 4)
+        np.testing.assert_array_equal(blocks.any(-1), blocks.all(-1))
+        self.assertEqual(int(blocks.all(-1).sum()), 2)
+        # A close score is not silently turned into a native/HF parity PASS.
+
+    def test_softmax_normalizes_across_blocks_not_within_each_block(self):
+        x = prefix(self.inputs, 8)
+        x.qg.fill(0)
+        x.qg[:, :, 0, -1] = 1
+        x.k.fill(0)
+        x.k[:4, :, -1] = 1
+        x.k[4:, :, -1] = -1
+        x.v[:4] = 0
+        x.v[4:] = 1
+        result = self.evaluate(x, start=7)
+        for h in range(self.cfg.heads):
+            logits = result["k"][:, h // 2].astype(np.float64) @ result["q"][0, h].astype(np.float64)
+            logits /= np.sqrt(self.cfg.head_dim)
+            weights = np.exp(logits - np.max(logits))
+            expected = weights[4:].sum() / weights.sum()
+            self.assertGreater(abs(expected - .5), .1)
+            np.testing.assert_allclose(result["attention_fp64"][0, h], expected, atol=1e-12, rtol=1e-12)
+
+    def test_softmax_large_logits_remains_finite(self):
+        x = prefix(self.inputs, 8)
+        x.gamma_q.fill(32)
+        x.gamma_k.fill(32)
+        result = self.evaluate(x)
+        self.assertTrue(np.isfinite(result["attention_eager"]).all())
+        np.testing.assert_allclose(result["attention_eager"], result["attention_fp64"], atol=3e-5, rtol=2e-4)
+
+    def test_long_prefix_chunk_boundaries_without_large_dense_oracle(self):
+        cfg = oracle.Config(budget=2048)
+        inputs = oracle.synthetic(cfg, 8193)
+        for end in (1024, 1025, 2048, 2053, 8192, 8193):
+            chunk = self.evaluate(prefix(inputs, end), start=end - 3, cfg=cfg)
+            for p in range(end - 3, end):
+                decode = self.evaluate(prefix(inputs, p + 1), start=p, cfg=cfg)
+                np.testing.assert_array_equal(decode["mask"][0], chunk["mask"][p - end + 3, :p + 1])
+                np.testing.assert_allclose(decode["gated_eager"][0], chunk["gated_eager"][p - end + 3],
+                                           atol=3e-5, rtol=2e-4)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "component": "D CPU oracle",
+  "base_spec_commit": "f788b1588f9e7fe168f9cfa5ef582cade0468277",
+  "integration_base": null,
+  "status": "Independent oracle and tests only; shared interfaces remain provisional",
+  "source": {
+    "repository": "https://github.com/huggingface/transformers",
+    "revision": "db2304e8694db3ecd6f39d353beba361688afe97",
+    "path": "src/transformers/models/qwen4_exp/modeling_qwen4_exp.py",
+    "sha256": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+    "license": "Apache-2.0; original source header retained in ignored build cache",
+    "loader": "AST allowlist, unchanged operator bodies, postponed annotations",
+    "adaptations": [
+      "Dynamic RoPE decorator disabled only for validated default RoPE",
+      "Projected QK injected instead of evaluating unrelated random projection weights",
+      "Read-only raw prefix concatenated through official update_indexer hook",
+      "Effective gamma converted to HF offset only when F32 round-trip is exact"
+    ]
+  },
+  "independent_checks": [
+    "Official HF causal indexer mask versus NumPy FP64 scores and lexicographic sort with a strict margin",
+    "Official eager attention versus CPU PyTorch SDPA FP64 on identical prepared operands and mask",
+    "Analytical single-key, uniform-score mean, pooling, partial RoPE and global softmax cases"
+  ],
+  "recipes": [
+    {
+      "name": "tiny", "seed": 3811, "prefix_tokens": 17, "query_start": 0,
+      "observed_artifact_sha256": "2f1bc073aeeb4a1c540653a9e99e42e0f47f380c88ba63ca0fb270e34de05e4d",
+      "observed_max_abs_attention_eager_vs_fp64": 1.123198750674348e-7
+    },
+    {
+      "name": "boundary", "seed": 3811, "prefix_tokens": 2053, "query_start": 2046,
+      "observed_artifact_sha256": "b26dd3d7d69ed06fd96c6704df2a1bda827442c900151d0cc2c29b94eab6f81a",
+      "observed_max_abs_attention_eager_vs_fp64": 6.173630814204634e-8
+    },
+    {
+      "name": "real-shape", "seed": 3811, "prefix_tokens": 9, "query_start": 0,
+      "observed_artifact_sha256": "1f351bdc1b69d2557b4b85baf8abbd428c1e0b410a9d51f1fd7102eaf428b450",
+      "observed_max_abs_attention_eager_vs_fp64": 6.684502176224072e-7
+    }
+  ],
+  "reproduce": {
+    "python": "/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python",
+    "first_use": "PYTHON tools/oracle/qwen38_attention.py --fetch-source",
+    "tests": "PYTHON tests/test_qwen38_attention.py -v",
+    "fixture": "PYTHON tools/oracle/qwen38_attention.py --case CASE --output build/qwen38-attention/NEW_DIRECTORY",
+    "notes": "Replace PYTHON with the existing absolute interpreter path and CASE with a recipe name. Never overwrite output; tests do not fetch implicitly. No Makefile changes required."
+  },
+  "verification": {
+    "date": "2026-10-12",
+    "test_count": 20,
+    "device": "CPU only, one torch thread",
+    "packages": {"numpy": "2.5.1", "torch": "2.13.0", "transformers": "5.13.0"},
+    "attention_tolerance": {"atol": 0.00003, "rtol": 0.0002},
+    "prep_tolerance": {"atol": 0.00002, "rtol": 0.00002},
+    "selection_margin_requirement": 0.0004,
+    "coverage": [
+      "Prefill, single-token decode, append and non-aligned chunk boundaries",
+      "Exact K/V and completed-block prefix consistency, independent sessions and unchanged inputs",
+      "Boundaries around 1024, 2048, first sparse position 2051, 8192 and 8193 tokens",
+      "Completed current block can be excluded; incomplete tail is always included",
+      "Exact and near-ties, ReLU zeros, explicit HF tie ambiguity",
+      "GQA and partial rotary dimensions at real head shapes using synthetic data",
+      "Global softmax normalization, large logits, elementwise sigmoid gate",
+      "Source integrity, bounded allocations, export hashes and overwrite refusal"
+    ]
+  },
+  "limits": [
+    "No C or Metal implementation, GPU execution, checkpoint payload read or benchmark",
+    "No comparison with an installed full qwen4_exp module; pinned extracted methods are executed",
+    "Observed artifact hashes identify this environment's outputs; numerical tolerances govern other implementations",
+    "Raw-prefix cache hook is an oracle adapter, not native session lifetime/reset validation",
+    "FP64 score diagnostics use HF-prepared F32 operands and omit HF's positive 1/sqrt(Di) ranking scale",
+    "Exact HF top-k ties have unspecified order; no native lowest-index tie rule is claimed",
+    "Dynamic RoPE, multimodality, arbitrary padding, non-divisible budgets and F16/BF16 caches are excluded",
+    "Synthetic inputs and same-checkpoint arithmetic do not measure Q2 compression loss"
+  ]
+}

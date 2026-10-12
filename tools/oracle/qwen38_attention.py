@@ -4,6 +4,11 @@ Official Apache-2.0 Transformers definitions are loaded unchanged from a
 hash-checked local source file. No network access occurs on import/load.
 Use --fetch-source explicitly to acquire that file into this worktree.
 This tests checkpoint arithmetic, not Q2-versus-original-BF16 quality.
+
+From the worktree root, with the existing tools venv's Python:
+  python tools/oracle/qwen38_attention.py --fetch-source   # first use only
+  python tests/test_qwen38_attention.py -v
+  python tools/oracle/qwen38_attention.py --case boundary --output build/qsa-new
 """
 from __future__ import annotations
 
@@ -295,7 +300,27 @@ def _evaluate_cpu(hf, cfg, inputs, start, n):
     else:
         result["pooled_last"] = torch.empty(0, cfg.index_dim)
         result["block_keys_last"] = torch.empty(0, cfg.index_dim)
-    return {name: value.numpy().copy() for name, value in result.items()}
+    result = {name: value.numpy().copy() for name, value in result.items()}
+    result["indexer_scores_fp64_unscaled"] = indexer_scores64(
+        result["iq"], result["block_keys_last"], cfg.ratio, start)
+    return result
+
+
+def indexer_scores64(iq, block_keys, ratio, start):
+    """Independent diagnostic dots on official prepared F32 operands.
+
+    HF divides the summed ReLUs by sqrt(Di). This unscaled diagnostic follows
+    the DS/spec convention and uses FP64 BLAS, not the HF FP32 score path.
+    It is not evidence that the two top-k sets agree for near-ties.
+    """
+    queries = iq.astype(np.float64)
+    keys = block_keys.astype(np.float64)
+    scores = np.zeros((len(iq), len(block_keys)), dtype=np.float64)
+    for head in range(iq.shape[1]):
+        scores += np.maximum(queries[:, head] @ keys.T, 0)
+    visible = (np.arange(start, start + len(iq)) + 1) // ratio
+    scores[np.arange(len(block_keys))[None, :] >= visible[:, None]] = -np.inf
+    return scores
 
 
 def fixture_case(name: str):
@@ -331,6 +356,7 @@ def write_fixture(hf, source: Path, output: Path, case: str, seed: int = 3811):
         "adapter": "AST allowlist, unchanged bodies; default-only RoPE wrapper; projected QK; prefix keys",
         "dtype": "F32 preparation and eager; FP64 SDPA on identical prepared operands",
         "tie_policy": "Official torch.topk; tied boundary order unspecified, no native tie parity claimed",
+        "score_diagnostic": "Unscaled FP64 dots on official prepared F32 IQ/block keys; not an HF score dump",
         "scope": "Synthetic operator reference; no C/Metal or checkpoint/BF16 quality claim",
         "packages": {name: importlib.metadata.version(name) for name in ("numpy", "torch", "transformers")},
         "cpu_threads": torch.get_num_threads(),
