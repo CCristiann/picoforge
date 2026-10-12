@@ -1,5 +1,6 @@
 /* Native C11 packed rows. No file I/O, allocation, upstream decoder or GPU. */
 #include "qwen38_b_internal.h"
+#pragma STDC FP_CONTRACT OFF
 
 Qwen38Status q38_packed_layout_init(const GgufTensor *t, size_t logical,
                                    Q38PackedLayout *out, Qwen38Error *err) {
@@ -61,7 +62,24 @@ static float half_value(const unsigned char *p) {
     return value;
 }
 static float packed_value(const unsigned char *row, size_t column, uint32_t type) {
-    (void)type; /* This first increment admits only Q2_K. */
+    if (type == 0 || type == 30) {
+        uint32_t bits;
+        if (type == 30) bits = (uint32_t)little16(row + 2 * column) << 16;
+        else {
+            const unsigned char *p = row + 4 * column;
+            bits = (uint32_t)little16(p) | (uint32_t)little16(p + 2) << 16;
+        }
+        float value;
+        memcpy(&value, &bits, sizeof value);
+        return value;
+    }
+    if (type == 1) return half_value(row + 2 * column);
+    if (type == 8) {
+        const unsigned char *q8 = row + column / 32 * 34;
+        int code = q8[2 + column % 32];
+        if (code >= 128) code -= 256; /* No implementation-defined signed cast. */
+        return half_value(q8) * (float)code;
+    }
     const unsigned char *block = row + column / 256 * 84;
     size_t lane = column % 256;
     unsigned scale = block[lane / 16];
@@ -87,6 +105,44 @@ Qwen38Status q38_packed_decode_row(const Q38PackedCpuView *w, size_t expert,
         float value = packed_value(data, k, w->layout.gguf_type);
         if (!isfinite(value)) return q38_b_result(err, Q38_NONFINITE, "nonfinite packed value");
         out[k] = value;
+    }
+    return q38_b_result(err, Q38_OK, "");
+}
+
+Qwen38Status q38_packed_matmul(const Q38PackedCpuView *w, size_t expert,
+        Qwen38F32 x, Qwen38F32Mut y, Qwen38Error *err) {
+    Qwen38Status status = packed_view(w, expert);
+    if (status) return q38_b_result(err, status, "invalid weight view");
+    size_t xbytes, ybytes;
+    status = q38_b_matrix(x.rank, x.dim, x.stride_bytes, x.capacity_bytes, &xbytes);
+    if (status) return q38_b_result(err, status, "invalid input matrix");
+    status = q38_b_matrix(y.rank, y.dim, y.stride_bytes, y.capacity_bytes, &ybytes);
+    if (status) return q38_b_result(err, status, "invalid output matrix");
+    if (x.dim[0] != y.dim[0] || x.dim[1] != w->layout.k_logical || y.dim[1] != w->layout.n_out)
+        return q38_b_result(err, Q38_SHAPE, "incompatible matrix dimensions");
+    if (!x.dim[0]) return q38_b_result(err, Q38_OK, "");
+    if (!q38_b_address(x.data, xbytes) || !q38_b_address(y.data, ybytes) ||
+        (uintptr_t)x.data % _Alignof(float) || (uintptr_t)y.data % _Alignof(float))
+        return q38_b_result(err, Q38_INVALID_ARGUMENT, "invalid activation address");
+    if (q38_b_overlap(x.data, xbytes, y.data, ybytes) ||
+        q38_b_overlap(w->span.data, w->layout.tensor_bytes, x.data, xbytes) ||
+        q38_b_overlap(w->span.data, w->layout.tensor_bytes, y.data, ybytes))
+        return q38_b_result(err, Q38_INVALID_ARGUMENT, "aliased matrices");
+    for (size_t m = 0; m < x.dim[0]; m++) {
+        const float *input = x.data + m * (x.stride_bytes[0] / sizeof(float));
+        float *output = y.data + m * (y.stride_bytes[0] / sizeof(float));
+        for (size_t n = 0; n < w->layout.n_out; n++) {
+            const unsigned char *row = w->span.data + expert * w->layout.expert_bytes + n * w->layout.row_bytes;
+            float sum = 0;
+            for (size_t k = 0; k < w->layout.k_logical; k++) {
+                float value = packed_value(row, k, w->layout.gguf_type);
+                float product = value * input[k];
+                sum += product;
+                if (!isfinite(value) || !isfinite(input[k]) || !isfinite(product) || !isfinite(sum))
+                    return q38_b_result(err, Q38_NONFINITE, "nonfinite input or arithmetic");
+            }
+            output[n] = sum;
+        }
     }
     return q38_b_result(err, Q38_OK, "");
 }

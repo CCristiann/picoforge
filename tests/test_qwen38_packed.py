@@ -22,9 +22,86 @@ oracle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oracle)
 REFERENCE = None
 NATIVE = None
+PRODUCT_METRICS = []
+
+
+def packed_fixture(kind, columns, count, rng):
+    """Small deterministic finite payload; independent expected comes from upstream."""
+    if kind in (0, 1, 30):
+        values = (rng.integers(-16, 17, (count, columns)) / 16).astype("<f4")
+        if kind == 1:
+            return values.astype("<f2").tobytes()
+        if kind == 30:
+            return (values.view("<u4") >> 16).astype("<u2").tobytes()
+        return values.tobytes()
+    block, size = oracle.FORMATS[kind]
+    raw = rng.integers(0, 256, (count * columns // block, size), dtype=np.uint8)
+    if kind == 10:
+        raw[:, 80:82] = np.array([0.125], dtype="<f2").view(np.uint8)
+        raw[:, 82:84] = np.array([0.0625], dtype="<f2").view(np.uint8)
+    else:
+        raw[:, :2] = np.array([0.125], dtype="<f2").view(np.uint8)
+    return raw.tobytes()
+
+
+def native_product(packed, kind, physical, logical, n, experts, expert, x):
+    args = [str(NATIVE), "matmul", str(kind), str(physical), str(logical),
+            str(n), str(experts), str(expert), str(len(x))]
+    result = subprocess.run(args, input=packed + x.astype("<f4").tobytes(),
+                            capture_output=True, check=True, timeout=30)
+    if result.stderr or len(result.stdout) != len(x) * n * 4:
+        raise AssertionError(f"invalid native product transport: {result.stderr!r}")
+    return np.frombuffer(result.stdout, dtype="<f4").reshape(len(x), n)
+
+
+def check_product(actual, weights, x, logical, label):
+    ref, magnitude = oracle.matmul_reference(weights, x, logical)
+    u = 2**-24
+    gamma = (2 * logical + 8) * u / (1 - (2 * logical + 8) * u)
+    ulp = np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64)
+    bound = gamma * magnitude + 2 * ulp
+    delta = np.abs(actual.astype(np.float64) - ref)
+    if not np.isfinite(actual).all() or not (delta <= bound).all():
+        raise AssertionError(f"frozen FP32 reduction bound failed: {label}")
+    scaled = np.divide(delta, magnitude, out=np.zeros_like(delta), where=magnitude != 0)
+    ratio = np.divide(delta, bound, out=np.zeros_like(delta), where=bound != 0)
+    rounded = ref.astype(np.float32)
+    def ordered(values):
+        bits = values.view(np.uint32)
+        return np.where(bits & 0x80000000, ~bits, bits ^ 0x80000000).astype(np.int64)
+    ulps = np.abs(ordered(actual) - ordered(rounded))
+    PRODUCT_METRICS.append(dict(case=label, max_abs=float(delta.max(initial=0)),
+        max_error_over_sum=float(scaled.max(initial=0)), max_bound_fraction=float(ratio.max(initial=0)),
+        max_ulp=int(ulps.max(initial=0)), worst_index=list(map(int,np.unravel_index(np.argmax(delta),delta.shape)))
+        if delta.size else [], p99_abs=float(np.percentile(delta,99)) if delta.size else 0))
 
 
 class PackedReferenceTests(unittest.TestCase):
+    def test_native_matmul_formats_shapes_strides_and_experts(self):
+        if NATIVE is None:
+            self.skipTest("native harness not requested")
+        rng = np.random.default_rng(3812)
+        for kind in (0, 1, 30, 8, 10):
+            block = oracle.FORMATS[kind][0]
+            for m, n, logical in [(1,1,1), (2,7,255), (7,33,257),
+                                   (32,7,640), (33,7,640), (128,1,2560)]:
+                physical = (logical + block - 1) // block * block
+                packed = packed_fixture(kind, physical, n * 3, rng)
+                weights = self.decode(packed, kind, physical, n * 3)
+                x = rng.uniform(-1,1,(m,logical)).astype(np.float32)
+                x[0] = 0
+                if m > 1:
+                    x[1] = 0; x[1,-1] = 1
+                if m > 2:
+                    x[2] = np.where(np.arange(logical)%2, -1, 1)
+                for expert in (0,1,2):
+                    actual = native_product(packed,kind,physical,logical,n,3,expert,x)
+                    check_product(actual,weights[expert*n:(expert+1)*n],x,logical,
+                                  f"{kind}:M{m}:N{n}:K{logical}:E{expert}")
+                    self.assertTrue(np.all(actual[0] == 0))
+                    if m > 1:
+                        np.testing.assert_array_equal(actual[1],weights[expert*n:(expert+1)*n,logical-1])
+
     def decode(self, data, kind=10, columns=256, rows=1):
         expected = oracle.decode(REFERENCE, data, kind, columns, rows)
         if NATIVE is not None:
@@ -308,6 +385,7 @@ if __name__ == "__main__":
             report["source_sha256"].update({str(p.relative_to(ROOT)): oracle.digest(p.read_bytes())
                 for p in [ROOT / "src/qwen38_packed.c", ROOT / "src/qwen38_b_internal.h",
                           ROOT / "tests/test_qwen38_packed.c", ROOT / "src/qwen38_packed.h"]})
+            report["product_metrics"] = PRODUCT_METRICS
         with args.report.open("x") as output:
             output.write(json.dumps(report, indent=2) + "\n")
     sys.exit(0 if result.wasSuccessful() else 1)

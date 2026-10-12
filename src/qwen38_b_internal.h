@@ -38,9 +38,28 @@ static inline bool q38_b_same_layout(const Q38PackedLayout *a, const Q38PackedLa
 }
 /* Nonfatal admission before the existing registry's fatal unknown-ID path. */
 static inline Qwen38Status q38_b_format(uint32_t type, const GgufFormat **format) {
-    if (type == 10) { *format = gguf_format(type); return Q38_OK; }
-    if (type == 0 || type == 1 || type == 8 || type == 12 || type == 16 ||
-        type == 30 || type == 39) return Q38_UNSUPPORTED;
+    if (type == 0 || type == 1 || type == 8 || type == 10 || type == 30) {
+        *format = gguf_format(type); return Q38_OK;
+    }
+    if (type == 12 || type == 16 || type == 39) return Q38_UNSUPPORTED;
     return Q38_FORMAT;
+}
+/* Common rank-2 activation contract, usable by both CPU and GPU admission.
+ * Returns only the reachable extent, not the caller's entire allocation. */
+static inline Qwen38Status q38_b_matrix(size_t rank, const size_t dim[4],
+        const size_t stride[4], size_t capacity, size_t *extent) {
+    *extent = 0;
+    if (rank != 2 || !dim[1]) return Q38_SHAPE;
+    size_t width;
+    if (!q38_b_mul(dim[1], sizeof(float), &width)) return Q38_OVERFLOW;
+    if (stride[1] != sizeof(float) || stride[0] % sizeof(float) || stride[0] < width)
+        return Q38_STRIDE;
+    if (dim[0]) {
+        size_t prefix;
+        if (!q38_b_mul(dim[0] - 1, stride[0], &prefix) || prefix > SIZE_MAX - width)
+            return Q38_OVERFLOW;
+        *extent = prefix + width;
+    }
+    return *extent > capacity ? Q38_CAPACITY : Q38_OK;
 }
 #endif
