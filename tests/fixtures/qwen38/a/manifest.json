@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "scope": "CPU references only; no native Qwen3.8 implementation or BF16 quality claim",
+  "source_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+  "config": {
+    "url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json",
+    "sha256": "889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b"
+  },
+  "tokenizer": {
+    "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+    "relative_to_reference_root": "build/qwen38-tokenizer.json"
+  },
+  "tokenizer_config": {
+    "sha256": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+    "relative_to_reference_root": "build/qwen38-tokenizer-config.json"
+  },
+  "versions": {
+    "transformers": "5.13.0",
+    "tokenizers": "0.22.2",
+    "jinja2": "3.1.6"
+  },
+  "gguf": {
+    "repository": "antirez/qwen3.8-flash-next-gguf",
+    "revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "sha256_from_existing_verification": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+    "hash_recomputed": false,
+    "payload_read": false
+  },
+  "binding_schema": {
+    "source": "https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/gguf-tools/qwen4_pack_to_qwen4exp.py",
+    "independence_limit": "Descriptor checks are not numerical verification of conversion transforms or PLE hashes."
+  },
+  "config_verification": {
+    "date": "2026-10-12",
+    "tests_passed": 9,
+    "metadata_fields_compared_to_hf": 37,
+    "native_descriptors_equal_to_python": 1256,
+    "native_sanitizers": [
+      "address",
+      "undefined"
+    ],
+    "commands": [
+      "make build/test_gguf_inspect",
+      "./build/test_gguf_inspect \"$PF_MAIN/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf\" > build/qwen38-a-native-inventory.json",
+      "QWEN38_A_NATIVE_INVENTORY=build/qwen38-a-native-inventory.json \"$PF_MAIN/tools/venv/bin/python\" -B tests/test_qwen38_a.py"
+    ]
+  }
+}
