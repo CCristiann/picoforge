@@ -507,6 +507,50 @@ class NativeAttentionTests(unittest.TestCase):
             code, _ = self.call("select", (1, 1, 0, 0), np.array([value], np.float32), dtype=np.uint32)
             self.assertEqual(code, 16)  # Q38_NONFINITE, contract v1.
 
+    def attend(self, cfg, result, row, ids=None):
+        if ids is None:
+            ids = np.flatnonzero(result["mask"][row]).astype(np.uint32)
+        gate = torch.sigmoid(torch.from_numpy(result["gate"][row])).numpy()
+        return self.call("attend", (cfg.heads, cfg.kv_heads, cfg.head_dim, len(result["k"])),
+                         result["q"][row], gate, result["k"], result["v"],
+                         np.array([len(ids)], np.uint32), ids)
+
+    def test_native_tiled_softmax_and_gate_match_sdpa(self):
+        for case in ("tiny", "boundary", "real-shape"):
+            cfg, tokens, start = oracle.fixture_case(case)
+            result = oracle.evaluate(self.hf, cfg, oracle.synthetic(cfg, tokens), start)
+            for row in range(tokens - start):
+                code, y = self.attend(cfg, result, row)
+                self.assertEqual(code, 0)
+                np.testing.assert_allclose(y.reshape(cfg.heads, cfg.head_dim), result["gated_fp64"][row],
+                                           atol=3e-5, rtol=2e-4)
+
+    def test_native_tiles_rescale_and_skip_poisoned_unselected_keys(self):
+        cfg = oracle.Config(budget=64)
+        x = oracle.synthetic(cfg, 33)
+        x.qg.fill(0); x.qg[:, :, 0, -1] = 1
+        x.gamma_q.fill(32); x.gamma_k.fill(32)
+        x.k.fill(0); x.k[:16, :, -1] = -1; x.k[16:, :, -1] = 1
+        x.v[:16] = -1; x.v[16:] = 1
+        result = oracle.evaluate(self.hf, cfg, x)
+        code, y = self.attend(cfg, result, 32)
+        self.assertEqual(code, 0)
+        np.testing.assert_array_equal(y, .5)
+        result["k"][1:] = np.nan; result["v"][1:] = np.nan
+        code, y = self.attend(cfg, result, 0)
+        self.assertEqual(code, 0)
+        np.testing.assert_allclose(y.reshape(cfg.heads, cfg.head_dim), result["gated_fp64"][0],
+                                   atol=3e-5, rtol=2e-4)
+        code, _ = self.attend(cfg, result, 1)
+        self.assertEqual(code, 16)
+
+    def test_native_attention_rejects_invalid_selected_ids(self):
+        cfg = oracle.Config()
+        result = oracle.evaluate(self.hf, cfg, oracle.synthetic(cfg, 3))
+        for ids in ([], [1, 1], [2, 1], [3]):
+            code, _ = self.attend(cfg, result, 2, np.array(ids, np.uint32))
+            self.assertEqual(code, 5 if not ids else 4)  # SHAPE / RANGE
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -85,3 +85,65 @@ Qwen38Status q38d_select(const float *scores, uint32_t count, uint32_t budget,
     qsort(selected, n, sizeof(*selected), id_order);
     return Q38_OK;
 }
+
+Qwen38Status q38d_attend(const Qwen38AttentionConfig *c, const float *q,
+                        const float *gate, const float *k, const float *v,
+                        uint32_t visible, const uint32_t *ids, uint32_t count,
+                        float *out, float *scratch) {
+    if (!c || !q || !gate || !k || !v || !ids || !out || !scratch)
+        return Q38_INVALID_ARGUMENT;
+    if (!c->heads || !c->kv_heads || c->heads % c->kv_heads || !c->head_dim || !count)
+        return Q38_SHAPE;
+    for (uint32_t i = 0; i < count; ++i)
+        if (ids[i] >= visible || (i && ids[i] <= ids[i - 1])) return Q38_RANGE;
+    uint32_t dim = c->head_dim, group = c->heads / c->kv_heads;
+    float scale = 1.0f / sqrtf((float)dim);
+    float *acc = scratch, *logits = scratch + dim;
+    for (uint32_t h = 0; h < c->heads; ++h) {
+        const float *query = q + (size_t)h * dim;
+        for (uint32_t d = 0; d < dim; ++d) {
+            float g = gate[(size_t)h * dim + d];
+            if (!isfinite(query[d]) || !isfinite(g)) return Q38_NONFINITE;
+            if (g < 0 || g > 1) return Q38_RANGE;
+            acc[d] = 0;
+        }
+        float maximum = -INFINITY, denominator = 0;
+        for (uint32_t base = 0; base < count;) {
+            uint32_t tile = count - base < 16 ? count - base : 16;
+            float next_max = maximum;
+            for (uint32_t i = 0; i < tile; ++i) {
+                const float *key = k + ((size_t)ids[base + i] * c->kv_heads + h / group) * dim;
+                float dot = 0;
+                for (uint32_t d = 0; d < dim; ++d) {
+                    if (!isfinite(key[d])) return Q38_NONFINITE;
+                    dot += query[d] * key[d];
+                }
+                logits[i] = dot * scale;
+                if (!isfinite(logits[i])) return Q38_NONFINITE;
+                next_max = fmaxf(next_max, logits[i]);
+            }
+            /* First tile has old denominator zero: no -inf - (-inf). */
+            float rescale = denominator == 0 ? 0 : expf(maximum - next_max);
+            denominator *= rescale;
+            for (uint32_t d = 0; d < dim; ++d) acc[d] *= rescale;
+            for (uint32_t i = 0; i < tile; ++i) {
+                float weight = expf(logits[i] - next_max);
+                denominator += weight;
+                const float *value = v + ((size_t)ids[base + i] * c->kv_heads + h / group) * dim;
+                for (uint32_t d = 0; d < dim; ++d) {
+                    if (!isfinite(value[d])) return Q38_NONFINITE;
+                    acc[d] += weight * value[d];
+                }
+            }
+            maximum = next_max;
+            base += tile;
+        }
+        if (!isfinite(denominator) || denominator <= 0) return Q38_NONFINITE;
+        for (uint32_t d = 0; d < dim; ++d) {
+            float y = (acc[d] / denominator) * gate[(size_t)h * dim + d];
+            if (!isfinite(acc[d]) || !isfinite(y)) return Q38_NONFINITE;
+            out[(size_t)h * dim + d] = y;
+        }
+    }
+    return Q38_OK;
+}

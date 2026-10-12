@@ -37,6 +37,20 @@ int main(int argc, char **argv) {
         status = q38d_scores(q, k, dims[0], dims[1], dims[2], s);
         write_items(&status, sizeof(status), 1); write_items(s, sizeof(float), dims[2]);
         free(q); free(k); free(s);
+    } else if (!strcmp(argv[1], "attend")) {
+        Qwen38AttentionConfig c = {.heads=dims[0], .kv_heads=dims[1], .head_dim=dims[2]};
+        size_t hd = (size_t)c.heads * c.head_dim;
+        size_t cache = (size_t)dims[3] * c.kv_heads * c.head_dim;
+        float *q = read_floats(hd), *gate = read_floats(hd);
+        float *k = read_floats(cache), *v = read_floats(cache);
+        uint32_t n; read_items(&n, sizeof(n), 1); assert(n <= dims[3]);
+        uint32_t *ids = calloc(n ? n : 1, sizeof(uint32_t)); assert(ids);
+        read_items(ids, sizeof(uint32_t), n);
+        float *out = calloc(hd, sizeof(float)), *scratch = calloc(c.head_dim + 16, sizeof(float));
+        assert(out && scratch);
+        status = q38d_attend(&c, q, gate, k, v, dims[3], ids, n, out, scratch);
+        write_items(&status, sizeof(status), 1); write_items(out, sizeof(float), hd);
+        free(q); free(gate); free(k); free(v); free(ids); free(out); free(scratch);
     } else {
         assert(!strcmp(argv[1], "select"));
         float *s = read_floats(dims[0]);
