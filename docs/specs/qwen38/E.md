@@ -724,3 +724,116 @@ staging; va osservata e non confusa con memoria malloc/Metal.
 [config]: https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json
 [hf]: https://github.com/huggingface/transformers/blob/db2304e8694db3ecd6f39d353beba361688afe97/src/transformers/models/qwen4_exp/modeling_qwen4_exp.py
 [paper]: https://arxiv.org/html/2608.30320v1#S2.SS3
+
+## 11. ESEGUI dalla base consolidata — hash e reader CPU
+
+Base effettiva `c674b23bd1377b2ce0acef2d06fac8b160809446`, branch
+`impl/qwen38-e-v1`, worktree `../picoforge-e-execute`. Le sezioni SPEC
+precedenti sono conservate; prevalgono `integration.md` e gli header v1.
+Recuperati soltanto i file oracle/fixture di `c1a219a` e codice/test CPU di
+`4fbc52c`, senza reimportare la vecchia spec o file di altre sessioni.
+Il primo recupero verificato è `9a34fb0`.
+
+Implementato `qwen38_ngram_ids` con i tipi pubblici: array uint64,
+storia int32 newest-first immutabile e candidata separata; batch vuoto copia
+la storia. Checked bounds, dominio signed-int64 dei prodotti HF, intervalli
+contigui, capacità e alias rifiutati prima di scrivere. Nessun limite di
+ordine/head/token hardcoded nel runtime hash; i limiti dell'oracle restano
+esplicitamente quelli delle fixture bounded. Righe oltre UINT32_MAX testate
+separatamente, senza assumere il limite fisico del checkpoint nel contratto.
+
+Reader ancora **privato**, pronto per essere incorporato nel futuro store/job:
+usa solo `Qwen38Status`/`Qwen38Error`, fd duplicato read-only/CLOEXEC,
+nessun mapping/cache, staging allocato al setup, dedup globale, accorpamento
+di righe consecutive entro 64 KiB. CAPACITY distingue budget insufficiente
+da OOM dell'allocatore. Lease valide solo dopo successo completo; ogni nuova
+richiesta invalida la precedente, anche in caso di errore. OWNER per lease
+estranee; STALE per file modificato/generazione invalida. Errori I/O riportano
+errno, offset assoluto, riga e progresso dell'intervallo. Immutabilità del file
+rimane precondizione: fstat non garantisce integrità crittografica.
+
+Verifica ripetibile, Python esistente, nessun checkpoint aperto:
+
+```sh
+Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+# Solo al primo setup, oppure copiare la piccola cache verificata dal vecchio worktree:
+"$Q38_PY" tools/oracle/qwen38_ngram.py --fetch-source
+"$Q38_PY" tests/test_qwen38_ngram.py -v
+```
+
+11 test passati, harness clang C11 con warning come errori,
+`-ffp-contract=off -fsanitize=address,undefined -fno-omit-frame-pointer`.
+ID bit-esatti contro i metodi Transformers originali fissati, EOS e chunk
+1/2/3/7/9/10/255/256/1023/1024; BF16 bit-esatto contro PyTorch per tutti i
+65.280 pattern finiti. Fixture fino a 128 KiB, boundary pagina, duplicati,
+ultima riga, intervalli >64 KiB divisi; short read di 3 byte, EINTR e
+EOF/EIO/EBADF a ogni byte di un batch di 32 byte (96 errori), troncamento
+reale, NaN/Inf, fallimenti delle quattro allocazioni e limite esatto del
+budget. Errori e successo successivo non riabilitano lease precedenti.
+Il test controlla anche offset/errno/progresso, non soltanto il codice.
+Nessuna prova di perdita Q2 rispetto a BF16 originale, GPU o prestazioni.
+
+Store/state/job pubblico e history candidata richiedono ancora C1;
+PLE completo C2, B Q8_0 e A. Le dichiarazioni non implementate non hanno
+stub: questa consegna non certifica transazioni complete o generazione.
+
+### Gate PLE normalizzato — incremento indipendente completato
+
+Oracle `1109265`: `GateOracle` estrae via AST soltanto le tre assegnazioni
+del gate originale `Qwen4ExpTextPLELayer.forward`, con corpi matematici
+invariati; aggiunge esclusivamente catture per dot/g/u. Source hash completo
+verificato prima di eseguire, hash delle espressioni nel manifest,
+provenienza/licenza Apache-2.0 conservate nella piccola cache upstream.
+Nessuna proiezione, RMS o convoluzione simulata nell'oracle.
+
+`src/qwen38_ple.c` implementa l'entrypoint pubblico `qwen38_ple_gate`:
+input key/query normalizzati `[T,S,D]`, value `[T,D]`; output g `[T,S]`,
+u `[T,S,D]`. FP32, riduzione scalare con contrazione disabilitata nei test,
+exp del negativo della radice per evitare overflow della sigmoid;
+`dot==0` produce esattamente 0.5. È l'espressione fusa del gate PLE, senza
+esportare un secondo operatore di attivazione C. Non alloca memoria,
+non modifica input/stato. Stride/capacità in byte, feature contigua,
+outer pitch ammesso, input/output disgiunti. Batch vuoto senza accessi.
+Preflight di forme, stride, overflow, capacità, alias e finitezza; overflow
+del dot produce NONFINITE e rende inutilizzabile l'intero output, anche
+se alcune righe erano già calcolate. Nessuna promessa di rollback numerico.
+
+Suite aggiornata: **15 test passati** ASan/UBSan, più harness release O2
+con tutti i warning come errori. Fixture `[1,1,1]`, `[3,2,7]`, `[17,4,160]`,
+`[3,4,2560]`, pitch aggiuntivo 0/1/7 float, guardie intatte,
+parità token/chunk bitwise sul core, zero e near-zero con segno verificato,
+cancellazione, saturazione, NaN/Inf e overflow prodotto/somma. Le fixture
+analitiche verificano dot esatto; sulle fixture normalizzate si usa anche
+un oracle FP64 e il bound analitico `gamma(2*D+4)*sum(abs(k*q))/sqrt(D)`.
+Massimi osservati contro HF sulle fixture normalizzate: gate abs
+**2.68220901e-7** (soglia 1e-4), dot abs **3.33786011e-6**;
+u passa atol/rtol 2e-4 e relativo L2 1e-4. Questi dati non certificano
+PLE Delta/z/history, non ancora calcolati, né input arbitrari mal condizionati.
+
+Controlli eseguiti dalla radice del nuovo worktree:
+
+```sh
+"$Q38_PY" tests/test_qwen38_ngram.py -v
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -Isrc src/qwen38_ngram.c src/qwen38_ple.c \
+  tests/test_qwen38_ngram.c -o build/qwen38-e/test_ngram_release
+build/qwen38-e/test_ngram_release
+make -j4
+make PYTHON="$Q38_PY" test-qwen38-contracts test-gguf
+```
+
+Build generale e contratti/GGUF passati. `make` non cambia i flag globali:
+il coordinatore deve conservare `-ffp-contract=off` quando collega i target
+numerici E. Nessun header pubblico/Makefile modificato, nessun test GPU,
+nessun payload del checkpoint letto, nessun benchmark; lock non necessario
+per questi piccoli test CPU. `make test-all` e test GPU del grafo sono
+rimandati all'integrazione dei componenti.
+
+Per integrazione: acquisire i nuovi commit E in ordine sopra BASE_CONCORDATA,
+non riacquisire `c1a219a`/`4fbc52c` né `340d026`. Gli entrypoint disponibili
+sono hash pubblico, gate pubblico e reader privato; gli altri simboli del
+contratto restano dichiarazioni, senza stub. Il coordinatore aggiungerà il
+target della suite al Makefile. Restano C1 per history candidata e lifecycle
+store/state/job, C2+B Q8_0+A per PLE completo, poi kernel/staging Metal,
+commit globale, slice reali e integrazione del grafo. Nessun commit di altre
+sessioni è stato importato o dipendenza dichiarata implicitamente soddisfatta.
