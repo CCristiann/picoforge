@@ -304,6 +304,67 @@ class AttentionOracleTests(unittest.TestCase):
                 np.testing.assert_allclose(decode["gated_eager"][0], chunk["gated_eager"][p - end + 3],
                                            atol=3e-5, rtol=2e-4)
 
+    def test_online_tiles_and_splits_match_independent_sdpa(self):
+        result = self.evaluate()
+        for tile in (1, 3, 8, 32):
+            for splits in (1, 2, 7, 17):
+                for precision in ("float32", "float64"):
+                    with self.subTest(tile=tile, splits=splits, precision=precision):
+                        online = oracle.online_attention(self.cfg, result, tile, splits, precision)
+                        atol, rtol = (3e-5, 2e-4) if precision == "float32" else (1e-12, 1e-12)
+                        np.testing.assert_allclose(online["attention"], result["attention_fp64"],
+                                                   atol=atol, rtol=rtol)
+                        # First query leaves every later split empty. Its
+                        # normalization is exactly one, regardless of tiling.
+                        np.testing.assert_array_equal(online["denominator"][0], 1)
+                        self.assertTrue(np.isfinite(online["logsumexp"]).all())
+
+    def test_online_normalization_matches_dense_logsumexp(self):
+        result = self.evaluate()
+        online = oracle.online_attention(self.cfg, result, 3, 7, "float64")
+        for row in range(17):
+            for head in range(self.cfg.heads):
+                scores = (result["k"][:, head // 2].astype(np.float64)
+                          @ result["q"][row, head].astype(np.float64)) / np.sqrt(self.cfg.head_dim)
+                selected = scores[result["mask"][row]]
+                # NumPy's pairwise logaddexp reduction is separate from the
+                # online maximum/denominator recurrence under test.
+                expected = np.logaddexp.reduce(selected)
+                np.testing.assert_allclose(online["logsumexp"][row, head], expected,
+                                           atol=1e-12, rtol=1e-12)
+                self.assertAlmostEqual(online["maximum"][row, head], selected.max(), places=12)
+
+    def test_online_rescales_earlier_tiles_for_large_later_maximum(self):
+        x = prefix(self.inputs, 8)
+        x.qg.fill(0)
+        x.qg[:, :, 0, -1] = 1
+        x.gamma_q.fill(32)
+        x.gamma_k.fill(32)
+        x.k.fill(0)
+        x.k[:4, :, -1] = -1
+        x.k[4:, :, -1] = 1
+        x.v[:4] = -1
+        x.v[4:] = 1
+        result = self.evaluate(x, start=7)
+        for tile, splits in ((1, 1), (3, 2), (5, 7)):
+            online = oracle.online_attention(self.cfg, result, tile, splits)
+            np.testing.assert_array_equal(online["attention"], 1)
+            np.testing.assert_allclose(online["attention"], result["attention_fp64"], atol=1e-12)
+            np.testing.assert_array_equal(online["denominator"], 4)
+
+    def test_online_rejects_empty_rows_and_invalid_layouts(self):
+        result = self.evaluate()
+        for options in ({"tile_size": 0}, {"splits": 18}, {"splits": True},
+                        {"precision": "float16"}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                oracle.online_attention(self.cfg, result, **options)
+        for name, replacement in (("mask", np.zeros_like(result["mask"])),
+                                  ("k", result["k"][:, :1]),
+                                  ("v", result["v"].astype(np.float64)),
+                                  ("q", np.full_like(result["q"], np.nan))):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                oracle.online_attention(self.cfg, {**result, name: replacement})
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

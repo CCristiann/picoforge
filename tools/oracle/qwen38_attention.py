@@ -323,6 +323,71 @@ def indexer_scores64(iq, block_keys, ratio, start):
     return scores
 
 
+def online_attention(cfg, prepared, tile_size=3, splits=2, precision="float32"):
+    """CPU diagnostic of the proposed tiled reduction, NOT a second oracle.
+
+    Inputs are F32 Q[T,H,D], K/V[N,J,D] and bool mask[T,N] returned by
+    evaluate(). GQA maps h to h//(H/J). Partition the *token domain*, skip
+    empty tiles/splits, merge unnormalized (maximum, denominator, numerator),
+    and normalize once. Compare against independent official eager/SDPA.
+    No gate, persistent cache, native API or GPU behavior is implemented.
+    """
+    if any(type(x) is not int or x <= 0 for x in (tile_size, splits)):
+        raise ValueError("Tile size and split count must be positive integers")
+    if precision not in ("float32", "float64"):
+        raise ValueError("Unsupported accumulator precision")
+    q, k, v, mask = (prepared[name] for name in ("q", "k", "v", "mask"))
+    if (q.ndim != 3 or k.ndim != 3 or q.shape[1:] != (cfg.heads, cfg.head_dim)
+            or k.shape[1:] != (cfg.kv_heads, cfg.head_dim) or v.shape != k.shape
+            or mask.shape != (len(q), len(k)) or mask.dtype != np.bool_
+            or not len(q) or not len(k) or not mask.any(axis=1).all()):
+        raise ValueError("Invalid prepared shapes or empty selected row")
+    if any(x.dtype != np.float32 or not np.isfinite(x).all() for x in (q, k, v)):
+        raise ValueError("Prepared operands must be finite F32")
+    if splits > len(k):
+        raise ValueError("Split count exceeds token count")
+    dtype = np.dtype(precision).type
+    q, k, v = (x.astype(dtype) for x in (q, k, v))
+    output = np.zeros(q.shape, dtype=dtype)
+    maximum = np.full(q.shape[:2], -np.inf, dtype=dtype)
+    denominator = np.zeros(q.shape[:2], dtype=dtype)
+    scale = dtype(cfg.head_dim ** -0.5)
+
+    def merge(left, right):
+        # The identity is (-inf, 0, 0); never evaluate -inf - (-inf).
+        if right[1] == 0:
+            return left
+        if left[1] == 0:
+            return right
+        m = np.maximum(left[0], right[0])
+        a, b = np.exp(left[0] - m), np.exp(right[0] - m)
+        return m, a * left[1] + b * right[1], a * left[2] + b * right[2]
+
+    for row in range(len(q)):
+        for head in range(cfg.heads):
+            kv_head = head // (cfg.heads // cfg.kv_heads)
+            identity = (dtype(-np.inf), dtype(0), np.zeros(cfg.head_dim, dtype=dtype))
+            total = identity
+            for split in range(splits):
+                lo, hi = len(k) * split // splits, len(k) * (split + 1) // splits
+                partial = identity
+                for begin in range(lo, hi, tile_size):
+                    ids = np.flatnonzero(mask[row, begin:min(begin + tile_size, hi)]) + begin
+                    if not len(ids):
+                        continue
+                    scores = (k[ids, kv_head] @ q[row, head]) * scale
+                    if not np.isfinite(scores).all():
+                        raise ValueError("Nonfinite online logits")
+                    m = scores.max()
+                    weights = np.exp(scores - m)
+                    partial = merge(partial, (m, weights.sum(), weights @ v[ids, kv_head]))
+                total = merge(total, partial)
+            maximum[row, head], denominator[row, head] = total[:2]
+            output[row, head] = total[2] / total[1]
+    return {"attention": output, "maximum": maximum, "denominator": denominator,
+            "logsumexp": maximum + np.log(denominator)}
+
+
 def fixture_case(name: str):
     if name == "tiny":
         return Config(), 17, 0
@@ -344,8 +409,12 @@ def write_fixture(hf, source: Path, output: Path, case: str, seed: int = 3811):
     result = evaluate(hf, cfg, inputs, start)
     np.testing.assert_allclose(result["attention_eager"], result["attention_fp64"],
                                atol=3e-5, rtol=2e-4)
+    online = online_attention(cfg, result)
+    np.testing.assert_allclose(online["attention"], result["attention_fp64"],
+                               atol=3e-5, rtol=2e-4)
     arrays = {f"input_{k}": v for k, v in inputs.arrays().items()}
     arrays.update({f"reference_{k}": v for k, v in result.items()})
+    arrays.update({f"candidate_online_{k}": v for k, v in online.items()})
     record = {
         "schema_version": 1, "case": case, "seed": seed,
         "config": asdict(cfg), "prefix_tokens": tokens, "query_start": start,
@@ -357,11 +426,16 @@ def write_fixture(hf, source: Path, output: Path, case: str, seed: int = 3811):
         "dtype": "F32 preparation and eager; FP64 SDPA on identical prepared operands",
         "tie_policy": "Official torch.topk; tied boundary order unspecified, no native tie parity claimed",
         "score_diagnostic": "Unscaled FP64 dots on official prepared F32 IQ/block keys; not an HF score dump",
+        "online_diagnostic": {"role": "Candidate reduction checked against independent SDPA, not an oracle",
+                              "tile_size": 3, "splits": 2, "precision": "float32",
+                              "gate_applied": False},
         "scope": "Synthetic operator reference; no C/Metal or checkpoint/BF16 quality claim",
         "packages": {name: importlib.metadata.version(name) for name in ("numpy", "torch", "transformers")},
         "cpu_threads": torch.get_num_threads(),
         "max_abs_attention_eager_vs_fp64": float(np.max(np.abs(
             result["attention_eager"].astype(np.float64) - result["attention_fp64"]))),
+        "max_abs_attention_online_vs_fp64": float(np.max(np.abs(
+            online["attention"].astype(np.float64) - result["attention_fp64"]))),
         "arrays": {name: {"shape": list(value.shape), "dtype": value.dtype.str,
                            "sha256": hashlib.sha256(value.tobytes(order="C")).hexdigest()}
                    for name, value in arrays.items()},

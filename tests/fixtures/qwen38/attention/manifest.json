@@ -21,23 +21,36 @@
   "independent_checks": [
     "Official HF causal indexer mask versus NumPy FP64 scores and lexicographic sort with a strict margin",
     "Official eager attention versus CPU PyTorch SDPA FP64 on identical prepared operands and mask",
-    "Analytical single-key, uniform-score mean, pooling, partial RoPE and global softmax cases"
+    "Analytical single-key, uniform-score mean, pooling, partial RoPE and global softmax cases",
+    "NumPy tiled CPU candidate versus official eager and CPU SDPA FP64; normalization versus NumPy logaddexp reduction"
   ],
   "recipes": [
     {
-      "name": "tiny", "seed": 3811, "prefix_tokens": 17, "query_start": 0,
-      "observed_artifact_sha256": "2f1bc073aeeb4a1c540653a9e99e42e0f47f380c88ba63ca0fb270e34de05e4d",
-      "observed_max_abs_attention_eager_vs_fp64": 1.123198750674348e-7
+      "name": "tiny",
+      "seed": 3811,
+      "prefix_tokens": 17,
+      "query_start": 0,
+      "observed_artifact_sha256": "b4390019836528b7c994e57c538fa2dfdf431b1d64ea146a918aeca8e86781bc",
+      "observed_max_abs_attention_eager_vs_fp64": 1.123198750674348e-07,
+      "observed_max_abs_attention_online_vs_fp64": 1.1020826759522429e-07
     },
     {
-      "name": "boundary", "seed": 3811, "prefix_tokens": 2053, "query_start": 2046,
-      "observed_artifact_sha256": "b26dd3d7d69ed06fd96c6704df2a1bda827442c900151d0cc2c29b94eab6f81a",
-      "observed_max_abs_attention_eager_vs_fp64": 6.173630814204634e-8
+      "name": "boundary",
+      "seed": 3811,
+      "prefix_tokens": 2053,
+      "query_start": 2046,
+      "observed_artifact_sha256": "5387ce11a9d59b6d0e79ac5bbc15837b8467e3a5e266b93763f70292ed436a09",
+      "observed_max_abs_attention_eager_vs_fp64": 6.173630814204634e-08,
+      "observed_max_abs_attention_online_vs_fp64": 2.3239982865214115e-08
     },
     {
-      "name": "real-shape", "seed": 3811, "prefix_tokens": 9, "query_start": 0,
-      "observed_artifact_sha256": "1f351bdc1b69d2557b4b85baf8abbd428c1e0b410a9d51f1fd7102eaf428b450",
-      "observed_max_abs_attention_eager_vs_fp64": 6.684502176224072e-7
+      "name": "real-shape",
+      "seed": 3811,
+      "prefix_tokens": 9,
+      "query_start": 0,
+      "observed_artifact_sha256": "414427a2d2c87ce4cf3e8d632a88a8848bb62e79e1bc4ff26b0d70c1ee50508e",
+      "observed_max_abs_attention_eager_vs_fp64": 6.684502176224072e-07,
+      "observed_max_abs_attention_online_vs_fp64": 2.909324403055358e-07
     }
   ],
   "reproduce": {
@@ -49,11 +62,21 @@
   },
   "verification": {
     "date": "2026-10-12",
-    "test_count": 20,
+    "test_count": 24,
     "device": "CPU only, one torch thread",
-    "packages": {"numpy": "2.5.1", "torch": "2.13.0", "transformers": "5.13.0"},
-    "attention_tolerance": {"atol": 0.00003, "rtol": 0.0002},
-    "prep_tolerance": {"atol": 0.00002, "rtol": 0.00002},
+    "packages": {
+      "numpy": "2.5.1",
+      "torch": "2.13.0",
+      "transformers": "5.13.0"
+    },
+    "attention_tolerance": {
+      "atol": 3e-05,
+      "rtol": 0.0002
+    },
+    "prep_tolerance": {
+      "atol": 2e-05,
+      "rtol": 2e-05
+    },
     "selection_margin_requirement": 0.0004,
     "coverage": [
       "Prefill, single-token decode, append and non-aligned chunk boundaries",
@@ -63,8 +86,13 @@
       "Exact and near-ties, ReLU zeros, explicit HF tie ambiguity",
       "GQA and partial rotary dimensions at real head shapes using synthetic data",
       "Global softmax normalization, large logits, elementwise sigmoid gate",
-      "Source integrity, bounded allocations, export hashes and overwrite refusal"
-    ]
+      "Source integrity, bounded allocations, export hashes and overwrite refusal",
+      "Online CPU candidate: tiles 1/3/8/32, splits 1/2/7/17, empty tiles/splits, rescaling and dense logsumexp"
+    ],
+    "online_fp64_tolerance": {
+      "atol": 1e-12,
+      "rtol": 1e-12
+    }
   },
   "limits": [
     "No C or Metal implementation, GPU execution, checkpoint payload read or benchmark",
@@ -74,6 +102,7 @@
     "FP64 score diagnostics use HF-prepared F32 operands and omit HF's positive 1/sqrt(Di) ranking scale",
     "Exact HF top-k ties have unspecified order; no native lowest-index tie rule is claimed",
     "Dynamic RoPE, multimodality, arbitrary padding, non-divisible budgets and F16/BF16 caches are excluded",
-    "Synthetic inputs and same-checkpoint arithmetic do not measure Q2 compression loss"
+    "Synthetic inputs and same-checkpoint arithmetic do not measure Q2 compression loss",
+    "candidate_online_* arrays are diagnostic candidate outputs, not an independent reference; no native tiled implementation"
   ]
 }
