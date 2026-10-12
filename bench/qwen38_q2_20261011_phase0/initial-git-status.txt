@@ -1,0 +1,7 @@
+## main...origin/main
+ M docs/DESIGN.md
+ M docs/project-review-2026-10-11.md
+?? bench/qwen38_q2_20261011_phase0/
+?? docs/80b-100b-model-comparison-2026-10-11.md
+?? docs/large-model-research-2026-10-11.md
+?? docs/qwen38-q2-session-prompt.md

@@ -1,0 +1,75 @@
+{
+  "suite": "picoforge-qwen38-pilot-v1",
+  "scope": "Original local smoke tasks, never used for calibration; no leaderboard claim.",
+  "cases": [
+    {
+      "id": "merge-ranges",
+      "kind": "python",
+      "mode": "nothink",
+      "max_new": 512,
+      "grading": "Executable tests: empty/generator input, touching and nested intervals, negatives, unsorted input, no mutation, randomized comparison against an integer-set oracle.",
+      "prompt_file": "merge-ranges.txt",
+      "prompt_sha256": "07b82f275beab659c6c376d4324ce26940b78b5ba20c0d4da93f40d161348cca"
+    },
+    {
+      "id": "lower-bound",
+      "kind": "c11",
+      "mode": "nothink",
+      "max_new": 384,
+      "grading": "Compile with strict C11 warnings and ASan/UBSan; compare with a linear-search oracle over empty, duplicate, extreme and randomized arrays.",
+      "prompt_file": "lower-bound.txt",
+      "prompt_sha256": "7624ee309d048e83c2d10dc87bbed08c2157b1b7157fdb79de654ada0e20603d"
+    },
+    {
+      "id": "two-file-fix",
+      "kind": "python-files",
+      "mode": "nothink",
+      "max_new": 640,
+      "grading": "Write only the two named files into a temporary directory; execute boundary, fractional, negative, invalid-width and no-mutation tests against both APIs.",
+      "prompt_file": "two-file-fix.txt",
+      "prompt_sha256": "91afd4539c7c17d050cb0cf5c013fcb3570480e05d00fad08e24b902bcc062c3"
+    },
+    {
+      "id": "crt-italian",
+      "kind": "json",
+      "mode": "think",
+      "max_new": 1536,
+      "expected": {
+        "n": 1633
+      },
+      "grading": "Exact JSON answer; independent exhaustive search frozen before generation. A truncated reasoning trace is a failure at the specified token budget.",
+      "prompt_file": "crt-italian.txt",
+      "prompt_sha256": "6b5e4fcc7b49da5a4dab60e6910124034be9837b58c9a78255776994eb400c80"
+    },
+    {
+      "id": "archive-correction",
+      "kind": "json",
+      "mode": "nothink",
+      "max_new": 192,
+      "expected": {
+        "Iris": "BARI29",
+        "Loto": "VERDE82"
+      },
+      "grading": "Exact JSON after a long prompt and a correction; actual token count recorded by the runtime.",
+      "prompt_file": "archive-correction.txt",
+      "prompt_sha256": "58c5ef898043290efdd95a5d0b51721c22253df1faf94eef41f0b3dce3abbee0"
+    }
+  ],
+  "seed": 3811,
+  "context_tokens": 8192,
+  "prefill_chunk_tokens": 1024,
+  "mtp": false,
+  "temperature": 0,
+  "system_message": "",
+  "first_use_repetitions": 1,
+  "measured_repetitions": 3,
+  "performance_decisions": false,
+  "source_sha256": "bde073fe27d5b46090bfab3c1053e1c1e43c36a675de53ca89ca125bd7faa987",
+  "process_order": [
+    "two-file-fix",
+    "archive-correction",
+    "lower-bound",
+    "merge-ranges",
+    "crt-italian"
+  ]
+}

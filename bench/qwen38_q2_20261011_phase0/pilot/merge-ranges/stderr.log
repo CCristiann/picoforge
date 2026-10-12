@@ -1,0 +1,62 @@
+ds4: Qwen BF16 n-grams: 95.37 GiB, disk reads only
+ds4: Metal device Apple M5 Pro, 64.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal model views created in 1.068 ms, residency requested in 353.431 ms, warmup 2.685 ms (mapped 42720.44 MiB from offset 10.51 MiB)
+ds4: Metal mapped mmaped model as 2 overlapping shared buffers
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.26 GiB (raw 0.20 + compressed 0.06) + buffers 1.21 GiB + resident model 41.72 GiB = 43.19 GiB planned
+ds4: memory detail: ctx=8192 prefill_cap=1024 raw_kv_rows=8192 compressed_kv_rows=2049 backend=metal
+probe: load_s=0.457019000 prompt_tokens=96 context=8192 chunk=1024 mtp=false
+ngram_io: {"phase":"before_prefill","calls":0,"bytes":0,"summed_service_ns":0,"errors":0}
+ngram_io: {"phase":"after_prefill","calls":1528,"bytes":488960,"summed_service_ns":324903000,"errors":0}
+ngram_io: {"phase":"after_decode","calls":5576,"bytes":1784320,"summed_service_ns":1172190000,"errors":0}
+ds4: Metal memory probe before session free: runtime 1.10 GiB + streaming experts 0.00 GiB = 1.10 GiB tracked live
+ds4:   runtime tensors live 1128.81 MiB peak 1128.81 MiB
+ds4:   macOS task memory footprint 1.22 GiB, resident 0.92 GiB, virtual 509.35 GiB
+metal_allocated_bytes: 47253012480
+ds4:   mmap model wrapper creations 2 buffers 42.90 GiB cumulative, 38.88 GiB max (not copied)
+ds4:   model residency requests 2
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 0.00 MiB (flash mask 0.00, pad 0.00, tmp 0.00, blk 0.00, ring 0.00, kv 0.00, compressor 0.00, router 0.00, indexer 0.00, moe 0.00, f16 0.00, raw-store 0.00)
+ngram_io: {"phase":"before_prefill","calls":5576,"bytes":1784320,"summed_service_ns":1172190000,"errors":0}
+ngram_io: {"phase":"after_prefill","calls":7104,"bytes":2273280,"summed_service_ns":1370492000,"errors":0}
+ngram_io: {"phase":"after_decode","calls":11152,"bytes":3568640,"summed_service_ns":2257464000,"errors":0}
+ds4: Metal memory probe before session free: runtime 1.10 GiB + streaming experts 0.00 GiB = 1.10 GiB tracked live
+ds4:   runtime tensors live 1128.81 MiB peak 1128.81 MiB
+ds4:   macOS task memory footprint 2.05 GiB, resident 1.75 GiB, virtual 510.18 GiB
+metal_allocated_bytes: 48143253504
+ds4:   mmap model wrapper creations 2 buffers 42.90 GiB cumulative, 38.88 GiB max (not copied)
+ds4:   model residency requests 2
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 0.00 MiB (flash mask 0.00, pad 0.00, tmp 0.00, blk 0.00, ring 0.00, kv 0.00, compressor 0.00, router 0.00, indexer 0.00, moe 0.00, f16 0.00, raw-store 0.00)
+ngram_io: {"phase":"before_prefill","calls":11152,"bytes":3568640,"summed_service_ns":2257464000,"errors":0}
+ngram_io: {"phase":"after_prefill","calls":12680,"bytes":4057600,"summed_service_ns":2417861000,"errors":0}
+ngram_io: {"phase":"after_decode","calls":16728,"bytes":5352960,"summed_service_ns":3335604000,"errors":0}
+ds4: Metal memory probe before session free: runtime 1.10 GiB + streaming experts 0.00 GiB = 1.10 GiB tracked live
+ds4:   runtime tensors live 1128.81 MiB peak 1128.81 MiB
+ds4:   macOS task memory footprint 2.88 GiB, resident 2.58 GiB, virtual 511.01 GiB
+metal_allocated_bytes: 49033494528
+ds4:   mmap model wrapper creations 2 buffers 42.90 GiB cumulative, 38.88 GiB max (not copied)
+ds4:   model residency requests 2
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 0.00 MiB (flash mask 0.00, pad 0.00, tmp 0.00, blk 0.00, ring 0.00, kv 0.00, compressor 0.00, router 0.00, indexer 0.00, moe 0.00, f16 0.00, raw-store 0.00)
+ngram_io: {"phase":"before_prefill","calls":16728,"bytes":5352960,"summed_service_ns":3335604000,"errors":0}
+ngram_io: {"phase":"after_prefill","calls":18256,"bytes":5841920,"summed_service_ns":3508933000,"errors":0}
+ngram_io: {"phase":"after_decode","calls":22304,"bytes":7137280,"summed_service_ns":4390489000,"errors":0}
+ds4: Metal memory probe before session free: runtime 1.10 GiB + streaming experts 0.00 GiB = 1.10 GiB tracked live
+ds4:   runtime tensors live 1128.81 MiB peak 1128.81 MiB
+ds4:   macOS task memory footprint 3.71 GiB, resident 3.41 GiB, virtual 511.84 GiB
+metal_allocated_bytes: 49923735552
+ds4:   mmap model wrapper creations 2 buffers 42.90 GiB cumulative, 38.88 GiB max (not copied)
+ds4:   model residency requests 2
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   accelerated Metal path enabled
+ds4:   device Apple M5 Pro, Metal 4 runtime yes, family yes, MTL4 queue yes, tensor API enabled, M5 neural accelerators likely
+ds4:   scratch 0.00 MiB (flash mask 0.00, pad 0.00, tmp 0.00, blk 0.00, ring 0.00, kv 0.00, compressor 0.00, router 0.00, indexer 0.00, moe 0.00, f16 0.00, raw-store 0.00)

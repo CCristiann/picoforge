@@ -1,0 +1,48 @@
+--- a/ds4.c
++++ b/ds4.c
+@@ -58107,6 +58107,17 @@
+ static void qwen4_ref_row(const ds4_model *m, const ds4_tensor *t, uint64_t row, float *out);
+ static void qwen4_ple_step(int token, int *prev, uint32_t *rows);
+ 
++#include <stdatomic.h>
++static _Atomic uint64_t pf_ngram_calls, pf_ngram_bytes, pf_ngram_ns, pf_ngram_errors;
++void picoforge_ngram_report(const char *phase) {
++    fprintf(stderr, "ngram_io: {\"phase\":\"%s\",\"calls\":%llu,"
++        "\"bytes\":%llu,\"summed_service_ns\":%llu,\"errors\":%llu}\n", phase,
++        (unsigned long long)atomic_load(&pf_ngram_calls),
++        (unsigned long long)atomic_load(&pf_ngram_bytes),
++        (unsigned long long)atomic_load(&pf_ngram_ns),
++        (unsigned long long)atomic_load(&pf_ngram_errors));
++}
++
+ static bool qwen4_ngram_row(const ds4_model *m, uint32_t row, float *out) {
+     const ds4_tensor *t = m->ngram_tensor;
+     if (!t || m->ngram_fd < 0 || !out || row >= t->dim[1] ||
+@@ -58119,7 +58130,16 @@
+     const uint64_t offset = t->abs_offset + (uint64_t)row * bytes;
+     uint32_t done = 0;
+     while (done < bytes) {
++        double pf_start = now_sec();
+         ssize_t n = pread(m->ngram_fd, raw + done, bytes - done, (off_t)(offset + done));
++        int pf_errno = errno;
++        double pf_elapsed = now_sec() - pf_start;
++        atomic_fetch_add_explicit(&pf_ngram_calls, 1, memory_order_relaxed);
++        if (n > 0) atomic_fetch_add_explicit(&pf_ngram_bytes, (uint64_t)n, memory_order_relaxed);
++        if (n <= 0) atomic_fetch_add_explicit(&pf_ngram_errors, 1, memory_order_relaxed);
++        if (pf_elapsed >= 0.0)
++            atomic_fetch_add_explicit(&pf_ngram_ns, (uint64_t)(pf_elapsed * 1e9), memory_order_relaxed);
++        errno = pf_errno;
+         if (n < 0 && errno == EINTR) continue;
+         if (n <= 0 || (size_t)n > bytes - done) {
+             if (!n) errno = EIO;
+--- a/ds4_metal.m
++++ b/ds4_metal.m
+@@ -4348,6 +4348,8 @@
+             ds4_gpu_mib(tensor_live_snap),
+             ds4_gpu_mib(tensor_peak_snap));
+     ds4_gpu_print_task_memory_report();
++    fprintf(stderr, "metal_allocated_bytes: %llu\n",
++            (unsigned long long)[g_device currentAllocatedSize]);
+     fprintf(stderr,
+             "ds4:   mmap model wrapper creations %llu buffers %.2f GiB cumulative, %.2f GiB max (not copied)\n",
+             (unsigned long long)g_model_wrap_count,

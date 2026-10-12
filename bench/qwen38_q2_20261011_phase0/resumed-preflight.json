@@ -1,0 +1,34 @@
+{
+  "utc": "2026-10-12T06:14:59.100271+00:00",
+  "hardware": {
+    "device": "Apple M5 Pro",
+    "max_buffer_bytes": 41747087360,
+    "unified_memory": true,
+    "probe_allocated_bytes": 65536,
+    "max_threadgroup_bytes": 32768,
+    "physical_memory_bytes": 68719476736,
+    "recommended_working_set_bytes": 55662788608,
+    "os": "Version 27.0.1 (Build 26A434)",
+    "thermal_state": 0
+  },
+  "system_memory": {
+    "pid": 7855,
+    "monotonic_s": 238.892218,
+    "resident_bytes": 1785856,
+    "phys_footprint_bytes": 1360208,
+    "lifetime_peak_phys_footprint_bytes": 1392976,
+    "disk_read_bytes": 36864,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 0,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 0,
+    "system_swapouts_pages": 0,
+    "page_bytes": 16384,
+    "system_wired_pages": 232006,
+    "system_compressor_pages": 0
+  },
+  "power": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t82%; AC attached; not charging present: true\n",
+  "ollama_models": {
+    "models": []
+  }
+}

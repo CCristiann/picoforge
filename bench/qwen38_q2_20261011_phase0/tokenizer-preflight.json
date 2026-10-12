@@ -1,0 +1,13 @@
+{
+  "tokenizer_repository": "Qwen/Qwen3.8-Flash-Next",
+  "revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
+  "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+  "raw_prompt_tokens": {
+    "merge-ranges": 84,
+    "lower-bound": 114,
+    "two-file-fix": 161,
+    "crt-italian": 90,
+    "archive-correction": 7602
+  },
+  "note": "Raw counts omit the chat template; the DwarfStar probe verifies the final context budget. Original 360-record draft had 9102 raw tokens and was shortened before any model generation."
+}

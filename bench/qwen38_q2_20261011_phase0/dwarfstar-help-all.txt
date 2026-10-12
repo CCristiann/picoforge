@@ -1,0 +1,126 @@
+ds4
+Chat with a local DwarfStar model, run one-shot prompts, inspect models, or coordinate distributed inference.
+
+Usage: ds4 [(-p PROMPT | --prompt-file FILE)] [options]
+
+Model And Runtime
+  -m, --model FILE               GGUF model path. Default: ds4flash.gguf
+  --vision FILE                  Vision encoder GGUF for the selected model.
+  --metal | --cuda | --cpu       Select the backend explicitly.
+  --backend NAME                 Backend name: metal, cuda, or cpu.
+  --gpu-vram N[,N,...]|auto      CUDA VRAM budgets per device, in GiB, or auto-detect free VRAM.
+  --gpu-devices N[,N,...]        CUDA device indices used by multi-GPU placement.
+  --cuda-tensor-parallel         Enable the paired DeepSeek tensor/expert path on an even multi-GPU CUDA placement.
+  -c, --ctx N                    Allocated context tokens.
+  -t, --threads N                CPU helper threads for host-side/reference work.
+  --power N                      GPU duty-cycle target, 1..100. Default: 100
+  --ssd-streaming                Metal/CUDA/ROCm: opt in to SSD-backed model streaming instead of full residency.
+  --ssd-streaming-cold           SSD streaming: skip default popularity-based expert-cache preload.
+  --ssd-streaming-cache-experts N|NGB
+      SSD streaming cache target. N requests dynamic expert slots; NGB also reserves two full prefill layers. Either may be reduced to fit the model, graph, context, and backend working set.
+  --ssd-streaming-full-layers N  GLM Metal streaming: keep the first N routed layers fully resident. Default: auto from NGB expert budget; use 0 to disable.
+  --ssd-streaming-preload-experts N
+      SSD streaming: upfront popularity preload count. DeepSeek auto-seeds by default; GLM demand-fills unless N is explicit.
+  --simulate-used-memory NGB     Diagnostic: lock N GiB before model load to simulate a smaller-memory machine.
+  --prefill-chunk N              Graph prefill chunk size. Default: CUDA TP 2048; PRO long prompts 8192; others 4096.
+  --mtp                          Enable model-embedded MTP speculation.
+  --mtp-model FILE               External MTP or DSpark support GGUF.
+  --mtp-draft N                  Maximum autoregressive MTP draft tokens. Default: 1
+  --mtp-margin F                 Verifier confidence margin for fast MTP acceptance. Default: 3
+  --mtp-timing                   Enable embedded MTP and print acceptance/timing counters.
+  --dspark                       Enable DSpark using the support GGUF passed with --mtp-model.
+  --dspark-confidence F          Enable DSpark with confidence pruning threshold 0..1. Greedy/opportunistic default: resident Spark Q2 0.4, two-Spark Flash Q2/MXFP4 0, Metal 0.6, other CUDA/ROCm 0.7; exact sampling: 0.8
+  --mtp-exact-sampling           Preserve the ordinary temperature distribution instead of accepting target-matching greedy drafts directly.
+  --dspark-strict                Load DSpark support but keep target-only decode.
+  --quality                      Prefer exact kernels where faster approximate paths exist.
+  --warm-weights                 Touch resident weights at startup to reduce first-use stalls.
+  --expert-profile FILE          Metal-only: write routed expert locality/cache simulation JSON.
+
+Prompt And Sampling
+  -n, --tokens N                 Maximum generated tokens.
+  --temp F                       Sampling temperature. 0 is greedy/deterministic.
+  --top-p F                      Nucleus sampling probability.
+  --min-p F                      Keep tokens scoring at least F times the top token.
+  --seed N                       Sampling seed for reproducible non-greedy runs.
+GLM CLI and agent runs default to temperature 1.0, top-p 0.95, and min-p 0 unless those options are set explicitly.
+  --think                        Use normal thinking mode (V4.1: effort 75).
+  --think-max                    Use maximum thinking (V4.1: 100; V4: requires ctx >= 393216).
+  --think-level N                V4.1 thinking effort, 1..100; 0 disables thinking.
+  --nothink                      Disable thinking and ask for direct replies.
+  -sys, --system TEXT            System prompt. Empty string disables the default where supported.
+  -p, --prompt TEXT              One-shot prompt text.
+  --prompt-file FILE             Read one-shot prompt text from FILE.
+  --raw-prompt                   Tokenize the one-shot prompt without chat markers.
+
+Directional Steering
+  --dir-steering-file FILE       Load one f32 direction vector per layer.
+  --dir-steering-ffn F           Apply steering after FFN outputs. Default with file: 1
+  --dir-steering-attn F          Apply steering after attention outputs. Default: 0
+
+Distributed Inference
+
+Distributed mode runs one logical session across several machines by assigning contiguous model layer ranges to workers. Workers own their layer slice and KV-cache shard; the coordinator owns the prompt, sampling loop, and client/API flow. Start workers first, then start the coordinator. The coordinator waits for a complete route and streams hidden states through the workers.
+
+  --role ROLE                    Distributed role: coordinator or worker.
+  --layers A:B                   Inclusive layer slice, e.g. 0:20 or 21:output.
+  --listen HOST PORT             Coordinator listen address; workers may use it for their data listener.
+  --coordinator HOST PORT        Coordinator address for --role worker.
+  --dist-prefill-chunk N         Coordinator prefill pipeline chunk size. Default: session cap.
+  --dist-prefill-window N        Max prefill chunks in flight. Default: workers+2, capped at 8.
+  --dist-activation-bits N       Hidden-state transport width: 32, 16, or 8. Default: 32
+  --dist-replay-check            Diagnostic: reset and replay prompt, then compare logits.
+  --debug                        Print coordinator route/debug logs.
+
+Tensor Parallelism
+
+Tensor parallelism uses the same coordinator/worker addresses as distributed mode, but always runs one 50/50 worker. Add --tensor-parallel, omit --layers, start the worker, then start the coordinator.
+
+  --tensor-parallel              Switch --role/--listen/--coordinator to two-machine tensor parallelism.
+  --transport auto|rdma|tcp      Tensor gate transport. Default: auto
+  --rdma-device NAME             Select a verbs device when auto-detection is ambiguous.
+  --rdma-gid-index N             Select the local verbs GID index.
+  --tensor-parallel-token-prefill
+      GLM diagnostic: prefill one token at a time for exact arithmetic.
+  --debug-hash N                 Cross-check hidden state every N tokens.
+
+CLI Modes
+  ds4                            Start the interactive prompt.
+  ds4 -p TEXT                    Run one prompt and exit.
+  ds4 --prompt-file FILE         Run a long prompt from a file and exit.
+  --prefix-file FILE             Preload complete alternating USER:/ASSISTANT: turns before the live conversation.
+
+Diagnostics And Data Collection
+  --inspect                      Load the model and print a summary only.
+  --dump-tokens                  Print the exact CLI prompt token stream, then exit. Use --raw for literal text.
+  --dump-logits FILE             Write full next-token logits as JSON.
+  --dump-logprobs FILE           Write greedy continuation top-logprobs as JSON.
+  --logprobs-top-k N             Alternatives stored by --dump-logprobs. Default: 20
+  --decode-consistency N         Compare N-token decode logits with a fresh full prefill.
+  --expert-profile FILE          Metal-only: write routed expert locality/cache simulation JSON.
+  --perplexity-file FILE         Score raw text with teacher-forced NLL.
+  --imatrix-dataset FILE         Rendered prompt dataset for imatrix collection.
+  --imatrix-out FILE             Write llama-compatible routed-MoE imatrix .dat.
+  --imatrix-max-prompts N        Stop imatrix collection after N prompts.
+  --imatrix-max-tokens N         Stop imatrix collection after N prompt tokens.
+  --imatrix-min-expert-samples N Continue until every routed expert has N samples.
+  --head-test                    Run the output HC/logits head after the native slice.
+  --first-token-test             Run exact CPU whole-model pass for the first prompt token.
+  --metal-graph-test             Compare first GPU-resident graph stages with CPU.
+  --metal-graph-full-test        Run the GPU-resident self-token graph across all layers.
+  --metal-graph-prompt-test      Compare CPU and GPU graph logits for the full prompt.
+
+Interactive Commands
+  /help                          Show interactive commands.
+  /think [N], /think-max, /nothink
+      Switch thinking mode; V4.1 accepts effort 0..100.
+  /ctx N                         Restart the interactive session with a new context size.
+  /power N                       Set GPU duty cycle percentage, 1..100.
+  /read FILE                     Submit a text file, PNG, or JPEG as the next user message.
+  /quit, /exit                   Leave the prompt.
+  Ctrl+C                         Stop current generation and return to ds4>.
+
+Examples
+  chat                           ./ds4
+  one shot                       ./ds4 -p "Explain mmap in C"
+  long prompt                    ./ds4 --think-max --prompt-file prompt.txt --ctx 393216
+

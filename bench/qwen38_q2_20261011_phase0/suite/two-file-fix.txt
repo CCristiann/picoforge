@@ -1,0 +1,10 @@
+Fix this two-file Python library. slices.py contains:
+def windows(xs, k):
+    return [xs[i:i+k] for i in range(len(xs)-k)]
+
+summaries.py contains:
+from slices import windows
+def rolling_means(xs, k):
+    return [sum(chunk)//k for chunk in windows(xs, k)]
+
+Contract: k is an integer; both functions must raise ValueError for k <= 0. windows must return every complete length-k window (including the last one), return [] when k exceeds the input length, and must not mutate xs. rolling_means must use real division, including negative and fractional inputs. Return ONLY a JSON object whose keys are slices.py and summaries.py and whose values are the complete corrected source strings. No Markdown or extra keys.

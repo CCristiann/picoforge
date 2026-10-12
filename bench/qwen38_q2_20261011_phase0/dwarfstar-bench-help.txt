@@ -1,0 +1,76 @@
+ds4-bench
+Measure prefill, decode, context growth, and KV-cache size across repeatable context frontiers.
+
+Usage: ds4-bench (--prompt-file FILE | --chat-prompt-file FILE) [options]
+
+Model And Runtime
+  -m, --model FILE               GGUF model path. Default: ds4flash.gguf
+  --metal | --cuda | --cpu       Select the backend explicitly.
+  --backend NAME                 Backend name: metal, cuda, or cpu.
+  --gpu-vram N[,N,...]|auto      CUDA VRAM budgets per device, in GiB, or auto-detect free VRAM.
+  --gpu-devices N[,N,...]        CUDA device indices used by multi-GPU placement.
+  --cuda-tensor-parallel         Enable the paired DeepSeek tensor/expert path on an even multi-GPU CUDA placement.
+  -t, --threads N                CPU helper threads for host-side/reference work.
+  --power N                      GPU duty-cycle target, 1..100. Default: 100
+  --ssd-streaming                Metal/CUDA/ROCm: opt in to SSD-backed model streaming instead of full residency.
+  --ssd-streaming-cold           SSD streaming: skip default popularity-based expert-cache preload.
+  --ssd-streaming-cache-experts N|NGB
+      SSD streaming cache target. N requests dynamic expert slots; NGB also reserves two full prefill layers. Either may be reduced to fit the model, graph, context, and backend working set.
+  --ssd-streaming-full-layers N  GLM Metal streaming: keep the first N routed layers fully resident. Default: auto from NGB expert budget; use 0 to disable.
+  --ssd-streaming-preload-experts N
+      SSD streaming: upfront popularity preload count. DeepSeek auto-seeds by default; GLM demand-fills unless N is explicit.
+  --simulate-used-memory NGB     Diagnostic: lock N GiB before model load to simulate a smaller-memory machine.
+  --prefill-chunk N              Graph prefill chunk size. Default: CUDA TP 2048; PRO long prompts 8192; others 4096.
+  --mtp-model FILE               External MTP or DSpark support GGUF.
+  --dspark                       Benchmark greedy DSpark using the support GGUF passed with --mtp-model.
+  --dspark-confidence F          DSpark confidence pruning threshold 0..1.
+  --quality                      Prefer exact kernels where faster approximate paths exist.
+  --warm-weights                 Touch resident weights at startup to reduce first-use stalls.
+  --expert-profile FILE          Metal-only: write routed expert locality/cache simulation JSON.
+
+Distributed Inference
+
+Distributed mode runs one logical session across several machines by assigning contiguous model layer ranges to workers. Workers own their layer slice and KV-cache shard; the coordinator owns the prompt, sampling loop, and client/API flow. Start workers first, then start the coordinator. The coordinator waits for a complete route and streams hidden states through the workers.
+
+  --role ROLE                    Distributed role: coordinator or worker.
+  --layers A:B                   Inclusive layer slice, e.g. 0:20 or 21:output.
+  --listen HOST PORT             Coordinator listen address; workers may use it for their data listener.
+  --coordinator HOST PORT        Coordinator address for --role worker.
+  --dist-prefill-chunk N         Coordinator prefill pipeline chunk size. Default: session cap.
+  --dist-prefill-window N        Max prefill chunks in flight. Default: workers+2, capped at 8.
+  --dist-activation-bits N       Hidden-state transport width: 32, 16, or 8. Default: 32
+  --dist-replay-check            Diagnostic: reset and replay prompt, then compare logits.
+  --debug                        Print coordinator route/debug logs.
+
+Tensor Parallelism
+
+Tensor parallelism uses the same coordinator/worker addresses as distributed mode, but always runs one 50/50 worker. Add --tensor-parallel, omit --layers, start the worker, then start the coordinator.
+
+  --tensor-parallel              Switch --role/--listen/--coordinator to two-machine tensor parallelism.
+  --transport auto|rdma|tcp      Tensor gate transport. Default: auto
+  --rdma-device NAME             Select a verbs device when auto-detection is ambiguous.
+  --rdma-gid-index N             Select the local verbs GID index.
+  --tensor-parallel-token-prefill
+      GLM diagnostic: prefill one token at a time for exact arithmetic.
+  --debug-hash N                 Cross-check hidden state every N tokens.
+
+Benchmark Input
+  --prompt-file FILE             Raw benchmark text; token sequence is sliced at each frontier.
+  --chat-prompt-file FILE        Render FILE as one no-thinking chat user message.
+  -sys, --system TEXT            System prompt used only with --chat-prompt-file.
+
+Benchmark Sweep
+  --ctx-start N                  First measured frontier. Default: 2048
+  --ctx-max N                    Last measured frontier. Default: 32768
+  --ctx-alloc N                  Allocated context. Default: ctx-max + gen-tokens + 1
+  --step-mul F                   Multiplicative step. Default: 1
+  --step-incr N                  Linear step when --step-mul is 1. Default: 2048
+  --gen-tokens N                 Greedy decode tokens per frontier. 0 for pure prefill. Default: 128
+  --teacher-forced-decode        Decode the following prompt tokens instead of each predicted argmax.
+  --csv FILE                     Write CSV there instead of stdout.
+  --dump-frontier-logits-dir DIR Write one full-logit JSON file per frontier.
+
+Examples
+  csv                            ./ds4-bench --prompt-file long.txt --ctx-max 32768 --csv speed.csv
+  prefill only                   ./ds4-bench --prompt-file long.txt --gen-tokens 0
+

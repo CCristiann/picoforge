@@ -1,0 +1,36 @@
+```python
+def merge_ranges(ranges):
+    """
+    Merge overlapping and touching half-open intervals.
+    
+    Args:
+        ranges: An iterable of (start, end) integer pairs with start <= end.
+        
+    Returns:
+        A sorted list of merged (start, end) tuples.
+    """
+    # Filter out empty intervals (where start >= end) and collect valid intervals
+    valid = []
+    for start, end in ranges:
+        if start < end:
+            valid.append((start, end))
+    
+    if not valid:
+        return []
+    
+    # Sort by start time
+    valid.sort()
+    
+    # Merge overlapping and touching intervals
+    merged = [valid[0]]
+    for current_start, current_end in valid[1:]:
+        last_start, last_end = merged[-1]
+        # If current interval overlaps or touches the last merged interval
+        if current_start <= last_end:
+            # Extend the last merged interval
+            merged[-1] = (last_start, max(last_end, current_end))
+        else:
+            merged.append((current_start, current_end))
+    
+    return merged
+```

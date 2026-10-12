@@ -1,0 +1,50 @@
+{
+  "pilot": true,
+  "complete": true,
+  "suite_sha256": "e6c18eace5c5c7bd3fd4af4aca2fdb20eb294db13f9c7842dd913d21ba11d74e",
+  "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "probe_sha256": "9049533e87a8738dbfe821221da97808a97bf60ef9489da22ec655a96dacbd63",
+  "source_sha256": {
+    "tools/eval/check_qwen38_tokens.py": "561d2223821676ae90a3e7d5b71103d1f4770618621712296669288b001fa170",
+    "tools/eval/download_qwen38_q2.py": "070a163d4fa719997bf76082f076eea8e3d110214c7a78f84a7a8c9865b5fec3",
+    "tools/eval/grade_qwen38.py": "039be2522f4599455db48dd9281159e45cfd7490a401084598226e31b294f53a",
+    "tools/eval/inspect_qwen38_gguf.py": "d94c5d23690ecba4198ef0b3761e4d8d266199256b2adde7a0aa37319b696385",
+    "tools/eval/prepare_qwen38_suite.py": "f02ec4817ae5e0154fa855f75c4131811acbbfa783a99c41c1438baf31559e82",
+    "tools/eval/qwen38_cases.json": "bde073fe27d5b46090bfab3c1053e1c1e43c36a675de53ca89ca125bd7faa987",
+    "tools/eval/run_qwen38_pilot.py": "625fab5ede1507e1f22c6c99c19c16cd9facb0d98634565fb5373a9399fd6f6d",
+    "tools/eval/summarize_qwen38.py": "e8a01c74c504aa93235abf0ef483c5b9553dfcec4a9e363014e6059459d6a5ed",
+    "tools/eval/verify_qwen38_download.py": "042f0abf83694bdff1aff9a70d6f611a0e7ae1fd935f3889d4b9542b17a34b6a",
+    "tools/eval/dwarfstar_probe.c": "08f97f8ad6c62df0401abd3e8f89736823ec94db4ccc83499134bc06b05e3aca",
+    "tools/eval/build_dwarfstar_probe.py": "38b600098701b9b19369ff4c56733fe5afdca9513d57878a643fbc56849526ad",
+    "tools/eval/run_observed.py": "6a1464297de39befccf8669681c8d9c532ada4545f2c9fb2ce0b7c5ff5d1b6f7",
+    "tools/probe/memory_budget.m": "911a1142901cf555b0639303a15169f79173c2785b94933c00ae7e78e3217940",
+    "tools/probe/process_memory.c": "975a59d7f10d58e91fd3dc4e32c5c696693a76a2df4b95e051ade871bb1fe2dd"
+  },
+  "case_order": [
+    "two-file-fix",
+    "archive-correction",
+    "lower-bound",
+    "merge-ranges",
+    "crt-italian"
+  ],
+  "measured_repeats": 3,
+  "warmup_repeats": 1,
+  "finished": [
+    "two-file-fix",
+    "archive-correction",
+    "lower-bound",
+    "merge-ranges",
+    "crt-italian"
+  ],
+  "quality_graded": true,
+  "context_tokens": 8192,
+  "prefill_chunk_tokens": 1024,
+  "mtp": false,
+  "limitations": [
+    "Pilot only; three hot repeats are not a stable performance comparison.",
+    "First-use process load after hashing is not controlled cold-storage load.",
+    "N-gram instrumentation adds overhead; stock binaries are separate controls."
+  ],
+  "throughput_corpus_sha256": "f53e0d80cb2d4492d24ebd63c7000c397b16ae70f9bf09b3763e5d8323ec209f"
+}

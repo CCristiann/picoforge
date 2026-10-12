@@ -1,0 +1,14 @@
+We need answer in Italian? User asks Italian. Need solve CRT: find smallest integer n > 1000 such that n ≡ 2 mod 7, n ≡ 5 mod 11, n ≡ 8 mod 13. Need final only JSON object with key n integer. Need verify no smaller >1000. Need reason privately. Let's solve carefully.
+
+We need n ≡ 2 (mod 7), ≡5 (mod 11), ≡8 (mod 13). Moduli pairwise coprime: 7,11,13 product 1001. Since product 1001, residues modulo 1001 unique. Need smallest >1000. If solution residue r modulo 1001. If r > 1000? Since modulo 1001, smallest positive maybe r in 0..1000. If r=0? But >1000 then r+1001. Need compute r.
+
+Let's solve. n = 2 + 7a. Need 2+7a ≡5 mod11 => 7a ≡3 mod11. Inverse 7 mod11 is 8 (7*8=56=1). a ≡3*8=24≡2 mod11. So a=2+11b. n=2+7(2+11b)=16+77b. Need ≡8 mod13: 16+77b ≡8 mod13. 16≡3, 77≡12? 77 mod13 = 12 (or -1). So 3 + 12b ≡8 => 12b ≡5 mod13. Inverse 12 mod13 is 12 (-1). b ≡5*12=60≡8? 60 mod13=8 (52+8). So b=8+13c. n=16+77(8+13c)=16+616+1001c=632+1001c. So residue 632 mod1001. Smallest >1000 is 632+1001=1633. Check: 1633 mod7? 7*233=1631 remainder2. mod11: 11*148=1628 rem5. mod13: 13*125=1625 rem8. Need verify no smaller >1000. Since all solutions are 632+1001k. For k=0 gives 632 <=1000; k=1 gives 1633. There is no solution between 1001 and 1632 because next after 632 is 1633. But wait if residue 632, numbers >1000 congruent: 1633, 2634... yes. Need final JSON only: {"n":1633}. Ensure no extra text. Need maybe include only JSON. Final must be only object JSON. Good.
+
+Double-check if any solution >1000 less than 1633? Since modulo 1001, if residue 632, numbers: ..., -369, 632, 1633. None >1000 below 1633. Good.
+
+Need maybe consider n greater than 1000 not necessarily positive? smallest integer >1000 positive. Good.
+
+Final only JSON. Ensure valid JSON. No markdown.
+</think>
+
+{"n":1633}

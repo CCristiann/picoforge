@@ -1,0 +1,1 @@
+usage: ./build/dwarfstar_probe MODEL PROMPT STEM MAX_NEW nothink|think|raw:N REPEATS

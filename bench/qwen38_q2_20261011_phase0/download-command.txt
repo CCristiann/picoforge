@@ -1,0 +1,1 @@
+/usr/bin/caffeinate -i /usr/bin/curl --location --fail --show-error --silent --retry 8 --retry-delay 5 --connect-timeout 30 --speed-limit 1024 --speed-time 120 --continue-at - --output models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf.part https://huggingface.co/antirez/qwen3.8-flash-next-gguf/resolve/d600fe1a43d2e1cdcadb85144ce3142f66f9eefe/Qwen3.8-Flash-Next-Q2.gguf

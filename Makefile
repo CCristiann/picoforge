@@ -63,6 +63,25 @@ test-context: picoforge build/tiny-qwen3-moe
 test-bench-speculate:
 	@./tools/venv/bin/python tests/test_bench_speculate.py
 
+# Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
+build/process_memory: tools/probe/process_memory.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ $<
+
+build/memory_budget: tools/probe/memory_budget.m
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fobjc-arc -o $@ $< $(FRAMEWORKS)
+
+test-qwen38-tools: build/process_memory build/memory_budget
+	@./tools/venv/bin/python tests/test_qwen38_inventory.py
+	@./tools/venv/bin/python tests/test_run_observed.py
+	@./tools/venv/bin/python tests/test_qwen38_grading.py
+	@./tools/venv/bin/python tests/test_qwen38_evidence.py
+
+test-all: test-qwen38-tools
+
+.PHONY: test-qwen38-tools
+
 build/test_expert_cost: tests/test_expert_cost.c src/expert_cost.o src/config.o src/json.o src/util.o src/picoforge.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_expert_cost.c src/expert_cost.o src/config.o src/json.o src/util.o $(LDFLAGS)

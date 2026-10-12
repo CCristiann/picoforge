@@ -5,3 +5,6 @@ f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b  model.safetens
 aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4  tokenizer.json
 d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101  tokenizer_config.json
 ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910  vocab.json
+# Qwen3.8 Q2, antirez/qwen3.8-flash-next-gguf revision d600fe1a43d2e1cdcadb85144ce3142f66f9eefe
+# Verified 2026-10-12; path relative to models/; 147207127040 bytes.
+b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9  Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf

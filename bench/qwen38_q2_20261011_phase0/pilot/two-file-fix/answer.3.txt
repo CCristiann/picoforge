@@ -1,0 +1,4 @@
+{
+  "slices.py": "def windows(xs, k):\n    if not isinstance(k, int):\n        raise ValueError(\"k must be an integer\")\n    if k <= 0:\n        raise ValueError(\"k must be positive\")\n    if k > len(xs):\n        return []\n    return [xs[i:i+k] for i in range(len(xs) - k + 1)]",
+  "summaries.py": "from slices import windows\n\ndef rolling_means(xs, k):\n    if not isinstance(k, int):\n        raise ValueError(\"k must be an integer\")\n    if k <= 0:\n        raise ValueError(\"k must be positive\")\n    return [sum(chunk) / k for chunk in windows(xs, k)]"
+}

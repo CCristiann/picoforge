@@ -1,0 +1,563 @@
+cc -O3 -ffast-math -g -mcpu=native -Wall -Wextra -std=c99 -I. -c -o tests/test_qwen4_kernels.o tests/test_qwen4_kernels.c
+cc -O3 -ffast-math -g -mcpu=native -Wall -Wextra -std=c99 -fno-fast-math -I. -c -o tests/test_qwen4_moe_mm_specialize.o tests/test_qwen4_moe_mm_specialize.c
+cc -O3 -g -mcpu=native -Wall -Wextra -std=c99 -Wno-unused-function -I. -c -o tests/test_qwen4_ngrams.o tests/test_qwen4_ngrams.c
+cc -O3 -ffast-math -g -mcpu=native -Wall -Wextra -std=c99 -o tests/test_qwen4_moe_mm_specialize tests/test_qwen4_moe_mm_specialize.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_metal.o ds4_layer_pack.o ds4_engram.o -lm -pthread -framework Foundation -framework Metal
+cc -O3 -ffast-math -g -mcpu=native -Wall -Wextra -std=c99 -o tests/test_qwen4_kernels tests/test_qwen4_kernels.o ds4_metal.o ds4_image.o -lm -pthread -framework Foundation -framework Metal
+./tests/test_qwen4_kernels
+DS4_TEST_QWEN4_MV_EXACT=1 ./tests/test_qwen4_kernels
+ds4: Metal device Apple M5 Pro, 64.00 GiB RAM
+ds4: Metal device Apple M5 Pro, 64.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+cc -O3 -g -mcpu=native -Wall -Wextra -std=c99 -o tests/test_qwen4_ngrams tests/test_qwen4_ngrams.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o -lm -pthread
+./tests/test_qwen4_ngrams
+ds4: Qwen n-grams must follow page-aligned weights; repack with gguf-tools/qwen4_native_ngrams.py
+ds4: Qwen requires original BF16 n-grams; repack with gguf-tools/qwen4_native_ngrams.py
+ds4: Qwen requires original BF16 n-grams; repack with gguf-tools/qwen4_native_ngrams.py
+ds4: tensor points outside GGUF file
+Qwen BF16 n-grams: disk-only mapping, exact reads, batches and errors OK
+ds4: Metal model views created in 0.171 ms, residency requested in 35.242 ms, warmup 6.426 ms (mapped 1536.00 MiB from offset 0.00 MiB)
+ds4: Metal mapped mmaped model as 1 overlapping shared buffers
+ds4: Metal model views created in 0.133 ms, residency requested in 36.174 ms, warmup 5.543 ms (mapped 1536.00 MiB from offset 0.00 MiB)
+ds4: Metal mapped mmaped model as 1 overlapping shared buffers
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (4 < 8)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (124 < 128)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (128 < 132)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (132 < 136)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (1020 < 1024)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (1024 < 1028)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (1028 < 1032)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (16380 < 16384)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (16384 < 16388)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (16388 < 16392)
+ds4: Qwen3.8 argmax logits buffer is missing or undersized (993280 < 993284)
+hyper-connections
+Qwen decode fusions: exact residual/injection and Q8 checks passed
+Qwen predictor argmax: CPU indices, ties, special values and guards passed
+HC paired mixer geometry: all formats and guarded tails exact
+few-row matvec simdgroup counts: Q8 and F16 verify-row shapes exact at 1/2/4/8 groups
+  MoE grouped kernels: mid and down byte-exact against the per-token kernels under expert reuse
+HC prefetched mixers (single and paired): exact against the plain kernels on all lane paths
+  hc E=2560 rank=320 T=3 f16: xn               ok  max|d|=3.80e-07 (scale 2.60e+00)
+  hc E=2560 rank=320 T=3 f16: lowrank          ok  max|d|=5.02e-06 (scale 9.17e+00)
+  hc E=2560 rank=320 T=3 f16: inject partials  ok  max|d|=1.71e-07 (scale 1.46e+00)
+  hc E=2560 rank=320 T=3 f16: mixed            ok  max|d|=2.20e-07 (scale 1.12e+00)
+  hc E=2560 rank=320 T=3 f16: combine          ok  max|d|=2.14e-07 (scale 2.42e+00)
+  hc E=2560 rank=320 T=2 f16: xn               ok  max|d|=3.30e-07 (scale 2.56e+00)
+  hc E=2560 rank=320 T=2 f16: lowrank          ok  max|d|=2.50e-06 (scale 1.04e+01)
+  hc E=2560 rank=320 T=2 f16: inject partials  ok  max|d|=1.79e-07 (scale 1.36e+00)
+  hc E=2560 rank=320 T=2 f16: mixed            ok  max|d|=1.74e-07 (scale 1.02e+00)
+  hc E=2560 rank=320 T=2 f16: combine          ok  max|d|=1.86e-07 (scale 2.37e+00)
+  hc E=2560 rank=320 T=2 f32: xn               ok  max|d|=2.72e-07 (scale 2.62e+00)
+  hc E=2560 rank=320 T=2 f32: lowrank          ok  max|d|=2.52e-06 (scale 9.47e+00)
+  hc E=2560 rank=320 T=2 f32: inject partials  ok  max|d|=1.68e-07 (scale 1.60e+00)
+  hc E=2560 rank=320 T=2 f32: mixed            ok  max|d|=1.63e-07 (scale 1.17e+00)
+  hc E=2560 rank=320 T=2 f32: combine          ok  max|d|=1.91e-07 (scale 2.13e+00)
+  hc E=2560 rank=320 T=1 f32: xn               ok  max|d|=2.92e-07 (scale 2.59e+00)
+  hc E=2560 rank=320 T=1 f32: lowrank          ok  max|d|=1.15e-06 (scale 7.52e+00)
+  hc E=2560 rank=320 T=1 f32: inject partials  ok  max|d|=1.20e-07 (scale 1.51e+00)
+  hc E=2560 rank=320 T=1 f32: mixed            ok  max|d|=1.31e-07 (scale 1.04e+00)
+  hc E=2560 rank=320 T=1 f32: combine          ok  max|d|=1.44e-07 (scale 2.26e+00)
+  hc E=2560 rank=320 T=2 q8_0: xn              ok  max|d|=3.35e-07 (scale 2.60e+00)
+  hc E=2560 rank=320 T=2 q8_0: lowrank         ok  max|d|=2.21e-06 (scale 9.91e+00)
+  hc E=2560 rank=320 T=2 q8_0: inject partials ok  max|d|=2.30e-07 (scale 1.54e+00)
+  hc E=2560 rank=320 T=2 q8_0: mixed           ok  max|d|=1.89e-07 (scale 1.03e+00)
+  hc E=2560 rank=320 T=2 q8_0: combine         ok  max|d|=2.69e-07 (scale 2.73e+00)
+  hc E=2560 rank=320 T=1 q8_0: xn              ok  max|d|=2.78e-07 (scale 2.58e+00)
+  hc E=2560 rank=320 T=1 q8_0: lowrank         ok  max|d|=1.08e-06 (scale 8.52e+00)
+  hc E=2560 rank=320 T=1 q8_0: inject partials ok  max|d|=1.40e-07 (scale 1.25e+00)
+  hc E=2560 rank=320 T=1 q8_0: mixed           ok  max|d|=1.43e-07 (scale 1.13e+00)
+  hc E=2560 rank=320 T=1 q8_0: combine         ok  max|d|=1.21e-07 (scale 2.18e+00)
+  hc E=64 rank=8 T=5 f16: xn                   ok  max|d|=3.18e-07 (scale 2.56e+00)
+  hc E=64 rank=8 T=5 f16: lowrank              ok  max|d|=1.16e-07 (scale 1.03e+00)
+  hc E=64 rank=8 T=5 f16: inject partials      ok  max|d|=3.03e-08 (scale 3.06e-01)
+  hc E=64 rank=8 T=5 f16: mixed                ok  max|d|=1.01e-07 (scale 6.95e-01)
+  hc E=64 rank=8 T=5 f16: combine              ok  max|d|=1.36e-07 (scale 2.01e+00)
+  hc E=64 rank=8 T=2 f32: xn                   ok  max|d|=2.15e-07 (scale 2.59e+00)
+  hc E=64 rank=8 T=2 f32: lowrank              ok  max|d|=1.16e-07 (scale 1.19e+00)
+  hc E=64 rank=8 T=2 f32: inject partials      ok  max|d|=1.81e-08 (scale 2.16e-01)
+  hc E=64 rank=8 T=2 f32: mixed                ok  max|d|=5.05e-08 (scale 6.74e-01)
+  hc E=64 rank=8 T=2 f32: combine              ok  max|d|=1.32e-07 (scale 1.97e+00)
+  hc E=64 rank=8 T=1 q8_0: xn                  ok  max|d|=2.20e-07 (scale 2.53e+00)
+  hc E=64 rank=8 T=1 q8_0: lowrank             ok  max|d|=1.11e-07 (scale 7.68e-01)
+  hc E=64 rank=8 T=1 q8_0: inject partials     ok  max|d|=4.65e-08 (scal  moe q2_K E=2560 F=640 slots=6 T=1: reduce+combine ok  max|d|=4.59e-06 (scale 2.07e+01)
+  moe iq2_xxs E=2560 F=640 slots=6 T=1: mid (+shared) ok  max|d|=3.92e-05 (scale 1.86e+02)
+  moe q2_K E=2560 F=640 slots=6 T=1: down (+shared) ok  max|d|=3.83e-06 (scale 1.77e+01)
+  moe q2_K E=2560 F=640 slots=6 T=1: out       ok  max|d|=3.92e-06 (scale 2.06e+01)
+  moe mm iq2_xxs E=2560 F=640 slots=6 T=1: mid ok  max|d|=4.30e-02 (scale 1.86e+02)
+  moe mm iq2_xxs E=2560 F=640 slots=6 T=1: down ok  max|d|=9.02e-03 (scale 1.77e+01)
+  moe q2_K E=2560 F=640 slots=6 T=2: reduce+combine ok  max|d|=9.07e-06 (scale 3.65e+01)
+  moe iq2_xxs E=2560 F=640 slots=6 T=2: mid (+shared) ok  max|d|=3.02e-05 (scale 1.78e+02)
+  moe q2_K E=2560 F=640 slots=6 T=2: down (+shared) ok  max|d|=3.66e-06 (scale 1.79e+01)
+  moe q2_K E=2560 F=640 slots=6 T=2: out       ok  max|d|=6.60e-06 (scale 2.58e+01)
+  moe mm iq2_xxs E=2560 F=640 slots=6 T=2: mid ok  max|d|=6.08e-02 (scale 1.78e+02)
+  moe mm iq2_xxs E=2560 F=640 slots=6 T=2: down ok  max|d|=9.54e-03 (scale 1.79e+01)
+  moe q2_K E=256 F=256 slots=6 T=9: reduce+combine ok  max|d|=4.28e-07 (scale 2.68e+00)
+  moe iq2_xxs E=256 F=256 slots=6 T=9: mid (+shared) ok  max|d|=3.09e-06 (scale 1.97e+01)
+  moe q2_K E=256 F=256 slots=6 T=9: down (+shared) ok  max|d|=1.86e-07 (scale 1.15e+00)
+  moe q2_K E=256 F=256 slots=6 T=9: out        ok  max|d|=2.51e-07 (scale 1.53e+00)
+  moe mm iq2_xxs E=256 F=256 slots=6 T=9: mid  ok  max|d|=6.94e-03 (scale 1.97e+01)
+  moe mm iq2_xxs E=256 F=256 slots=6 T=9: down ok  max|d|=5.53e-04 (scale 1.15e+00)
+  moe q2_K E=256 F=672 slots=6 T=3: reduce+combine ok  max|d|=6.00e-07 (scale 3.85e+00)
+  moe iq2_xxs E=256 F=672 slots=6 T=3: mid (+shared) ok  max|d|=3.76e-06 (scale 1.81e+01)
+  moe q2_K E=256 F=672 slots=6 T=3: down (+shared) ok  max|d|=2.79e-07 (scale 1.54e+00)
+  moe q2_K E=256 F=672 slots=6 T=3: out        ok  max|d|=2.99e-07 (scale 2.00e+00)
+  moe mxfp4 E=2560 F=640 slots=6 T=1: reduce+combine ok  max|d|=1.89e-07 (scale 1.31e+00)
+  moe q4_K E=2560 F=640 slots=6 T=1: mid (+shared) ok  max|d|=4.91e-07 (scale 2.68e+00)
+  moe mxfp4 E=2560 F=640 slots=6 T=1: down (+shared) ok  max|d|=1.98e-07 (scale 1.05e+00)
+  moe mxfp4 E=2560 F=640 slots=6 T=1: out      ok  max|d|=9.53e-08 (scale 2.55e-01)
+  moe mm q4_K E=2560 F=640 slots=6 T=1: mid    ok  max|d|=2.31e-04 (scale 7.32e-01)
+  moe mm q4_K E=2560 F=640 slots=6 T=1: down   ok  max|d|=5.95e-05 (scale 1.53e-01)
+  moe mxfp4 E=2560 F=640 slots=6 T=2: reduce+combine ok  max|d|=1.26e-07 (scale 1.26e+00)
+  moe q4_K E=2560 F=640 slots=6 T=2: mid (+shared) ok  max|d|=5.29e-07 (scale 3.18e+00)
+  moe mxfp4 E=2560 F=640 slots=6 T=2: down (+shared) ok  max|d|=2.21e-07 (scale 1.05e+00)
+  moe mxfp4 E=2560 F=640 slots=6 T=2: out      ok  max|d|=1.06e-07 (scale 4.19e-01)
+  moe mm q4_K E=2560 F=640 slots=6 T=2: mid    ok  max|d|=3.38e-04 (scale 6.68e-01)
+  moe mm q4_K E=2560 F=640 slots=6 T=2: down   ok  max|d|=5.80e-05 (scale 1.09e-01)
+  moe mxfp4 E=256 F=256 slots=6 T=9: reduce+combine ok  max|d|=5.71e-08 (scale 1.05e+00)
+  moe q4_K E=256 F=256 slots=6 T=9: mid (+shared) ok  max|d|=3.64e-08 (scale 2.87e-01)
+  moe mxfp4 E=256 F=256 slots=6 T=9: down (+shared) ok  max|d|=8.97e-09 (scale 7.44e-02)
+  moe mxfp4 E=256 F=256 slots=6 T=9: out       ok  max|d|=8.01e-09 (scale 4.73e-02)
+  moe mm q4_K E=256 F=256 slots=6 T=9: mid     ok  max|d|=3.12e-05 (scale 9.29e-02)
+  moe mm q4_K E=256 F=256 slots=6 T=9: down    ok  max|d|=6.72e-06 (scale 1.09e-02)
+  moe mxfp4 E=256 F=672 slots=6 T=3: reduce+combine ok  max|d|=6.19e-08 (scale 1.05e+00)
+  moe q4_K E=256 F=672 slots=6 T=3: mid (+shared) ok  max|d|=3.91e-08 (scale 2.22e-01)
+  moe mxfp4 E=256 F=672 slots=6 T=3: down (+shared) ok  max|d|=1.27e-08 (scale 7.46e-02)
+  moe mxfp4 E=256 F=672 slots=6 T=3: out       ok  max|d|=1.12e-08 (scale 6.51e-02)
+all Qwen MoE decode specialization tests passed
+./tests/test_qwen4_moe_mm_specialize
+ds4: Metal device Apple M5 Pro, 64.00 GiB RAM
+ds4: Metal 4 tensor API enabled for Tensor kernels
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=on
+ds4: Metal model views created in 0.019 ms, residency requested in 0.123 ms, warmup 1.664 ms (mapped 5.91 MiB from offset 0.00 MiB)
+ds4: Metal mapped mmaped model as 1 overlapping shared buffers
+e 3.08e-01)
+  hc E=64 rank=8 T=1 q8_0: mixed               ok  max|d|=7.30e-08 (scale 7.63e-01)
+  hc E=64 rank=8 T=1 q8_0: combine             ok  max|d|=1.06e-07 (scale 1.89e+00)
+  hc E=64 rank=8 T=3 q8_0: xn                  ok  max|d|=2.15e-07 (scale 2.59e+00)
+  hc E=64 rank=8 T=3 q8_0: lowrank             ok  max|d|=1.59e-07 (scale 1.29e+00)
+  hc E=64 rank=8 T=3 q8_0: inject partials     ok  max|d|=2.43e-08 (scale 2.30e-01)
+  hc E=64 rank=8 T=3 q8_0: mixed               ok  max|d|=5.91e-08 (scale 7.65e-01)
+  hc E=64 rank=8 T=3 q8_0: combine             ok  max|d|=1.36e-07 (scale 1.88e+00)
+gated delta net
+  gdn 16/48/128 T=5 chunk: output              ok  max|d|=6.12e-07 (scale 2.44e+00)
+  gdn 16/48/128 T=5 chunk: state               ok  max|d|=3.58e-08 (scale 2.64e-01)
+  gdn 16/48/128 T=5 chunk: conv history        ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=5 decode: output             ok  max|d|=6.12e-07 (scale 2.44e+00)
+  gdn 16/48/128 T=5 decode: state              ok  max|d|=3.58e-08 (scale 2.64e-01)
+  gdn 16/48/128 T=5 decode: conv history       ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=5 fused: output              ok  max|d|=6.12e-07 (scale 2.44e+00)
+  gdn 16/48/128 T=5 fused: state               ok  max|d|=4.08e-08 (scale 2.64e-01)
+  gdn 16/48/128 T=5 fused: conv history        ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=5: first-row state snapshot  ok  max|d|=4.30e-08 (scale 2.04e-01)
+  gdn 16/48/128 T=5: first-row history snapshot ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=40 chunk: output             ok  max|d|=8.83e-07 (scale 3.09e+00)
+  gdn 16/48/128 T=40 chunk: state              ok  max|d|=4.95e-08 (scale 2.42e-01)
+  gdn 16/48/128 T=40 chunk: conv history       ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=40 decode: output            ok  max|d|=8.83e-07 (scale 3.09e+00)
+  gdn 16/48/128 T=40 decode: state             ok  max|d|=4.95e-08 (scale 2.42e-01)
+  gdn 16/48/128 T=40 decode: conv history      ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=40 fused: output             ok  max|d|=6.87e-07 (scale 3.09e+00)
+  gdn 16/48/128 T=40 fused: state              ok  max|d|=4.95e-08 (scale 2.42e-01)
+  gdn 16/48/128 T=40 fused: conv history       ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=40: first-row state snapshot ok  max|d|=5.28e-08 (scale 2.63e-01)
+  gdn 16/48/128 T=40: first-row history snapshot ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=200 chunk: output            ok  max|d|=1.09e-06 (scale 3.44e+00)
+  gdn 16/48/128 T=200 chunk: state             ok  max|d|=4.31e-08 (scale 2.49e-01)
+  gdn 16/48/128 T=200 chunk: conv history      ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=200 decode: output           ok  max|d|=1.09e-06 (scale 3.44e+00)
+  gdn 16/48/128 T=200 decode: state            ok  max|d|=4.31e-08 (scale 2.49e-01)
+  gdn 16/48/128 T=200 decode: conv history     ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=200 fused: output            ok  max|d|=1.15e-06 (scale 3.44e+00)
+  gdn 16/48/128 T=200 fused: state             ok  max|d|=4.31e-08 (scale 2.49e-01)
+  gdn 16/48/128 T=200 fused: conv history      ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 16/48/128 T=200: first-row state snapshot ok  max|d|=4.20e-08 (scale 2.71e-01)
+  gdn 16/48/128 T=200: first-row history snapshot ok  max|d|=0.00e+00 (scale 1.00e+00)
+  idx score mm T=37 n=3001 pos0=11000          ok  max|d|=5.19e-03 (scale 3.28e+01)
+  idx score mm T=3 n=70 pos0=100               ok  max|d|=2.58e-03 (scale 1.89e+01)
+  idx select T=4 n=70001 k=512 visible=69000   ok
+  idx select T=3 n=600 k=512 visible=599       ok
+  idx select T=2 n=3000 k=512 visible=520      ok
+  attn mm T=40 H=24 pos0=0 dense               ok  max|d|=1.93e-04 (scale 1.31e+00)
+  attn mm T=37 H=24 pos0=3000 sparse           ok  max|d|=1.31e-04 (scale 7.94e-01)
+  attn mm T=3 H=24 pos0=100 sparse             ok  max|d|=0.00e+00 (scale 8.09e-01)
+  attn mm T=4 H=24 pos0=128 dense              ok  max|d|=0.00e+00 (scale 6.03e-01)
+  attn mm T=8 H=24 pos0=128 dense              ok  max|d|=0.00e+00 (scale 5.59e-01)
+  attn mm T=9 H=24 pos0=128 dense              ok  max|d|=4.74e-05 (scale 5.95e-01)
+  gdn 2/6/32 T=7 chunk: output                 ok  max|d|=8.02e-07 (scale 2.10e+00)
+  gdn 2/6/32 T=7 chunk: state                  ok  max|d|=2.43e-08 (scale 2.01e-01)
+  gdn 2/6/32 T=7 chunk: conv history           ok  max|d|=0.00e+00 (scale 9.98e-01)
+  gdn 2/6/32 T=7 decode: output                ok  max|d|=8.02e-07 (scale 2.10e+00)
+  gdn 2/6/32 T=7 decode: state                 ok  max|d|=2.43e-08 (scale 2.01e-01)
+  gdn 2/6/32 T=7 decode: conv history          ok  max|d|=0.00e+00 (scale 9.98e-01)
+  gdn 2/6/32 T=7 fused: output                 ok  max|d|=8.02e-07 (scale 2.10e+00)
+  gdn 2/6/32 T=7 fused: state                  ok  max|d|=5.26e-08 (scale 2.01e-01)
+  gdn 2/6/32 T=7 fused: conv history           ok  max|d|=0.00e+00 (scale 9.98e-01)
+  gdn 2/6/32 T=7: first-row state snapshot     ok  max|d|=3.26e-08 (scale 1.87e-01)
+  gdn 2/6/32 T=7: first-row history snapshot   ok  max|d|=0.00e+00 (scale 9.98e-01)
+  gdn 2/6/64 T=9 chunk: output                 ok  max|d|=7.93e-07 (scale 2.22e+00)
+  gdn 2/6/64 T=9 chunk: state                  ok  max|d|=3.08e-08 (scale 2.92e-01)
+  gdn 2/6/64 T=9 chunk: conv history           ok  max|d|=0.00e+00 (scale 9.99e-01)
+  gdn 2/6/64 T=9 decode: output                ok  max|d|=7.93e-07 (scale 2.22e+00)
+  gdn 2/6/64 T=9 decode: state                 ok  max|d|=3.08e-08 (scale 2.92e-01)
+  gdn 2/6/64 T=9 decode: conv history          ok  max|d|=0.00e+00 (scale 9.99e-01)
+  gdn 2/6/64 T=9 fused: output                 ok  max|d|=6.74e-07 (scale 2.22e+00)
+  gdn 2/6/64 T=9 fused: state                  ok  max|d|=3.08e-08 (scale 2.92e-01)
+  gdn 2/6/64 T=9 fused: conv history           ok  max|d|=0.00e+00 (scale 9.99e-01)
+  gdn 2/6/64 T=9: first-row state snapshot     ok  max|d|=3.21e-08 (scale 2.85e-01)
+  gdn 2/6/64 T=9: first-row history snapshot   ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 2/6/96 T=17 chunk: output                ok  max|d|=5.13e-07 (scale 2.61e+00)
+  gdn 2/6/96 T=17 chunk: state                 ok  max|d|=1.88e-08 (scale 1.54e-01)
+  gdn 2/6/96 T=17 chunk: conv history          ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 2/6/96 T=17 decode: output               ok  max|d|=5.13e-07 (scale 2.61e+00)
+  gdn 2/6/96 T=17 decode: state                ok  max|d|=1.88e-08 (scale 1.54e-01)
+  gdn 2/6/96 T=17 decode: conv history         ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 2/6/96 T=17 fused: output                ok  max|d|=5.88e-07 (scale 2.61e+00)
+  gdn 2/6/96 T=17 fused: state                 ok  max|d|=2.63e-08 (scale 1.54e-01)
+  gdn 2/6/96 T=17 fused: conv history          ok  max|d|=0.00e+00 (scale 1.00e+00)
+  gdn 2/6/96 T=17: first-row state snapshot    ok  max|d|=3.36e-08 (scale 1.84e-01)
+  gdn 2/6/96 T=17: first-row history snapshot  ok  max|d|=0.00e+00 (scale 1.00e+00)
+ple
+  ple E=2560 T=3 chunk: residual               ok  max|d|=2.67e-07 (scale 2.36e+00)
+  ple E=2560 T=3 chunk: history                ok  max|d|=4.06e-07 (scale 2.61e+00)
+  ple E=2560 T=3 decode: residual              ok  max|d|=2.67e-07 (scale 2.36e+00)
+  ple E=2560 T=3 decode: history               ok  max|d|=4.06e-07 (scale 2.61e+00)
+  ple E=64 T=12 chunk: residual                ok  max|d|=2.31e-07 (scale 2.12e+00)
+  ple E=64 T=12 chunk: history                 ok  max|d|=4.14e-07 (scale 2.74e+00)
+  ple E=64 T=12 decode: residual               ok  max|d|=2.31e-07 (scale 2.12e+00)
+  ple E=64 T=12 decode: history                ok  max|d|=4.14e-07 (scale 2.74e+00)
+router
+  router NE=512 k=10 T=3: shared gate logit    ok  max|d|=1.14e-07 (scale 7.95e-01)
+  router NE=512 k=10 T=3: softmax top-k        ok  max|d|=1.09e-08
+  router NE=32 k=10 T=5: shared gate logit     ok  max|d|=1.71e-07 (scale 6.77e-01)
+  router NE=32 k=10 T=5: softmax top-k         ok  max|d|=1.91e-08
+attention
+  attention H=24/2 D=256 k=2 n=21              ok  max|d|=8.30e-05 (scale 7.30e-01)
+  attention H=4/2 D=32 k=2 n=30                ok  max|d|=3.39e-05 (scale 6.92e-01)
+  attention rows: dense, block-completing and sparse rows byte-exact against the per-row kernels
+routed experts
+  moe q8_0 E=2560 F=640 slots=10 T=2: reduce+combine ok  max|d|=9.26e-07 (scale 4.39e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=2: mid (+shared) ok  max|d|=9.11e-07 (scale 4.88e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=2: down (+shared) ok  max|d|=2.82e-07 (scale 1.28e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=2: out      ok  max|d|=5.31e-07 (scale 2.53e+00)
+  moe mm q8_0 E=2560 F=640 slots=10 T=2: mid   ok  max|d|=1.92e-03 (scale 4.88e+00)
+  moe mm q8_0 E=2560 F=640 slots=10 T=2: down  ok  max|d|=6.86e-04 (scale 1.28e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=1: reduce+combine ok  max|d|=3.88e-07 (scale 2.02e+00)
+  moe q4_K E=2560 F=640 slots=10 T=1: mid (+shared) ok  max|d|=6.97e-07 (scale 2.54e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=1: down (+shared) ok  max|d|=1.99e-07 (scale 8.53e-01)
+  moe q8_0 E=2560 F=640 slots=10 T=1: out      ok  max|d|=1.73e-07 (scale 6.16e-01)
+  moe mm q4_K E=2560 F=640 slots=10 T=1: mid   ok  max|d|=2.09e-04 (scale 4.23e-01)
+  moe mm q4_K E=2560 F=640 slots=10 T=1: down  ok  max|d|=1.02e-04 (scale 1.71e-01)
+  moe q8_0 E=2560 F=640 slots=10 T=2: reduce+combine ok  max|d|=2.05e-07 (scale 1.74e+00)
+  moe q4_K E=2560 F=640 slots=10 T=2: mid (+shared) ok  max|d|=5.81e-07 (scale 4.30e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=2: down (+shared) ok  max|d|=2.01e-07 (scale 1.35e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=2: out      ok  max|d|=1.50e-07 (scale 6.86e-01)
+  moe mm q4_K E=2560 F=640 slots=10 T=2: mid   ok  max|d|=2.21e-04 (scale 5.20e-01)
+  moe mm q4_K E=2560 F=640 slots=10 T=2: down  ok  max|d|=9.85e-05 (scale 1.87e-01)
+  moe mxfp4 E=2560 F=640 slots=10 T=2: reduce+combine ok  max|d|=2.40e-07 (scale 1.66e+00)
+  moe q4_K E=2560 F=640 slots=10 T=2: mid (+shared) ok  max|d|=5.33e-07 (scale 2.53e+00)
+  moe mxfp4 E=2560 F=640 slots=10 T=2: down (+shared) ok  max|d|=2.00e-07 (scale 9.95e-01)
+  moe mxfp4 E=2560 F=640 slots=10 T=2: out     ok  max|d|=1.48e-07 (scale 5.96e-01)
+  moe mm q4_K E=2560 F=640 slots=10 T=2: mid   ok  max|d|=3.50e-04 (scale 8.15e-01)
+  moe mm q4_K E=2560 F=640 slots=10 T=2: down  ok  max|d|=8.92e-05 (scale 1.37e-01)
+  moe q2_K E=2560 F=640 slots=10 T=1: reduce+combine ok  max|d|=9.55e-06 (scale 4.32e+01)
+  moe iq2_xxs E=2560 F=640 slots=10 T=1: mid (+shared) ok  max|d|=3.07e-05 (scale 1.76e+02)
+  moe q2_K E=2560 F=640 slots=10 T=1: down (+shared) ok  max|d|=3.66e-06 (scale 1.93e+01)
+  moe q2_K E=2560 F=640 slots=10 T=1: out      ok  max|d|=4.72e-06 (scale 2.42e+01)
+  moe mm iq2_xxs E=2560 F=640 slots=10 T=1: mid ok  max|d|=5.19e-02 (scale 1.76e+02)
+  moe mm iq2_xxs E=2560 F=640 slots=10 T=1: down ok  max|d|=9.56e-03 (scale 1.93e+01)
+  moe q2_K E=2560 F=640 slots=10 T=37: reduce+combine ok  max|d|=1.74e-05 (scale 6.48e+01)
+  moe iq2_xxs E=2560 F=640 slots=10 T=37: mid (+shared) ok  max|d|=4.48e-05 (scale 2.65e+02)
+  moe q2_K E=2560 F=640 slots=10 T=37: down (+shared) ok  max|d|=5.59e-06 (scale 2.57e+01)
+  moe q2_K E=2560 F=640 slots=10 T=37: out     ok  max|d|=1.02e-05 (scale 4.24e+01)
+  moe mm iq2_xxs E=2560 F=640 slots=10 T=37: mid ok  max|d|=9.56e-02 (scale 2.65e+02)
+  moe mm iq2_xxs E=2560 F=640 slots=10 T=37: down ok  max|d|=1.18e-02 (scale 2.57e+01)
+  moe q2_K E=256 F=256 slots=6 T=9: reduce+combine ok  max|d|=5.51e-07 (scale 2.94e+00)
+  moe iq2_xxs E=256 F=256 slots=6 T=9: mid (+shared) ok  max|d|=2.67e-06 (scale 2.02e+01)
+  moe q2_K E=256 F=256 slots=6 T=9: down (+shared) ok  max|d|=2.24e-07 (scale 1.32e+00)
+  moe q2_K E=256 F=256 slots=6 T=9: out        ok  max|d|=3.48e-07 (scale 1.78e+00)
+  moe mm iq2_xxs E=256 F=256 slots=6 T=9: mid  ok  max|d|=9.15e-03 (scale 2.02e+01)
+  moe mm iq2_xxs E=256 F=256 slots=6 T=9: down ok  max|d|=5.37e-04 (scale 1.32e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=37: reduce+combine ok  max|d|=4.50e-07 (scale 2.99e+00)
+  moe q4_K E=2560 F=640 slots=10 T=37: mid (+shared) ok  max|d|=1.40e-06 (scale 6.19e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=37: down (+shared) ok  max|d|=2.93e-07 (scale 1.29e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=37: out     ok  max|d|=3.52e-07 (scale 2.00e+00)
+  moePASS Qwen MoE specialization type=12 T=8 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=8 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=8 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=8 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=8 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=8 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=9 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=9 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=9 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=9 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=9 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=9 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=16 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=16 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=16 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=16 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=16 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=16 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=17 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=17 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=17 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=17 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=17 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=17 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=24 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=24 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=24 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=24 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=24 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=24 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=31 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=31 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=31 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=31 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=31 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=31 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=32 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=32 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=32 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=32 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=32 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=32 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=33 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=33 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=33 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=33 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=33 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=33 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=48 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=48 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=48 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=48 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=48 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=48 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=63 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=63 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=63 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=63 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=63 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=63 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=64 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=64 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=64 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=64 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=64 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=64 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=65 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=65 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=65 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=65 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=65 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=65 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=95 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=95 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=95 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=95 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=95 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=95 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=96 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=96 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=96 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=96 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=96 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=96 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=97 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=97 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=97 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=97 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=97 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=97 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=127 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=127 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=127 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=127 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=127 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=127 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=128 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=128 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=128 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=128 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=128 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=128 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=129 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=129 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=129 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=129 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=129 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=129 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=257 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=257 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=257 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=257 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=257  mm q4_K E=2560 F=640 slots=10 T=37: mid  ok  max|d|=7.15e-04 (scale 1.79e+00)
+  moe mm q4_K E=2560 F=640 slots=10 T=37: down ok  max|d|=6.28e-04 (scale 1.03e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=100: reduce+combine ok  max|d|=6.26e-07 (scale 3.07e+00)
+  moe q4_K E=2560 F=640 slots=10 T=100: mid (+shared) ok  max|d|=1.28e-06 (scale 7.04e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=100: down (+shared) ok  max|d|=2.72e-07 (scale 1.44e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=100: out    ok  max|d|=4.45e-07 (scale 2.06e+00)
+  moe mm q4_K E=2560 F=640 slots=10 T=100: mid ok  max|d|=5.88e-04 (scale 1.57e+00)
+  moe mm q4_K E=2560 F=640 slots=10 T=100: down ok  max|d|=4.65e-04 (scale 1.04e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=37: reduce+combine ok  max|d|=4.02e-07 (scale 2.38e+00)
+  moe q2_K E=2560 F=640 slots=10 T=37: mid (+shared) ok  max|d|=8.50e-07 (scale 5.53e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=37: down (+shared) ok  max|d|=2.50e-07 (scale 1.33e+00)
+  moe q8_0 E=2560 F=640 slots=10 T=37: out     ok  max|d|=2.15e-07 (scale 1.05e+00)
+  moe mm q2_K E=2560 F=640 slots=10 T=37: mid  ok  max|d|=2.36e-04 (scale 7.79e-01)
+  moe mm q2_K E=2560 F=640 slots=10 T=37: down ok  max|d|=8.05e-05 (scale 1.72e-01)
+  moe q8_0 E=2560 F=640 slots=10 T=37: reduce+combine ok  max|d|=4.28e-05 (scale 1.90e+02)
+  moe iq2_xxs E=2560 F=640 slots=10 T=37: mid (+shared) ok  max|d|=4.87e-05 (scale 2.57e+02)
+  moe q8_0 E=2560 F=640 slots=10 T=37: down (+shared) ok  max|d|=1.14e-05 (scale 6.32e+01)
+  moe q8_0 E=2560 F=640 slots=10 T=37: out     ok  max|d|=2.59e-05 (scale 1.16e+02)
+  moe mm iq2_xxs E=2560 F=640 slots=10 T=37: mid ok  max|d|=7.94e-02 (scale 2.57e+02)
+  moe mm iq2_xxs E=2560 F=640 slots=10 T=37: down ok  max|d|=2.94e-02 (scale 6.32e+01)
+  moe f32 E=2560 F=640 slots=10 T=1: reduce+combine ok  max|d|=1.21e-06 (scale 4.57e+00)
+  moe f32 E=2560 F=640 slots=10 T=1: mid (+shared) ok  max|d|=1.21e-06 (scale 4.31e+00)
+  moe f32 E=2560 F=640 slots=10 T=1: down (+shared) ok  max|d|=3.59e-07 (scale 1.29e+00)
+  moe f32 E=2560 F=640 slots=10 T=1: out       ok  max|d|=9.18e-07 (scale 3.02e+00)
+  moe q8_0 E=64 F=32 slots=10 T=3: reduce+combine ok  max|d|=3.02e-08 (scale 1.00e+00)
+  moe q8_0 E=64 F=32 slots=10 T=3: mid (+shared) ok  max|d|=7.54e-09 (scale 5.45e-02)
+  moe q8_0 E=64 F=32 slots=10 T=3: down (+shared) ok  max|d|=8.21e-10 (scale 6.49e-03)
+  moe q8_0 E=64 F=32 slots=10 T=3: out         ok  max|d|=1.62e-09 (scale 9.37e-03)
+  moe f32 E=64 F=32 slots=10 T=3: reduce+combine ok  max|d|=2.99e-08 (scale 9.99e-01)
+  moe f32 E=64 F=32 slots=10 T=3: mid (+shared) ok  max|d|=7.02e-09 (scale 5.86e-02)
+  moe f32 E=64 F=32 slots=10 T=3: down (+shared) ok  max|d|=9.84e-10 (scale 5.34e-03)
+  moe f32 E=64 F=32 slots=10 T=3: out          ok  max|d|=1.62e-09 (scale 1.05e-02)
+  q4_K ordered T=1 F=640 shared=1: default and NR 1/2 x NSG 1..8 byte-exact mid, down, reduce
+  q4_K ordered T=2 F=640 shared=0: default and NR 1/2 x NSG 1..8 byte-exact mid, down, reduce
+  q4_K ordered T=1 F=641 shared=0: default and NR 1/2 x NSG 1..8 byte-exact mid (odd tail)
+  q4_K ordered T=2 F=641 shared=1: default and NR 1/2 x NSG 1..8 byte-exact mid (odd tail)
+  MoE tile caps T=641 Q4_K/q8_0: caps 1,16,32 and 64-token gate/up tiles byte-exact mid/down vs cap8
+  MoE simdgroup mid vs exact: max=3.050e-04 mean=6.788e-06
+  MoE simdgroup down vs exact: max=6.013e-05 mean=3.488e-06
+  MoE nax=1 mid: max|d|=6.855e-07 (scale 8.439e-01) hash=615c92e349846415
+  MoE nax=1 mid vs exact: max=3.051e-04 mean=6.788e-06
+  MoE nax=1 down: max|d|=1.154e-05 (scale 1.478e-01) hash=043d8964cc23c343
+  MoE nax=1 down vs exact: max=5.966e-05 mean=3.488e-06
+  MoE nax=2 mid: max|d|=6.855e-07 (scale 8.439e-01) hash=615c92e349846415
+  MoE nax=2 mid vs exact: max=3.051e-04 mean=6.788e-06
+  MoE nax=2 down: max|d|=1.154e-05 (scale 1.478e-01) hash=043d8964cc23c343
+  MoE nax=2 down vs exact: max=5.966e-05 mean=3.488e-06
+  MoE nax=3 mid: max|d|=2.116e-04 (scale 8.439e-01) hash=4ef3c7b8da527c4a
+  MoE nax=3 mid vs exact: max=2.449e-04 mean=4.990e-06
+  MoE nax=3 down: max|d|=4.533e-05 (scale 1.478e-01) hash=2a8c22a4f92de743
+  MoE nax=3 down vs exact: max=4.148e-05 mean=2.407e-06
+  MoE nax=4 mid: max|d|=2.116e-04 (scale 8.439e-01) hash=4ef3c7b8da527c4a
+  MoE nax=4 mid vs exact: max=2.449e-04 mean=4.990e-06
+  MoE nax=4 down: max|d|=4.533e-05 (scale 1.478e-01) hash=2a8c22a4f92de743
+  MoE nax=4 down vs exact: max=4.148e-05 mean=2.407e-06
+  MoE nax=5 mid: max|d|=2.116e-04 (scale 8.439e-01) hash=192c4fc3447b741c
+  MoE nax=5 mid vs exact: max=2.448e-04 mean=4.990e-06
+  MoE nax=5 down: max|d|=4.533e-05 (scale 1.478e-01) hash=a1c9d4a4a1b9d3c3
+  MoE nax=5 down vs exact: max=4.145e-05 mean=2.407e-06
+  MoE dyadic mid simdgroup: max=1.080e-01 mean=1.935e-03
+  MoE dyadic mid nax=2: max=1.080e-01 mean=1.935e-03
+  MoE dyadic mid nax=5: max=2.385e-04 mean=1.630e-06
+  MoE tile caps T=641 Q4_K/mxfp4: caps 1,16,32 and 64-token gate/up tiles byte-exact mid/down vs cap8
+  Q2 tiles nax=0 mid vs exact: max=4.265e-02 mean=8.897e-04
+  Q2 tiles nax=0 down vs exact: max=3.548e-03 mean=2.777e-04
+  Q2 tiles nax=1 mid vs exact: max=4.264e-02 mean=8.897e-04
+  Q2 tiles nax=1 mid vs simdgroup: max|d|=6.104e-05 (scale 1.279e+02)
+  Q2 tiles nax=1 down vs exact: max=3.549e-03 mean=2.778e-04
+  Q2 tiles nax=1 down vs simdgroup: max|d|=9.376e-04 (scale 6.549e+00)
+  Q2 tiles nax=2 mid vs exact: max=4.264e-02 mean=8.897e-04
+  Q2 tiles nax=2 mid vs simdgroup: max|d|=6.104e-05 (scale 1.279e+02)
+  Q2 tiles nax=2 down vs exact: max=3.549e-03 mean=2.778e-04
+  Q2 tiles nax=2 down vs simdgroup: max|d|=9.376e-04 (scale 6.549e+00)
+  Q2 tiles nax=5 mid vs exact: max=3.602e-02 mean=6.593e-04
+  Q2 tiles nax=5 mid vs simdgroup: max|d|=2.560e-02 (scale 1.278e+02)
+  Q2 tiles nax=5 down vs exact: max=2.482e-03 mean=2.070e-04
+  Q2 tiles nax=5 down vs simdgroup: max|d|=2.130e-03 (scale 6.550e+00)
+dense mm
+  dense mm type 0 512x2560 T=37                ok  max|d|=2.25e-06 (scale 3.41e+00)
+  batch mm q8 640x2560 T=16                    ok  max|d|=8.99e-07 (scale 3.06e+00)
+  batch mm q8 2560x6144 T=16                   ok  max|d|=3.65e-06 (scale 5.84e+00)
+  batch mm q8 128x2560 T=8                     ok  max|d|=6.41e-07 (scale 2.56e+00)
+  dense mm type 1 320x10240 T=33               ok  max|d|=5.57e-06 (scale 7.00e+00)
+  dense mm type 1 10240x320 T=40               ok  max|d|=9.48e-07 (scale 1.41e+00)
+  dense mm type 8 100x2560 T=9                 ok  max|d|=6.65e-07 (scale 2.89e+00)
+  dense mm type 0 32x64 T=70                   ok  max|d|=1.15e-07 (scale 4.85e-01)
+multi gemv
+  multi gemv out0 type 12 rows 64 T=2          ok  max|d|=2.38e-07 (scale 1.05e+00)
+  multi gemv out1 type 30 rows 48 T=2          ok  max|d|=3.35e-07 (scale 2.10e+00)
+  multi gemv out2 type 2 rows 32 T=2           ok  max|d|=2.66e-07 (scale 1.83e+00)
+  multi gemv out3 type 1 rows 16 T=2           ok  max|d|=5.26e-07 (scale 2.32e+00)
+  multi gemv out0 type 8 rows 64 T=3           ok  max|d|=2.83e-08 (scale 4.10e-01)
+  multi gemv out1 type 30 rows 48 T=3          ok  max|d|=2.19e-08 (scale 4.03e-01)
+  multi gemv out2 type 2 rows 32 T=3           ok  max|d|=2.97e-08 (scale 3.55e-01)
+  multi gemv out3 type 1 rows 16 T=3           ok  max|d|=2.58e-08 (scale 3.94e-01)
+mtp
+  mtp stage E=2560 hc=4                        ok  max|d|=2.80e-07 (scale 2.57e+00)
+  mtp combine E=2560 hc=4                      ok  max|d|=0.00e+00 (scale 1.99e+00)
+  mtp stage E=64 hc=4                          ok  max|d|=2.21e-07 (scale 2.49e+00)
+  mtp combine E=64 hc=4                        ok  max|d|=0.00e+00 (scale 1.68e+00)
+  HC norm reuse/default type=0 E=2560 hc=4 T=3 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=2560 hc=4 T=9 inject=0: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=2560 hc=4 T=17 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=2560 hc=4 T=8 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=2560 hc=4 T=9 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=260 hc=8 T=9 inject=3: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=4 hc=8 T=9 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=260 hc=8 T=3 inject=3: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=40 hc=4 T=5 inject=1: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=260 hc=8 T=3 inject=2: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=4 hc=8 T=3 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=0 E=2560 hc=4 T=1 inject=4: byte-exact xn/inj, guards (decode fallback)
+  HC norm reuse/default type=0 E=2560 hc=4 T=2 inject=4: byte-exact xn/inj, guards (decode fallback)
+  HC norm reuse/default type=1 E=2560 hc=4 T=3 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=2560 hc=4 T=9 inject=0: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=2560 hc=4 T=17 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=2560 hc=4 T=8 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=2560 hc=4 T=9 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=260 hc=8 T=9 inject=3: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=4 hc=8 T=9 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=260 hc=8 T=3 inject=3: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=40 hc=4 T=5 inject=1: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=260 hc=8 T=3 inject=2: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=4 hc=8 T=3 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=2560 hc=4 T=1 inject=4: byte-exact xn/inj, guards (decode fallback)
+  HC norm reuse/default type=1 E=2560 hc=4 T=2 inject=4: byte-exact xn/inj, guards (decode fallback)
+  HC norm reuse/default type=8 E=2560 hc=4 T=3 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=2560 hc=4 T=9 inject=0: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=2560 hc=4 T=17 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=2560 hc=4 T=8 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=2560 hc=4 T=9 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=260 hc=8 T=9 inject=3: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=4 hc=8 T=9 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=260 hc=8 T=3 inject=3: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=40 hc=4 T=5 inject=1: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=260 hc=8 T=3 inject=2: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=4 hc=8 T=3 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=8 E=2560 hc=4 T=1 inject=4: byte-exact xn/inj, guards (decode fallback)
+  HC norm reuse/default type=8 E=2560 hc=4 T=2 inject=4: byte-exact xn/inj, guards (decode fallback)
+  HC norm reuse/default type=1 E=2560 hc=4 T=8191 inject=4: byte-exact xn/inj, guards
+  HC norm reuse/default type=1 E=2560 hc=4 T=8192 inject=4: byte-exact xn/inj, guards
+  GDN prefill T=8191: byte-exact split/batch output, state and snapshot
+  GDN prefill T=8192: byte-exact split/batch output, state and snapshot
+  GDN prefill T=8193: byte-exact split/batch output, state and snapshot
+all qwen4 kernel tests passed
+mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=257 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=8191 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=8191 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=8191 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=8191 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=8191 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=8191 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=8192 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=8192 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=8192 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=8192 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=8192 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=8192 mid/down exact, padding intact
+PASS Qwen MoE specialization type=12 T=8193 mid/down exact, padding intact
+PASS Qwen MoE specialization type=16 T=8193 mid/down exact, padding intact
+PASS Qwen MoE specialization type=10 T=8193 mid/down exact, padding intact
+PASS Qwen MoE specialization type=8 T=8193 mid/down exact, padding intact
+PASS Qwen MoE specialization type=39 T=8193 mid/down exact, padding intact
+PASS Qwen MoE specialization type=2 T=8193 mid/down exact, padding intact

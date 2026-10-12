@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "status": "pilot_complete",
+  "pilot": true,
+  "created_utc": "2026-10-11T21:38:20.525439+00:00",
+  "picoforge_head": "7e3156a93503eb0785004993ece4d32278a7167d",
+  "preexisting_files_sha256": {
+    "docs/DESIGN.md": "60da0817c403721ce3c83f9453f74f55282010bdb7f2dcc29075c52f1bafac01",
+    "docs/project-review-2026-10-11.md": "5bb7445297fe8e1c3b1957b0a98cba60bc99b9497f13cd53495e7e63bf1acf0f",
+    "docs/80b-100b-model-comparison-2026-10-11.md": "5ab5820f45678ac94bc5af3c378a6496f63a85c5ef05bb5fdc6ff0a477780292",
+    "docs/large-model-research-2026-10-11.md": "859fc20ce7fd3f23df4b74b6818bf01efe38a1d54da67de0fbc6670811b629e0",
+    "docs/qwen38-q2-session-prompt.md": "6aa039cde91cb9078e7b59251a44a8b90728b815e4f4b6494db75560e9c65816"
+  },
+  "dwarfstar": {
+    "repository": "https://github.com/antirez/ds4",
+    "revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "directory": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+    "upstream_main_at_inspection": "fc80bd695da76ee14bcb86820bf900a5cdfda806"
+  },
+  "checkpoint": {
+    "repository": "antirez/qwen3.8-flash-next-gguf",
+    "revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "filename": "Qwen3.8-Flash-Next-Q2.gguf",
+    "size_bytes": 147207127040,
+    "published_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+    "verified_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+  },
+  "settings": {
+    "context_tokens": 8192,
+    "prefill_chunk_tokens": 1024,
+    "mtp": false,
+    "sessions": 1,
+    "expert_streaming": false
+  },
+  "disk_free_before_download_bytes": 229403283456,
+  "claims": {
+    "model_feasibility_validated": true,
+    "quality_validated": false,
+    "native_qwen38_support": false,
+    "quality_pilot_completed": true
+  },
+  "limitations": [
+    "Pilot, not a performance decision or official quality benchmark.",
+    "No cold-storage claim after sequential checksum verification.",
+    "Small CPU-only parser builds/checks occurred during the pilot; no concurrent GPU workload. Timing remains pilot-only."
+  ],
+  "builds": {
+    "dwarfstar": "passed; original upstream objects",
+    "observation_probe": "passed; isolated source copies and observability.patch",
+    "picoforge": "passed"
+  },
+  "tests": {
+    "upstream_qwen4_kernels_q2_ngrams": "passed",
+    "inventory": "6 passed",
+    "monitor": "5 passed",
+    "picoforge_test_all": "passed",
+    "phase0_tooling": "20 tests passed",
+    "upstream_metal_validation": "all qwen4 kernel tests passed with MTL_DEBUG_LAYER=1"
+  },
+  "hardware": {
+    "device": "Apple M5 Pro",
+    "max_buffer_bytes": 41747087360,
+    "unified_memory": true,
+    "probe_allocated_bytes": 65536,
+    "max_threadgroup_bytes": 32768,
+    "physical_memory_bytes": 68719476736,
+    "recommended_working_set_bytes": 55662788608,
+    "os": "Version 27.0.1 (Build 26A434)",
+    "thermal_state": 0
+  },
+  "suite": "suite/suite.json",
+  "observability_patch_sha256": "18e64c3eacfedd69c961710f37529ede64677d973af4cb84e27508e43c1b7226",
+  "toolchain": {
+    "xcrun clang --version": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+    "xcrun --show-sdk-version": "26.5",
+    "sw_vers ": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434"
+  },
+  "updated_utc": "2026-10-12T06:28:27.120879+00:00",
+  "download_recovery": {
+    "initial_curl_exit": 18,
+    "preserved_partial_bytes": 71263952385,
+    "cause": "remote transfer closed early; curl default retry excludes exit 18",
+    "resumed_with": "tools/eval/download_qwen38_q2.py",
+    "updated_utc": "2026-10-11T22:13:57.981563+00:00"
+  },
+  "interrupted_download_resume": {
+    "preserved_partial_bytes": 125166878209,
+    "active_process_at_resume": false,
+    "resumed_utc": "2026-10-12T06:12:03.792704+00:00"
+  },
+  "local_results": {
+    "scope": "one 8K session, chunk 1024, no MTP; five original pilot tasks",
+    "stock_8063_prefill_tok_s": 600.68,
+    "stock_128_decode_tok_s": 30.88,
+    "task_decode_median_range_tok_s": [
+      29.99,
+      32.34
+    ],
+    "peak_sampled_metal_allocated_bytes": 49940365312,
+    "strict_task_passes": 2,
+    "independent_tasks": 5,
+    "executable_code_tasks_passed": 3,
+    "math_correct": true,
+    "archive_facts_correct_but_noncompliant_markdown": true,
+    "tokenizer_template_exact_parity": true,
+    "full_greedy_sequence_repeat_parity": true,
+    "global_swap_growth_across_processes_bytes": 5767168,
+    "swap_note": "Two isolated system-wide increases; no sustained growth observed. These counters do not identify the process causing swap."
+  },
+  "final_verification": {
+    "native_build_passed": true,
+    "test_all_passed": true,
+    "preexisting_documents_preserved": true,
+    "upstream_checkout_unchanged": true,
+    "checkpoint_identity_unchanged_since_full_hash": true
+  }
+}

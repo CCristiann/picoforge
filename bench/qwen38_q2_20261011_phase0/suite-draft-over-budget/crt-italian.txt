@@ -1,0 +1,1 @@
+Trova il più piccolo intero n maggiore di 1000 che lascia resto 2 quando diviso per 7, resto 5 quando diviso per 11 e resto 8 quando diviso per 13. Puoi ragionare prima, ma la risposta finale deve essere soltanto un oggetto JSON con la chiave n e il valore intero. Verifica che non esista una soluzione più piccola maggiore di 1000.

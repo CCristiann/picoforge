@@ -1,0 +1,15 @@
+{
+  "repository": "antirez/qwen3.8-flash-next-gguf",
+  "revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+  "checked_utc": "2026-10-12T06:19:06.689388+00:00",
+  "size_bytes": 147207127040,
+  "sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+  "expected_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+  "matched": true,
+  "file_stable": true,
+  "file_mtime_ns": 1791785892435960350,
+  "file_inode": 30631842,
+  "verification_s": 54.25194099999999,
+  "path": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "cache_note": "Full sequential hashing warms the file cache; subsequent load is not storage-cold."
+}

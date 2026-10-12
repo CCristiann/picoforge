@@ -1,0 +1,32 @@
+{
+  "merge-ranges": {
+    "matched": true,
+    "actual_tokens": 96,
+    "expected_tokens": 96,
+    "first_difference": null
+  },
+  "lower-bound": {
+    "matched": true,
+    "actual_tokens": 126,
+    "expected_tokens": 126,
+    "first_difference": null
+  },
+  "two-file-fix": {
+    "matched": true,
+    "actual_tokens": 173,
+    "expected_tokens": 173,
+    "first_difference": null
+  },
+  "crt-italian": {
+    "matched": true,
+    "actual_tokens": 142,
+    "expected_tokens": 142,
+    "first_difference": null
+  },
+  "archive-correction": {
+    "matched": true,
+    "actual_tokens": 7614,
+    "expected_tokens": 7614,
+    "first_difference": null
+  }
+}

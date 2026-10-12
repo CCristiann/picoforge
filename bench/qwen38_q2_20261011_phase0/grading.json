@@ -1,0 +1,53 @@
+{
+  "frozen_grader_unchanged": true,
+  "independent_task_count": 5,
+  "results": [
+    {
+      "case": "merge-ranges",
+      "format_followed": false,
+      "tests_passed": true,
+      "returncode": 0,
+      "stdout": "PASS: interval oracle, generator and no mutation\n",
+      "stderr": "",
+      "response_sha256": "e3d64b5fbb76a3d34f1e27b230e6a28ace0259160ededc96ec0355258889d000",
+      "source_review": "Reviewed before execution; only pure interval, window/mean and binary-search implementations."
+    },
+    {
+      "case": "lower-bound",
+      "format_followed": false,
+      "tests_passed": true,
+      "returncode": 0,
+      "stdout": "PASS: lower_bound linear oracle and sanitizers\n",
+      "stderr": "",
+      "response_sha256": "e31bec9ac8e3c6858443788175e19052e9de4274f414fecddfea2e1d8299e732",
+      "source_review": "Reviewed before execution; only pure interval, window/mean and binary-search implementations."
+    },
+    {
+      "case": "two-file-fix",
+      "format_followed": true,
+      "tests_passed": true,
+      "returncode": 0,
+      "stdout": "PASS: both files, boundaries, validation, true division\n",
+      "stderr": "",
+      "response_sha256": "72594d459b6ca09082105e2d651750425efe391866298100ff4ee901735f5f8b",
+      "source_review": "Reviewed before execution; only pure interval, window/mean and binary-search implementations."
+    },
+    {
+      "case": "crt-italian",
+      "format_followed": true,
+      "tests_passed": true,
+      "response_sha256": "d8a2010b3b34fe51d7baa1d1eed86b08344b57ba222faa3cc543fc397da4aca5",
+      "source_review": "JSON only; no code execution."
+    },
+    {
+      "case": "archive-correction",
+      "format_followed": false,
+      "tests_passed": false,
+      "response_sha256": "7e64ab56f595c530efc5c58db93a28c84f40e693b0019e35f6075316b9a642b5",
+      "source_review": "JSON only; no code execution."
+    }
+  ],
+  "strict_pass_count": 2,
+  "test_pass_count": 4,
+  "manual_content_note": "Archive response contains exactly the two correct facts inside a Markdown fence; frozen strict JSON grading still fails it. Code tests strip a single fence, but format_followed remains false."
+}

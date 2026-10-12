@@ -1,0 +1,11 @@
+{
+  "device" : "Apple M5 Pro",
+  "max_buffer_bytes" : 41747087360,
+  "unified_memory" : true,
+  "probe_allocated_bytes" : 65536,
+  "max_threadgroup_bytes" : 32768,
+  "physical_memory_bytes" : 68719476736,
+  "recommended_working_set_bytes" : 55662788608,
+  "os" : "Version 27.0.1 (Build 26A434)",
+  "thermal_state" : 0
+}

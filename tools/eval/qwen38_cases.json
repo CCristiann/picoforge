@@ -1,0 +1,39 @@
+{
+  "suite": "picoforge-qwen38-pilot-v1",
+  "scope": "Original local smoke tasks, never used for calibration; no leaderboard claim.",
+  "cases": [
+    {
+      "id": "merge-ranges",
+      "kind": "python",
+      "mode": "nothink",
+      "max_new": 512,
+      "prompt": "Write Python 3 code defining merge_ranges(ranges). Input is an iterable of (start, end) integer pairs with start <= end representing half-open intervals. Ignore empty intervals, merge both overlapping and touching intervals, and return a sorted list of tuples. Do not mutate the input. Handle empty input and generators. Use O(n log n) time. Output only the code, with no explanation and no example calls.",
+      "grading": "Executable tests: empty/generator input, touching and nested intervals, negatives, unsorted input, no mutation, randomized comparison against an integer-set oracle."
+    },
+    {
+      "id": "lower-bound",
+      "kind": "c11",
+      "mode": "nothink",
+      "max_new": 384,
+      "prompt": "Scrivi soltanto codice C11 che definisca size_t lower_bound_int(const int *a, size_t n, int x). L'array è ordinato in modo non decrescente. Restituisci il primo indice i con a[i] >= x, oppure n se non esiste. Con n=0 a può essere NULL. Gestisci duplicati e INT_MIN/INT_MAX; niente overflow nel calcolo del punto medio. Complessità O(log n), nessuna allocazione. Includi gli header necessari, senza main e senza spiegazioni.",
+      "grading": "Compile with strict C11 warnings and ASan/UBSan; compare with a linear-search oracle over empty, duplicate, extreme and randomized arrays."
+    },
+    {
+      "id": "two-file-fix",
+      "kind": "python-files",
+      "mode": "nothink",
+      "max_new": 640,
+      "prompt": "Fix this two-file Python library. slices.py contains:\ndef windows(xs, k):\n    return [xs[i:i+k] for i in range(len(xs)-k)]\n\nsummaries.py contains:\nfrom slices import windows\ndef rolling_means(xs, k):\n    return [sum(chunk)//k for chunk in windows(xs, k)]\n\nContract: k is an integer; both functions must raise ValueError for k <= 0. windows must return every complete length-k window (including the last one), return [] when k exceeds the input length, and must not mutate xs. rolling_means must use real division, including negative and fractional inputs. Return ONLY a JSON object whose keys are slices.py and summaries.py and whose values are the complete corrected source strings. No Markdown or extra keys.",
+      "grading": "Write only the two named files into a temporary directory; execute boundary, fractional, negative, invalid-width and no-mutation tests against both APIs."
+    },
+    {
+      "id": "crt-italian",
+      "kind": "json",
+      "mode": "think",
+      "max_new": 1536,
+      "prompt": "Trova il più piccolo intero n maggiore di 1000 che lascia resto 2 quando diviso per 7, resto 5 quando diviso per 11 e resto 8 quando diviso per 13. Puoi ragionare prima, ma la risposta finale deve essere soltanto un oggetto JSON con la chiave n e il valore intero. Verifica che non esista una soluzione più piccola maggiore di 1000.",
+      "expected": {"n": 1633},
+      "grading": "Exact JSON answer; independent exhaustive search frozen before generation. A truncated reasoning trace is a failure at the specified token budget."
+    }
+  ]
+}
