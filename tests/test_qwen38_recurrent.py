@@ -1,6 +1,7 @@
 """Small CPU-only oracle checks; no models, Metal, MPS or network access."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, str(ROOT / "tools/oracle"))
 import qwen38_recurrent as oracle
 
 SOURCE = ROOT / oracle.UPSTREAM_DEFAULT
+FIXTURES = ROOT / "tests/fixtures/qwen38/c"
 
 
 class ReferenceTests(unittest.TestCase):
@@ -56,15 +58,20 @@ class ReferenceTests(unittest.TestCase):
         self.assertTrue(torch.equal(raw_final, final))
 
     def test_gdn_scalar_analytic(self):
-        q, k, v = (torch.tensor([[[a]]]) for a in (0.5, 1., 4.))
-        decay = torch.tensor([[0.5]]).log()
-        beta, state = torch.tensor([[0.25]]), torch.tensor([[[2.]]])
-        for algorithm in ("chunk", "recurrent"):
-            out, final = oracle.gdn_reference(self.ref, q, k, v, decay, beta, state,
-                                              algorithm=algorithm, normalize_qk=False)
-            torch.testing.assert_close(out, torch.tensor([[[0.875]]]), rtol=0, atol=1e-7)
-            torch.testing.assert_close(final, torch.tensor([[[1.75]]]), rtol=0, atol=1e-7)
-        self.assertEqual(state.item(), 2.)
+        for case in json.loads((FIXTURES / "analytic.json").read_text())["cases"]:
+            with self.subTest(case=case["name"]):
+                q, k, v = (torch.tensor(case[name], dtype=torch.float32).reshape(-1, 1, 1) for name in ("q", "k", "v"))
+                decay, beta = (torch.tensor(case[name], dtype=torch.float32).reshape(-1, 1) for name in ("log_decay", "beta"))
+                state = torch.tensor([[[case["state_initial"]]]], dtype=torch.float32)
+                expected = (torch.tensor(case["output"]).reshape(-1, 1, 1),
+                            torch.tensor([[[case["state_final"]]]]))
+                results = [oracle.gdn_reference(self.ref, q, k, v, decay, beta, state,
+                           algorithm=algorithm, normalize_qk=False) for algorithm in ("chunk", "recurrent")]
+                results.append(oracle.affine_reference(q, k, v, decay, beta, state, False))
+                for result in results:
+                    for got, ref in zip(result, expected):
+                        torch.testing.assert_close(got.double(), ref.double(), atol=1e-7, rtol=0)
+                self.assertEqual(state.item(), case["state_initial"])
 
     def test_gdn_rectangular_chunk_matches_recurrent(self):
         gen = torch.Generator(device="cpu").manual_seed(3812)
@@ -319,6 +326,134 @@ class ReferenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             oracle.error_metrics(got, expected)
 
+    def test_fixture_writer_roundtrip_and_no_overwrite(self):
+        tensors = {"state": ("state_initial", ("Hv", "Dv", "Dk"), torch.arange(12.).reshape(2, 2, 3)),
+                   "output": ("output", ("T", "C"), torch.arange(15.).double().reshape(3, 5)[:, ::2])}
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "bundle"
+            manifest = oracle.write_bundle(out, tensors, {"test": True})
+            raw = (out / "tensors.bin").read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), manifest["data"]["sha256"])
+            for name, item in manifest["tensors"].items():
+                begin, size = item["offset_bytes"], item["nbytes"]
+                self.assertEqual(begin % 64, 0)
+                piece = raw[begin:begin + size]
+                self.assertEqual(hashlib.sha256(piece).hexdigest(), item["sha256"])
+                actual = np.frombuffer(piece, dtype=item["dtype"]).reshape(item["shape"])
+                np.testing.assert_array_equal(actual, tensors[name][2].numpy())
+            with self.assertRaises(FileExistsError):
+                oracle.write_bundle(out, tensors, {})
+            self.assertEqual((out / "tensors.bin").read_bytes(), raw)
+            tensors["bad"] = ("output", ("C",), torch.tensor([float("nan")]))
+            with self.assertRaises(ValueError):
+                oracle.write_bundle(Path(directory) / "invalid", tensors, {})
+            self.assertFalse((Path(directory) / "invalid").exists())
+
+    def test_gdn_fixture_is_reproducible_and_keeps_both_states(self):
+        recipe = json.loads((FIXTURES / "manifest.json").read_text())
+        self.assertEqual(recipe["upstream"]["sha256"], oracle.UPSTREAM_SHA256)
+        self.assertEqual(recipe["upstream"]["revision"], oracle.UPSTREAM_REV)
+        runs = [oracle.gdn_fixture(self.ref, recipe["gdn"], torch.Generator(device="cpu").manual_seed(recipe["seed"]),
+                recipe["rms_epsilon"], recipe["tolerances_proposed"]["gdn"]) for _ in range(2)]
+        self.assertEqual(runs[0][1], runs[1][1])
+        for name, (role, axes, tensor) in runs[0][0].items():
+            self.assertTrue(torch.equal(tensor, runs[1][0][name][2]), name)
+            self.assertEqual(len(axes), tensor.ndim)
+        self.assertEqual(runs[0][0]["gdn.state_initial"][0], "state_initial")
+        self.assertEqual(runs[0][0]["gdn.state_chunk"][0], "state_final")
+        self.assertEqual(runs[0][0]["gdn.output_affine64"][2].dtype, torch.float64)
+
+    def test_complete_fixture_export_provenance_and_determinism(self):
+        with tempfile.TemporaryDirectory() as directory:
+            a, b = Path(directory) / "a", Path(directory) / "b"
+            manifest = oracle.export_synthetic(SOURCE, a)
+            oracle.export_synthetic(SOURCE, b)
+            for filename in ("manifest.json", "tensors.bin"):
+                self.assertEqual((a / filename).read_bytes(), (b / filename).read_bytes())
+            metadata = manifest["metadata"]
+            self.assertEqual(metadata["analytic_sha256"], hashlib.sha256((FIXTURES / "analytic.json").read_bytes()).hexdigest())
+            self.assertEqual(metadata["adapter_sha256"], hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest())
+            for prefix in ("gdn", "conv_d1", "conv_d3"):
+                roles = {t["role"] for name, t in manifest["tensors"].items() if name.startswith(prefix + ".")}
+                self.assertTrue({"state_initial", "state_final", "input", "output"} <= roles)
+            self.assertIn("norm.output", manifest["tensors"])
+            self.assertIn("hc.result_residual", manifest["tensors"])
+
+    def test_conv_gdn_composition_interleaved_sessions_and_reset(self):
+        gen = torch.Generator(device="cpu").manual_seed(3821)
+        t, hk, hv, dk, dv, kernel = 129, 2, 6, 3, 5, 4
+        channels = 2 * hk * dk + hv * dv
+        taps = torch.randn(channels, kernel, generator=gen) / 4
+        gain = torch.tensor([.25, -.5, 1., 2., -1.])
+        sessions = []
+        for _ in range(2):
+            x = torch.randn(t, channels, generator=gen)
+            z = torch.randn(t, hv, dv, generator=gen)
+            a, b = (torch.randn(t, hv, generator=gen) for _ in range(2))
+            decay, beta = oracle.gate_reference(a, b, torch.full((hv,), .25), torch.full((hv,), -.5))
+            state = torch.randn(hv, dv, dk, generator=gen)
+            history = torch.randn(kernel - 1, channels, generator=gen)
+            sessions.append((x, z, decay, beta, state, history))
+
+        def run(session, start, stop, state, history, algorithm="chunk"):
+            x, z, decay, beta, _, _ = session
+            qkv, next_history = oracle.conv_reference(x[start:stop], taps, history)
+            q, k, v = torch.split(qkv, (hk * dk, hk * dk, hv * dv), dim=-1)
+            n = stop - start
+            out, next_state = oracle.gdn_reference(self.ref, q.reshape(n, hk, dk), k.reshape(n, hk, dk),
+                v.reshape(n, hv, dv), decay[start:stop], beta[start:stop], state, algorithm=algorithm)
+            return oracle.gdn_norm_reference(self.ref, out, z[start:stop], gain), next_state, next_history
+
+        expected = [run(s, 0, t, s[4], s[5]) for s in sessions]
+        states = [(s[4], s[5]) for s in sessions]
+        pieces, pos = [[], []], 0
+        for size in (1, 3, 2, 65, 58):
+            for i, session in enumerate(sessions):
+                out, state, history = run(session, pos, pos + size, *states[i])
+                # Output and both persistent states at every irregular boundary.
+                prefix = run(session, 0, pos + size, session[4], session[5])
+                torch.testing.assert_close(state, prefix[1], atol=5e-5, rtol=0)
+                self.assertTrue(torch.equal(history, prefix[2]))
+                states[i] = (state, history)
+                pieces[i].append(out)
+            pos += size
+        for i in range(2):
+            torch.testing.assert_close(torch.cat(pieces[i]), expected[i][0], atol=5e-5, rtol=0)
+        state, history, pieces = sessions[0][4], sessions[0][5], []
+        for pos in range(t):
+            out, state, history = run(sessions[0], pos, pos + 1, state, history, "recurrent")
+            pieces.append(out)
+        torch.testing.assert_close(torch.cat(pieces), expected[0][0], atol=5e-5, rtol=0)
+        torch.testing.assert_close(state, expected[0][1], atol=5e-5, rtol=0)
+        self.assertTrue(torch.equal(history, expected[0][2]))
+        # Reset dirty copies, then compare with a completely fresh session.
+        state.zero_()
+        history.zero_()
+        reset = run(sessions[0], 0, t, state, history)
+        fresh = run(sessions[0], 0, t, torch.zeros_like(state), torch.zeros_like(history))
+        for got, ref in zip(reset, fresh):
+            self.assertTrue(torch.equal(got, ref))
+        stale_history = run(sessions[0], 0, t, state, expected[0][2])
+        self.assertFalse(torch.allclose(stale_history[0][:3], fresh[0][:3]))
+
+    def test_upstream_norms_do_not_claim_fp64_precision(self):
+        x, gain = torch.ones(1, 2, 3, dtype=torch.float64), torch.ones(3, dtype=torch.float64)
+        with self.assertRaisesRegex(ValueError, "FP32"):
+            oracle.grouped_rms_reference(self.ref, x, gain)
+        with self.assertRaisesRegex(ValueError, "FP32"):
+            oracle.gdn_norm_reference(self.ref, x, x, gain)
+
+    def test_effective_gain_is_never_silently_rounded(self):
+        gain = torch.tensor([1e-10, .5, 2.])
+        x = torch.ones(1, 1, 3)
+        with self.assertRaisesRegex(ValueError, "reconstructed exactly"):
+            oracle.grouped_rms_reference(self.ref, x, gain)
+        with self.assertRaisesRegex(ValueError, "reconstructed exactly"):
+            oracle.hc_reference(self.ref, x, gain[None], torch.zeros(1, 3), torch.zeros(3, 1))
+        # Direct GDN gain is unrelated to the zero-centered HF convention.
+        result = oracle.gdn_norm_reference(self.ref, x, torch.zeros_like(x), gain)
+        self.assertGreater(result[0, 0, 0].item(), 0.)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
@@ -332,5 +467,8 @@ if __name__ == "__main__":
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(dict(upstream=oracle.UPSTREAM_REV, torch=torch.__version__,
             numpy=np.__version__, tests=result.testsRun, passed=result.wasSuccessful(),
+            upstream_sha256=oracle.UPSTREAM_SHA256,
+            adapter_sha256=hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest(),
+            tests_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             measurements=ReferenceTests.measurements), indent=2) + "\n")
     sys.exit(not result.wasSuccessful())

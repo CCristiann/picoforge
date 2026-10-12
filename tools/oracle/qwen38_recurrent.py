@@ -8,6 +8,7 @@ See docs/specs/qwen38/C.md for layouts and the separate BF16-quality question.
 
 import ast
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,8 @@ UPSTREAM_URL = (f"https://raw.githubusercontent.com/huggingface/transformers/{UP
                 "src/transformers/models/qwen4_exp/modeling_qwen4_exp.py")
 UPSTREAM_DEFAULT = Path("build/qwen38-c/upstream/modeling_qwen4_exp.py")
 SOURCE_LIMIT = 512 * 1024
+EXPORT_LIMIT = 32 * 1024 * 1024
+FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "tests/fixtures/qwen38/c"
 NODES = (
     "l2norm", "causal_conv1d_update", "causal_conv1d_fn",
     "torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule",
@@ -29,13 +32,31 @@ NODES = (
 )
 
 
-def source_bytes(path):
-    """Verify the complete source before parsing or executing selected nodes."""
-    with Path(path).open("rb") as handle:
-        raw = handle.read(SOURCE_LIMIT + 1)
+def verify_source(raw):
     if len(raw) > SOURCE_LIMIT or hashlib.sha256(raw).hexdigest() != UPSTREAM_SHA256:
         raise ValueError("Qwen4Exp upstream SHA-256 mismatch")
     return raw
+
+
+def source_bytes(path):
+    """Verify the complete source before parsing or executing selected nodes."""
+    with Path(path).open("rb") as handle:
+        return verify_source(handle.read(SOURCE_LIMIT + 1))
+
+
+def fetch_upstream(path):
+    """Explicit opt-in, bounded download of one pinned source file, never kernels."""
+    from urllib.request import urlopen
+
+    path = Path(path)
+    if path.exists():
+        source_bytes(path)
+        return
+    with urlopen(UPSTREAM_URL, timeout=30) as response:
+        raw = verify_source(response.read(SOURCE_LIMIT + 1))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as handle:
+        handle.write(raw)
 
 
 def load_upstream(path=UPSTREAM_DEFAULT):
@@ -65,6 +86,12 @@ def load_upstream(path=UPSTREAM_DEFAULT):
 def require_cpu(*tensors):
     if any(t.device.type != "cpu" for t in tensors):
         raise ValueError("Qwen3.8 oracle accepts CPU tensors only")
+
+
+def require_fp32(*tensors):
+    require_cpu(*tensors)
+    if any(t.dtype != torch.float32 or not torch.isfinite(t).all() for t in tensors):
+        raise ValueError("this upstream adapter requires finite FP32 tensors")
 
 
 def head_permutation(key_heads, value_heads):
@@ -166,34 +193,46 @@ def gdn_reference(ref, q, k, v, log_decay, beta, state, *, algorithm="chunk",
 
 def grouped_rms_reference(ref, x, gain, eps=1e-6):
     """Use the upstream zero-centered norm with an effective GGUF gain."""
-    require_cpu(x, gain)
+    require_fp32(x, gain)
     if x.ndim != 3 or gain.shape not in (x.shape[1:], x.shape[-1:]):
         raise ValueError("grouped RMS shape mismatch")
     groups, width = x.shape[1:]
     with torch.device("cpu"), torch.inference_mode():
-        norm = ref.Qwen4ExpTextRMSNorm(groups * width, group_size=width, eps=eps)
-        norm.weight.copy_(gain.expand(groups, width).flatten() - 1)
+        norm = ref.Qwen4ExpTextRMSNorm(groups * width, group_size=width, eps=eps).float()
+        norm.weight.copy_(zero_centered_weight(gain.expand(groups, width).flatten()))
         return norm(x.flatten(1)).reshape_as(x)
+
+
+def zero_centered_weight(gain):
+    """Do not silently change an effective GGUF gain while adapting it to HF.
+
+    Tiny/arbitrary FP32 gains may not be in the image of FP32 (1+w).
+    Such gains need original HF weights or an explicitly different oracle.
+    """
+    weight = gain - 1
+    if not torch.equal(1 + weight, gain):
+        raise ValueError("effective gain cannot be reconstructed exactly as upstream 1+w")
+    return weight
 
 
 def gdn_norm_reference(ref, out, z, gain, eps=1e-6):
     """The GDN gated norm uses direct gain and sigmoid, NOT zero-centered gain."""
-    require_cpu(out, z, gain)
+    require_fp32(out, z, gain)
     if out.ndim != 3 or out.shape != z.shape or gain.shape != out.shape[-1:]:
         raise ValueError("GDN norm shape mismatch")
     with torch.device("cpu"), torch.inference_mode():
-        norm = ref.Qwen4ExpTextRMSNormGated(out.shape[-1], eps, activation="sigmoid")
+        norm = ref.Qwen4ExpTextRMSNormGated(out.shape[-1], eps, activation="sigmoid").float()
         norm.weight.copy_(gain)
         return norm(out, z)
 
 
 def hc_reference(ref, residual, gain, down, up, inject=None, block=None, eps=1e-6):
     """Upstream GatedResidual; optional combine is explicit for fixture output."""
-    require_cpu(residual, gain, down, up)
+    require_fp32(residual, gain, down, up)
     if inject is not None:
-        require_cpu(inject)
+        require_fp32(inject)
     if block is not None:
-        require_cpu(block)
+        require_fp32(block)
     if residual.ndim != 3 or down.ndim != 2:
         raise ValueError("HC rank mismatch")
     tokens, streams, width = residual.shape
@@ -209,8 +248,8 @@ def hc_reference(ref, residual, gain, down, up, inject=None, block=None, eps=1e-
     config = SimpleNamespace(hc_count=streams, hidden_size=width, hc_lowrank=rank,
                              rms_norm_eps=eps)
     with torch.device("cpu"), torch.inference_mode():
-        hc = ref.Qwen4ExpTextGatedResidual(config, use_combine=inject is not None)
-        hc.hc_norm.weight.copy_(gain.flatten() - 1)
+        hc = ref.Qwen4ExpTextGatedResidual(config, use_combine=inject is not None).float()
+        hc.hc_norm.weight.copy_(zero_centered_weight(gain.flatten()))
         hc.input_mix_weight_down.weight.copy_(down)
         hc.input_mix_weight_up.weight.copy_(up)
         if inject is not None:
@@ -278,3 +317,169 @@ def error_metrics(got, expected, local_ndim=1):
     return dict(max_abs=diff.max().item(), scaled_inf=scaled.max().item(),
                 scaled_rms=scaled.square().mean(axes).sqrt().max().item(),
                 worst_index=[int(i) for i in index])
+
+
+def write_bundle(directory, tensors, metadata):
+    """Export an experimental test dataset, not a native engine ABI.
+
+    tensors maps names to (role, axis_names, CPU tensor). Arrays own no state
+    in the engine; every exported state is a separate snapshot. Never overwrite
+    an existing directory. Validate and bound the payload before creating it.
+    """
+    payload, records = bytearray(), {}
+    roles = {"input", "intermediate", "output", "state_initial", "state_final"}
+    for name, (role, axes, tensor) in tensors.items():
+        require_cpu(tensor)
+        if tensor.dtype not in (torch.float32, torch.float64) or not torch.isfinite(tensor).all():
+            raise ValueError(f"invalid floating fixture: {name}")
+        if role not in roles or len(axes) != tensor.ndim:
+            raise ValueError(f"invalid role/axes: {name}")
+        dtype = "<f4" if tensor.dtype == torch.float32 else "<f8"
+        array = np.ascontiguousarray(tensor.detach().numpy(), dtype=dtype)
+        offset = (len(payload) + 63) // 64 * 64
+        if offset + array.nbytes > EXPORT_LIMIT:
+            raise ValueError("fixture payload exceeds 32 MiB budget")
+        raw = array.tobytes(order="C")
+        payload.extend(b"\0" * (offset - len(payload)))
+        payload.extend(raw)
+        records[name] = dict(role=role, axes=list(axes), shape=list(array.shape), dtype=dtype,
+                             strides_bytes=list(array.strides), offset_bytes=offset, nbytes=len(raw),
+                             sha256=hashlib.sha256(raw).hexdigest())
+    document = dict(schema="qwen38-c-cpu-bundle-v1", metadata=metadata, tensors=records,
+                    data=dict(path="tensors.bin", nbytes=len(payload), sha256=hashlib.sha256(payload).hexdigest()))
+    encoded = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=False)
+    with (directory / "tensors.bin").open("xb") as handle:
+        handle.write(payload)
+    with (directory / "manifest.json").open("x") as handle:
+        handle.write(encoded)
+    return document
+
+
+def gdn_fixture(ref, recipe, gen, eps, tolerance):
+    """Small synthetic scan fixture; no projections/dequantization are simulated."""
+    t, hk, hv, dk, dv = (recipe[n] for n in ("tokens", "key_heads", "value_heads", "key_dim", "value_dim"))
+    if not (0 < t <= 129 and 0 < hk <= hv <= 16 and hv % hk == 0 and 0 < dk <= 16 and 0 < dv <= 16):
+        raise ValueError("fixture exceeds small affine-oracle dimensions")
+    rand = lambda *shape: torch.randn(*shape, generator=gen, device="cpu", dtype=torch.float32)
+    q, k, v, z = rand(t, hk, dk), rand(t, hk, dk), rand(t, hv, dv), rand(t, hv, dv)
+    a, b, dt, ssm_a = rand(t, hv), rand(t, hv), rand(hv) / 4, -rand(hv).abs() - .01
+    gain, initial = rand(dv), rand(hv, dv, dk)
+    decay, beta = gate_reference(a, b, dt, ssm_a)
+    inputs = (q, k, v, decay, beta, initial)
+    chunk = gdn_reference(ref, *inputs, chunk_size=recipe["chunk_size"])
+    recurrent = gdn_reference(ref, *inputs, algorithm="recurrent")
+    affine = affine_reference(*inputs)
+    tensors = {}
+
+    def add(name, role, axes, value):
+        tensors["gdn." + name] = (role, axes.split(), value)
+
+    for name, value in (("q", q), ("k", k)):
+        add(name, "input", "T Hk Dk", value)
+        add(name + "_l2", "intermediate", "T Hk Dk", ref.l2norm(value))
+    for name, value in (("v", v), ("z", z)):
+        add(name, "input", "T Hv Dv", value)
+    for name, value in (("a", a), ("b", b)):
+        add(name, "input", "T Hv", value)
+    for name, value in (("dt_bias", dt), ("ssm_a", ssm_a)):
+        add(name, "input", "Hv", value)
+    add("norm_gain", "input", "Dv", gain)
+    add("log_decay", "intermediate", "T Hv", decay)
+    add("beta", "intermediate", "T Hv", beta)
+    add("state_initial", "state_initial", "Hv Dv Dk", initial)
+    for name, result in (("chunk", chunk), ("recurrent", recurrent), ("affine64", affine)):
+        add("output_" + name, "output", "T Hv Dv", result[0])
+        add("state_" + name, "state_final", "Hv Dv Dk", result[1])
+    add("norm_sigmoid", "output", "T Hv Dv", gdn_norm_reference(ref, chunk[0], z, gain, eps))
+    comparisons = {}
+    for name, result in (("chunk", chunk), ("recurrent", recurrent)):
+        for part, got, expected, axes in (("output", result[0], affine[0], 1), ("state", result[1], affine[1], 2)):
+            metrics = error_metrics(got, expected, axes)
+            if metrics["scaled_inf"] > tolerance:
+                raise ValueError(f"{name}/{part} exceeds the proposed tolerance: {metrics}")
+            comparisons[name + "_vs_affine64_" + part] = dict(limit=tolerance, **metrics)
+    return tensors, comparisons
+
+
+def export_synthetic(source, directory):
+    """Create small CPU fixtures from the checked-in recipe and pinned source."""
+    ref = load_upstream(source)
+    recipe_raw = (FIXTURE_ROOT / "manifest.json").read_bytes()
+    recipe = json.loads(recipe_raw)
+    if recipe["upstream"]["sha256"] != UPSTREAM_SHA256 or recipe["upstream"]["revision"] != UPSTREAM_REV:
+        raise ValueError("fixture recipe and adapter source pins disagree")
+    gen = torch.Generator(device="cpu").manual_seed(recipe["seed"])
+    tensors, comparisons = gdn_fixture(ref, recipe["gdn"], gen, recipe["rms_epsilon"],
+                                       recipe["tolerances_proposed"]["gdn"])
+    rand = lambda *shape: torch.randn(*shape, generator=gen, device="cpu", dtype=torch.float32)
+
+    def add(prefix, name, role, axes, value):
+        tensors[prefix + "." + name] = (role, axes.split(), value)
+
+    for conv in recipe["conv"]:
+        t, c, kernel, d = (conv[n] for n in ("tokens", "channels", "kernel", "dilation"))
+        x, taps, history = rand(t, c), rand(c, kernel), rand((kernel - 1) * d, c)
+        raw, last = conv_reference(x, taps, history, d, False)
+        for name, role, axes, value in (
+            ("x", "input", "T C", x), ("taps", "input", "C K", taps),
+            ("history_initial", "state_initial", "history_time C", history),
+            ("raw", "output", "T C", raw), ("silu", "output", "T C", F.silu(raw)),
+            ("history_final", "state_final", "history_time C", last),
+        ):
+            add(conv["name"], name, role, axes, value)
+    t, h, width, rank = (recipe["hc"][n] for n in ("tokens", "streams", "width", "rank"))
+    x, down, up = rand(t, h, width), rand(rank, h * width) / 5, rand(h * width, rank) / 5
+    inject, block = rand(h, h * width) / 5, rand(t, width)
+    # Dyadic effective gain survives reconstruction of upstream's (1+w) exactly.
+    gain = torch.randint(-4, 9, (h, width), generator=gen, device="cpu").float() / 4
+    for name, axes, value in (("residual", "T H E", x), ("gain", "H E", gain),
+                              ("down", "rank HE", down), ("up", "HE rank", up),
+                              ("inject", "H HE", inject), ("block", "T E", block)):
+        add("hc", name, "input", axes, value)
+    outputs = hc_reference(ref, x, gain, down, up, inject, block, recipe["rms_epsilon"])
+    axes = dict(normed="T H E", low="T rank", gate_logits="T H E", mixed="T E",
+                injection_logits="T H", injection="T H", residual="T H E")
+    for name, value in outputs.items():
+        role = "output" if name in ("mixed", "residual") else "intermediate"
+        add("hc", "result_" + name, role, axes[name], value)
+    add("norm", "x", "input", "T H E", x)
+    add("norm", "shared_gain", "input", "E", gain[0])
+    add("norm", "output", "output", "T H E", grouped_rms_reference(ref, x, gain[0], recipe["rms_epsilon"]))
+    metadata = dict(recipe=recipe, comparisons=comparisons, device="cpu", accumulator="FP32 upstream; FP64 affine",
+                    torch_version=torch.__version__, numpy_version=np.__version__, threads=torch.get_num_threads(),
+                    source_url=UPSTREAM_URL, removed_decorators=ref.removed_decorators,
+                    recipe_sha256=hashlib.sha256(recipe_raw).hexdigest(),
+                    analytic_sha256=hashlib.sha256((FIXTURE_ROOT / "analytic.json").read_bytes()).hexdigest(),
+                    adapter_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+    return write_bundle(directory, tensors, metadata)
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=UPSTREAM_DEFAULT)
+    parser.add_argument("--fetch-upstream", action="store_true", help="explicitly download pinned Python source only")
+    parser.add_argument("--synthetic", action="store_true", help="export input/output/state tensors")
+    parser.add_argument("--device", choices=("cpu",), default="cpu")
+    parser.add_argument("--out", type=Path, default=Path("build/qwen38-c/fixtures"))
+    args = parser.parse_args()
+    if not args.fetch_upstream and not args.synthetic:
+        parser.error("select --fetch-upstream and/or --synthetic")
+    torch.set_num_threads(1)
+    try:
+        if args.fetch_upstream:
+            fetch_upstream(args.source)
+            print(f"Verified upstream {UPSTREAM_REV}: {args.source}")
+        if args.synthetic:
+            document = export_synthetic(args.source, args.out)
+            print(f"Exported {len(document['tensors'])} CPU tensors, {document['data']['nbytes']} bytes: {args.out}")
+            print(f"SHA-256 tensors.bin: {document['data']['sha256']}")
+    except (OSError, ValueError) as error:
+        parser.exit(1, f"qwen38 oracle: {error}\n")
+
+
+if __name__ == "__main__":
+    main()
