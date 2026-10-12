@@ -170,9 +170,13 @@ typedef struct Q38CGpu Q38CGpu;
 /* Slots: ACT/HC_LOW/HC_INJECT x,out; RMS x,gain,out;
  * HC_READ normed,logits,mixed; HC_ADD residual,block,inject;
  * CONV x,taps,out,history[L,C] (raw oldest-first, mutable after success);
- * GDN_PREP qkv,a,b,A,dt,prepared,log_decay,beta; GDN_NORM o,gain,out,z. */
+ * GDN_PREP qkv,a,b,A,dt,prepared,log_decay,beta; GDN_NORM o,gain,out,z;
+ * GDN_SCAN prepared,log_decay,beta,S[Hv,Dv,Dk],out[T,Hv,Dv].
+ * Raw GPU state has NO private epoch/position API: the harness owns it and
+ * discards/resets it on any command error. Public lifecycle glue is pending. */
 typedef enum { Q38C_ACT, Q38C_RMS, Q38C_HC_LOW, Q38C_HC_INJECT,
-    Q38C_HC_READ, Q38C_HC_ADD, Q38C_CONV, Q38C_GDN_PREP, Q38C_GDN_NORM, Q38C_GPU_OPS } Q38CGpuOp;
+    Q38C_HC_READ, Q38C_HC_ADD, Q38C_CONV, Q38C_GDN_PREP, Q38C_GDN_NORM,
+    Q38C_GDN_SCAN, Q38C_GPU_OPS } Q38CGpuOp;
 typedef struct { Qwen38Activation activation; float eps; Qwen38HcShape hc;
     Qwen38ConvShape conv; Qwen38GdnShape gdn; } Q38CGpuSpec;
 Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Error *);

@@ -23,7 +23,7 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
     g->device=(__bridge_retained void *)dev;
     NSString *names[]={@"q38c_activate",@"q38c_rms",@"q38c_activate",@"q38c_activate",
         @"q38c_hc_read",@"q38c_hc_add",@"q38c_conv",@"q38c_gdn_prepare",@"q38c_rms",
-        @"q38c_check",@"q38c_history"};
+        @"q38c_gdn_scan",@"q38c_check",@"q38c_history"};
     for (size_t i=0;i<Q38C_GPU_OPS+2;++i) {
         id<MTLFunction> fn=[lib newFunctionWithName:names[i]];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
@@ -114,15 +114,21 @@ static Qwen38Status stage(Q38CGpuOp op, const Q38CGpuSpec *s, Q38CGpuArgs *a,
         if (!isfinite(eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite RMS epsilon");
         if (eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive RMS epsilon");
         a->eps=eps; *writes=4; *inplace=UINT64_C(1)<<16; *work=t*groups;
-    } else if (op==Q38C_GDN_PREP) {
+    } else if (op==Q38C_GDN_PREP || op==Q38C_GDN_SCAN) {
         Qwen38StateSize size; Q38C_TRY(qwen38_gdn_state_bytes(&s->gdn,&size,e));
         size_t hk=s->gdn.key_heads, hv=s->gdn.value_heads, dk=s->gdn.key_dim, dv=s->gdn.value_dim;
         if (!gpu_dims(v[0],2,(size_t[]){t,2*hk*dk+hv*dv}) || !gpu_dims(v[1],2,(size_t[]){t,hv}) ||
-            !gpu_same(v[1],v[2]) || !gpu_dims(v[3],1,(size_t[]){hv}) || !gpu_same(v[3],v[4]) ||
-            !gpu_same(v[0],v[5]) || !gpu_same(v[1],v[6]) || !gpu_same(v[2],v[7])) goto shape;
+            !gpu_same(v[1],v[2])) goto shape;
         a->p[0]=(uint32_t)hk; a->p[1]=(uint32_t)hv; a->p[2]=(uint32_t)dk; a->p[3]=(uint32_t)dv;
-        a->p[4]=1; a->eps=s->gdn.l2_eps; a->read_mask=31; *writes=224; *work=t;
-        *inplace=(UINT64_C(1)<<40)|(UINT64_C(1)<<49)|(UINT64_C(1)<<58);
+        if (op==Q38C_GDN_PREP) {
+            if (!gpu_dims(v[3],1,(size_t[]){hv}) || !gpu_same(v[3],v[4]) ||
+                !gpu_same(v[0],v[5]) || !gpu_same(v[1],v[6]) || !gpu_same(v[2],v[7])) goto shape;
+            a->p[4]=1; a->eps=s->gdn.l2_eps; a->read_mask=31; *writes=224; *work=t;
+            *inplace=(UINT64_C(1)<<40)|(UINT64_C(1)<<49)|(UINT64_C(1)<<58);
+        } else {
+            if (!gpu_dims(v[3],3,(size_t[]){hv,dv,dk}) || !gpu_dims(v[4],3,(size_t[]){t,hv,dv})) goto shape;
+            a->p[4]=2; a->read_mask=15; *writes=24; *work=t ? hv*dv : 0;
+        }
     } else if (op==Q38C_CONV) {
         Qwen38StateSize size; Q38C_TRY(qwen38_conv_state_bytes(&s->conv,&size,e));
         size_t c=s->conv.channels, k=s->conv.kernel, d=s->conv.dilation, l=(k-1)*d;
@@ -160,6 +166,7 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     if (op==Q38C_CONV) expected_count=4;
     if (op==Q38C_GDN_PREP) expected_count=8;
     if (op==Q38C_GDN_NORM) expected_count=4;
+    if (op==Q38C_GDN_SCAN) expected_count=5;
     if (count!=expected_count) return q38c_error(e,Q38_SHAPE,"wrong GPU view count");
     Q38CGpuArgs a={0}; size_t span[8]={0};
     for (size_t j=0;j<count;++j) {

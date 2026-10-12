@@ -32,6 +32,8 @@ kernel void q38c_check(Q38C_BUFFERS) {
     for (uint j=0;j<8;++j) if ((a.read_mask&(1u<<j)) && i<a.v[j].count) {
         float x=v[j][at(a.v[j],i)]; valid(x,error);
         if (a.p[4]==1 && j==3 && x>0) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
+        if (a.p[4]==2 && ((j==1 && x>0) || (j==2 && (x<0 || x>1))))
+            atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
     }
 }
 kernel void q38c_activate(Q38C_BUFFERS) {
@@ -118,5 +120,27 @@ kernel void q38c_gdn_prepare(Q38C_BUFFERS) {
         if (!valid(g,error)) return;
         v6[at(a.v[6],i*hv+h)]=g;
         v7[at(a.v[7],i*hv+h)]=sigmoid(v2[at(a.v[2],i*hv+h)]);
+    }
+}
+/* Each lane owns an entire (value-head,value-channel) state row. FP32 and
+ * sequential feature/time order deliberately mirror C before optimization. */
+kernel void q38c_gdn_scan(Q38C_BUFFERS) {
+    uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3];
+    if (i>=hv*dv || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint h=i/dv, v=i%dv, row=at(a.v[3],i*dk);
+    for (uint t=0;t<a.v[0].dim[0];++t) {
+        uint q=t*a.v[0].stride[0]+(h%hk)*dk, k=q+hk*dk;
+        uint value=t*a.v[0].stride[0]+2*hk*dk+h*dv+v;
+        float decay=exp(v1[at(a.v[1],t*hv+h)]), beta=v2[at(a.v[2],t*hv+h)], prediction=0;
+        for (uint j=0;j<dk;++j) { v3[row+j]*=decay; prediction+=v3[row+j]*v0[k+j]; }
+        float delta=(v0[value]-prediction)*beta, result=0;
+        if (!valid(prediction,error) || !valid(delta,error)) return;
+        for (uint j=0;j<dk;++j) {
+            v3[row+j]+=delta*v0[k+j];
+            if (!valid(v3[row+j],error)) return;
+            result+=v3[row+j]*v0[q+j];
+        }
+        if (!valid(result,error)) return;
+        v4[at(a.v[4],(t*hv+h)*dv+v)]=result;
     }
 }
