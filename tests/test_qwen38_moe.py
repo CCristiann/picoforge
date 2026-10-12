@@ -63,5 +63,89 @@ class UpstreamOracleTests(unittest.TestCase):
         np.testing.assert_allclose(raw["y"], 15 * sigmoid1**2 + 3 * sigmoid1, rtol=2e-6)
 
 
+class DifferentialTests(unittest.TestCase):
+    def compare(self, config, x, weights):
+        actual = moe.numpy_forward(config, x, weights)
+        expected = moe.upstream_forward(config, x, weights)
+        np.testing.assert_array_equal(actual["ids"], expected["ids"])
+        for key in expected:
+            if key != "ids":
+                atol, rtol = (2e-5, 2e-4) if key == "y" else (2e-6, 2e-5)
+                np.testing.assert_allclose(actual[key], expected[key], atol=atol, rtol=rtol,
+                                           err_msg=key)
+        delta = actual["y"].astype(np.float64) - expected["y"]
+        rms = np.sqrt(np.mean(expected["y"].astype(np.float64)**2))
+        self.assertLessEqual(np.sqrt(np.mean(delta**2)) / max(rms, 1e-6), 1e-4)
+        return actual
+
+    def test_random_asymmetric_block(self):
+        for seed in range(12):
+            for k in (1, 2, 4):
+                for norm in (False, True):
+                    with self.subTest(seed=seed, k=k, norm=norm):
+                        c = replace(moe.FixtureConfig(), num_experts_per_tok=k, norm_topk_prob=norm)
+                        x, w = moe.synthetic(c, tokens=7, seed=seed)
+                        self.compare(c, x, w)
+
+    def test_512_experts_top10_small_float_weights(self):
+        c = replace(moe.FixtureConfig(), num_experts=512, num_experts_per_tok=10,
+                    moe_intermediate_size=2)
+        x, w = moe.synthetic(c, tokens=3)
+        self.compare(c, x, w)
+
+    def test_routed_intermediates_against_torch_float64(self):
+        c = moe.FixtureConfig()
+        x, w = moe.synthetic(c)
+        trace = self.compare(c, x, w)
+        # Independent library primitives at higher precision, not another decoder.
+        for token, row in enumerate(x):
+            for slot, expert in enumerate(trace["ids"][token]):
+                xt = torch.tensor(row, dtype=torch.float64)
+                gu = torch.tensor(w["experts.gate_up_proj"][expert], dtype=torch.float64)
+                gate, up = torch.nn.functional.linear(xt, gu).chunk(2)
+                mid = torch.nn.functional.silu(gate) * up
+                down = torch.nn.functional.linear(
+                    mid, torch.tensor(w["experts.down_proj"][expert], dtype=torch.float64))
+                for name, ref in (("gate", gate), ("up", up), ("mid", mid), ("down", down)):
+                    np.testing.assert_allclose(trace[name][token, slot], ref.numpy(),
+                                               atol=2e-6, rtol=2e-5, err_msg=name)
+
+    def test_shared_gate_zero_and_saturation(self):
+        c = moe.FixtureConfig()
+        x, w = moe.synthetic(c, tokens=1)
+        x[:] = 1
+        for logit, factor in ((0, 0.5), (-1000, 0.0), (1000, 1.0)):
+            w["shared_expert_gate.weight"][:] = logit / c.hidden_size
+            actual = self.compare(c, x, w)
+            np.testing.assert_allclose(actual["y"], actual["routed"] + factor*actual["shared"],
+                                       atol=2e-6, rtol=2e-5)
+
+    def test_invalid_inputs_and_projection_overflow(self):
+        c = moe.FixtureConfig()
+        x, w = moe.synthetic(c)
+        for bad in (np.nan, np.inf, -np.inf):
+            broken = x.copy()
+            broken[0, 0] = bad
+            for run in (moe.numpy_forward, moe.upstream_forward):
+                with self.assertRaises(ValueError):
+                    run(c, broken, w)
+        for run in (moe.numpy_forward, moe.upstream_forward):
+            with self.assertRaises(ValueError):
+                run(c, x.astype(np.float64), w)
+            with self.assertRaises(ValueError):
+                run(c, x[:, :-1], w)
+            broken = dict(w, **{"gate.weight": w["gate.weight"].T})
+            with self.assertRaises(ValueError):
+                run(c, x, broken)
+            broken = dict(w, **{"gate.weight": np.full_like(w["gate.weight"], 3e38)})
+            with self.assertRaises(FloatingPointError):
+                run(c, np.full_like(x, 3), broken)
+        for field, value in (("num_experts", 0), ("num_experts_per_tok", 5),
+                             ("hidden_size", True), ("hidden_act", "relu"),
+                             ("norm_topk_prob", 1)):
+            with self.assertRaises(ValueError):
+                replace(c, **{field: value})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

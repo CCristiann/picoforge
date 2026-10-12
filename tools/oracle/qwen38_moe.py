@@ -86,22 +86,115 @@ class FixtureConfig:
     norm_topk_prob: bool = True
     hidden_act: str = "silu"
 
+    def __post_init__(self):
+        for name in ("hidden_size", "num_experts", "num_experts_per_tok",
+                     "moe_intermediate_size", "shared_expert_intermediate_size"):
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.num_experts_per_tok > self.num_experts:
+            raise ValueError("top-k exceeds expert count")
+        if type(self.norm_topk_prob) is not bool or self.hidden_act != "silu":
+            raise ValueError("expected boolean norm_topk_prob and silu")
 
-def synthetic(config=FixtureConfig(), tokens=7, seed=3811):
+
+def weight_shapes(config):
     h, e, i, s = (config.hidden_size, config.num_experts,
                   config.moe_intermediate_size, config.shared_expert_intermediate_size)
-    shapes = {"gate.weight": (e, h), "experts.gate_up_proj": (e, 2*i, h),
+    return {"gate.weight": (e, h), "experts.gate_up_proj": (e, 2*i, h),
               "experts.down_proj": (e, h, i), "shared_expert.gate_proj.weight": (s, h),
               "shared_expert.up_proj.weight": (s, h), "shared_expert.down_proj.weight": (h, s),
               "shared_expert_gate.weight": (1, h)}
+
+
+def synthetic(config=FixtureConfig(), tokens=7, seed=3811):
+    if type(tokens) is not int or tokens < 0:
+        raise ValueError("tokens must be a nonnegative integer")
     rng = np.random.default_rng(seed)
     weights = {name: (rng.standard_normal(shape) / np.sqrt(shape[-1])).astype(np.float32)
-               for name, shape in shapes.items()}
-    return rng.standard_normal((tokens, h)).astype(np.float32), weights
+               for name, shape in weight_shapes(config).items()}
+    return rng.standard_normal((tokens, config.hidden_size)).astype(np.float32), weights
+
+
+def validate_inputs(config, x, weights):
+    shapes = weight_shapes(config)
+    if set(weights) != set(shapes):
+        raise ValueError("unexpected or missing weight names")
+    if x.ndim != 2 or x.shape[1] != config.hidden_size:
+        raise ValueError("expected X[T,H]")
+    for name, array in {"input": x, **weights}.items():
+        if array.dtype != np.float32 or not np.isfinite(array).all():
+            raise ValueError(f"{name}: expected finite FP32")
+        if name != "input" and array.shape != shapes[name]:
+            raise ValueError(f"{name}: incorrect shape")
+
+
+def route_logits(logits, k, normalize=True):
+    """Native proposed tie policy: equal FP32 probabilities -> smaller ID."""
+    if (logits.ndim != 2 or logits.dtype != np.float32 or
+            not np.isfinite(logits).all() or type(k) is not int or
+            not 1 <= k <= logits.shape[1] or type(normalize) is not bool):
+        raise ValueError("invalid FP32 logits / top-k / normalization")
+    # A negative overflow in the shifted logits is harmless: exp(-inf)=0.
+    with np.errstate(over="ignore", under="ignore"):
+        probabilities = np.exp(logits - logits.max(axis=-1, keepdims=True))
+    probabilities /= probabilities.sum(axis=-1, keepdims=True)
+    ids = np.argsort(-probabilities, axis=-1, kind="stable")[:, :k]
+    scores = np.take_along_axis(probabilities, ids, axis=-1)
+    if normalize:
+        scores /= scores.sum(axis=-1, keepdims=True)
+    return probabilities, ids.astype(np.uint32), scores
+
+
+def sigmoid(x):
+    result = np.empty_like(x)
+    positive = x >= 0
+    with np.errstate(under="ignore"):
+        result[positive] = 1 / (1 + np.exp(-x[positive]))
+        exp_x = np.exp(x[~positive])
+    result[~positive] = exp_x / (1 + exp_x)
+    return result
+
+
+def numpy_forward(config, x, weights):
+    """Transparent FP32 reference, validated against the upstream oracle."""
+    validate_inputs(config, x, weights)
+    t, h = x.shape
+    k, i = config.num_experts_per_tok, config.moe_intermediate_size
+    trace = {}
+    with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+        trace["logits"] = x @ weights["gate.weight"].T
+        if not np.isfinite(trace["logits"]).all():
+            raise FloatingPointError("nonfinite router projection")
+        p, ids, scores = route_logits(trace["logits"], k, config.norm_topk_prob)
+        trace.update(probabilities=p, ids=ids, weights=scores)
+        for name in ("gate", "up", "mid"):
+            trace[name] = np.empty((t, k, i), dtype=np.float32)
+        trace["down"] = np.empty((t, k, h), dtype=np.float32)
+        routed = np.zeros((t, h), dtype=np.float32)
+        for token in range(t):
+            for slot, expert in enumerate(ids[token]):
+                g, u = np.split(weights["experts.gate_up_proj"][expert] @ x[token], 2)
+                mid = (g * sigmoid(g)) * u
+                down = weights["experts.down_proj"][expert] @ mid
+                for name, value in (("gate", g), ("up", u), ("mid", mid), ("down", down)):
+                    trace[name][token, slot] = value
+                routed[token] += scores[token, slot] * down
+        gs = x @ weights["shared_expert.gate_proj.weight"].T
+        us = x @ weights["shared_expert.up_proj.weight"].T
+        ms = gs * sigmoid(gs) * us
+        shared = ms @ weights["shared_expert.down_proj.weight"].T
+        logit = x @ weights["shared_expert_gate.weight"].T
+        trace.update(routed=routed, shared=shared, shared_logit=logit,
+                     shared_gate=gs, shared_up=us, shared_mid=ms,
+                     y=routed + sigmoid(logit) * shared)
+    if any(not np.isfinite(a).all() for a in trace.values()):
+        raise FloatingPointError("nonfinite MoE intermediate")
+    return trace
 
 
 def upstream_forward(config, x, weights, cache=CACHE):
     """No full model import, device discovery, checkpoint or GPU allocation."""
+    validate_inputs(config, x, weights)
     with torch.device("cpu"), torch.no_grad():
         block = upstream_class(cache)(config).float().eval()
         block.load_state_dict({name: torch.from_numpy(np.array(w, copy=True))
@@ -118,4 +211,7 @@ def upstream_forward(config, x, weights, cache=CACHE):
             handle.remove()
         logits, scores, ids = trace.pop("route")
         trace.update(y=y, logits=logits, weights=scores, ids=ids)
-        return {name: value.detach().numpy().copy() for name, value in trace.items()}
+        result = {name: value.detach().numpy().copy() for name, value in trace.items()}
+        if any(not np.isfinite(a).all() for a in result.values()):
+            raise FloatingPointError("nonfinite upstream MoE output")
+        return result
