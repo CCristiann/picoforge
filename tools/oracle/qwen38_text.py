@@ -1,8 +1,8 @@
 """Pinned Hugging Face tokenizer/template oracle, CPU and local files only.
 
 There is no reimplementation of BPE, Unicode splitting or Jinja here.
-Generated cases are references for future native tests, not evidence that
-picoforge already implements Qwen3.8 tokenization or tool rendering.
+Generated cases are independent references; native parity is established
+separately by the C harness, not by regenerating these cases alone.
 """
 import argparse
 import hashlib
@@ -12,15 +12,27 @@ from pathlib import Path
 import random
 import math
 import struct
+from functools import lru_cache
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "tests/fixtures/qwen38/a"
 
 
-def load_reference(reference_root):
+@lru_cache(maxsize=1)
+def _pinned_reference(tokenizer_path, template, eos):
+    # Borrowed, read-only instances: repeated suites need not rebuild two
+    # 248k-entry vocabularies. Validation always runs before this cache.
     from tokenizers import Tokenizer
     from transformers import PreTrainedTokenizerFast
 
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    chat = PreTrainedTokenizerFast(tokenizer_file=tokenizer_path,
+                                  chat_template=template, eos_token=eos,
+                                  clean_up_tokenization_spaces=False)
+    return tokenizer, chat
+
+
+def load_reference(reference_root):
     manifest = json.loads((FIXTURES / "manifest.json").read_text())
     for package, expected in manifest["versions"].items():
         if importlib.metadata.version(package) != expected:
@@ -33,11 +45,7 @@ def load_reference(reference_root):
             raise ValueError(f"oracle source hash changed: {name}")
         paths[name] = path
     config = json.loads(paths["tokenizer_config"].read_text())
-    tokenizer = Tokenizer.from_file(str(paths["tokenizer"]))
-    chat = PreTrainedTokenizerFast(tokenizer_file=str(paths["tokenizer"]),
-                                  chat_template=config["chat_template"], eos_token=config["eos_token"],
-                                  clean_up_tokenization_spaces=False)
-    return tokenizer, chat
+    return _pinned_reference(str(paths["tokenizer"].resolve()), config["chat_template"], config["eos_token"])
 
 
 def input_cases():
