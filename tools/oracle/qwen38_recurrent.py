@@ -75,6 +75,24 @@ def head_permutation(key_heads, value_heads):
     return (h % key_heads) * (value_heads // key_heads) + h // key_heads
 
 
+def gate_reference(a, b, dt_bias, ssm_a):
+    """FP32 gates from projected inputs, all in physical GGUF head order.
+
+    Upstream GatedDeltaNet.forward uses -exp(A_log)*softplus(a+dt_bias).
+    The converter has ALREADY stored -exp(A_log) in ssm_a: never exp it again.
+    This adapter is checked against NumPy logaddexp, not treated as a second
+    independent implementation of the upstream forward function.
+    """
+    require_cpu(a, b, dt_bias, ssm_a)
+    if a.ndim != 2 or b.shape != a.shape or dt_bias.shape != a.shape[-1:] or ssm_a.shape != dt_bias.shape:
+        raise ValueError("GDN projected gates shape mismatch")
+    if any(t.dtype != torch.float32 or not torch.isfinite(t).all() for t in (a, b, dt_bias, ssm_a)):
+        raise ValueError("GDN projected gates require finite FP32 tensors")
+    if (ssm_a >= 0).any():
+        raise ValueError("ssm_a must contain already-negative decay coefficients")
+    return ssm_a * F.softplus(a + dt_bias), torch.sigmoid(b)
+
+
 def conv_reference(x, taps, history, dilation=1, apply_silu=True):
     """Torch depthwise correlation, [T,C], taps [C,K], oldest-first history.
 
@@ -241,3 +259,22 @@ def affine_reference(q, k, v, log_decay, beta, state, normalize_qk=True):
             state[h] = state[h] @ transition + write
             output[t, h] = state[h] @ q[t, h % hk]
     return torch.from_numpy(output), torch.from_numpy(state)
+
+
+def error_metrics(got, expected, local_ndim=1):
+    """Errors scaled per output row/head (1 axis), or per state head (2 axes)."""
+    require_cpu(got, expected)
+    if got.shape != expected.shape or not 1 <= local_ndim <= expected.ndim:
+        raise ValueError("invalid comparison shapes")
+    if not torch.isfinite(got).all() or not torch.isfinite(expected).all():
+        raise ValueError("nonfinite reference/comparison result")
+    if not got.numel():
+        return dict(max_abs=0., scaled_inf=0., scaled_rms=0., worst_index=[])
+    axes = tuple(range(-local_ndim, 0))
+    diff = (got.double() - expected.double()).abs()
+    scale = expected.double().abs().amax(axes, keepdim=True).clamp_min(1)
+    scaled = diff / scale
+    index = np.unravel_index(scaled.argmax().item(), got.shape)
+    return dict(max_abs=diff.max().item(), scaled_inf=scaled.max().item(),
+                scaled_rms=scaled.square().mean(axes).sqrt().max().item(),
+                worst_index=[int(i) for i in index])

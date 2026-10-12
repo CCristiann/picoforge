@@ -1,11 +1,13 @@
 """Small CPU-only oracle checks; no models, Metal, MPS or network access."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 
+import numpy as np
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,8 @@ SOURCE = ROOT / oracle.UPSTREAM_DEFAULT
 
 
 class ReferenceTests(unittest.TestCase):
+    measurements = []
+
     @classmethod
     def setUpClass(cls):
         cls.ref = oracle.load_upstream(SOURCE)
@@ -178,11 +182,155 @@ class ReferenceTests(unittest.TestCase):
                 oracle.gdn_reference(self.ref, q, q, q, torch.tensor([[decay]]),
                                       torch.tensor([[beta]]), q)
 
+    def test_gate_extremes_and_l2_epsilon(self):
+        a = torch.tensor([-100., -20., -1., 0., 1., 20., 100.]).reshape(-1, 1)
+        dt, ssm_a = torch.tensor([.25]), torch.tensor([-.5])
+        decay, beta = oracle.gate_reference(a, -a, dt, ssm_a)
+        expected = -.5 * np.logaddexp(0., a.double().numpy() + .25)
+        np.testing.assert_allclose(decay.numpy(), expected, atol=1e-5, rtol=0)
+        np.testing.assert_allclose(beta.numpy(), np.exp(-np.logaddexp(0., a.double().numpy())), atol=1e-7)
+        self.assertTrue(torch.isfinite(decay).all() and (decay <= 0).all())
+        q = torch.tensor([[0., 0., 0.], [1e-6, -1e-6, 0.], [1., 2., 3.], [100., -100., 100.]])
+        expected = q.double() / (q.double().square().sum(-1, keepdim=True) + 1e-6).sqrt()
+        torch.testing.assert_close(self.ref.l2norm(q).double(), expected, rtol=0, atol=1e-7)
+        with self.assertRaises(ValueError):
+            oracle.gate_reference(a, a, dt, -ssm_a)
+
+    def test_conv_toeplitz_fp64_and_independent_channels(self):
+        gen = torch.Generator(device="cpu").manual_seed(3815)
+        for channels in (1, 31, 33):
+            for dilation in (1, 3):
+                for kernel in (1, 2, 4):
+                    halo = (kernel - 1) * dilation
+                    for tokens in sorted({0, 1, max(0, halo - 1), halo, halo + 1}):
+                        taps = torch.randn(channels, kernel, generator=gen)
+                        x = torch.randn(tokens, channels, generator=gen)
+                        history = torch.randn(halo, channels, generator=gen)
+                        out, final = oracle.conv_reference(x, taps, history, dilation, False)
+                        raw = torch.cat((history, x)).double().numpy()
+                        matrix = np.zeros((channels, tokens, halo + tokens))
+                        for t in range(tokens):
+                            matrix[:, t, t + np.arange(kernel) * dilation] = taps.double().numpy()
+                        expected = np.einsum("ctj,jc->tc", matrix, raw)
+                        np.testing.assert_allclose(out.numpy(), expected, atol=1e-5, rtol=0)
+                        expected_history = torch.cat((history, x))[-halo:] if halo else history
+                        self.assertTrue(torch.equal(final, expected_history))
+                        if halo:
+                            self.assertNotEqual(final.data_ptr(), history.data_ptr())
+
+    def test_norm_axes_gains_and_epsilon_fp64(self):
+        x = torch.tensor([[[0., 0., 0.], [1e-6, -2e-6, 3e-6]], [[1., -2., 3.], [100., -20., 1.]]])
+        for eps in (1e-6, 1e-3):
+            for gain in (torch.tensor([.5, -1., 2.]), torch.tensor([[.5, -1., 2.], [2., .25, -2.]])):
+                expected = x.double() * gain.double() / (x.double().square().mean(-1, keepdim=True) + eps).sqrt()
+                got = oracle.grouped_rms_reference(self.ref, x, gain, eps)
+                torch.testing.assert_close(got.double(), expected, rtol=0, atol=1e-5)
+            z = torch.tensor([[[-100., 0., 100.], [20., -20., 1.]]]).expand_as(x)
+            gain = torch.tensor([.5, -1., 2.])
+            expected = (x.double() * gain.double() / (x.double().square().mean(-1, keepdim=True) + eps).sqrt()
+                        * z.double().sigmoid())
+            got = oracle.gdn_norm_reference(self.ref, x, z, gain, eps)
+            torch.testing.assert_close(got.double(), expected, rtol=0, atol=1e-5)
+
+    def test_hc_nonzero_projections_fp64(self):
+        gen = torch.Generator(device="cpu").manual_seed(3816)
+        x = torch.randn(5, 3, 7, generator=gen)
+        gain = torch.tensor([.25, -.5, 1., 2., -1., 0., 1.5]).expand(3, 7)
+        down, up = torch.randn(5, 21, generator=gen) / 5, torch.randn(21, 5, generator=gen) / 5
+        inject, block = torch.randn(3, 21, generator=gen) / 5, torch.randn(5, 7, generator=gen)
+        got = oracle.hc_reference(self.ref, x, gain, down, up, inject, block)
+        xx, gg = x.double().numpy(), gain.double().numpy()
+        norm = xx * gg / np.sqrt((xx * xx).mean(-1, keepdims=True) + 1e-6)
+        low = norm.reshape(5, 21) @ down.double().numpy().T
+        sigmoid = lambda t: np.exp(-np.logaddexp(0., -t))
+        gate = ((low / 3) * sigmoid(low / 3) @ up.double().numpy().T).reshape(5, 3, 7)
+        logits = norm.reshape(5, 21) @ inject.double().numpy().T
+        injection = 2 * sigmoid(logits / 3)
+        expected = dict(normed=norm, low=low, gate_logits=gate, mixed=(norm * sigmoid(gate)).mean(1),
+                        injection_logits=logits, injection=injection,
+                        residual=xx + injection[:, :, None] * block.double().numpy()[:, None, :])
+        for name, value in expected.items():
+            np.testing.assert_allclose(got[name].numpy(), value, atol=2e-5, rtol=0, err_msg=name)
+
+    def test_conv_matches_upstream_prefill_and_decode(self):
+        gen = torch.Generator(device="cpu").manual_seed(3817)
+        x, taps = torch.randn(11, 3, generator=gen), torch.randn(3, 4, generator=gen)
+        expected, last = oracle.conv_reference(x, taps, torch.zeros(3, 3))
+        full = self.ref.causal_conv1d_fn(x.T[None], taps, activation="silu")[0].T
+        torch.testing.assert_close(full, expected, atol=1e-5, rtol=0)
+        # HF caches K samples; our minimal halo contains K-1. Align explicitly.
+        state, pieces = torch.zeros(1, 3, 4), []
+        for token in x:
+            pieces.append(self.ref.causal_conv1d_update(token[None, :, None], state, taps, activation="silu"))
+        torch.testing.assert_close(torch.cat(pieces, -1)[0].T, expected, atol=1e-5, rtol=0)
+        self.assertTrue(torch.equal(state[0, :, 1:].T, last))
+
+    def test_gdn_single_tokens_noncontiguous_and_no_alias(self):
+        gen = torch.Generator(device="cpu").manual_seed(3818)
+        q, k = (torch.randn(65, 2, 6, generator=gen)[:, :, ::2] for _ in range(2))
+        v = torch.randn(65, 6, 5, generator=gen)
+        decay, beta = -torch.rand(65, 6, generator=gen), torch.rand(65, 6, generator=gen)
+        initial = torch.randn(6, 5, 3, generator=gen)
+        saved = initial.clone()
+        full, last = oracle.gdn_reference(self.ref, q, k, v, decay, beta, initial)
+        for chunk_size in (1, 3, 4, 128):
+            out, state = oracle.gdn_reference(self.ref, q, k, v, decay, beta, initial, chunk_size=chunk_size)
+            torch.testing.assert_close(out, full, atol=5e-5, rtol=0)
+            torch.testing.assert_close(state, last, atol=5e-5, rtol=0)
+        state, pieces = initial, []
+        for i in range(len(q)):
+            part = [a[i:i + 1] for a in (q, k, v, decay, beta)]
+            out, state = oracle.gdn_reference(self.ref, *part, state, algorithm="recurrent")
+            pieces.append(out)
+        torch.testing.assert_close(torch.cat(pieces), full, atol=5e-5, rtol=0)
+        torch.testing.assert_close(state, last, atol=5e-5, rtol=0)
+        self.assertTrue(torch.equal(initial, saved))
+        self.assertNotEqual(state.data_ptr(), initial.data_ptr())
+        empty, copy = oracle.gdn_reference(self.ref, q[:0], k[:0], v[:0], decay[:0], beta[:0], initial)
+        self.assertEqual(empty.numel(), 0)
+        self.assertTrue(torch.equal(copy, saved))
+        copy.zero_()
+        self.assertTrue(torch.equal(initial, saved))
+
+    def test_gdn_long_streams(self):
+        gen = torch.Generator(device="cpu").manual_seed(3819)
+        for tokens in (1023, 1024, 1025, 8192, 16384, 32768):
+            q, k = (torch.randn(tokens, 1, 3, generator=gen) for _ in range(2))
+            v = torch.randn(tokens, 2, 5, generator=gen)
+            # Nearly no forgetting exercises accumulated roundoff in the state.
+            decay, beta = -torch.rand(tokens, 2, generator=gen) * 1e-5, torch.rand(tokens, 2, generator=gen)
+            initial = torch.randn(2, 5, 3, generator=gen)
+            expected = oracle.gdn_reference(self.ref, q, k, v, decay, beta, initial, algorithm="recurrent")
+            out, last = oracle.gdn_reference(self.ref, q, k, v, decay, beta, initial)
+            limit = 5e-5 if tokens <= 1025 else 2e-4
+            for name, got, ref, axes in (("output", out, expected[0], 1), ("state", last, expected[1], 2)):
+                metrics = oracle.error_metrics(got, ref, axes)
+                self.measurements.append(dict(tokens=tokens, comparison=name, limit=limit, **metrics))
+                self.assertLessEqual(metrics["scaled_inf"], limit, self.measurements[-1])
+
+    def test_scaled_error_rejects_nonfinite_and_keeps_heads_separate(self):
+        expected = torch.tensor([[[100000., 0.], [0., 0.]]])
+        got = expected.clone()
+        got[0, 1, 0] = .1
+        metrics = oracle.error_metrics(got, expected)
+        self.assertGreater(metrics["scaled_inf"], .09)
+        self.assertEqual(metrics["worst_index"], [0, 1, 0])
+        got[0, 1, 0] = float("nan")
+        with self.assertRaises(ValueError):
+            oracle.error_metrics(got, expected)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--source", type=Path, default=SOURCE)
+    parser.add_argument("--report", type=Path)
     args, remaining = parser.parse_known_args()
     SOURCE = args.source
     torch.set_num_threads(1)
-    unittest.main(argv=[sys.argv[0], *remaining])
+    result = unittest.main(argv=[sys.argv[0], *remaining], exit=False).result
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(dict(upstream=oracle.UPSTREAM_REV, torch=torch.__version__,
+            numpy=np.__version__, tests=result.testsRun, passed=result.wasSuccessful(),
+            measurements=ReferenceTests.measurements), indent=2) + "\n")
+    sys.exit(not result.wasSuccessful())
