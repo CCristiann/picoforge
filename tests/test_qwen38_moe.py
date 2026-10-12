@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools/oracle"))
 import qwen38_moe as moe
 
 torch.set_num_threads(1)
+FORWARD_METRICS=[]
 
 
 class UpstreamOracleTests(unittest.TestCase):
@@ -463,9 +464,13 @@ def native_forward(c, x, matrices, payloads=None, trace=True, sparse=False):
         payload += struct.pack("<4I",kind,matrix.shape[-1],matrix.shape[-2],experts) + data
     payload += x.astype("<f4").tobytes()
     proc = subprocess.run([os.environ["Q38_F_NATIVE"],"--forward"],input=payload,
-                          capture_output=True,check=True,timeout=60)
-    if proc.stderr:
-        raise AssertionError(proc.stderr.decode())
+                          capture_output=True,check=True,timeout=60,
+                          pass_fds=(int(os.environ["PICOFORGE_GPU_LOCK_FD"]),) if os.environ.get("PICOFORGE_GPU_LOCK_FD") else ())
+    diagnostics=proc.stderr.decode()
+    if os.environ.get("Q38_F_METAL"):
+        import re
+        diagnostics=re.sub(r"(?m)^.*Metal API Validation Enabled\r?\n", "", diagnostics)
+    if diagnostics: raise AssertionError(diagnostics)
     blob, offset, records = proc.stdout,0,[]
     while struct.unpack_from("<Q",blob,offset)[0] != 2**64-1:
         stage, expert, token, rows, cols, outputs = struct.unpack_from("<6Q",blob,offset)
@@ -500,6 +505,7 @@ class NativeForwardTests(unittest.TestCase):
             np.testing.assert_allclose(actual["y"],reference["y"],atol=2e-5,rtol=2e-4)
             self.assertLessEqual(moe.error_metrics(actual["y"],reference["y"])["nrmse"],1e-4)
         previous_activation = None
+        worst_bound_ratio=0
         for stage,expert,token,a,b in records:
             if stage < 8:
                 matrix = matrices[stage][expert] if matrices[stage].ndim==3 else matrices[stage]
@@ -509,6 +515,7 @@ class NativeForwardTests(unittest.TestCase):
                 nu = (2*a.shape[1]+8)*2**-24
                 bound = nu/(1-nu)*magnitude + 2*np.abs(np.spacing(reference.astype(np.float32)))
                 self.assertTrue(np.all(np.abs(b-reference)<=bound),f"B bound stage {stage}")
+                worst_bound_ratio=max(worst_bound_ratio,float(np.max(np.abs(b-reference)/np.maximum(bound,1e-30))))
             elif stage in (8,10):
                 at = torch.from_numpy(a.copy()).to(torch.float64)
                 reference = (torch.nn.functional.silu(at) if stage==8 else torch.sigmoid(at)).numpy()
@@ -519,6 +526,9 @@ class NativeForwardTests(unittest.TestCase):
             elif stage in (11,12):
                 key = "routed" if stage==11 else "y"
                 np.testing.assert_allclose(b,expected[key][token:token+len(b)],atol=2e-5,rtol=2e-4)
+        FORWARD_METRICS.append(dict(tokens=len(x),experts=c.num_experts,top_k=c.num_experts_per_tok,
+            hidden=c.hidden_size,packed=payloads is not None,projection_bound_ratio=worst_bound_ratio,
+            y=moe.error_metrics(actual["y"],upstream["y"]),stages=len(records),cpu_workspace_bytes=budget))
         return actual,records
 
     def test_float_composed_stages_chunks_and_shared(self):
@@ -538,12 +548,42 @@ class NativeForwardTests(unittest.TestCase):
     def test_float_nonfinite_and_zero_input(self):
         c=moe.FixtureConfig(); x,weights=moe.synthetic(c,tokens=2,seed=44)
         self.verify(c,x*0,weights)
+        self.verify(replace(c,norm_topk_prob=False),x,weights)
+        for logit in (-100,0,100):
+            changed={n:v.copy() for n,v in weights.items()}
+            changed["shared_expert_gate.weight"][:]=logit/c.hidden_size
+            self.verify(c,np.ones_like(x),changed)
         for value in (np.nan,np.inf):
             broken=x.copy(); broken[-1,-1]=value
             self.assertNotEqual(native_forward(c,broken,forward_weights(c,weights))[0],0)
         for name in ("gate.weight","shared_expert.down_proj.weight"):
             changed={n:v.copy() for n,v in weights.items()}; changed[name][:]=np.nan
             self.assertNotEqual(native_forward(c,x,forward_weights(c,changed))[0],0)
+        if os.environ.get("Q38_F_METAL"):
+            from unittest.mock import patch
+            with patch.dict(os.environ,{"Q38_F_GPU_NONFINITE":"1"}):
+                self.assertNotEqual(native_forward(c,x,forward_weights(c,weights))[0],0)
+
+    def test_native_tied_block_and_near_tie_margins(self):
+        c=moe.FixtureConfig(1,4,2,1,1)
+        x,weights=moe.synthetic(c,tokens=1,seed=4); x[:]=1
+        weights["experts.gate_up_proj"][:]=1
+        weights["experts.down_proj"][:]=np.arange(1,5,dtype=np.float32).reshape(4,1,1)
+        weights["shared_expert.down_proj.weight"][:]=0
+        for delta in (0,1e-9,1e-5):
+            weights["gate.weight"][:]=np.array([0,delta,0,-delta],np.float32)[:,None]
+            expected=moe.numpy_forward(c,x,weights)
+            status,actual,records,_=native_forward(c,x,forward_weights(c,weights))
+            self.assertEqual(status,0)
+            np.testing.assert_array_equal(actual["ids"],expected["ids"])
+            np.testing.assert_allclose(actual["y"],expected["y"],atol=2e-5,rtol=2e-4)
+            z=next(record[4] for record in records if record[0]==0)
+            np.testing.assert_array_equal(z,weights["gate.weight"].T)
+            if delta<=1e-9: np.testing.assert_array_equal(actual["ids"],[[0,1]])
+            # The K/K+1 boundary is tied even for delta=1e-5. Compare canonical
+            # IDs on identical FP32 probabilities; do not claim an HF ID promise.
+            probability=expected["probabilities"][0]
+            self.assertEqual(np.sort(probability)[-2],np.sort(probability)[-3])
 
     def test_packed_composition_and_640_768_padding(self):
         import importlib.util
@@ -682,4 +722,12 @@ class NativeForwardTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    program=unittest.main(verbosity=2,exit=False)
+    if os.environ.get("Q38_F_REPORT"):
+        report=dict(complete=program.result.wasSuccessful() and not program.result.skipped,
+                    tests=program.result.testsRun,skips=len(program.result.skipped),
+                    backend="Metal post-routing" if os.environ.get("Q38_F_METAL") else "CPU",
+                    forward=FORWARD_METRICS)
+        with Path(os.environ["Q38_F_REPORT"]).open("x") as output:
+            json.dump(report,output,indent=2)
+    sys.exit(0 if program.result.wasSuccessful() and not program.result.skipped else 1)

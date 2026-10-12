@@ -42,7 +42,8 @@ def prepare_real_slice(native, checkpoint, output, layer):
         raise RuntimeError("real slice preparation requires the common lock")
     output = Path(output)
     output.mkdir(parents=True,exist_ok=False)
-    descriptor = json.loads(subprocess.check_output([str(native),"--describe",str(checkpoint),str(layer)]))
+    descriptor = json.loads(subprocess.check_output([str(native),"--describe",str(checkpoint),str(layer)],
+        pass_fds=(int(os.environ["PICOFORGE_GPU_LOCK_FD"]),)))
     h,e,k,i,s,physical,norm = descriptor["config"]
     fd=os.open(checkpoint,os.O_RDONLY)
     manifest=dict(schema=1,complete=False,layer=layer,config=descriptor["config"],

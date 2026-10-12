@@ -10,6 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef Q38_F_FORWARD
+#define Q38_F_FORWARD(c,weights,m,x,y,r,w,e) qwen38_moe_forward(m,x,y,r,w,e)
+#endif
+
 static Qwen38F32Mut view(float *p, size_t cap, size_t t, size_t e, size_t pitch) {
     return (Qwen38F32Mut){.data=p, .capacity_bytes=cap, .rank=2,
         .dim={t,e,1,1}, .stride_bytes={pitch,4,0,0}};
@@ -347,8 +351,8 @@ static void stream_forward(void) {
     if (!st) st=qwen38_moe_work_create(m,t,budget,&w,&error);
     if (!st && (h[8]&1)) q38_moe_observe(w,emit_trace,NULL);
     Qwen38MoeRoutes routes={{ids,t*(k+3)*4,t,k,(k+3)*4},view(scores,t*(k+2)*4,t,k,(k+2)*4)};
-    if (!st) st=qwen38_moe_forward(m,readonly(view(x,t*pitch*4,t,width,pitch*4)),
-                                   view(y,t*pitch*4,t,width,pitch*4),&routes,w,&error);
+    if (!st) st=Q38_F_FORWARD(&c,&weights,m,readonly(view(x,t*pitch*4,t,width,pitch*4)),
+                              view(y,t*pitch*4,t,width,pitch*4),&routes,w,&error);
     assert(error.code==st);
     uint64_t end[]={UINT64_MAX,(uint64_t)st,budget}; assert(fwrite(end,8,3,stdout)==3);
     if (!st) {

@@ -683,3 +683,100 @@ DwarfStar fissato verso `build/qwen38-f/packed-reference` con sanitize=True;
 0/3/47, output `build/qwen38-f/slice-<layer>`. Riusare i tre file upstream
 hash-verificati nella cache F. Test offline; nessuno skip equivale a PASS.
 Report numerico riprodotto in `build/qwen38-f/slice-results.json`.
+
+### Metal privato post-routing e consegna v2
+
+`src/qwen38_moe.m` compone **route CPU congelate → gather GPU → prodotti B →
+SiLU/sigmoid C → prodotto gate/up F → riduzione routed/shared F**.
+`src/qwen38_moe.metal` contiene solo gather/prodotto/riduzione e copia per
+tracce di test, senza decoder, linear o attivazioni duplicati. Contesto e
+scratch privati con cap 1..32, budget esplicito <=32 MiB; store/binding borrowed,
+pipeline/buffer retained fino a destroy dopo completion. La funzione encode
+non fa commit/wait, non azzera la parola errore e non alloca scratch per token.
+Il caller serializza il riuso; nessun lifecycle GPU pubblico nuovo.
+
+Limite esplicito: B encode riceve `expert` host-side; questo esperimento non
+esegue routing/grouping dipendente da risultati GPU. Il harness esegue il
+forward CPU per route/riferimento, poi un solo command buffer per microbatch
+per tutti gli esperti selezionati e shared. Non è un engine ibrido pubblicato
+né una misura di velocità. Proiezioni e attivazioni GPU sono catturate prima
+del riuso scratch tramite copie nello stesso encoder, poi confrontate con
+FP64 e upstream; le copie e le allocazioni diagnostiche appartengono al test.
+Le route e le tracce router di questo percorso restano **CPU**.
+
+Verifica finale GPU: **4 test, zero skip**, 42 casi differenziali registrati,
+4280 stadi (include router CPU), ulteriori casi analitici di tie e fault
+injection; 154 microbatch GPU completati con Metal API Validation e harness
+ASan/UBSan. Floating T fino a1024, chunk 1/7/32, K=1/2/E; shared gate a
+-100/0/+100 e norm_topk false sintetico. Packed IQ2_XXS/Q2_K/Q8_0, pad640/768
+nonzero e variante poison. Preflight rifiuta alias X/Y/error word, view corta,
+owner diverso, duplicati ID, pesi negativi e budget insufficiente; T=0 valida
+senza dispatch. NaN introdotta **solo nel buffer GPU dopo il riferimento CPU**
+produce `Q38_GPU_NONFINITE`, controllato dopo command completion.
+
+Y sintetico GPU vs upstream: max abs **1.192093e-6**, max NRMSE
+**4.836173e-7**, entro entrambi i gate. Snapshot di ogni prodotto B controllato
+sullo stesso input al bound congelato; attivazioni ai gate F e prodotto
+SiLU*up esatto rispetto agli snapshot. Allocazione Metal massima osservata
+nel harness **4,866,048 byte**, trace massimo1,634,688 byte, scratch F massimo
+445,312 byte sulle shape sintetiche provate; non è footprint del modello.
+Report nel build: `gpu-final.json`, `gpu-final-allocations.jsonl`.
+Slice reali verificate **CPU**, non Metal; il harness GPU rifiuta oltre64MiB
+packed e non materializza lo storage dell'intero layer reale.
+
+Comandi Metal effettivi, oltre alla preparazione CPU descritta sopra:
+
+```sh
+make build/qwen38-b/packed.air build/qwen38-c/recurrent.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc \
+  -c src/qwen38_moe.metal -o build/qwen38-f/moe.air
+xcrun -sdk macosx metallib build/qwen38-b/packed.air \
+  build/qwen38-c/recurrent.air build/qwen38-f/moe.air -o build/qwen38-f/moe.metallib
+clang -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc -Isrc \
+  tests/test_qwen38_moe.m src/qwen38_moe.c src/qwen38_moe.m \
+  src/qwen38_packed.c src/qwen38_packed_gpu.m src/qwen38_base.c src/qwen38_conv.c \
+  src/qwen38_gdn.c src/qwen38_recurrent_gpu.m src/qwen38_config.c \
+  src/qwen38_weights.c src/gpu_weights.m src/gguf_plan.c src/gguf.c \
+  src/gguf_reader.c src/util.c -framework Foundation -framework Metal -lm \
+  -o build/qwen38-f/test_moe_gpu
+Q38_F_NATIVE="$PWD/build/qwen38-f/test_moe_gpu" \
+  Q38_F_LIBRARY="$PWD/build/qwen38-f/moe.metallib" Q38_F_METAL=1 MTL_DEBUG_LAYER=1 \
+  OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  ../picoforge/tools/venv/bin/python tools/qwen38_gpu_lock.py --timeout 60 -- \
+  ../picoforge/tools/venv/bin/python tests/test_qwen38_moe.py \
+  NativeForwardTests.test_float_composed_stages_chunks_and_shared \
+  NativeForwardTests.test_float_nonfinite_and_zero_input \
+  NativeForwardTests.test_packed_composition_and_640_768_padding \
+  NativeForwardTests.test_native_tied_block_and_near_tie_margins
+```
+
+`Q38_F_REPORT` opzionale salva JSON in un percorso **nuovo**; il test rifiuta
+sovrascrittura e restituisce nonzero per errori o skip. `Q38_F_ALLOCATIONS`
+aggiunge record di allocazione nel build; scegliere un nome nuovo per ogni run.
+CPU finale: suite estesa a28 test; `make test-qwen38-links
+PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python` passa
+A→B→F, C→E e A→D/E. Nessuna esecuzione del modello completo o benchmark.
+
+**Proposte concrete al coordinatore, file condivisi non modificati:**
+
+1. Il target CPU F deve aggiungere i `.c` B/C/A/reader del comando sopra.
+   Collegare AIR F alla libreria e aggiungere il target GPU privato sotto lock.
+   Il Makefile corrente mappa **sia `qwen38_moe.c` sia `qwen38_moe.m` a
+   `src/qwen38_moe.o`**: usare oggetti distinti (es. `.c.o` e `.m.o`) oppure
+   assegnare a F il nome `src/qwen38_moe_gpu.m` e aggiornare ownership/build.
+   `make`/`test-all` globali restano al coordinatore dopo questo wiring;
+   i comandi isolati e test-links sopra sono verificati.
+2. Per routing interamente GPU senza readback/commit per esperto, B deve
+   possedere un encode indexed: stesso layout packed e input `[P,Klogical]`,
+   output `[P,N]`, più `expert_ids[P]` uint32 contiguo in GPU span bounded.
+   Ogni riga sceglie la propria matrice esperto, verifica ID<`n_experts` e
+   conserva il bound numerico/logical padding B. F può così produrre route e
+   pair sulla GPU e ridurre per slot, senza accedere al decoder B. Nome/API
+   pubblica e lifecycle sono da fissare dal coordinatore, non introdotti qui.
+
+Limiti residui: Metal completo con router GPU e slice reali, errori di
+allocazione forzati, lifecycle globale/integrazione nel grafo, regressioni
+Qwen3 complete e generazione Qwen3.8. Le prove C11 complete del blocco MoE e
+Metal post-routing non certificano questi incrementi né la qualità Q2/BF16.

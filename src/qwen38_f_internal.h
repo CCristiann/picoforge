@@ -11,6 +11,22 @@ typedef void (*Q38MoeObserver)(void *, size_t stage, size_t expert, size_t token
                              Qwen38F32 input, Qwen38F32 output);
 void q38_moe_observe(Qwen38MoeWork *, Q38MoeObserver, void *);
 
+/* Private post-routing GPU experiment. CPU route IDs/weights are frozen before
+ * encode; B's expert index is host-side. No GPU-dependent dispatch, lifecycle
+ * ABI, commit or wait here. Caller serializes reuse and keeps store/bindings,
+ * context and all resources alive and unchanged until command completion. */
+typedef struct Q38FMoeGpu Q38FMoeGpu;
+typedef void (*Q38FMoeGpuObserver)(void *,Qwen38GpuCommand,size_t stage,size_t expert,
+                                  Qwen38GpuF32 input,Qwen38GpuF32 output);
+void q38f_gpu_observe(Q38FMoeGpu *,Q38FMoeGpuObserver,void *);
+Qwen38Status q38f_gpu_create(void *device,void *library,const Qwen38MoeConfig *,
+    const GpuWeightStore *,const GgufBinding *const weights[8],size_t token_cap,
+    size_t byte_budget,Q38FMoeGpu **,Qwen38Error *);
+void q38f_gpu_destroy(Q38FMoeGpu *);
+size_t q38f_gpu_bytes(const Q38FMoeGpu *);
+Qwen38Status q38f_gpu_encode(Q38FMoeGpu *,Qwen38GpuCommand,Qwen38GpuF32 x,
+    Qwen38GpuF32 y,Qwen38MoeRoutes frozen_routes,Qwen38Error *);
+
 typedef struct {
     size_t *offsets;                 /* [experts+1], group [offsets[e],offsets[e+1]) */
     size_t offsets_capacity_bytes;
