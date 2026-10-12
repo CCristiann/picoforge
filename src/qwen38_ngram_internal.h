@@ -38,4 +38,52 @@ Q38eReadStats q38e_reader_stats(const Q38eReader *reader);
 void q38e_reader_close(Q38eReader *reader);
 /* Test-visible exact FP32 reduction used by the normalized PLE core. */
 float q38e_ple_scaled_dot(const float *key, const float *query, size_t width);
+/* One synchronous job per store. References stay pinned until job_release,
+ * including after commit/abort. Handles are invalid after destroy/release. */
+typedef enum { Q38E_PREPARED, Q38E_READY, Q38E_COMPUTED, Q38E_COMMITTED, Q38E_ABORTED } Q38ePhase;
+typedef struct { void *allocation; size_t bytes; Qwen38ConvState *handle; } Q38eConv;
+struct Qwen38NgramStore {
+    Qwen38NgramConfig config;
+    Qwen38ConvShape conv;
+    Qwen38StateSize conv_size;
+    Q38eAllocator allocator;
+    Q38eReader *reader;
+    uint64_t *arrays;
+    size_t max_tokens, width, channels, used, peak, states, workspaces;
+    bool changed;
+    Qwen38NgramJob *job;
+    Q38ePread read_fn;
+    void *read_context;
+};
+struct Qwen38NgramState {
+    Qwen38NgramStore *store;
+    Qwen38StateInfo info;
+    int32_t *previous;
+    Q38eConv conv;
+};
+struct Qwen38NgramJob {
+    Qwen38NgramStore *store;
+    Qwen38NgramState *state;
+    Qwen38StateKey key;
+    size_t count;
+    uint64_t position, *ids;
+    int32_t *next;
+    Q38eConv candidate;
+    Q38eLease lease;
+    Q38ePhase phase;
+    Qwen38PleWorkspace *workspace;
+};
+struct Qwen38PleWorkspace {
+    Qwen38NgramStore *store;
+    Qwen38NgramJob *job;
+    float *data, *key, *query, *value, *gate, *u, *z, *conv;
+    size_t bytes;
+};
+Qwen38Status q38e_error(Qwen38Error *, Qwen38Status, const char *);
+Qwen38Status q38e_allocate(Qwen38NgramStore *, size_t, void **, Qwen38Error *);
+void q38e_free(Qwen38NgramStore *, void *, size_t);
+Qwen38Status q38e_job_check(const Qwen38NgramJob *, Qwen38Error *);
+/* Fault seams use the same production path. Allocator context must outlive store. */
+Qwen38Status q38e_ngram_open_test(const Gguf *, const Qwen38NgramConfig *, size_t,
+    size_t, const Q38eAllocator *, Qwen38NgramStore **, Qwen38Error *);
 #endif

@@ -13,6 +13,7 @@ import urllib.request
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 REVISION = "db2304e8694db3ecd6f39d353beba361688afe97"
 SOURCE_SHA256 = "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa"
@@ -157,6 +158,63 @@ class GateOracle:
         return dot.squeeze(-1), gate.squeeze(-1), output
 
 
+class PleOracle:
+    """Original PLE forward and dilated conv, on bounded caller-supplied weights.
+
+    GGUF gains are already folded. A norm adapter uses upstream _norm and
+    applies the direct gain (avoids lossy un-fold/re-fold of stored FP32 gains).
+    No custom cache algorithm: evaluate the whole small prefix, slice afterwards.
+    """
+    def __init__(self, config, table, key, value, gains, taps, eps=1e-6):
+        raw = verified_source()
+        names = {"Qwen4ExpTextRMSNorm", "Qwen4ExpTextPLELayer"}
+        nodes = [n for n in ast.parse(raw).body if isinstance(n, ast.ClassDef) and n.name in names]
+        future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
+        module = ast.fix_missing_locations(ast.Module(body=[future, *nodes], type_ignores=[]))
+        scope = {"torch": torch, "nn": nn, "F": F, "math": math}
+        exec(compile(module, str(SOURCE), "exec"), scope)
+        cls, norm_cls = scope["Qwen4ExpTextPLELayer"], scope["Qwen4ExpTextRMSNorm"]
+        obj = cls.__new__(cls)
+        nn.Module.__init__(obj)
+        channels, width = key.shape[0], value.shape[0]
+        obj.hidden_size, obj.hc_count, obj.layer_idx = width, channels//width, config.get("layer", 0)
+        obj.short_conv_state_len = (taps.shape[-1]-1)*config["ngram_size"]
+        obj.ple_embedding = IdOracle(config).model
+        obj.ple_embedding.ngram_embedding = (table if isinstance(table, nn.Module) else
+                                            nn.Embedding.from_pretrained(table.float(), freeze=True))
+        obj.key_proj = nn.Linear(key.shape[1], channels, bias=False)
+        obj.value_proj = nn.Linear(value.shape[1], width, bias=False)
+        obj.key_proj.weight = nn.Parameter(key.float(), requires_grad=False)
+        obj.value_proj.weight = nn.Parameter(value.float(), requires_grad=False)
+
+        class FoldedNorm(nn.Module):
+            def __init__(self, gain):
+                super().__init__()
+                self.norm = norm_cls(channels, group_size=width, eps=eps)
+                self.register_buffer("gain", gain.float().flatten())
+            def forward(self, x):
+                return self.norm._norm(x.float()) * self.gain
+
+        obj.norm_key, obj.norm_query, obj.norm_conv = [FoldedNorm(g) for g in gains]
+        obj.conv1d = nn.Conv1d(channels, channels, taps.shape[-1], groups=channels,
+                              dilation=config["ngram_size"], bias=False)
+        obj.conv1d.weight = nn.Parameter(taps.float().unsqueeze(1), requires_grad=False)
+        self.model, self.trace = obj, {}
+        for name in ("key_proj", "value_proj", "norm_key", "norm_query", "norm_conv"):
+            getattr(obj, name).register_forward_hook(
+                lambda module, inputs, output, name=name: self.trace.__setitem__(name, output.detach().clone()))
+
+    def run(self, tokens, residual):
+        with torch.no_grad():
+            delta = self.model(residual.flatten(-2).unsqueeze(0),
+                               torch.tensor([tokens], dtype=torch.int64), None).squeeze(0)
+        trace = {k: v.squeeze(0) for k, v in self.trace.items()}
+        z = trace["norm_conv"]
+        length = self.model.short_conv_state_len
+        history = F.pad(z, (0, 0, max(0, length-z.shape[0]), 0))[-length:] if length else z[:0]
+        return delta.reshape(residual.shape), history, trace
+
+
 def fixture():
     import json
     config = dict(ngram_size=3, heads_per_ngram=2, vocab=100, eos=99,
@@ -193,15 +251,164 @@ def fixture():
                 gate_expression_sha256=gate_oracle.expression_sha256, gate_cases=gate_cases)
 
 
+def real_ple(checkpoint, output, native, reference):
+    """Two-token full-width PLE slice; invoke only under the common lock."""
+    import json
+    import os
+    import subprocess
+    from qwen38_packed import decode
+    if not os.environ.get("PICOFORGE_GPU_LOCK_FD"):
+        raise RuntimeError("real PLE workload requires tools/qwen38_gpu_lock.py")
+    output = Path(output).resolve()
+    if not output.is_relative_to(ROOT/"build"):
+        raise ValueError("slice output must be under this worktree build")
+    output.mkdir(parents=True, exist_ok=False)
+    torch.set_num_threads(1)
+    identity = os.stat(checkpoint)
+    manifest = json.loads(subprocess.check_output([str(native), "--extract-real", str(checkpoint), str(output)]))
+    fields = (output/"config.txt").read_text().split()
+    n, per, vocab, eos, rows, rowdim, d, h, kernel = map(int, fields[:9])
+    eps = float(fields[9]); t = int(fields[10]); heads=(n-1)*per
+    assert t==2 and d==2560 and h==4 and rowdim==160 and heads==16
+    nums=list(map(int,fields[12:])); channels=h*d; width=heads*rowdim
+    config=dict(ngram_size=n, heads_per_ngram=per, vocab=vocab, eos=eos, rows=rows,
+        multipliers=nums[:n],offsets=nums[n:n+heads],sizes=nums[n+heads:],layer=manifest["layer"])
+    tokens=[1,eos]  # current EOS still uses prior history; synthetic suite tests continuation
+    ids=torch.tensor(IdOracle(config).ids(tokens),dtype=torch.int64)
+    unique=torch.unique(ids,sorted=True)
+    fd=os.open(checkpoint,os.O_RDONLY)
+    raw=[]
+    try:
+        for row in unique.tolist():
+            b=os.pread(fd,manifest["row_bytes"],manifest["table_offset"]+row*manifest["row_bytes"])
+            if len(b)!=manifest["row_bytes"]: raise EOFError("incomplete oracle row")
+            raw.append(b)
+    finally:
+        os.close(fd)
+    payload=b"".join(raw); (output/"rows.bf16").write_bytes(payload)
+    probes=sorted(set(config["offsets"]+[o+v-1 for o,v in zip(config["offsets"],config["sizes"])]+[0,1,12,13,203,204,205]))
+    fields=[manifest["table_offset"],rows,rowdim,len(probes),len(probes),65536,1<<20]+probes
+    probe_run=subprocess.run([str(native),"--lookup",str(checkpoint)],input=" ".join(map(str,fields)),
+                             text=True,capture_output=True,check=True)
+    lines=probe_run.stdout.splitlines()
+    assert lines[0]=="status 0"
+    actual_bits=[int(x,16) for x in lines[1].split()]
+    fd=os.open(checkpoint,os.O_RDONLY)
+    try:
+        probe_raw=b"".join(os.pread(fd,manifest["row_bytes"],manifest["table_offset"]+i*manifest["row_bytes"]) for i in probes)
+    finally:
+        os.close(fd)
+    expected_bits=torch.frombuffer(bytearray(probe_raw),dtype=torch.bfloat16).float().view(torch.int32)
+    assert actual_bits==[int(x)&0xffffffff for x in expected_bits]
+    (output/"boundary_rows.bf16").write_bytes(probe_raw)
+    table=torch.frombuffer(bytearray(payload),dtype=torch.bfloat16).float().reshape(-1,rowdim)
+    class SparseTable(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight=nn.Parameter(table,requires_grad=False)
+        def forward(self, indices):
+            at=torch.searchsorted(unique,indices)
+            if not torch.equal(unique[at],indices): raise ValueError("oracle row missing")
+            return self.weight[at]
+    def matrix(name, count):
+        packed=(output/name).read_bytes(); rowbytes=width//32*34
+        result=torch.empty(count,width)
+        for start in range(0,count,512):
+            stop=min(count,start+512)
+            values=decode(reference,packed[start*rowbytes:stop*rowbytes],8,width,stop-start)
+            result[start:stop]=torch.from_numpy(values.copy())
+        return result
+    def floats(name, shape):
+        return torch.frombuffer(bytearray((output/name).read_bytes()),dtype=torch.float32).reshape(shape)
+    key,value=matrix("key.bin",channels),matrix("value.bin",d)
+    gains=[floats(name,(channels,)) for name in ("gain_key.bin","gain_query.bin","gain_conv.bin")]
+    taps=floats("taps.bin",(channels,kernel))
+    residual=torch.randn(t,h,d,generator=torch.Generator().manual_seed(3819))*0.3
+    (output/"residual.bin").write_bytes(residual.numpy().tobytes())
+    (output/"tokens.bin").write_bytes(torch.tensor(tokens,dtype=torch.int32).numpy().tobytes())
+    oracle=PleOracle(config,SparseTable(),key,value,gains,taps,eps)
+    expected, _, trace=oracle.run(tokens,residual)
+    embedding=table[torch.searchsorted(unique,ids)].flatten(-2)
+    metrics=[]
+    for chunk in (1,2):
+        run=subprocess.run([str(native),"--ple",str(output),str(chunk),str(checkpoint)],
+            text=True,capture_output=True,check=True)
+        delta=floats("delta.out",expected.shape)
+        torch.testing.assert_close(delta,expected,atol=2e-4,rtol=2e-4)
+        relative=(torch.linalg.vector_norm(delta-expected)/torch.linalg.vector_norm(expected)).item()
+        assert relative<=1e-4
+        assert torch.equal(floats("rows.out",embedding.shape),embedding)
+        ratios=[]
+        for name,weight in (("key_proj.out",key),("value_proj.out",value)):
+            actual=floats(name,(t,weight.shape[0])).double()
+            for start in range(0,weight.shape[0],512):
+                tile=weight[start:start+512].double(); x=embedding.double()
+                r=x@tile.T; magnitude=x.abs()@tile.abs().T
+                u=2**-24; gamma=(2*width+8)*u/(1-(2*width+8)*u)
+                r32=r.float(); ulp=(torch.nextafter(r32,torch.full_like(r32,float("inf")))-r32).abs().double()
+                bound=gamma*magnitude+2*ulp
+                ratio=((actual[:,start:start+len(tile)]-r).abs()/bound.clamp_min(1e-45)).max().item()
+                assert ratio<=1; ratios.append(ratio)
+        kn=floats("key_norm.out",(t,h,d)); qn=floats("query_norm.out",(t,h,d))
+        v=floats("value.out",(t,d)); z=floats("z.out",(t,channels)); u_native=floats("u.out",(t,h,d))
+        for actual,name in ((kn.flatten(-2),"norm_key"),(qn.flatten(-2),"norm_query"),(z,"norm_conv")):
+            torch.testing.assert_close(actual,trace[name],atol=2e-4,rtol=2e-4)
+            if torch.linalg.vector_norm(trace[name])>=1:
+                assert torch.linalg.vector_norm(actual-trace[name])/torch.linalg.vector_norm(trace[name])<=1e-4
+        dot,gate,u_ref=GateOracle().gate(kn,qn,v)
+        native_dot=floats("dot.out",dot.shape)
+        assert torch.equal(torch.sign(native_dot),torch.sign(dot))
+        assert (floats("gate.out",gate.shape)-gate).abs().max()<=1e-4
+        torch.testing.assert_close(u_native,u_ref,atol=2e-4,rtol=2e-4)
+        with torch.no_grad():
+            local_z=oracle.model.norm_conv(u_native.flatten(-2))
+            local_k=oracle.model.norm_key(floats("key_proj.out",(t,channels)))
+            local_q=oracle.model.norm_query(residual.flatten(-2))
+            local_delta=u_native.flatten(-2)+oracle.model._short_conv(z.unsqueeze(0),None).squeeze(0)
+        for a,b in ((z,local_z),(kn.flatten(-2),local_k),(qn.flatten(-2),local_q)):
+            assert torch.all((a-b).abs().amax(-1)<=1e-5*b.abs().amax(-1).clamp_min(1))
+        torch.testing.assert_close(delta.flatten(-2),local_delta,atol=2e-4,rtol=2e-4)
+        length=(kernel-1)*n
+        histories=torch.stack([F.pad(z[:stop],(0,0,max(0,length-stop),0))[-length:]
+                               for stop in range(chunk,t+1,chunk)])
+        assert torch.equal(floats("history.out",histories.shape),histories)
+        history_ref=torch.stack([F.pad(trace["norm_conv"][:stop],(0,0,max(0,length-stop),0))[-length:]
+                                 for stop in range(chunk,t+1,chunk)])
+        torch.testing.assert_close(histories,history_ref,atol=2e-4,rtol=2e-4)
+        assert torch.linalg.vector_norm(histories-history_ref)/torch.linalg.vector_norm(history_ref)<=1e-4
+        metrics.append(dict(chunk=chunk,delta_max_abs=(delta-expected).abs().max().item(),
+            delta_relative_l2=relative,projection_bound_max_ratio=max(ratios),native=run.stdout.strip()))
+    after=os.stat(checkpoint)
+    if any(getattr(after,k)!=getattr(identity,k) for k in ("st_dev","st_ino","st_size","st_mtime_ns","st_ctime_ns")):
+        raise RuntimeError("checkpoint changed during slice")
+    manifest.update(source_sha256=SOURCE_SHA256, artifact_revision="d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+        artifact_sha256_previously_verified="b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+        size=identity.st_size,mtime_ns=identity.st_mtime_ns,inode=identity.st_ino,
+        ids=ids.tolist(),unique_rows=unique.tolist(),row_bytes_read=len(payload),metrics=metrics,
+        boundary_rows=probes,boundary_bytes_read=len(probe_raw),
+        hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in output.iterdir() if p.is_file()},
+        native_sha256=hashlib.sha256(Path(native).read_bytes()).hexdigest(),
+        packed_manifest_sha256=hashlib.sha256(Path(reference).with_name("manifest.json").read_bytes()).hexdigest(),
+        synthetic_residual=True,full_model_loaded=False,gpu=False)
+    (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    print(json.dumps(metrics,indent=2))
+
+
 if __name__ == "__main__":
     import argparse
     import json
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fetch-source", action="store_true", help="fetch pinned source into build only")
     parser.add_argument("--output", type=Path, help="write reproducible golden JSON, refusing overwrite")
+    parser.add_argument("--real-checkpoint",type=Path)
+    parser.add_argument("--native",type=Path)
+    parser.add_argument("--packed-reference",type=Path)
     args = parser.parse_args()
     verified_source(fetch=args.fetch_source)
-    if args.output:
+    if args.real_checkpoint:
+        if not (args.output and args.native and args.packed_reference): parser.error("real slice requires output/native/packed-reference")
+        real_ple(args.real_checkpoint,args.output,args.native.resolve(),args.packed_reference)
+    elif args.output:
         result = fixture()
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x") as out:

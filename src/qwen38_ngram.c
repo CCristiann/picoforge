@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -309,3 +310,258 @@ Qwen38Status q38e_reader_copy(const Q38eReader *r, Q38eLease lease,
     return reader_result(e,code,NULL,errno);
 }
 
+
+Qwen38Status q38e_error(Qwen38Error *e, Qwen38Status code, const char *detail) {
+    if (e) {
+        *e=(Qwen38Error){.code=code};
+        snprintf(e->subject,sizeof e->subject,"ngram lifecycle");
+        snprintf(e->detail,sizeof e->detail,"%s",detail ? detail : "");
+    }
+    return code;
+}
+Qwen38Status q38e_allocate(Qwen38NgramStore *s, size_t bytes, void **out, Qwen38Error *e) {
+    *out=NULL;
+    if (bytes > 256u*1024u*1024u-s->used) return q38e_error(e,Q38_CAPACITY,"E aggregate budget");
+    if (!bytes) return Q38_OK;
+    *out=s->allocator.allocate(s->allocator.context,bytes);
+    if (!*out) return q38e_error(e,Q38_OOM,"allocation");
+    memset(*out,0,bytes); s->used+=bytes;
+    if (s->used>s->peak) s->peak=s->used;
+    return Q38_OK;
+}
+void q38e_free(Qwen38NgramStore *s, void *p, size_t bytes) {
+    if (p) { s->allocator.release(s->allocator.context,p); s->used-=bytes; }
+}
+static Qwen38Status conv_new(Qwen38NgramStore *s, Qwen38StateKey key, Q38eConv *c, Qwen38Error *e) {
+    Qwen38StateSize z=s->conv_size;
+    c->bytes=z.metadata_bytes+z.payload_bytes+z.alignment-1;
+    Qwen38Status code=q38e_allocate(s,c->bytes,&c->allocation,e);
+    if (code) return code;
+    uintptr_t aligned=((uintptr_t)c->allocation+z.alignment-1)&~(uintptr_t)(z.alignment-1);
+    return qwen38_conv_state_init(&s->conv,key,(Qwen38Memory){(void *)aligned,z.metadata_bytes},
+        (Qwen38Memory){(void *)(aligned+z.metadata_bytes),z.payload_bytes},&c->handle,e);
+}
+static void conv_free(Qwen38NgramStore *s, Q38eConv *c) {
+    q38e_free(s,c->allocation,c->bytes); *c=(Q38eConv){0};
+}
+Qwen38Status q38e_ngram_open_test(const Gguf *g, const Qwen38NgramConfig *c,
+    size_t max_tokens, size_t budget, const Q38eAllocator *alloc,
+    Qwen38NgramStore **out, Qwen38Error *e) {
+    if (out) *out=NULL;
+    if (!out || !g || !c || !g->tensors ||
+        !c->multipliers || !c->head_offsets || !c->head_vocab_sizes)
+        return q38e_error(e,Q38_INVALID_ARGUMENT,"store arguments");
+    if (!max_tokens) return q38e_error(e,Q38_RANGE,"zero token capacity");
+    if (!c->head_dim || !c->hidden_size || !c->streams || !c->conv_kernel || c->order<2 || !c->head_count)
+        return q38e_error(e,Q38_SHAPE,"store dimensions");
+    if (c->multiplier_count!=c->order || (uint64_t)(c->order-1)*c->heads_per_order!=c->head_count)
+        return q38e_error(e,Q38_SHAPE,"hash array lengths");
+    if (max_tokens>UINT32_MAX || c->head_count>UINT32_MAX/c->head_dim ||
+        c->streams>UINT32_MAX/c->hidden_size || max_tokens>SIZE_MAX/c->head_count/8 ||
+        c->head_count>(SIZE_MAX-c->order)/2 || (c->order+2*c->head_count)>SIZE_MAX/8)
+        return q38e_error(e,Q38_OVERFLOW,"store geometry");
+    if (!isfinite(c->rms_eps)) return q38e_error(e,Q38_NONFINITE,"RMS epsilon");
+    if (c->rms_eps<=0) return q38e_error(e,Q38_RANGE,"RMS epsilon");
+    const GgufTensor *table=NULL;
+    for (size_t i=0;i<g->tensor_count;i++)
+        if (!strncmp(g->tensors[i].name,"per_layer_token_embd.weight",sizeof g->tensors[i].name)) {
+            if (table) return q38e_error(e,Q38_FORMAT,"duplicate disk table");
+            table=g->tensors+i;
+        }
+    if (!table) return q38e_error(e,Q38_MISSING,"disk table");
+    if (table->type!=30) return q38e_error(e,Q38_TYPE,"disk table must be BF16");
+    if (c->row_count>SIZE_MAX/c->head_dim/2) return q38e_error(e,Q38_OVERFLOW,"disk table extent");
+    if (table->rank!=2 || table->shape[0]!=c->head_dim || table->shape[1]!=c->row_count ||
+        table->bytes!=c->row_count*c->head_dim*2)
+        return q38e_error(e,Q38_SHAPE,"disk table shape");
+    size_t arrays=(c->order+2*c->head_count)*8;
+    if (budget>256u*1024u*1024u) budget=256u*1024u*1024u;
+    if (sizeof(Qwen38NgramStore)>budget || arrays>budget-sizeof(Qwen38NgramStore))
+        return q38e_error(e,Q38_CAPACITY,"store staging budget");
+    Q38eAllocator a=alloc ? *alloc : (Q38eAllocator){NULL,default_allocate,default_release};
+    if (!a.allocate || !a.release) return q38e_error(e,Q38_INVALID_ARGUMENT,"allocator");
+    Qwen38NgramStore *s=a.allocate(a.context,sizeof *s);
+    if (!s) return q38e_error(e,Q38_OOM,"store allocation");
+    *s=(Qwen38NgramStore){.allocator=a,.config=*c,.max_tokens=max_tokens,.used=sizeof *s,
+        .width=c->head_count*c->head_dim,.channels=(size_t)c->streams*c->hidden_size};
+    s->conv=(Qwen38ConvShape){s->channels,c->conv_kernel,c->order,true};
+    Qwen38Status code=qwen38_conv_state_bytes(&s->conv,&s->conv_size,e);
+    if (!code && (s->conv_size.payload_bytes>256u*1024u*1024u ||
+        s->conv_size.metadata_bytes>SIZE_MAX-s->conv_size.payload_bytes-s->conv_size.alignment))
+        code=q38e_error(e,Q38_CAPACITY,"conv backing budget");
+    if (!code) code=q38e_allocate(s,arrays,(void **)&s->arrays,e);
+    if (!code) {
+        memcpy(s->arrays,c->multipliers,c->order*8);
+        memcpy(s->arrays+c->order,c->head_offsets,c->head_count*8);
+        memcpy(s->arrays+c->order+c->head_count,c->head_vocab_sizes,c->head_count*8);
+        s->config.multipliers=s->arrays; s->config.head_offsets=s->arrays+c->order;
+        s->config.head_vocab_sizes=s->arrays+c->order+c->head_count;
+        /* Validate hash metadata without allocating arbitrary history arrays. */
+        code=qwen38_ngram_ids(&s->config,NULL,c->order-1,NULL,0,NULL,0,NULL,0,e);
+        if (code==Q38_CAPACITY) code=Q38_OK; /* next capacity is intentionally zero */
+    }
+    if (!code) code=q38e_reader_open(g->fd,table->file_offset,c->row_count,c->head_dim,
+        max_tokens*c->head_count,65536,budget-s->used,&a,&s->reader,e);
+    if (code) { q38e_free(s,s->arrays,arrays); a.release(a.context,s); return code; }
+    s->used+=q38e_reader_stats(s->reader).staging_bytes; s->peak=s->used;
+    *out=s; return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_open(const Gguf *g, const Qwen38NgramConfig *c, size_t n,
+    size_t budget, Qwen38NgramStore **out, Qwen38Error *e) {
+    return q38e_ngram_open_test(g,c,n,budget,NULL,out,e);
+}
+Qwen38Status qwen38_ngram_close(Qwen38NgramStore *s, Qwen38Error *e) {
+    if (!s) return q38e_error(e,Q38_INVALID_ARGUMENT,"null store");
+    if (s->job || s->states || s->workspaces) return q38e_error(e,Q38_BUSY,"store referenced");
+    q38e_reader_close(s->reader);
+    s->allocator.release(s->allocator.context,s->arrays);
+    s->allocator.release(s->allocator.context,s);
+    return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_state_create(Qwen38NgramStore *s, Qwen38StateKey key,
+    Qwen38NgramState **out, Qwen38Error *e) {
+    if (out) *out=NULL;
+    if (!s || !out || !key.model || !key.epoch) return q38e_error(e,Q38_INVALID_ARGUMENT,"state key");
+    if (s->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
+    if (key.layer!=s->config.layer) return q38e_error(e,Q38_OWNER,"state layer");
+    Qwen38NgramState *state=NULL;
+    Qwen38Status code=q38e_allocate(s,sizeof *state,(void **)&state,e);
+    if (code) return code;
+    state->store=s; state->info=(Qwen38StateInfo){.key=key,.valid=true};
+    size_t bytes=(s->config.order-1u)*sizeof(int32_t);
+    code=q38e_allocate(s,bytes,(void **)&state->previous,e);
+    if (!code) code=conv_new(s,key,&state->conv,e);
+    if (code) {
+        conv_free(s,&state->conv); q38e_free(s,state->previous,bytes); q38e_free(s,state,sizeof *state);
+        return code;
+    }
+    for (size_t i=0;i<s->config.order-1u;i++) state->previous[i]=(int32_t)s->config.eos_id;
+    s->states++; *out=state; return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38StateInfo qwen38_ngram_state_info(const Qwen38NgramState *s) {
+    Qwen38StateInfo info=s ? s->info : (Qwen38StateInfo){0};
+    if (s && s->store->changed) info.valid=false;
+    return info;
+}
+Qwen38Status qwen38_ngram_state_reset(Qwen38NgramState *s, uint64_t epoch, Qwen38Error *e) {
+    if (!s) return q38e_error(e,Q38_INVALID_ARGUMENT,"null state");
+    if (s->info.busy) return q38e_error(e,Q38_BUSY,"state referenced");
+    if (s->store->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
+    Qwen38Status code=qwen38_conv_state_reset(s->conv.handle,epoch,e);
+    if (code) return code;
+    s->info.key.epoch=epoch; s->info.next_pos=0; s->info.valid=true;
+    for (size_t i=0;i<s->store->config.order-1u;i++) s->previous[i]=(int32_t)s->store->config.eos_id;
+    return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_state_destroy(Qwen38NgramState *state, Qwen38Error *e) {
+    if (!state) return q38e_error(e,Q38_INVALID_ARGUMENT,"null state");
+    if (state->info.busy) return q38e_error(e,Q38_BUSY,"state referenced");
+    Qwen38NgramStore *s=state->store;
+    conv_free(s,&state->conv); q38e_free(s,state->previous,(s->config.order-1u)*sizeof(int32_t));
+    q38e_free(s,state,sizeof *state); s->states--;
+    return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status q38e_job_check(const Qwen38NgramJob *j, Qwen38Error *e) {
+    if (!j) return q38e_error(e,Q38_INVALID_ARGUMENT,"null job");
+    if (j->store->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
+    if (j->store->job!=j || j->state->store!=j->store) return q38e_error(e,Q38_OWNER,"job owner");
+    Qwen38StateInfo info=j->state->info;
+    if (info.key.epoch!=j->key.epoch) return q38e_error(e,Q38_STALE,"job epoch");
+    if (info.key.model!=j->key.model || info.key.layer!=j->key.layer)
+        return q38e_error(e,Q38_OWNER,"job key");
+    if (!info.valid) return q38e_error(e,Q38_BAD_STATE,"state requires reset");
+    return Q38_OK;
+}
+static void job_free(Qwen38NgramJob *j) {
+    Qwen38NgramStore *s=j->store;
+    conv_free(s,&j->candidate);
+    q38e_free(s,j->ids,j->count*s->config.head_count*8);
+    q38e_free(s,j->next,(s->config.order-1u)*sizeof(int32_t));
+    q38e_free(s,j,sizeof *j);
+}
+Qwen38Status qwen38_ngram_prepare(Qwen38NgramStore *s, Qwen38NgramState *state,
+    const int32_t *tokens, size_t count, uint64_t position, Qwen38NgramJob **out, Qwen38Error *e) {
+    if (out) *out=NULL;
+    if (!s || !state || !out) return q38e_error(e,Q38_INVALID_ARGUMENT,"prepare arguments");
+    if (s->changed) return q38e_error(e,Q38_STALE,"store requires reopen");
+    if (state->store!=s) return q38e_error(e,Q38_OWNER,"foreign state");
+    if (s->job || state->info.busy) return q38e_error(e,Q38_BUSY,"job pending release");
+    if (!state->info.valid || position!=state->info.next_pos) return q38e_error(e,Q38_BAD_STATE,"append position");
+    if (count>s->max_tokens) return q38e_error(e,Q38_CAPACITY,"token capacity");
+    if (count>UINT64_MAX-position) return q38e_error(e,Q38_OVERFLOW,"append position overflow");
+    Qwen38NgramJob *j=NULL;
+    Qwen38Status code=q38e_allocate(s,sizeof *j,(void **)&j,e);
+    if (code) return code;
+    *j=(Qwen38NgramJob){.store=s,.state=state,.key=state->info.key,.position=position,
+        .count=count,.phase=count ? Q38E_PREPARED : Q38E_COMPUTED};
+    code=q38e_allocate(s,count*s->config.head_count*8,(void **)&j->ids,e);
+    if (!code) code=q38e_allocate(s,(s->config.order-1u)*sizeof(int32_t),(void **)&j->next,e);
+    if (!code) code=qwen38_ngram_ids(&s->config,state->previous,s->config.order-1u,tokens,count,
+        j->ids,count*s->config.head_count,j->next,s->config.order-1u,e);
+    if (!code && count) code=conv_new(s,j->key,&j->candidate,e);
+    if (!code && count) code=qwen38_conv_state_copy(j->candidate.handle,state->conv.handle,e);
+    if (code) { job_free(j); return code; }
+    s->job=j; state->info.busy=true; *out=j; return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_read(Qwen38NgramJob *j, Qwen38Error *e) {
+    Qwen38Status code=q38e_job_check(j,e); if (code) return code;
+    if (!j->count && j->phase==Q38E_COMPUTED) return q38e_error(e,Q38_OK,NULL);
+    if (j->phase!=Q38E_PREPARED) return q38e_error(e,Q38_BAD_STATE,"read requires PREPARED");
+    code=q38e_reader_read(j->store->reader,j->ids,j->count*j->store->config.head_count,
+        j->store->read_fn,j->store->read_context,&j->lease,e);
+    j->phase=code ? Q38E_ABORTED : Q38E_READY;
+    if (code==Q38_STALE) j->store->changed=true;
+    return code;
+}
+Qwen38Status qwen38_ngram_rows(const Qwen38NgramJob *j, Qwen38F32 *out, Qwen38Error *e) {
+    if (out) *out=(Qwen38F32){0};
+    Qwen38Status code=q38e_job_check(j,e); if (code) return code;
+    if (!out) return q38e_error(e,Q38_INVALID_ARGUMENT,"null rows output");
+    if (j->phase!=Q38E_READY && j->phase!=Q38E_COMPUTED && j->phase!=Q38E_COMMITTED)
+        return q38e_error(e,Q38_BAD_STATE,"rows unavailable");
+    const Q38eReader *r=j->store->reader;
+    if (j->count) {
+        if (!r->ready || j->lease.owner!=r || j->lease.generation!=r->generation)
+            return q38e_error(e,Q38_STALE,"reader lease");
+        code=unchanged(r);
+        if (code==Q38_STALE) j->store->changed=true;
+        if (code) return reader_result(e,code,NULL,errno);
+    }
+    size_t width=j->store->width;
+    *out=(Qwen38F32){.data=j->count ? r->values : NULL,.rank=2,.dim={j->count,width},
+        .stride_bytes={width*4,4},.capacity_bytes=j->count*width*4};
+    return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_commit(Qwen38NgramState *state, Qwen38NgramJob *j, Qwen38Error *e) {
+    if (!state || !j) return q38e_error(e,Q38_INVALID_ARGUMENT,"commit arguments");
+    if (j->state!=state) return q38e_error(e,Q38_OWNER,"commit state");
+    Qwen38Status code=q38e_job_check(j,e); if (code) return code;
+    if (j->phase!=Q38E_COMPUTED || state->info.next_pos!=j->position)
+        return q38e_error(e,Q38_BAD_STATE,"commit requires computed contiguous job");
+    if (j->count) {
+        Qwen38F32 rows;
+        code=qwen38_ngram_rows(j,&rows,e);
+        if (code) { j->phase=Q38E_ABORTED; return code; }
+        Qwen38StateInfo candidate=qwen38_conv_state_info(j->candidate.handle);
+        if (!candidate.valid || candidate.next_pos!=j->position+j->count)
+            return q38e_error(e,Q38_BAD_STATE,"candidate history incomplete");
+        code=qwen38_conv_state_copy(state->conv.handle,j->candidate.handle,e);
+        if (code) { state->info.valid=false; j->phase=Q38E_ABORTED; return code; }
+        memcpy(state->previous,j->next,(j->store->config.order-1u)*sizeof(int32_t));
+        state->info.next_pos+=j->count;
+    }
+    j->phase=Q38E_COMMITTED; return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_abort(Qwen38NgramJob *j, Qwen38Error *e) {
+    Qwen38Status code=q38e_job_check(j,e); if (code) return code;
+    if (j->phase==Q38E_COMMITTED) return q38e_error(e,Q38_BAD_STATE,"already committed");
+    j->phase=Q38E_ABORTED; j->lease=(Q38eLease){0};
+    return q38e_error(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_ngram_job_release(Qwen38NgramJob *j, Qwen38Error *e) {
+    if (!j) return q38e_error(e,Q38_INVALID_ARGUMENT,"null job");
+    if (j->store->job!=j) return q38e_error(e,Q38_OWNER,"foreign job");
+    if (j->workspace) j->workspace->job=NULL;
+    j->state->info.busy=false; j->store->job=NULL;
+    job_free(j); return q38e_error(e,Q38_OK,NULL);
+}

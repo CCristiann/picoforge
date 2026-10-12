@@ -17,7 +17,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools/oracle"))
-from qwen38_ngram import IdOracle, GateOracle, SOURCE, fixture, verified_source, validate
+from qwen38_ngram import IdOracle, GateOracle, PleOracle, SOURCE, fixture, verified_source, validate
 
 GOLDEN = json.loads((ROOT / "tests/fixtures/qwen38/ngram.json").read_text())
 BINARY = ROOT / "build/qwen38-e/test_ngram"
@@ -29,12 +29,85 @@ class NativeTests(unittest.TestCase):
         BINARY.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["clang", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Wpedantic",
                         "-Wshadow", "-Wconversion", "-Werror", "-fsanitize=address,undefined",
-                        "-ffp-contract=off", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
-                        "src/qwen38_ple.c", "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
+                        "-ffp-contract=off", "-fno-fast-math", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
+                        "src/qwen38_ple.c", "src/qwen38_conv.c", "src/qwen38_base.c",
+                        "src/qwen38_packed.c", "src/qwen38_config.c", "src/qwen38_weights.c", "src/gguf.c", "src/gguf_reader.c", "src/util.c",
+                        "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
 
     def test_native_errors(self):
         result = subprocess.run([str(BINARY)], cwd=ROOT, capture_output=True, text=True, check=True)
         self.assertIn("PASS", result.stdout)
+
+    def test_complete_ple_f32_q8_abort_reset_and_history(self):
+        self.check_complete_ple(23, (1, 2, 7, 9, 23), (0, 8))
+
+    def test_complete_ple_32k_history(self):
+        self.check_complete_ple(32768, (255, 1024), (8,))
+
+    def check_complete_ple(self, t, chunks, formats):
+        torch.set_num_threads(1)
+        rng = torch.Generator().manual_seed(3877)
+        cfg = GOLDEN["cases"][0]["config"]
+        h, d, row_width, kernel = 2, 8, 8, 4
+        channels, width = h*d, 4*row_width
+        tokens = torch.randint(0, 99, (t,), generator=rng, dtype=torch.int32)
+        tokens[[0, 8, 9, 16]] = cfg["eos"]
+        table = (torch.randn(cfg["rows"], row_width, generator=rng)*0.1).to(torch.bfloat16)
+        residual = torch.randn(t, h, d, generator=rng)
+        gains = [torch.randint(8, 25, (channels,), generator=rng).float()/16 for _ in range(3)]
+        taps = torch.randn(channels, kernel, generator=rng)*0.2
+        worst = 0.0
+        for kind in formats:
+            key = torch.randint(-9, 10, (channels, width), generator=rng).float()/64
+            value = torch.randint(-9, 10, (d, width), generator=rng).float()/64
+            oracle = PleOracle(cfg, table, key, value, gains, taps)
+            expected, _, trace = oracle.run(tokens.tolist(), residual)
+            _, gate_ref, _ = GateOracle().gate(trace["norm_key"].reshape(t,h,d),
+                trace["norm_query"].reshape(t,h,d), trace["value_proj"])
+            with tempfile.TemporaryDirectory(dir=BINARY.parent) as directory:
+                path = Path(directory)
+                fields = [cfg[k] for k in ("ngram_size", "heads_per_ngram", "vocab", "eos", "rows")]
+                fields += [row_width, d, h, kernel, 1e-6, t, kind]
+                fields += cfg["multipliers"] + cfg["offsets"] + cfg["sizes"]
+                (path / "config.txt").write_text(" ".join(map(str, fields)))
+                for name, tensor in (("tokens.bin", tokens), ("residual.bin", residual),
+                                     ("table.bin", table.view(torch.uint16)), ("taps.bin", taps),
+                                     *zip(("gain_key.bin", "gain_query.bin", "gain_conv.bin"), gains)):
+                    (path / name).write_bytes(tensor.numpy().tobytes())
+                for name, tensor in (("key.bin", key), ("value.bin", value)):
+                    # Construct exact dyadic Q8 fixtures from known weights; no
+                    # native decoder participates in the expected values.
+                    payload = tensor.numpy().tobytes() if kind==0 else b"".join(
+                        struct.pack("<e", 1/64)+bytes((int(v*64)&255 for v in row))
+                        for row in tensor.tolist())
+                    (path / name).write_bytes(payload)
+                for chunk in chunks:
+                    run = subprocess.run([str(BINARY), "--ple", str(path), str(chunk)],
+                                         capture_output=True, text=True, cwd=ROOT)
+                    self.assertEqual(run.returncode, 0, run.stdout+run.stderr)
+                    def read(name, shape):
+                        return torch.frombuffer(bytearray((path/name).read_bytes()), dtype=torch.float32).reshape(shape)
+                    actual = read("delta.out", expected.shape)
+                    worst = max(worst, (actual-expected).abs().max().item())
+                    torch.testing.assert_close(actual, expected, atol=2e-4, rtol=2e-4)
+                    self.assertLessEqual((torch.linalg.vector_norm(actual-expected)/torch.linalg.vector_norm(expected)).item(), 1e-4)
+                    self.assertTrue(torch.equal(actual, read("replay.out", expected.shape)))
+                    for name, reference in (("z.out", trace["norm_conv"]), ("key_norm.out", trace["norm_key"]),
+                                            ("query_norm.out", trace["norm_query"]), ("value.out", trace["value_proj"])):
+                        torch.testing.assert_close(read(name, reference.shape), reference, atol=2e-4, rtol=2e-4)
+                    self.assertLessEqual((read("gate.out", gate_ref.shape)-gate_ref).abs().max().item(),1e-4)
+                    length=(kernel-1)*cfg["ngram_size"]
+                    histories=[]
+                    for stop in range(chunk, t+chunk, chunk):
+                        prefix=trace["norm_conv"][:min(stop,t)]
+                        histories.append(torch.nn.functional.pad(prefix,(0,0,max(0,length-len(prefix)),0))[-length:])
+                    history_ref=torch.stack(histories)
+                    history=read("history.out",history_ref.shape)
+                    torch.testing.assert_close(history, history_ref, atol=2e-4, rtol=2e-4)
+                    if torch.linalg.vector_norm(history_ref)>=1:
+                        self.assertLessEqual((torch.linalg.vector_norm(history-history_ref)/torch.linalg.vector_norm(history_ref)).item(),1e-4)
+                    self.assertTrue(torch.equal(history,read("replay_history.out",history.shape)))
+        print(f"PLE composed T={t} max |Delta-ref|={worst:.9g}; formats={formats}, chunks={chunks}")
 
     def native_gate(self, key, query, value, pad=0):
         fields = list(key.shape) + [pad]
