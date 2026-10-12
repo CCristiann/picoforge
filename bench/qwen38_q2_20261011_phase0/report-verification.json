@@ -1,0 +1,33 @@
+{
+  "checked_utc": "2026-10-12T08:21:03.268716+00:00",
+  "browser": "T3 Code collaborative preview",
+  "viewports": [
+    {
+      "width": 1280,
+      "height": 800,
+      "page_width": 1280
+    },
+    {
+      "width": 390,
+      "height": 844,
+      "page_width": 390
+    }
+  ],
+  "horizontal_table_scroll_verified_on_mobile": true,
+  "task_anchor_opens_answer": "answer-lower-bound",
+  "linked_artifacts": 14,
+  "linked_artifacts_http_200": 14,
+  "embedded_answers_exactly_match_raw_files": 5,
+  "browser_console_errors": [],
+  "byte_identical_regeneration": true,
+  "scope": "Static report UI; not a new inference or memory measurement.",
+  "sha256": {
+    "tools/eval/render_qwen38_report.py": "277afd976a0838db8a9aaecd9a907cee0cff2e67285b2ecce5105925201361f2",
+    "tools/eval/qwen38_report.html": "27e6aef6d972f98eea8935a6c19805d60922b87f807bb2290b4c75b5ef3f9016",
+    "bench/qwen38_q2_20261011_phase0/report.html": "8db743efa4ea370d2466dc0143f26ccf936e21a0a4a08d929399737822f61d8d",
+    "bench/qwen38_q2_20261011_phase0/summary.json": "abf4c340863f71b995dc1124b035395420e4266a4020bd5f03f12886df5aef04",
+    "bench/qwen38_q2_20261011_phase0/grading.json": "d4e364779acc13a1cd077a0302ca98f4e3ff6b675f53d86da210f8d71924f1c1",
+    "bench/qwen38_q2_20261011_phase0/manifest.json": "26ddae30465beb078342184f49487a65c8f1a96117bd6b4039d96744047bbe8f",
+    "bench/qwen38_q2_20261012_storage/manifest.json": "c433fa5e9649fc238e69b24cbc761ac743d000b328440670ec4cab708b8a3798"
+  }
+}

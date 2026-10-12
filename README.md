@@ -6,8 +6,14 @@ quantisation, MoE routing and greedy speculative decoding. The engine has no
 Python or ML framework dependency.
 
 This is a working inference engine and a place to study its costs. The code
-keeps one model family and one GPU backend. Performance claims refer to the
+keeps one GPU backend. Performance claims refer to the
 local measurements linked below; there is no measured lead over other runtimes.
+
+The development target is **Qwen3.8-Flash-Next Q2** on the M5 Pro with 64 GiB.
+Its [local DwarfStar baseline](docs/qwen38-q2-baseline.md) is measured. Native
+[GGUF storage and multiple no-copy Metal views](docs/qwen38-storage.md) are
+implemented and tested; Qwen3.8 generation in picoforge is not implemented yet.
+The existing Qwen3 models remain the inference and regression reference.
 
 ## Build and run
 
@@ -43,10 +49,11 @@ limit and the GPU's threadgroup-memory capacity before dispatch.
 
 | Area | Current support |
 |---|---|
-| Models tested | Qwen3-0.6B dense, Qwen3-30B-A3B MoE; synthetic MoE for regression tests |
+| Native inference tested | Qwen3-0.6B dense, Qwen3-30B-A3B MoE; synthetic MoE for regression tests |
 | Dense GPU weights | bf16, q8_row/q8_g32, q4_row/q4_g32/q4_g64 |
 | MoE GPU experts | bf16 or q8_row; Q4 experts are not implemented |
-| Checkpoints | Hugging Face safetensors; GPU needs a single file, CPU accepts shards |
+| Qwen3 checkpoints | Hugging Face safetensors; GPU needs a single file, CPU accepts shards |
+| Qwen3.8 storage | Bounded GGUF v3 inventory; mixed packed formats; multiple Metal views excluding disk-only n-grams |
 | Generation | Single-turn chat, sampling, greedy, prompt-lookup or model-based speculation |
 | Adaptive drafting | Default uses acceptance and timings; optional `auto-experts` forecasts cost from accepted routes |
 | Local UI | Python standard-library server; loads a new engine process for each request |
@@ -56,6 +63,25 @@ its original checkpoint is handled by `tools/quant/quantize.py`. A 64 GB machine
 was used for the measurements; smaller memory configurations have not been tested.
 
 ## Measurements
+
+The [Qwen3.8 results page](bench/qwen38_q2_20261011_phase0/report.html) contains
+the memory plot, per-task timings, raw answers and native storage status.
+Open the self-contained HTML file directly, or serve the recorded evidence:
+
+```sh
+python3 -m http.server 8765 --bind 127.0.0.1 --directory bench
+# http://127.0.0.1:8765/qwen38_q2_20261011_phase0/report.html
+```
+
+This page displays a completed pilot; it does not launch model generation.
+
+The [October 12 Qwen3.8 Q2 pilot](docs/qwen38-q2-baseline.md#local-pilot-results)
+uses DwarfStar at a pinned revision, 8K total context, chunks of 1,024 and no
+MTP. Five task medians range from 29.99 to 32.34 decode tokens/s; a separate
+stock run prefills 8,063 tokens at 600.68 tokens/s. This is an external runtime
+baseline, not picoforge inference performance. Only two of five tasks satisfy
+both the frozen correctness and output-format criteria; all three coding
+answers pass their executable tests after extracting the code.
 
 The October 11 pilot used ten prompts, five repetitions per configuration and
 up to 128 output tokens. All 180 measured and warmup outputs matched ordinary
@@ -107,11 +133,12 @@ then Metal with the C path. Speculative tests compare complete token sequences
 with ordinary greedy generation. Long-context tests also compare attention
 with an fp64 reference and all router choices with Transformers on the tiny MoE.
 
-The next latency work is to separate first-use costs from warmed prompt
-processing, then improve the decode path using the 30B profile. An opt-in
-expert-cost experiment now forecasts how many distinct experts a verify may
-touch from recent accepted routes. Its pilot does not justify replacing the
-default scheduler. See [the experiment and commands](docs/phase4-expert-experiment.md).
+The next Qwen3.8 increment is independent numerical references and native
+operators for its packed weights and hybrid architecture, followed by ordinary
+generation. Storage validation does not establish logits or recurrent-state
+correctness. The [handoff](docs/qwen38-q2-session-prompt.md) sets the order.
+The 30B [expert-cost experiment](docs/phase4-expert-experiment.md) remains
+available; its pilot does not justify replacing the default scheduler.
 The [project review](docs/project-review-2026-10-11.md) records the scope and
 related work. [DESIGN.md](docs/DESIGN.md) explains the implementation.
 
@@ -121,4 +148,6 @@ related work. [DESIGN.md](docs/DESIGN.md) explains the implementation.
 `tests/` the checks; `bench/` the measured data; `docs/` the design and run notes.
 
 MIT; see [LICENSE](LICENSE). Qwen3 weights have their own Apache-2.0 license.
+The selected Qwen3.8 weights use the separate Qwen Community License; provenance
+and the locally verified artifact hash are in the baseline report.
 The small-runtime approach was inspired by [DwarfStar](https://github.com/antirez/ds4).

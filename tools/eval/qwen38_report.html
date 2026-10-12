@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="Risultati locali di Qwen3.8-Flash-Next Q2 su M5 Pro: baseline DwarfStar e storage nativo picoforge.">
+<title>Qwen3.8 Q2 sul M5 Pro | picoforge</title>
+<style>
+:root { --ink:#193043; --muted:#536b7c; --blue:#255cc4; --paper:#eef3f8; --line:#ccd8e2; --green:#17664f; --amber:#895113; }
+* { box-sizing:border-box; }
+html { scroll-padding-top:24px; }
+body { margin:0; color:var(--ink); background:var(--paper); font:16px/1.6 "Avenir Next",Avenir,-apple-system,BlinkMacSystemFont,sans-serif; }
+a { color:var(--blue); text-underline-offset:4px; }
+a:hover { text-decoration-thickness:2px; }
+:focus-visible { outline:3px solid var(--blue); outline-offset:5px; }
+header,main,footer { max-width:1184px; margin:auto; padding-inline:40px; }
+header { min-height:90px; display:flex; align-items:center; justify-content:space-between; gap:24px; }
+.brand { font-size:23px; font-weight:750; letter-spacing:-.8px; color:var(--ink); text-decoration:none; }
+nav { display:flex; flex-wrap:wrap; gap:22px; font-size:14px; }
+nav a { color:var(--muted); text-decoration:none; }
+nav a:hover { color:var(--blue); text-decoration:underline; }
+.hero { padding:46px 0 38px; display:grid; grid-template-columns:1fr 290px; gap:52px; align-items:center; }
+h1 { font-size:clamp(32px,4.2vw,54px); font-weight:650; line-height:1.12; letter-spacing:-1.6px; margin:12px 0 20px; }
+h2 { font-size:27px; letter-spacing:-.65px; line-height:1.25; margin:0 0 12px; }
+h3 { font-size:19px; margin:0 0 8px; }
+p { margin:0 0 16px; max-width:76ch; }
+.intro { color:var(--muted); max-width:53ch; font-size:17px; }
+.date { color:var(--muted); font-size:14px; }
+.state { padding:24px; border-left:4px solid var(--blue); background:white; border-radius:0 12px 12px 0; }
+.state p:last-child { margin:0; }
+.state strong { display:block; font-size:16px; }
+.state span { font-size:14px; color:var(--muted); }
+.pass { color:var(--green); }
+.review { color:var(--amber); }
+.metrics { display:grid; grid-template-columns:1.5fr 1fr 1fr; gap:24px; border-top:1px solid var(--line); padding:28px 0 38px; margin:0; }
+.metrics dt { color:var(--muted); font-size:14px; }
+.metrics dd { margin:6px 0 0; font-size:30px; font-weight:650; line-height:1.2; letter-spacing:-.8px; font-variant-numeric:tabular-nums; }
+.metrics dd span { font-size:15px; letter-spacing:0; font-weight:500; }
+.metrics small { display:block; font-size:13px; color:var(--muted); margin-top:8px; }
+section { margin-bottom:44px; }
+.memory { background:white; padding:32px; border-radius:16px; }
+.section-head { display:flex; align-items:baseline; justify-content:space-between; gap:20px; }
+.section-head a { font-size:14px; white-space:nowrap; }
+.note { font-size:14px; color:var(--muted); }
+figure { margin:30px 0 22px; }
+.scale { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin-bottom:8px; }
+.track { height:72px; position:relative; background:#e5ecf4; border-radius:8px; }
+.fill { width:$peak_percent%; height:100%; background:var(--blue); border-radius:8px 0 0 8px; display:flex; align-items:center; padding:18px; color:white; font-weight:600; font-size:21px; }
+.limit { position:absolute; left:$recommended_percent%; top:-8px; bottom:-8px; border-left:2px dashed var(--ink); }
+figcaption { display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; margin-top:16px; font-size:14px; color:var(--muted); }
+.memory-notes { display:grid; grid-template-columns:1fr 1fr; gap:28px; margin-top:26px; }
+.memory-notes p { font-size:14px; margin:0; }
+.memory-notes strong { display:block; margin-bottom:4px; }
+.table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:white; }
+table { width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums; }
+caption { text-align:left; padding:16px 20px; font-size:13px; color:var(--muted); }
+th,td { text-align:right; padding:15px 16px; border-top:1px solid var(--line); white-space:nowrap; }
+thead th { color:var(--muted); background:#f5f8fb; font-size:12px; font-weight:600; }
+th:first-child,td:last-child { text-align:left; }
+tbody th { font-weight:600; }
+tbody th a { color:var(--ink); }
+tbody small { display:block; font-weight:400; color:var(--muted); font-size:12px; margin-top:3px; }
+.rate { min-width:102px; font-weight:650; }
+.spark { width:70px; height:4px; background:var(--paper); margin:7px 0 0 auto; }
+.spark i { display:block; height:100%; background:var(--blue); }
+.quality { padding:24px 0 0; display:grid; grid-template-columns:1fr 1fr; gap:32px; }
+.quality p { font-size:15px; }
+details { border-bottom:1px solid var(--line); }
+summary { cursor:pointer; padding:20px 8px; font-weight:600; }
+summary span { float:right; font-size:13px; font-weight:500; }
+.answer { padding:0 8px 24px; font-size:14px; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; background:white; border:1px solid var(--line); border-radius:8px; padding:20px; max-height:480px; overflow:auto; font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.native { padding:30px; background:#e0eaf5; border-radius:16px; display:grid; grid-template-columns:1.15fr 1fr; gap:32px; }
+.native p { font-size:15px; }
+.native ul { margin:0; padding-left:22px; font-size:15px; }
+.native li { margin:0 0 9px; }
+footer { padding-block:0 40px; font-size:12px; color:var(--muted); }
+footer p { max-width:none; overflow-wrap:anywhere; }
+footer .sources { display:flex; flex-wrap:wrap; gap:20px; font-size:14px; margin-bottom:20px; }
+.skip { position:absolute; left:16px; top:-80px; background:white; padding:12px; }
+.skip:focus { top:12px; }
+@media(max-width:800px) { header,main,footer { padding-inline:20px; } header { padding-block:20px; align-items:flex-start; } nav { gap:12px; } .hero { grid-template-columns:1fr; gap:18px; padding-top:24px; } .state { display:flex; gap:24px; } .state p { flex:1; margin:0; } .metrics { gap:16px; } .metrics dd { font-size:25px; } .native { grid-template-columns:1fr; gap:16px; } }
+@media(max-width:540px) { header { flex-direction:column; gap:12px; } nav { font-size:13px; } h1 { letter-spacing:-1px; } .metrics { grid-template-columns:1fr; gap:22px; } .metrics > div { display:grid; grid-template-columns:1fr 1fr; gap:4px 14px; } .metrics dt { align-self:center; } .metrics dd { margin:0; text-align:right; } .metrics small { grid-column:1 / -1; margin:0; } .memory,.native { padding:22px; } .memory-notes,.quality { grid-template-columns:1fr; gap:16px; } .section-head { align-items:flex-start; } .section-head a { white-space:normal; text-align:right; } .fill { font-size:18px; padding:12px; } summary span { float:none; display:block; margin:4px 0 0 18px; } .state { padding:18px; gap:16px; } }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Vai ai risultati</a>
+<header><a class="brand" href="#main">picoforge</a><nav aria-label="Sezioni del report"><a href="#memory">Memoria</a><a href="#performance">Prestazioni</a><a href="#answers">Risposte</a><a href="#native">Motore nativo</a></nav></header>
+<main id="main">
+<div class="hero"><div><div class="date">Pilot locale del <time datetime="$date">$date</time> · Apple M5 Pro, 64 GiB</div><h1>Qwen3.8-Flash-Next Q2<br>sul nostro Mac.</h1><p class="intro">La prima baseline è riproducibile. Qui trovi i tempi misurati, l'uso della memoria e le risposte effettive ai cinque task.</p></div><aside class="state" aria-label="Stato del progetto"><p><strong class="pass">DwarfStar esegue il modello</strong><span>8K di contesto, chunk da 1.024, una sessione, MTP disattivato.</span></p><p><strong>picoforge legge i pesi in Metal</strong><span>Storage nativo verificato. La generazione Qwen3.8 è ancora da implementare.</span></p></aside></div>
+<dl class="metrics"><div><dt>Velocità di generazione</dt><dd>$low–$high <span>token/s</span></dd><small>Intervallo delle mediane dei cinque task</small></div><div><dt>Prefill di 8.063 token</dt><dd>$prefill <span>token/s</span></dd><small>Run separato con ds4-bench originale</small></div><div><dt>Correttezza e formato</dt><dd>$strict / $tasks <span>task</span></dd><small>$coding/3 risposte di coding passano i test sul codice</small></div></dl>
+<section class="memory" id="memory"><div class="section-head"><h2>Quanto spazio occupa?</h2><a href="$manifest_link">Dati del run</a></div><p class="note">Allocazioni Metal campionate durante la baseline DwarfStar. Scala in GiB.</p><figure aria-label="Picco delle allocazioni Metal: $peak GiB. Working set GPU raccomandato: $recommended GiB. Memoria fisica: $physical GiB."><div class="scale"><span>0 GiB</span><span>$physical GiB fisici</span></div><div class="track" aria-hidden="true"><div class="fill">$peak GiB</div><div class="limit"></div></div><figcaption><span>Picco allocato da Metal</span><span>Linea tratteggiata: $recommended GiB raccomandati per la GPU</span></figcaption></figure><div class="memory-notes"><p><strong>Pressione normale durante il pilot</strong>Swap globale cresciuto di $swap MiB in due incrementi isolati, senza crescita sostenuta osservata. Il contatore di sistema non identifica il processo responsabile.</p><p><strong>Allocazioni, footprint e RAM sono misure diverse</strong>Il grafico non rappresenta la RAM fisica totale occupata. Footprint e allocazioni Metal non vanno sommati; il dettaglio dei campioni è nei dati grezzi.</p></div></section>
+<section id="performance"><div class="section-head"><h2>Tempi per task</h2><a href="$summary_link">Scarica il CSV</a></div><p class="note">Mediane di tre ripetizioni calde, dopo una prima esecuzione separata. I tempi escludono il caricamento del motore.</p><div class="table-wrap" role="region" aria-label="Tabella dei tempi, scorribile orizzontalmente" tabindex="0"><table><caption>Runtime DwarfStar. Su schermi piccoli scorri la tabella orizzontalmente.</caption><thead><tr><th scope="col">Task</th><th scope="col">Prompt</th><th scope="col">Output</th><th scope="col">Token/s</th><th scope="col">Primo token</th><th scope="col">Richiesta</th><th scope="col">Esito completo</th></tr></thead><tbody>$rows</tbody></table></div><div class="quality"><p><strong>Tre soluzioni di coding corrette nei test.</strong> Il C passa anche ASan/UBSan. La risposta matematica è corretta. Il JSON dell'archivio contiene i fatti corretti, ma fallisce il criterio congelato per i delimitatori Markdown aggiunti.</p><p><strong>Il formato resta un limite osservato.</strong> Anche due risposte di coding aggiungono Markdown non richiesto. I test estraggono il codice, ma il criterio completo conserva questi errori: $strict/$tasks task superati.</p></div></section>
+<section id="answers"><div class="section-head"><h2>Apri le risposte</h2><a href="$grading_link">Valutazione completa</a></div><p class="note">Output integrale della prima esecuzione. Nessuna correzione alle risposte o ai criteri dopo il run.</p>$answers</section>
+<section class="native" id="native"><div><h2>Il primo pezzo del nostro engine</h2><p>Il loader C11 legge il GGUF e lo storage Metal accede ai pesi compressi senza copiarli o espanderli in FP16. Le tabelle n-gram restano escluse dalle viste GPU.</p><a href="$native_link">Evidenze dello storage</a></div><div><h3>Verificato sul checkpoint reale</h3><ul><li>$weights tensori residenti in $views viste Metal.</li><li>$probes letture di byte corrispondono al file.</li><li>Le mappature durano fino al termine dei comandi GPU e vengono rilasciate.</li><li>Build e regressione completa <code>make test-all</code> superate.</li></ul><p class="note">Prossimo incremento: riferimenti numerici e operatori. Questi test non verificano ancora logits, stato ricorrente o generazione nativa.</p></div></section>
+</main>
+<footer><div class="sources"><a href="$manifest_link">Manifest della baseline</a><a href="$summary_link">Metriche CSV</a><a href="$grading_link">Qualità JSON</a><a href="$native_link">Manifest dello storage</a></div><p>Pilot su cinque task originali: nessun punteggio di leaderboard, confronto BF16 o vantaggio prestazionale dimostrato per picoforge. Tre ripetizioni non sostituiscono le 25 richieste per decisioni prestazionali. Il caricamento a disco freddo non è stato isolato; durante il pilot si sono svolti piccoli controlli CPU, senza altri carichi GPU.</p><p>DwarfStar: $revision<br>SHA-256 del checkpoint verificato localmente: $checksum</p><p>Report statico, consultabile anche offline. Nessuna richiesta al modello viene avviata da questa pagina.</p></footer>
+<script>
+function revealAnswer() { const target = document.getElementById(location.hash.slice(1)); if (target instanceof HTMLDetailsElement) target.open = true; }
+window.addEventListener('hashchange', revealAnswer); revealAnswer();
+</script>
+</body>
+</html>
