@@ -1,4 +1,4 @@
-"""CPU-only Qwen3.8 references; no checkpoint or inference engine is loaded.
+"""CPU-only Qwen3.8 references; only explicit bounded checkpoint slices are read.
 
 The numerical definitions are selected, unchanged, from pinned Transformers
 source (Qwen Team / Hugging Face, Apache-2.0). Only optional kernel-dispatch
@@ -459,23 +459,254 @@ def export_synthetic(source, directory):
     return write_bundle(directory, tensors, metadata)
 
 
+def prepare_composition(native, reference, directory, *, checkpoint=None, layer=0, tokens=65):
+    """C4 data only: A supplies shapes/roles, B supplies the pinned decoder.
+
+    Real data is copied by bounded pread; the checkpoint is never writable or
+    fully mapped. Only the selected layer's 13 tensors are retained packed.
+    Every projection is decoded later one bounded row tile at a time.
+    """
+    import importlib.util
+    import os
+    import subprocess
+    import qwen38_packed as packed
+
+    if not 1 <= tokens <= 129:
+        raise ValueError("composition fixture needs 1..129 tokens")
+    directory = Path(directory).resolve()
+    root = Path(__file__).resolve().parents[2]
+    if not directory.is_relative_to(root / "build"):
+        raise ValueError("composition output must stay in this worktree's build")
+    directory.mkdir(parents=True, exist_ok=False)
+    if checkpoint is None:
+        spec = importlib.util.spec_from_file_location("c4_synthetic_a", root / "tools/synth/make_qwen38_a.py")
+        synth = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(synth)
+        hf = synth.small_config()
+        hf["text_config"].update(linear_key_head_dim=8, linear_value_head_dim=8)
+        checkpoint = directory / "schema.gguf"
+        synth.write_fixture(checkpoint, hf)
+        kind = "synthetic"
+    else:
+        kind = "checkpoint_slice"
+    checkpoint = Path(checkpoint).resolve()
+    descriptor = json.loads(subprocess.check_output([str(native), "--describe", str(checkpoint), str(layer)], text=True))
+    if sum(w["bytes"] for w in descriptor["weights"]) > 96 * 1024**2:
+        raise ValueError("selected C layer exceeds the 96 MiB packed payload budget")
+    rng = np.random.default_rng(3842)
+    fd = os.open(checkpoint, os.O_RDONLY)
+    try:
+        before = os.fstat(fd)
+        for w in descriptor["weights"]:
+            cols, rows, slot, fmt = (w[k] for k in ("columns", "rows", "slot", "type"))
+            if kind == "checkpoint_slice":
+                raw = packed.pread_exact(fd, w["offset"], w["bytes"])
+            elif fmt == 8:
+                blocks = np.empty((rows * cols // 32, 34), np.uint8)
+                scale = np.array([0.5 / np.sqrt(cols) / 32], dtype="<f2").view(np.uint8)
+                blocks[:, :2] = scale
+                blocks[:, 2:] = rng.integers(-64, 65, (len(blocks), 32), dtype=np.int8).view(np.uint8)
+                raw = blocks.tobytes()  # Fixture construction only, not a new decoder.
+            else:
+                values = (rng.standard_normal((rows, cols)) / np.sqrt(cols)).astype(np.float32)
+                if slot in (0, 11): values = rng.integers(4, 13, (rows, cols)).astype(np.float32) / 8
+                if slot == 8: values = -rng.uniform(.03, .2, (rows, cols)).astype(np.float32)
+                if slot == 9: values = values * .2 - .5
+                if slot == 10:
+                    values *= .2
+                    values[:, -1] += 1
+                raw = values.astype("<f2" if fmt == 1 else "<f4").tobytes()
+            if len(raw) != w["bytes"]:
+                raise ValueError("packed fixture disagrees with A's descriptor")
+            w["path"] = f"weight-{slot}.bin"
+            w["sha256"] = hashlib.sha256(raw).hexdigest()
+            (directory / w["path"]).write_bytes(raw)
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            raise ValueError("checkpoint changed during bounded extraction")
+    finally:
+        os.close(fd)
+    x = (.3 * rng.standard_normal((tokens, descriptor["streams"], descriptor["hidden"]))).astype("<f4")
+    (directory / "input.f32").write_bytes(x.tobytes())
+    descriptor.update(schema="qwen38-c-composition-v1", scope=kind, tokens=tokens, checkpoint=str(checkpoint),
+        input_sha256=hashlib.sha256(x.tobytes()).hexdigest(), packed_bytes=sum(w["bytes"] for w in descriptor["weights"]),
+        reference_revision=packed.REVISION, reference_sha256=hashlib.sha256(Path(reference).read_bytes()).hexdigest(),
+        model_revision="d600fe1a43d2e1cdcadb85144ce3142f66f9eefe" if kind == "checkpoint_slice" else None,
+        source_stat=dict(device=before.st_dev, inode=before.st_ino, bytes=before.st_size, mtime_ns=before.st_mtime_ns),
+        interpretation="Same Q2 checkpoint weights; synthetic activations; no BF16 quality or complete model claim.")
+    (directory / "manifest.json").write_text(json.dumps(descriptor, indent=2) + "\n")
+    return descriptor
+
+
+class CompositionWeights:
+    """Independent B decoder transport with at most 4 MiB decoded per tile."""
+
+    def __init__(self, reference, directory):
+        self.reference, self.directory = Path(reference), Path(directory)
+        self.metadata = json.loads((self.directory / "manifest.json").read_text())
+        for w in self.metadata["weights"]:
+            raw = (self.directory / w["path"]).read_bytes()
+            if len(raw) != w["bytes"] or hashlib.sha256(raw).hexdigest() != w["sha256"]:
+                raise ValueError("corrupt C4 packed fixture")
+
+    def tiles(self, slot):
+        import qwen38_packed as packed
+        w = self.metadata["weights"][slot]
+        rows, cols = w["rows"], w["columns"]
+        tile = max(1, 4 * 1024**2 // (4 * cols))
+        row_bytes = w["bytes"] // rows
+        with (self.directory / w["path"]).open("rb") as handle:
+            for start in range(0, rows, tile):
+                count = min(tile, rows - start)
+                raw = handle.read(count * row_bytes)
+                yield start, packed.decode(self.reference, raw, w["type"], cols, count)
+
+    def constant(self, slot):
+        return torch.from_numpy(np.concatenate([v for _, v in self.tiles(slot)]).copy())
+
+    def linear(self, slot, x):
+        import qwen38_packed as packed
+        x = np.ascontiguousarray(x.detach().numpy().reshape(len(x), -1), dtype=np.float32)
+        y = np.empty((len(x), self.metadata["weights"][slot]["rows"]), np.float32)
+        for start, weight in self.tiles(slot):
+            y[:, start:start + len(weight)] = packed.matmul_reference(weight, x, x.shape[1])[0]
+        return torch.from_numpy(y)
+
+
+COMPOSE_STAGES = ("normed", "low", "activated", "gate_logits", "injection_logits", "injection",
+                  "mixed", "qkv_raw", "convolved", "prepared", "z", "alpha", "beta_raw",
+                  "log_decay", "beta", "scan", "gated_norm", "contribution")
+COMPOSE_PRODUCTS = ((1, "normed", "low"), (2, "activated", "gate_logits"),
+                    (3, "normed", "injection_logits"), (4, "mixed", "qkv_raw"),
+                    (5, "mixed", "z"), (6, "mixed", "alpha"), (7, "mixed", "beta_raw"),
+                    (12, "gated_norm", "contribution"))
+
+
+def composition_qkv(m, x):
+    t, hk, hv, dk, dv = len(x), m["hk"], m["hv"], m["dk"], m["dv"]
+    q, k, v = x.split((hk * dk, hk * dk, hv * dv), dim=-1)
+    return q.reshape(t, hk, dk), k.reshape(t, hk, dk), v.reshape(t, hv, dv)
+
+
+def composition_reference(ref, weights, residual):
+    """Actual upstream HC forward and GDN operators, with B's FP64 products.
+
+    Only projection callbacks adapt the frozen upstream HC module. No production
+    C operator participates in this reference. Each weight is decoded in tiles.
+    """
+    require_fp32(residual)
+    m, stages = weights.metadata, {}
+    t, h, e = residual.shape
+    gain = weights.constant(0).reshape(h, e)
+
+    def norm(x):
+        stages["normed"] = grouped_rms_reference(ref, x.reshape(t, h, e), gain, m["eps"]).flatten(1)
+        return stages["normed"]
+
+    def linear(slot, name, x):
+        if slot == 2: stages["activated"] = x.clone()
+        stages[name] = weights.linear(slot, x)
+        return stages[name]
+
+    hc = SimpleNamespace(hc_count=h, hidden_size=e, hc_norm=norm,
+        input_mix_weight_down=lambda x: linear(1, "low", x),
+        input_mix_weight_up=lambda x: linear(2, "gate_logits", x),
+        block_inject_weight=lambda x: linear(3, "injection_logits", x))
+    stages["mixed"], _, stages["injection"] = ref.Qwen4ExpTextGatedResidual.forward(hc, residual.flatten(1))
+    for slot, name in ((4, "qkv_raw"), (5, "z"), (6, "alpha"), (7, "beta_raw")):
+        linear(slot, name, stages["mixed"])
+    history = torch.zeros(m["kernel"] - 1, stages["qkv_raw"].shape[-1])
+    stages["convolved"], stages["history"] = conv_reference(stages["qkv_raw"], weights.constant(10), history)
+    q, k, v = composition_qkv(m, stages["convolved"])
+    stages["prepared"] = torch.cat(((ref.l2norm(q) / np.sqrt(m["dk"])).flatten(1), ref.l2norm(k).flatten(1), v.flatten(1)), -1)
+    stages["log_decay"], stages["beta"] = gate_reference(stages["alpha"], stages["beta_raw"],
+        weights.constant(9).flatten(), weights.constant(8).flatten())
+    state = torch.zeros(m["hv"], m["dv"], m["dk"])
+    scan, stages["state"] = gdn_reference(ref, q, k, v, stages["log_decay"], stages["beta"], state)
+    stages["scan"] = scan.flatten(1)
+    stages["gated_norm"] = gdn_norm_reference(ref, scan, stages["z"].reshape_as(scan),
+        weights.constant(11).flatten(), m["eps"]).flatten(1)
+    linear(12, "contribution", stages["gated_norm"])
+    stages["residual"] = residual + stages["injection"].unsqueeze(-1) * stages["contribution"].unsqueeze(1)
+    return stages
+
+
+def composition_local_reference(ref, weights, residual, actual):
+    """Upstream primitive checks on EXACT native intermediate inputs."""
+    m = weights.metadata
+    t, h, e = residual.shape
+    local = dict(normed=grouped_rms_reference(ref, residual, weights.constant(0).reshape(h, e), m["eps"]).flatten(1),
+        activated=F.silu(actual["low"] / h), injection=2 * torch.sigmoid(actual["injection_logits"] / h),
+        mixed=(actual["normed"].reshape(t, h, e) * torch.sigmoid(actual["gate_logits"]).reshape(t, h, e)).mean(1))
+    zero_history = torch.zeros(m["kernel"] - 1, actual["qkv_raw"].shape[-1])
+    local["convolved"], local["history"] = conv_reference(actual["qkv_raw"], weights.constant(10), zero_history)
+    q, k, v = composition_qkv(m, actual["convolved"])
+    local["prepared"] = torch.cat(((ref.l2norm(q) / np.sqrt(m["dk"])).flatten(1), ref.l2norm(k).flatten(1), v.flatten(1)), -1)
+    local["log_decay"], local["beta"] = gate_reference(actual["alpha"], actual["beta_raw"],
+        weights.constant(9).flatten(), weights.constant(8).flatten())
+    q, k, v = composition_qkv(m, actual["prepared"])
+    # Upstream applies 1/sqrt(Dk); undo ONLY that scale in this adapter.
+    scan, local["state"] = gdn_reference(ref, q * np.sqrt(m["dk"]), k, v,
+        actual["log_decay"], actual["beta"], torch.zeros(m["hv"], m["dv"], m["dk"]), normalize_qk=False)
+    local["scan"] = scan.flatten(1)
+    o = actual["scan"].reshape(t, m["hv"], m["dv"])
+    local["gated_norm"] = gdn_norm_reference(ref, o, actual["z"].reshape_as(o), weights.constant(11).flatten(), m["eps"]).flatten(1)
+    local["residual"] = residual + actual["injection"].unsqueeze(-1) * actual["contribution"].unsqueeze(1)
+    return local
+
+
+def composition_projection_gate(weights, actual):
+    """Enforce B's gamma bound elementwise, separately for each projection."""
+    import qwen38_packed as packed
+    measurements = []
+    for slot, source, target in COMPOSE_PRODUCTS:
+        x = np.ascontiguousarray(actual[source].numpy().reshape(len(actual[source]), -1))
+        y = actual[target].numpy().reshape(len(x), -1)
+        gamma = (2 * x.shape[1] + 8) * 2.**-24
+        gamma /= 1 - gamma
+        worst, max_error = 0., 0.
+        for start, w in weights.tiles(slot):
+            expected, magnitude = packed.matmul_reference(w, x, x.shape[1])
+            bound = gamma * magnitude + 2 * np.abs(np.spacing(expected.astype(np.float32))).astype(np.float64)
+            error = np.abs(y[:, start:start + len(w)].astype(np.float64) - expected)
+            if not np.isfinite(error).all() or np.any(error > bound):
+                raise AssertionError(f"B gamma projection gate failed: {target}")
+            worst = max(worst, float(np.max(error / np.maximum(bound, np.finfo(np.float64).tiny))))
+            max_error = max(max_error, float(error.max()))
+        measurements.append(dict(stage=target, gamma_bound_ratio=worst, max_abs=max_error))
+    return measurements
+
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=UPSTREAM_DEFAULT)
     parser.add_argument("--fetch-upstream", action="store_true", help="explicitly download pinned Python source only")
+    parser.add_argument("--composition", action="store_true", help="prepare bounded A/B/C composition fixture")
+    parser.add_argument("--native", type=Path)
+    parser.add_argument("--packed-reference", type=Path)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--layer", type=int, default=0)
+    parser.add_argument("--tokens", type=int, default=65)
     parser.add_argument("--synthetic", action="store_true", help="export input/output/state tensors")
     parser.add_argument("--device", choices=("cpu",), default="cpu")
     parser.add_argument("--out", type=Path, default=Path("build/qwen38-c/fixtures"))
     args = parser.parse_args()
-    if not args.fetch_upstream and not args.synthetic:
-        parser.error("select --fetch-upstream and/or --synthetic")
+    if not args.fetch_upstream and not args.synthetic and not args.composition:
+        parser.error("select --fetch-upstream, --synthetic or --composition")
     torch.set_num_threads(1)
     try:
         if args.fetch_upstream:
             fetch_upstream(args.source)
             print(f"Verified upstream {UPSTREAM_REV}: {args.source}")
+        if args.composition:
+            if not args.native or not args.packed_reference:
+                parser.error("--composition needs --native and --packed-reference")
+            document = prepare_composition(args.native.resolve(), args.packed_reference.resolve(), args.out,
+                checkpoint=args.checkpoint, layer=args.layer, tokens=args.tokens)
+            print(f"Prepared {document['scope']}: {document['packed_bytes']} packed bytes, {args.tokens} tokens")
         if args.synthetic:
             document = export_synthetic(args.source, args.out)
             print(f"Exported {len(document['tensors'])} CPU tensors, {document['data']['nbytes']} bytes: {args.out}")

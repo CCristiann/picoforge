@@ -792,15 +792,115 @@ class NativeTests(unittest.TestCase):
         np.testing.assert_array_equal(copied, np.concatenate((initial[1:], token)))
 
 
+def run_composition_tests(args):
+    """Explicit C4 suite: no implicit skips in the existing primitive runner."""
+    import subprocess
+    weights = oracle.CompositionWeights(args.packed_reference, args.composition)
+    m = weights.metadata
+    directory = Path(args.composition)
+    raw = (directory / "input.f32").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != m["input_sha256"]:
+        raise ValueError("corrupt composition input")
+    residual = torch.from_numpy(np.frombuffer(raw, "<f4").copy().reshape(m["tokens"], m["streams"], m["hidden"]))
+    ref = oracle.load_upstream(args.source)
+    expected = oracle.composition_reference(ref, weights, residual)
+    measurements, native_reports = [], []
+
+    def load_output(out):
+        return {name: torch.from_numpy(np.fromfile(out / (name + ".f32"), "<f4").reshape(value.shape))
+                for name, value in expected.items()}
+
+    def check(name, got, want, tolerance, scope):
+        # Local gates are per row/head, never diluted by other heads or streams.
+        if name in ("normed", "gate_logits", "residual"):
+            got, want = (v.reshape(m["tokens"], m["streams"], m["hidden"]) for v in (got, want))
+        if name in ("scan", "gated_norm", "z"):
+            got, want = (v.reshape(m["tokens"], m["hv"], m["dv"]) for v in (got, want))
+        if name in ("prepared", "convolved", "qkv_raw"):
+            for suffix, g, w in zip(("q", "k", "v"), oracle.composition_qkv(m, got), oracle.composition_qkv(m, want)):
+                check(name + "/" + suffix, g, w, tolerance, scope)
+            return
+        metric = oracle.error_metrics(got, want, local_ndim=2 if name == "state" else 1)
+        measurements.append(dict(stage=name, scope=scope, tolerance=tolerance, **metric))
+        if max(metric["scaled_inf"], metric["scaled_rms"]) > tolerance:
+            raise AssertionError(f"{scope}/{name}: {metric}, tolerance={tolerance}")
+
+    class CompositionTests(unittest.TestCase):
+        def test_01_cpu_intermediates_and_independent_oracle(self):
+            out = directory / "cpu-whole"
+            out.mkdir(exist_ok=True)
+            result = subprocess.run([str(args.composed_native.resolve()), "--compose", m["checkpoint"],
+                str(m["layer"]), str(directory), str(out), str(m["tokens"]), "0"], text=True, capture_output=True, check=True)
+            native_reports.append(json.loads(result.stdout))
+            actual = load_output(out)
+            measurements.extend(dict(scope="projection", **v) for v in oracle.composition_projection_gate(weights, actual))
+            for name, want in oracle.composition_local_reference(ref, weights, residual, actual).items():
+                check(name, actual[name], want, 5e-5 if name in ("scan", "state") else 2e-5 if name in ("mixed", "residual") else 1e-5, "local")
+            for name, want in expected.items():
+                check(name, actual[name], want, 5e-4, "composed")
+            # Small affine FP64 oracle uses a different mathematical organization.
+            if max(m["dk"], m["dv"], m["hv"]) <= 16:
+                q, k, v = oracle.composition_qkv(m, expected["convolved"])
+                y, state = oracle.affine_reference(q, k, v, expected["log_decay"], expected["beta"],
+                    torch.zeros(m["hv"], m["dv"], m["dk"]))
+                check("scan", expected["scan"], y.flatten(1), 5e-5, "upstream_affine64")
+                check("state", expected["state"], state, 5e-5, "upstream_affine64")
+
+        def test_02_token_chunk_reset_continuation(self):
+            full = load_output(directory / "cpu-whole")
+            for size, suffix in ((1, "token"), (7, "chunks")):
+                out = directory / ("cpu-" + suffix)
+                out.mkdir(exist_ok=True)
+                result = subprocess.run([str(args.composed_native.resolve()), "--compose", m["checkpoint"],
+                    str(m["layer"]), str(directory), str(out), str(m["tokens"]), str(size)], text=True, capture_output=True, check=True)
+                native_reports.append(json.loads(result.stdout))
+                for name, value in load_output(out).items():
+                    self.assertTrue(torch.equal(value, full[name]), f"{suffix}/{name} not bitwise equal")
+
+        def test_03_explicit_fixture_and_provenance(self):
+            exported = directory / "oracle-bundle"
+            if not exported.exists():
+                tensors = dict(residual_input=("input", ("T", "H", "E"), residual),
+                    state_initial=("state_initial", ("Hv", "Dv", "Dk"), torch.zeros_like(expected["state"])),
+                    history_initial=("state_initial", ("L", "C"), torch.zeros_like(expected["history"])))
+                for name, value in expected.items():
+                    role = "state_final" if name in ("state", "history") else "output" if name == "residual" else "intermediate"
+                    axes = ("Hv", "Dv", "Dk") if name == "state" else ("L", "C") if name == "history" else ("T", "H", "E") if name == "residual" else ("T", "F")
+                    tensors[name] = role, axes, value
+                oracle.write_bundle(exported, tensors, dict(upstream=oracle.UPSTREAM_REV, source_sha256=oracle.UPSTREAM_SHA256,
+                    catalog=m, state_contract="initial zero; history raw oldest-first; S[Hv,Dv,Dk]", projection="external B decode + FP64 products rounded FP32"))
+            self.assertEqual(m["reference_sha256"], hashlib.sha256(args.packed_reference.read_bytes()).hexdigest())
+            self.assertEqual(len(m["weights"]), 13)
+            self.assertLessEqual(m["packed_bytes"], 96 * 1024**2)
+
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CompositionTests))
+    if args.report:
+        args.report.write_text(json.dumps(dict(passed=result.wasSuccessful(), tests=result.testsRun, skipped=len(result.skipped),
+            scope=m["scope"], tokens=m["tokens"], upstream=oracle.UPSTREAM_REV, upstream_sha256=oracle.UPSTREAM_SHA256,
+            native_sha256=hashlib.sha256(args.composed_native.read_bytes()).hexdigest(),
+            adapter_sha256=hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest(),
+            tests_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            fixture_sha256=hashlib.sha256((directory / "manifest.json").read_bytes()).hexdigest(),
+            measurements=measurements, native=native_reports), indent=2) + "\n")
+    return not result.wasSuccessful()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--cpu-lib", type=Path)
+    parser.add_argument("--composition", type=Path)
+    parser.add_argument("--composed-native", type=Path)
+    parser.add_argument("--packed-reference", type=Path)
     args, remaining = parser.parse_known_args()
     SOURCE = args.source
     CPU_LIB = args.cpu_lib
     torch.set_num_threads(1)
+    if args.composition:
+        if not args.composed_native or not args.packed_reference:
+            parser.error("--composition requires --composed-native and --packed-reference")
+        sys.exit(run_composition_tests(args))
     result = unittest.main(argv=[sys.argv[0], *remaining], exit=False).result
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
