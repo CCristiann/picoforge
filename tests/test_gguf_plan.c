@@ -23,12 +23,18 @@ int main(int argc, char **argv) {
     gguf_plan(&g, page, cap, &p);
     if (argc != 1) return 2;
     assert(p.view_count == 3 && p.weight_count == 3);
+    assert(p.source == &g);
+    Gguf other = g; /* Equal descriptors do not make two openings identical. */
+    GgufPlan other_plan;
+    gguf_plan(&other, page, cap, &other_plan);
+    assert(other_plan.source != p.source);
+    gguf_plan_free(&other_plan);
     assert(p.views[0].file_offset == page && p.views[0].bytes == 2*page);
     assert(p.weights[0].offset == 32 && p.weights[1].buffer_id == 1);
     assert(p.weights[2].buffer_id == 2 && p.views[2].file_offset == 7*page);
     assert(p.disk_table.bytes == 2*page);
     gguf_plan_free(&p);
-    assert(!p.weights && !p.views);
+    assert(!p.weights && !p.views && !p.source);
     puts("PASS: tensor boundaries, multiple views and disk-only exclusion");
     return 0;
 }

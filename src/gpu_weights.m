@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #include "picoforge.h"
 #include "gguf.h"
+#include "qwen38_packed.h"
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -66,6 +67,39 @@ void *gpu_weights_buffer(const GpuWeightStore *s, const GgufBinding *b) {
     if (b->offset > v->bytes || b->tensor.bytes > v->bytes - b->offset)
         die("gguf: binding exceeds its view");
     return s->buffers[b->buffer_id]; /* borrowed; the command encoder retains it */
+}
+
+Qwen38Status qwen38_weights_cpu_span(const GpuWeightStore *s,
+        const GgufBinding *b, Qwen38CpuSpan *out, Qwen38Error *err) {
+    Qwen38Status status = Q38_OK;
+    if (err) memset(err, 0, sizeof *err);
+    if (out) *out = (Qwen38CpuSpan){0};
+    if (!s || !b || !out) status = Q38_INVALID_ARGUMENT;
+    else if (b->owner != &s->plan) status = Q38_OWNER;
+    else {
+        /* Accept a live catalog record, not a forged/copy-by-value binding. */
+        bool found = false;
+        for (size_t i = 0; i < s->plan.weight_count; i++)
+            if (b == &s->plan.weights[i]) { found = true; break; }
+        if (!found) status = Q38_OWNER;
+        else if (b->buffer_id >= s->plan.view_count) status = Q38_RANGE;
+        else {
+            id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)s->buffers[b->buffer_id];
+            size_t bytes = (size_t)buffer.length;
+            if (b->offset > bytes || b->tensor.bytes > bytes - b->offset)
+                status = Q38_RANGE;
+            else *out = (Qwen38CpuSpan){(const unsigned char *)buffer.contents + b->offset,
+                                       b->tensor.bytes};
+        }
+    }
+    if (err) {
+        err->code = status;
+        if (status != Q38_OK) {
+            snprintf(err->subject, sizeof err->subject, "weight CPU span");
+            snprintf(err->detail, sizeof err->detail, "invalid argument, owner or bounds");
+        }
+    }
+    return status;
 }
 
 void gpu_weights_close(GpuWeightStore *s) {
