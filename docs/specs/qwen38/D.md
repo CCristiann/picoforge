@@ -760,7 +760,8 @@ clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
   src/qwen38_weights.c src/qwen38_packed.c src/gguf.c src/gguf_reader.c \
   src/gguf_plan.c src/util.c -lm -o build/qwen38-d/test_attention
 Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
-"$Q38_PY" tests/test_qwen38_attention.py --native build/qwen38-d/test_attention
+"$Q38_PY" tests/test_qwen38_attention.py --native build/qwen38-d/test_attention \
+  AttentionOracleTests NativeAttentionTests
 "$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- "$Q38_PY" \
   tools/oracle/qwen38_attention.py \
   --slice-checkpoint /Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
@@ -784,3 +785,71 @@ checkpoint già verificato; fixture SHA256
 Attivazioni X sintetiche, pesi Q2 effettivi: nessuna misura di perdita BF16,
 nessun logit/generazione completa. Lo sparse path reale oltre 2051 token è
 verificato con fixture sintetica piccola, non con il layer reale completo.
+
+### Metal conservativo privato verificato
+
+File nuovi D: `src/qwen38_attention_gpu.m`, `src/qwen38_attention.metal`,
+`tests/test_qwen38_attention.m`; contratto privato in `qwen38_d_internal.h`.
+Quattro stadi FP32: RoPE parziale, media IKraw, score indexer non scalato,
+attention GQA con softmax online globale a tile16 e gate finale. Nessuna
+norma, attivazione o dequantizzazione duplicata. Il test composto prep usa
+RMS/sigmoid C e RoPE D nello stesso command buffer. I kernel ricevono solo
+il prefisso visibile e ID selezionati ordinati: ID duplicati, decrescenti o
+fuori prefisso sono errori. La selezione usa il core CPU D esistente.
+
+La `pow` Metal non preservava le frequenze FP32 a posizioni lunghe (errore
+RoPE fino a 0.00106138 a 32768): ora le costanti default sono costruite dalla
+funzione C comune `q38d_rope_frequency` e copiate con setBytes (massimo512B).
+Angoli, rotazioni e tensori sono elaborati dal kernel. Gate originali
+invariati, verificati a 0/2051/8192/32768 e sulle forme H24,D256,R64.
+
+API privata: buffer borrowed, span dense con offset multiplo di4; output e
+input disgiunti; no-copy Shared sovrapposti rifiutati. H<=128, D<=256,
+N<=32768; nessun commit/wait nel glue, error word Shared conservata con OR.
+Caller mantiene le risorse fino a completion e scarta output/stato su ogni
+errore command-buffer/error-word; nessun nuovo ABI di stato GPU. La
+moltiplicazione/softmax usa accumulatori FP32, niente fast-math, FMA contratta,
+FP16 o eviction. Un thread per testa è deliberatamente conservativo: nessuna
+promessa di prestazioni. I limiti di questi stadi non restringono l'API CPU.
+
+Verifica finale: **44 test CPU e 10 test Metal, zero skip**, harness con
+ASan/UBSan e Metal API validation, lock comune. 117 invocazioni Metal nel
+run completo; picco `device.currentAllocatedSize` 1.048.576B (harness, non
+footprint del modello). Scarti massimi GPU vs core C: attention1.78814e-7,
+RoPE2.38419e-7, pool/score0. Oracle HF/SDPA indipendente resta il gate dei
+risultati: il confronto C non lo sostituisce. Slice Q2 già estratta, stesso
+SHA della fixture sopra, attraversa prep K/Q/IQ/gate, pool→norm→RoPE blocchi,
+scoreGPU→selectCPU→attentionGPU: massimo errore FP64 `4.8698728e-8`.
+Report locale `build/qwen38-d/metal-vnqqh10a/manifest.json` con hash sorgente
+HF, test, metallib, fixture e metriche. `make -j4` passato; questa build non
+include ancora i kernel D nel metallib principale e non prova generazione.
+
+Comandi aggiuntivi ripetibili, senza modificare Makefile:
+
+```sh
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc \
+  -c src/qwen38_attention.metal -o build/qwen38-d/attention.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc \
+  -c src/qwen38_recurrent.metal -o build/qwen38-d/recurrent.air
+xcrun -sdk macosx metallib build/qwen38-d/attention.air \
+  build/qwen38-d/recurrent.air -o build/qwen38-d/attention.metallib
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -fobjc-arc -Isrc tests/test_qwen38_attention.m \
+  src/qwen38_attention.c src/qwen38_attention_gpu.m src/qwen38_recurrent_gpu.m \
+  src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c \
+  -framework Foundation -framework Metal -lm -o build/qwen38-d/test_attention_gpu
+"$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 \
+  "$Q38_PY" tests/test_qwen38_attention.py --native build/qwen38-d/test_attention \
+  --metal build/qwen38-d/test_attention_gpu --slice-fixture build/qwen38-d/slice-01 \
+  MetalAttentionTests -v
+make -j4
+```
+
+Residui da integrare: il coordinatore aggiunge le dipendenze A+B+C al
+harness D CPU (elenco nel comando precedente), il target privato GPU e
+`attention.air` al metallib. Restano selezione residente GPU, composizione
+QSA interamente in un comando senza passaggi host, lifecycle/commit globale
+GPU, proiezioni B GPU nel percorso D e catture di attivazioni reali/logits.
+Il contratto CPU pubblico e il suo lifecycle sono implementati; i kernel
+privati verificati non costituiscono una sessione Qwen3.8 GPU completa.

@@ -66,7 +66,7 @@ Qwen38Status qwen38_attention_plan(const Qwen38AttentionConfig *c,
         || !add_size(cache, blocks, &cache) || !mul_size(cache, sizeof(float), &bytes)
         || !add_size(bytes, aligned_metadata(sizeof(Qwen38AttentionState)), &p->cache_bytes))
         return report(e, Q38_OVERFLOW);
-    /* Reserve one token of future C2 prep, then reduction + selection.
+    /* Reserve one token of C2 prep, then reduction + selection.
      * No allocation per token and no dense attention matrix. */
     if (!mul_size(c->heads, c->head_dim, &scratch) || !mul_size(scratch, 2, &scratch)
         || !add_size(scratch, kd, &scratch)
@@ -357,6 +357,9 @@ Qwen38Status qwen38_attention_cpu(Qwen38AttentionTicket *t,
     return report(e,code);
 }
 
+float q38d_rope_frequency(float theta, uint32_t i, uint32_t rotary) {
+    return 1.0f / powf(theta, (float)(2 * i) / (float)rotary);
+}
 Qwen38Status q38d_rope(float *x, uint32_t heads, uint32_t dim,
                       uint32_t rotary, uint32_t pos, float theta) {
     if (!x || !heads || !dim || !rotary || rotary % 2 || rotary > dim)
@@ -369,7 +372,7 @@ Qwen38Status q38d_rope(float *x, uint32_t heads, uint32_t dim,
         for (uint32_t i = 0; i < rotary / 2; ++i) {
             /* Match default HF frequency construction: reciprocal pow,
              * then F32 position multiplication, not a half-angle variant. */
-            float inv = 1.0f / powf(theta, (float)(2 * i) / (float)rotary);
+            float inv = q38d_rope_frequency(theta,i,rotary);
             float angle = (float)pos * inv;
             float c = cosf(angle), s = sinf(angle);
             float a = row[i], b = row[i + rotary / 2];
