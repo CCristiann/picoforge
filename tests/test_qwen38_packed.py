@@ -6,6 +6,7 @@ reference fails the suite; these tests never silently replace the oracle.
 import argparse
 import importlib.util
 import json
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -81,7 +82,7 @@ class PackedReferenceTests(unittest.TestCase):
         if NATIVE is None:
             self.skipTest("native harness not requested")
         rng = np.random.default_rng(3812)
-        for kind in (0, 1, 30, 8, 10):
+        for kind in (0, 1, 30, 8, 10, 16):
             block = oracle.FORMATS[kind][0]
             for m, n, logical in [(1,1,1), (2,7,255), (7,33,257),
                                    (32,7,640), (33,7,640), (128,1,2560)]:
@@ -101,6 +102,14 @@ class PackedReferenceTests(unittest.TestCase):
                     self.assertTrue(np.all(actual[0] == 0))
                     if m > 1:
                         np.testing.assert_array_equal(actual[1],weights[expert*n:(expert+1)*n,logical-1])
+
+    def test_native_grid_matches_canonical_hash(self):
+        if NATIVE is None:
+            self.skipTest("native constants not requested")
+        text = (ROOT / "src/qwen38_iq2_grid.inc").read_text()
+        raw = b"".join(int(word,16).to_bytes(8,"little") for word in re.findall(r"0x[0-9a-f]+",text))
+        self.assertEqual(len(raw),2048)
+        self.assertEqual(oracle.digest(raw),oracle.IQ2_GRID_SHA256)
 
     def decode(self, data, kind=10, columns=256, rows=1):
         expected = oracle.decode(REFERENCE, data, kind, columns, rows)
@@ -385,6 +394,7 @@ if __name__ == "__main__":
             report["source_sha256"].update({str(p.relative_to(ROOT)): oracle.digest(p.read_bytes())
                 for p in [ROOT / "src/qwen38_packed.c", ROOT / "src/qwen38_b_internal.h",
                           ROOT / "tests/test_qwen38_packed.c", ROOT / "src/qwen38_packed.h"]})
+            report["source_sha256"]["src/qwen38_iq2_grid.inc"] = oracle.digest((ROOT / "src/qwen38_iq2_grid.inc").read_bytes())
             report["product_metrics"] = PRODUCT_METRICS
         with args.report.open("x") as output:
             output.write(json.dumps(report, indent=2) + "\n")

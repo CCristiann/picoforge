@@ -1,6 +1,9 @@
 /* Native C11 packed rows. No file I/O, allocation, upstream decoder or GPU. */
 #include "qwen38_b_internal.h"
 #pragma STDC FP_CONTRACT OFF
+static const uint64_t q38_iq2_grid[256] = {
+#include "qwen38_iq2_grid.inc"
+};
 
 Qwen38Status q38_packed_layout_init(const GgufTensor *t, size_t logical,
                                    Q38PackedLayout *out, Qwen38Error *err) {
@@ -79,6 +82,20 @@ static float packed_value(const unsigned char *row, size_t column, uint32_t type
         int code = q8[2 + column % 32];
         if (code >= 128) code -= 256; /* No implementation-defined signed cast. */
         return half_value(q8) * (float)code;
+    }
+    if (type == 16) {
+        const unsigned char *iq = row + column / 256 * 66;
+        size_t lane = column % 256, slot = lane % 32 / 8;
+        const unsigned char *group = iq + 2 + lane / 32 * 8;
+        uint32_t bits = (uint32_t)little16(group + 4) | (uint32_t)little16(group + 6) << 16;
+        unsigned signs = (bits >> (7 * slot)) & 127u;
+        unsigned parity = signs;
+        parity ^= parity >> 4; parity ^= parity >> 2; parity ^= parity >> 1;
+        signs |= (parity & 1u) << 7;
+        unsigned magnitude = (unsigned)((q38_iq2_grid[group[slot]] >> (8 * (lane % 8))) & 255u);
+        float scale = half_value(iq) * (float)(2 * (bits >> 28) + 1) * 0.125f;
+        float value = scale * (float)magnitude;
+        return signs & (1u << (lane % 8)) ? -value : value;
     }
     const unsigned char *block = row + column / 256 * 84;
     size_t lane = column % 256;
