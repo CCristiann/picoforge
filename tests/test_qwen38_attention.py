@@ -365,6 +365,83 @@ class AttentionOracleTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 oracle.online_attention(self.cfg, {**result, name: replacement})
 
+    def test_indexer_relu_precedes_head_sum_without_head_softmax(self):
+        cfg = oracle.Config(budget=4)
+        x = oracle.synthetic(cfg, 12)
+        x.iq.fill(0)
+        x.iq[:, 0, -2] = 1
+        x.iq[:, 1, -1] = 1
+        x.ik.fill(0)
+        directions = np.array([[.8, .6], [.96, -.28], [-.6, .8]], dtype=np.float32)
+        x.ik[:, -2:] = np.repeat(directions, 4, axis=0)
+        x.gamma_iq.fill(1)
+        x.gamma_ik.fill(1)
+        result = self.evaluate(x, start=11, cfg=cfg)
+        # No rotated coordinates: evaluate the two independent dot products
+        # analytically, including RMS epsilon and input F32 rounding.
+        directions = directions.astype(np.float64)
+        key_norm = np.sqrt((directions ** 2).sum(-1) / cfg.index_dim + cfg.eps)
+        query_norm = np.sqrt(1 / cfg.index_dim + cfg.eps)
+        dots = directions / (key_norm[:, None] * query_norm)
+        expected = np.maximum(dots, 0).sum(-1)
+        np.testing.assert_allclose(result["indexer_scores_fp64_unscaled"][0], expected,
+                                   atol=2e-5, rtol=2e-5)
+        np.testing.assert_array_equal(np.flatnonzero(result["mask"][0]), np.arange(4))
+        # Softmax per head would select a DIFFERENT block on this fixture.
+        weights = np.exp(dots - dots.max(axis=0))
+        self.assertNotEqual(int((weights / weights.sum(axis=0)).sum(-1).argmax()), 0)
+        # Opposite heads must not cancel before ReLU. Block 2 is uniquely
+        # strongest by absolute projection; sum-then-ReLU gives all zeros.
+        x.iq[:, 0, -2] = 0
+        x.iq[:, 0, -1] = -1
+        x.ik[:, -2:] = np.repeat(np.array([[1, 0], [.8, .6], [0, 1]], np.float32), 4, axis=0)
+        result = self.evaluate(x, start=11, cfg=cfg)
+        np.testing.assert_array_equal(np.flatnonzero(result["mask"][0]), np.arange(8, 12))
+        np.testing.assert_allclose(result["indexer_scores_fp64_unscaled"][0],
+                                   np.array([0, .6, 1]) / (1 / cfg.index_dim + cfg.eps),
+                                   atol=2e-5, rtol=2e-5)
+
+    def test_ratio_one_single_block_and_oversized_budgets(self):
+        for cfg in (oracle.Config(ratio=1, budget=1), oracle.Config(budget=4),
+                    oracle.Config(budget=64)):
+            x = oracle.synthetic(cfg, 13)
+            full = self.evaluate(x, cfg=cfg)
+            for p, row in enumerate(full["mask"]):
+                complete, tail = divmod(p + 1, cfg.ratio)
+                expected_count = min(complete, cfg.budget // cfg.ratio) * cfg.ratio + tail
+                self.assertEqual(int(row.sum()), expected_count)
+                self.assertFalse(row[p + 1:].any())
+                self.assertTrue(row[complete * cfg.ratio:p + 1].all())
+                if complete:
+                    blocks = row[:complete * cfg.ratio].reshape(complete, cfg.ratio)
+                    np.testing.assert_array_equal(blocks.any(-1), blocks.all(-1))
+            for start, end in ((0, 3), (3, 4), (4, 9), (9, 13)):
+                chunk = self.evaluate(prefix(x, end), start=start, cfg=cfg)
+                np.testing.assert_array_equal(chunk["mask"], full["mask"][start:end, :end])
+                np.testing.assert_allclose(chunk["gated_eager"], full["gated_eager"][start:end],
+                                           atol=3e-5, rtol=2e-4)
+
+    def test_completing_a_block_preserves_past_queries_and_replaces_raw_tail(self):
+        before = self.evaluate(prefix(self.inputs, 11), start=8)
+        after = self.evaluate(prefix(self.inputs, 12), start=8)
+        np.testing.assert_array_equal(before["mask"], after["mask"][:3, :11])
+        np.testing.assert_allclose(before["gated_eager"], after["gated_eager"][:3],
+                                   atol=3e-5, rtol=2e-4)
+        self.assertEqual(len(before["pooled_last"]), 2)
+        self.assertEqual(len(after["pooled_last"]), 3)
+        np.testing.assert_array_equal(before["block_keys_last"], after["block_keys_last"][:2])
+        expected_pool = self.inputs.ik[8:12].astype(np.float64).mean(axis=0)
+        np.testing.assert_allclose(after["pooled_last"][-1], expected_pool, atol=1e-7, rtol=1e-6)
+        # Raw keys across the append boundary form one block. Norming or
+        # rotating a tail early and then pooling it would violate this check.
+        mutated = copy.deepcopy(prefix(self.inputs, 12))
+        mutated.ik[11] += 4
+        changed = self.evaluate(mutated, start=8)
+        np.testing.assert_array_equal(before["mask"], changed["mask"][:3, :11])
+        np.testing.assert_array_equal(before["block_keys_last"], changed["block_keys_last"][:2])
+        np.testing.assert_allclose(changed["pooled_last"][-1], expected_pool + 1,
+                                   atol=2e-7, rtol=1e-6)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -62,7 +62,7 @@
   },
   "verification": {
     "date": "2026-10-12",
-    "test_count": 24,
+    "test_count": 27,
     "device": "CPU only, one torch thread",
     "packages": {
       "numpy": "2.5.1",
@@ -87,7 +87,10 @@
       "GQA and partial rotary dimensions at real head shapes using synthetic data",
       "Global softmax normalization, large logits, elementwise sigmoid gate",
       "Source integrity, bounded allocations, export hashes and overwrite refusal",
-      "Online CPU candidate: tiles 1/3/8/32, splits 1/2/7/17, empty tiles/splits, rescaling and dense logsumexp"
+      "Online CPU candidate: tiles 1/3/8/32, splits 1/2/7/17, empty tiles/splits, rescaling and dense logsumexp",
+      "Analytical indexer head scores: ReLU before summing heads, opposing heads, no per-head softmax",
+      "Ratio one, one-block budget, oversized budget and whole-block selection across append",
+      "Append completes pooled raw-key block without changing earlier causal queries or completed blocks"
     ],
     "online_fp64_tolerance": {
       "atol": 1e-12,
