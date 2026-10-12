@@ -733,10 +733,13 @@ a una CPU di scrivere in un buffer Shared mentre la GPU lavora: lo scratch
 immutabile fino all'ultimo lettore resta un obbligo del chiamante. (4) Gli
 alias tra buffer Private sono rilevati solo dentro lo stesso buffer; gli alias
 via `MTLHeap` non sono modellati. (5) I componenti C/D/E/F **non** sono ancora
-collegati alla sessione: G0 offre il contratto, non gli adattatori. (6) Non ho
-rieseguito la suite completa v2 (richiede la preparazione degli asset del
-checkpoint): G0 aggiunge file nuovi e dichiarazioni additive, verificate a
-livello di compilazione/collegamento dei consumatori.
+collegati alla sessione: G0 offre il contratto, non gli adattatori. (6) La suite
+completa v2 (`make test-qwen38`: 169 test CPU A–F, gate GPU separati,
+composizioni su pesi reali) è stata rieseguita sulla base G0, con asset
+preparati dal checkpoint, senza skip e senza tolleranze allargate: tutto PASS
+in circa 7 minuti, log in `bench/qwen38_gpu_lifecycle_20261012/full-suite.log`.
+Non rieseguito: `make test-all` legacy sul Qwen3, che G0 non tocca (il motore
+`picoforge` si ricollega con il nuovo oggetto).
 
 **Ordine successivo:** adattatori C/E sul ticket comune, selezione D, prodotto
 indicizzato B e routing F come in [resume-v3.md](resume-v3.md); poi G2.
