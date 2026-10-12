@@ -131,3 +131,5 @@ test-qwen38:
  test-qwen38-e-cpu test-qwen38-f-cpu test-qwen38-a-gpu test-qwen38-b-gpu test-qwen38-c-gpu
 
 include tools/qwen38_v2.mk
+
+include tools/qwen38_g0.mk
