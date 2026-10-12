@@ -1,5 +1,7 @@
 /* Bounded binary fixture transport; compiled with ASan/UBSan. CPU only. */
 #include "qwen38_d_internal.h"
+#include "qwen38.h"
+#include "qwen38_packed.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -177,7 +179,11 @@ static void public_fixture(void) {
     assert(ends[chunks-1]==count);
     size_t hd=(size_t)c.heads*c.head_dim,kd=(size_t)c.kv_heads*c.head_dim;
     size_t id=(size_t)c.index_heads*c.index_dim, bd=(size_t)(count/c.ratio)*c.index_dim;
-    float *qg=read_floats(count*hd*2), *k=read_floats(count*kd), *v=read_floats(count*kd);
+    float *packed_qg=read_floats(count*hd*2), *k=read_floats(count*kd), *v=read_floats(count*kd);
+    size_t qp=2*hd+5; float *qg=malloc(count*qp*4); assert(qg);
+    for(size_t i=0;i<count*qp;++i) qg[i]=7654;
+    for(uint32_t i=0;i<count;++i) memcpy(qg+i*qp,packed_qg+i*hd*2,hd*8);
+    free(packed_qg);
     float *iq=read_floats(count*id), *ik=read_floats((size_t)count*c.index_dim);
     float *gq=read_floats(c.head_dim), *gk=read_floats(c.head_dim);
     float *giq=read_floats(c.index_dim), *gik=read_floats(c.index_dim);
@@ -194,8 +200,8 @@ static void public_fixture(void) {
     uint32_t begin=0;
     for (uint32_t j=0;j<chunks;++j) {
         assert(ends[j]>=begin && ends[j]<=count); uint32_t n=ends[j]-begin;
-        Qwen38AttentionInput in={.qg={qg+begin*hd*2,n*hd*8,4,{n,c.heads,2,c.head_dim},
-            {hd*8,(size_t)c.head_dim*8,(size_t)c.head_dim*4,4}},
+        Qwen38AttentionInput in={.qg={qg+begin*qp,n*qp*4,4,{n,c.heads,2,c.head_dim},
+            {qp*4,(size_t)c.head_dim*8,(size_t)c.head_dim*4,4}},
             .k=dense(k+begin*kd,n,c.kv_heads,c.head_dim,false), .v=dense(v+begin*kd,n,c.kv_heads,c.head_dim,false),
             .iq=dense(iq+begin*id,n,c.index_heads,c.index_dim,false), .ik=dense(ik+(size_t)begin*c.index_dim,n,1,c.index_dim,true),
             .gamma_q=gains[0],.gamma_k=gains[1],.gamma_iq=gains[2],.gamma_ik=gains[3]};
@@ -210,6 +216,8 @@ static void public_fixture(void) {
             Qwen38F32Mut short_out=y; short_out.capacity_bytes=0;
             assert(qwen38_attention_cpu(t,&in,short_out,w,&e)==Q38_CAPACITY);
             assert(qwen38_attention_cpu(t,&in,y,NULL,&e)==Q38_OWNER);
+            short_out=y; short_out.data=qg+begin*qp;
+            assert(qwen38_attention_cpu(t,&in,short_out,w,&e)==Q38_INVALID_ARGUMENT);
         }
         assert(qwen38_attention_state_info(s).valid);
         code=qwen38_attention_cpu(t,&in,y,w,&e); assert(e.code==code);
@@ -237,12 +245,71 @@ static void public_fixture(void) {
     write_items(q38d_cache_raw_index(s),4,(size_t)count*c.index_dim);
     write_items(q38d_cache_blocks(s),4,bd);
     write_items(trace,4,count*(2*hd+id));
+    const float *pq,*pg,*pi,*scores; const uint32_t *ids;
+    q38d_last_query(w,&pq,&pg,&pi,&scores,&ids);
+    uint32_t blocks_count=count/c.ratio, selected=blocks_count<c.token_budget/c.ratio ? blocks_count : c.token_budget/c.ratio;
+    write_items(scores,4,blocks_count); write_items(ids,4,(size_t)selected*c.ratio+count%c.ratio);
+    if(code==Q38_OK) {
+        assert(qwen38_attention_reset(s,2,&e)==Q38_OK);
+        Qwen38AttentionInput first={.qg={qg,qp*4,4,{1,c.heads,2,c.head_dim},
+            {qp*4,(size_t)c.head_dim*8,(size_t)c.head_dim*4,4}},
+            .k=dense(k,1,c.kv_heads,c.head_dim,false), .v=dense(v,1,c.kv_heads,c.head_dim,false),
+            .iq=dense(iq,1,c.index_heads,c.index_dim,false), .ik=dense(ik,1,1,c.index_dim,true),
+            .gamma_q=gains[0],.gamma_k=gains[1],.gamma_iq=gains[2],.gamma_ik=gains[3]};
+        float *replay=calloc(hd,4); assert(replay);
+        Qwen38F32Mut y={replay,hd*4,3,{1,c.heads,c.head_dim},{hd*4,(size_t)c.head_dim*4,4}};
+        Qwen38AttentionTicket *t;
+        assert(qwen38_attention_begin(s,0,1,1,&t,&e)==Q38_STALE);
+        assert(qwen38_attention_begin(s,0,1,2,&t,&e)==Q38_OK);
+        assert(qwen38_attention_cpu(t,&first,y,w,&e)==Q38_OK);
+        assert(!memcmp(replay,out,hd*4)); free(replay);
+        assert(qwen38_attention_finish(t,true,&e)==Q38_OK);
+        for(uint32_t i=0;i<count;++i) for(size_t d=2*hd;d<qp;++d) assert(qg[i*qp+d]==7654);
+    }
     assert(qwen38_attention_destroy(s,w,&e)==Q38_OK);
     free(ends); free(qg); free(k); free(v); free(iq); free(ik); free(gq); free(gk); free(giq); free(gik);
     free(out); free(trace); assert(getchar()==EOF);
 }
 
+static void catalog(const char *path, uint32_t layer) {
+    Gguf g; gguf_open(path,&g);
+    Qwen38Config *cfg; Qwen38Weights *weights; Qwen38Error e;
+    assert(qwen38_config_load(&g,&cfg,&e)==Q38_OK);
+    const Qwen38ConfigView *v=qwen38_config_view(cfg); const Qwen38Layer *l;
+    assert(qwen38_config_layer(cfg,layer,&l,&e)==Q38_OK && l->kind==Q38_LAYER_QSA && l->domain==Q38_TRUNK);
+    assert(qwen38_weights_describe(&g,cfg,&weights,&e)==Q38_OK);
+    Qwen38AttentionConfig c=v->attention; c.ratio=l->compress_ratio;
+    printf("{\"hidden\":%u,\"config\":{\"width\":%u,\"heads\":%u,\"kv_heads\":%u,\"head_dim\":%u,"
+           "\"index_heads\":%u,\"index_dim\":%u,\"ratio\":%u,\"budget\":%u,\"rotary_dim\":%u,\"eps\":%.9g,\"theta\":%.9g},\"tensors\":[",
+           v->hidden_size,v->hidden_size,c.heads,c.kv_heads,c.head_dim,c.index_heads,c.index_dim,
+           c.ratio,c.token_budget,c.rotary_dim,(double)c.rms_eps,(double)c.rope_theta);
+    Qwen38Role roles[]={Q38_ATTN_QG,Q38_ATTN_K,Q38_ATTN_V,Q38_INDEX_Q,Q38_INDEX_K,Q38_ATTN_OUT,
+        Q38_ATTN_Q_NORM,Q38_ATTN_K_NORM,Q38_INDEX_Q_NORM,Q38_INDEX_K_NORM};
+    for(size_t i=0;i<10;++i) {
+        const Qwen38Tensor *t; assert(qwen38_weights_get(weights,layer,roles[i],&t,&e)==Q38_OK);
+        const GgufTensor *s=&t->storage;
+        printf("%s{\"name\":\"%s\",\"type\":%u,\"k\":%zu,\"rows\":%zu,\"offset\":%zu,\"bytes\":%zu}",
+            i?",":"",s->name,s->type,s->shape[0],s->rank==1?1:s->shape[1],s->file_offset,s->bytes);
+    }
+    puts("]}"); qwen38_weights_free(weights); qwen38_config_free(cfg); gguf_close(&g);
+}
+static void linear_fixture(const uint32_t *d) {
+    size_t m=d[0],rows=d[1],k=d[2];
+    const GgufFormat *format=gguf_format(d[3]); assert(format && k%format->block==0);
+    size_t bytes=k/format->block*format->bytes*rows; assert(bytes<=32u*1024u*1024u);
+    unsigned char *raw=malloc(bytes); assert(raw); read_items(raw,1,bytes);
+    float *x=read_floats(m*k),*y=calloc(m*rows,4); assert(y);
+    GgufTensor t={.type=d[3],.rank=2,.shape={k,rows,1,1},.bytes=bytes};
+    Q38PackedCpuView weight={.span={raw,bytes}}; Qwen38Error e;
+    assert(q38_packed_layout_init(&t,k,&weight.layout,&e)==Q38_OK);
+    Qwen38F32 input={x,m*k*4,2,{m,k},{k*4,4}};
+    Qwen38F32Mut out={y,m*rows*4,2,{m,rows},{rows*4,4}};
+    Qwen38Status code=q38_packed_matmul(&weight,0,input,out,&e);
+    write_items(&code,sizeof(code),1); write_items(y,4,m*rows); free(raw); free(x); free(y);
+}
+
 int main(int argc, char **argv) {
+    if(argc==4 && !strcmp(argv[1],"catalog")) { catalog(argv[2],(uint32_t)strtoul(argv[3],NULL,10)); return 0; }
     assert(argc == 2);
     if (!strcmp(argv[1], "lifecycle")) { lifecycle(); puts("lifecycle OK"); return 0; }
     if (!strcmp(argv[1], "append")) { append_fixture(); return 0; }
@@ -250,6 +317,7 @@ int main(int argc, char **argv) {
     uint32_t dims[4];
     read_items(dims, sizeof(uint32_t), 4);
     for (size_t i = 0; i < 4; ++i) assert(dims[i] <= 32768);
+    if(!strcmp(argv[1],"linear")) { linear_fixture(dims); assert(getchar()==EOF); return 0; }
     Qwen38Status status;
     if (!strcmp(argv[1], "rope")) {
         float theta;

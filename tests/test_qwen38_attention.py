@@ -681,27 +681,7 @@ class NativeAttentionTests(unittest.TestCase):
 
 
     def public(self, cfg, x, ends):
-        config = struct.pack("=9I2f", cfg.heads, cfg.kv_heads, cfg.head_dim,
-                             cfg.index_heads, 1, cfg.index_dim, cfg.ratio, cfg.budget,
-                             cfg.rotary_dim, cfg.eps, cfg.theta)
-        n = len(x.qg)
-        payload = config + struct.pack("=2I", n, len(ends)) + np.array(ends, np.uint32).tobytes()
-        payload += b"".join(a.tobytes() for a in x.arrays().values())
-        run = subprocess.run([str(NATIVE), "public"], input=payload, capture_output=True, check=True)
-        self.assertEqual(run.stderr, b"")
-        code, = struct.unpack("=i", run.stdout[:4])
-        values = np.frombuffer(run.stdout[4:], np.float32)
-        offset = 0
-        result = {}
-        for key, shape in (("out", (n, cfg.heads, cfg.head_dim)),
-                           ("k", (n, cfg.kv_heads, cfg.head_dim)), ("ik", (n, cfg.index_dim)),
-                           ("blocks", (n // cfg.ratio, cfg.index_dim)),
-                           ("trace", (n, 2 * cfg.heads * cfg.head_dim + cfg.index_heads * cfg.index_dim))):
-            size = int(np.prod(shape))
-            result[key] = values[offset:offset+size].reshape(shape)
-            offset += size
-        self.assertEqual(offset, len(values))
-        return code, result
+        return oracle.native_public(NATIVE,cfg,x,ends)
 
     def test_public_prep_gain_gate_pooling_and_chunk_equivalence(self):
         for case in ("tiny", "real-shape"):
@@ -738,6 +718,48 @@ class NativeAttentionTests(unittest.TestCase):
             x.arrays()[name].flat[-1] = np.nan
             code, _ = self.public(cfg, x, [3,7,13])
             self.assertEqual(code,16,name)
+
+    def test_public_ties_preserve_contract_and_record_uncertain_margin(self):
+        cfg=oracle.Config()
+        records=[]
+        for near in (False,True):
+            x=oracle.synthetic(cfg,13); x.qg.fill(0); x.iq.fill(0); x.ik.fill(0)
+            if near:
+                x.iq[..., -1]=1; x.ik[..., -2]=.8
+                step=np.spacing(np.float32(.6))
+                x.ik[:, -1]=np.repeat(np.array([.6+step,.6,.6-step,.6],np.float32),4)[:13]
+            x.gamma_iq.fill(1); x.gamma_ik.fill(1)
+            ref=oracle.evaluate(self.hf,cfg,x)
+            code,got=self.public(cfg,x,[3,7,11,12,13]); self.assertEqual(code,0)
+            order=np.lexsort((np.arange(3),-got["scores"]))
+            ids=np.r_[np.concatenate([np.arange(b*4,b*4+4) for b in sorted(order[:2])]),12]
+            np.testing.assert_array_equal(got["ids"],ids)
+            expected=np.repeat(x.v[ids].astype(np.float64).mean(0),2,axis=0)*.5
+            np.testing.assert_allclose(got["out"][-1],expected,atol=3e-5,rtol=2e-4)
+            scores64=ref["indexer_scores_fp64_unscaled"][-1]
+            rank=np.sort(scores64)[::-1]; gap=float(rank[1]-rank[2])
+            error=float(np.max(np.abs(got["scores"]-scores64)))
+            records.append(dict(near=near,gap=gap,max_score_error=error,
+                scores_fp32=got["scores"].tolist(),scores_fp64=scores64.tolist(),
+                selected_native=got["ids"].tolist(),selected_hf=np.flatnonzero(ref["mask"][-1]).tolist(),
+                end_to_end_parity_certified=False,
+                decision="Exact FP32 contract tested; boundary ties/near-ties require integration review"))
+            self.assertLess(gap,4e-4)
+        folder=Path(tempfile.mkdtemp(prefix="selection-",dir=ROOT/"build/qwen38-d"))
+        (folder/"manifest.json").write_text(json.dumps(records,indent=2)+"\n")
+
+    def test_public_first_sparse_boundary(self):
+        cfg=oracle.Config(budget=2048); x=oracle.synthetic(cfg,2053)
+        x.iq.fill(0); x.iq[..., -1]=1; x.ik.fill(0)
+        coords=np.linspace(.1,.9,514,dtype=np.float32).repeat(4)[:2053]
+        x.ik[:, -1]=coords; x.ik[:, -2]=np.sqrt(1-coords**2)
+        results=[]
+        for ends in ([2053],[0,1,1023,1024,1025,2047,2048,2051,2052,2053]):
+            code,got=self.public(cfg,x,ends); self.assertEqual(code,0); results.append(got)
+        np.testing.assert_array_equal(results[0]["out"],results[1]["out"])
+        ref=oracle.evaluate(self.hf,cfg,x,2046)
+        np.testing.assert_allclose(results[0]["out"][2046:],ref["gated_fp64"],atol=3e-5,rtol=2e-4)
+        np.testing.assert_array_equal(results[0]["ids"],np.flatnonzero(ref["mask"][-1]))
 
 
 if __name__ == "__main__":

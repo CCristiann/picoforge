@@ -730,3 +730,57 @@ sono distinti. Nessuna tabella n-gram completa mappata da D.
   nessuna dichiarazione di parità HF o test GPU eseguito finché mancano.
 - Cache 32K, dtype ridotti e prestazioni restano incrementi da verificare.
   La SPEC non conclude che un kernel funzionante basti alla generazione nativa.
+
+## Consegna D v2 — CPU pubblica e slice A+B (2026-10-12)
+
+Base operativa `6a6b886e985185d7c9104eda888e6a406553aedf`, branch
+`impl/qwen38-d-v2`, worktree `../picoforge-d-v2`. Nessun cherry-pick,
+header pubblico o build condivisa modificati. Le dipendenze C2 sono ora
+presenti: `qwen38_attention_cpu` usa RMS diretto e sigmoid di C e il core D.
+Prep Q/gate interleaved, cache FP32, IKraw pooled prima di norma/RoPE,
+posizione iniziale del blocco; il ticket pubblica `next_pos` solo a finish.
+Preflight strutturale prima delle scritture, errore numerico invalida lo
+stato, reset richiede nuova epoch. Nessuna allocazione per token.
+
+44 test CPU passati con ASan/UBSan: gain/gate non banali, prep Q/K/IQ,
+pooling, stride/canary, errori, causalità, append non allineato, equivalenza
+bitwise fra chunk, reset/replay, prima selezione sparsa e near-tie. I report
+`build/qwen38-d/selection-*/manifest.json` registrano margine, score FP32/64 e
+ID HF/nativi; near-tie non certificati come parità end-to-end.
+
+Comando harness v2 da integrare a cura del coordinatore (il target v1
+non include le nuove dipendenze A+B+C):
+
+```sh
+mkdir -p build/qwen38-d
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -Isrc tests/test_qwen38_attention.c \
+  src/qwen38_attention.c src/qwen38_base.c src/qwen38_config.c \
+  src/qwen38_weights.c src/qwen38_packed.c src/gguf.c src/gguf_reader.c \
+  src/gguf_plan.c src/util.c -lm -o build/qwen38-d/test_attention
+Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+"$Q38_PY" tests/test_qwen38_attention.py --native build/qwen38-d/test_attention
+"$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- "$Q38_PY" \
+  tools/oracle/qwen38_attention.py \
+  --slice-checkpoint /Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
+  --native build/qwen38-d/test_attention \
+  --packed-reference /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-b/reference/reference \
+  --output build/qwen38-d/slice-01
+```
+
+La directory output deve essere nuova; il sorgente HF fissato deve già essere
+in `build/qwen38-attention/modeling_qwen4_exp.py`. Slice eseguita col lock
+comune: 54.750.848 byte letti, cap 64 MiB di payload/256 MiB temporanei
+numerici (runtime Python escluso), niente mapping/checksum completo. Catalogo
+A layer 3, sei proiezioni B contro DwarfStar indipendente+FP64 sul medesimo
+input, prep C/D contro HF e SDPA FP64. Cinque token, schedule 5, 1+1+1+1+1,
+1+2+2: uscite identiche bitwise. Errore attention massimo `4.8698728e-8`;
+massimo errore proiezioni `3.5150914e-7`, massimo rapporto al bound B
+`0.00094353`. Layer 27/47: solo piccoli probe di offset/decoder indipendente,
+non layer completi. Manifest con offset, SHA delle slice e identità del
+checkpoint già verificato; fixture SHA256
+`946fd83498acbce9097460743f0d9a8e56184e82847dbe9ca2120b9cf3d8108a`.
+Attivazioni X sintetiche, pesi Q2 effettivi: nessuna misura di perdita BF16,
+nessun logit/generazione completa. Lo sparse path reale oltre 2051 token è
+verificato con fixture sintetica piccola, non con il layer reale completo.
