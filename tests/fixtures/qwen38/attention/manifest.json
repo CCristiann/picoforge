@@ -2,8 +2,8 @@
   "schema_version": 1,
   "component": "D CPU oracle",
   "base_spec_commit": "f788b1588f9e7fe168f9cfa5ef582cade0468277",
-  "integration_base": null,
-  "status": "Independent oracle and tests only; shared interfaces remain provisional",
+  "integration_base": "c674b23bd1377b2ce0acef2d06fac8b160809446",
+  "status": "Native D core in increments; public contracts follow integration v1",
   "source": {
     "repository": "https://github.com/huggingface/transformers",
     "revision": "db2304e8694db3ecd6f39d353beba361688afe97",
@@ -58,11 +58,12 @@
     "first_use": "PYTHON tools/oracle/qwen38_attention.py --fetch-source",
     "tests": "PYTHON tests/test_qwen38_attention.py -v",
     "fixture": "PYTHON tools/oracle/qwen38_attention.py --case CASE --output build/qwen38-attention/NEW_DIRECTORY",
-    "notes": "Replace PYTHON with the existing absolute interpreter path and CASE with a recipe name. Never overwrite output; tests do not fetch implicitly. No Makefile changes required."
+    "notes": "Replace PYTHON with the existing absolute interpreter path and CASE with a recipe name. Never overwrite output; tests do not fetch implicitly. No Makefile changes required.",
+    "native_tests": "PYTHON tests/test_qwen38_attention.py --native build/qwen38-d/test_attention -v"
   },
   "verification": {
     "date": "2026-10-12",
-    "test_count": 27,
+    "test_count": 30,
     "device": "CPU only, one torch thread",
     "packages": {
       "numpy": "2.5.1",
@@ -95,10 +96,11 @@
     "online_fp64_tolerance": {
       "atol": 1e-12,
       "rtol": 1e-12
-    }
+    },
+    "native": "C11 clang -O2 -ffp-contract=off -fsanitize=address,undefined; warnings as errors"
   },
   "limits": [
-    "No C or Metal implementation, GPU execution, checkpoint payload read or benchmark",
+    "No Metal execution, checkpoint payload read or benchmark; native core tested on synthetic prepared inputs",
     "No comparison with an installed full qwen4_exp module; pinned extracted methods are executed",
     "Observed artifact hashes identify this environment's outputs; numerical tolerances govern other implementations",
     "Raw-prefix cache hook is an oracle adapter, not native session lifetime/reset validation",
@@ -106,6 +108,7 @@
     "Exact HF top-k ties have unspecified order; no native lowest-index tie rule is claimed",
     "Dynamic RoPE, multimodality, arbitrary padding, non-divisible budgets and F16/BF16 caches are excluded",
     "Synthetic inputs and same-checkpoint arithmetic do not measure Q2 compression loss",
-    "candidate_online_* arrays are diagnostic candidate outputs, not an independent reference; no native tiled implementation"
+    "candidate_online_* arrays are diagnostic candidate outputs, not an independent reference; no native tiled implementation",
+    "Full projected-input preparation waits for C2 RMSNorm; no duplicate normalization in D"
   ]
 }

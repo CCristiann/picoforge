@@ -7,6 +7,8 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import struct
+import subprocess
 
 import numpy as np
 import torch
@@ -16,6 +18,7 @@ sys.path.insert(0, str(ROOT / "tools/oracle"))
 import qwen38_attention as oracle
 
 SOURCE = ROOT / "build/qwen38-attention/modeling_qwen4_exp.py"
+NATIVE = None  # Explicit --native runs the sanitized C harness, never a stub.
 
 
 def prefix(inputs, length):
@@ -443,9 +446,73 @@ class AttentionOracleTests(unittest.TestCase):
                                    atol=2e-7, rtol=1e-6)
 
 
+class NativeAttentionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if NATIVE is None:
+            raise unittest.SkipTest("Pass --native build/qwen38-d/test_attention for C parity")
+        torch.set_num_threads(1)
+        cls.hf = oracle.load_reference(SOURCE)
+
+    def call(self, mode, dims, *arrays, dtype=np.float32):
+        payload = struct.pack("=4I", *dims) + b"".join(x.tobytes() for x in arrays)
+        run = subprocess.run([str(NATIVE), mode], input=payload, capture_output=True, check=True)
+        self.assertEqual(run.stderr, b"")
+        code, = struct.unpack("=i", run.stdout[:4])
+        return code, np.frombuffer(run.stdout[4:], dtype=dtype)
+
+    def test_native_rope_matches_official_positions(self):
+        cfg = oracle.Config()
+        x = oracle.synthetic(cfg, 8193)
+        for pos in (0, 1, 3, 4, 1024, 2048, 8192):
+            result = oracle.evaluate(self.hf, cfg, prefix(x, pos + 1), pos)
+            raw = x.qg[pos, :, 0].astype(np.float64)
+            norm = raw / np.sqrt(np.mean(raw ** 2, -1, keepdims=True) + cfg.eps) * x.gamma_q
+            code, got = self.call("rope", (cfg.heads, cfg.head_dim, cfg.rotary_dim, pos),
+                                  np.array([cfg.theta], np.float32), norm.astype(np.float32))
+            self.assertEqual(code, 0)
+            np.testing.assert_allclose(got.reshape(cfg.heads, cfg.head_dim), result["q"][0],
+                                       atol=2e-5, rtol=2e-5)
+
+    def test_native_scores_and_selection_match_independent_reference(self):
+        cfg = oracle.Config()
+        result = oracle.evaluate(self.hf, cfg, oracle.synthetic(cfg, 25))
+        for pos in range(25):
+            n = (pos + 1) // cfg.ratio
+            code, scores = self.call("scores", (cfg.index_heads, cfg.index_dim, n, 0),
+                                     result["iq"][pos], result["block_keys_last"][:n])
+            self.assertEqual(code, 0)
+            reference = result["indexer_scores_fp64_unscaled"][pos, :n]
+            np.testing.assert_allclose(scores, reference, atol=2e-4, rtol=2e-5)
+            code, ids = self.call("select", (n, 2, 0, 0), scores, dtype=np.uint32)
+            self.assertEqual(code, 0)
+            expected = np.sort(np.lexsort((np.arange(n), -scores))[:2])
+            np.testing.assert_array_equal(ids, expected)
+            if n > 2:
+                ranked = np.sort(reference)[::-1]
+                gap = ranked[1] - ranked[2]
+                error = np.max(np.abs(scores - reference))
+                if gap > 2 * error:
+                    mask = result["mask"][pos, :n * 4].reshape(n, 4).all(-1)
+                    np.testing.assert_array_equal(ids, np.flatnonzero(mask))
+
+    def test_native_exact_ties_and_nonfinite_scores(self):
+        for values in ([0, -0., 0, 0, 0], [3, 3, 1, 4, 4], [1, 2, 3, 4, 5]):
+            scores = np.array(values, np.float32)
+            for budget in (1, 2, 3, 5, 8):
+                code, ids = self.call("select", (5, budget, 0, 0), scores, dtype=np.uint32)
+                self.assertEqual(code, 0)
+                np.testing.assert_array_equal(ids, np.sort(np.lexsort((np.arange(5), -scores))[:budget]))
+        for value in (np.nan, np.inf, -np.inf):
+            code, _ = self.call("select", (1, 1, 0, 0), np.array([value], np.float32), dtype=np.uint32)
+            self.assertEqual(code, 16)  # Q38_NONFINITE, contract v1.
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE)
+    parser.add_argument("--native", type=Path)
     args, remaining = parser.parse_known_args()
     SOURCE = args.source
+    NATIVE = args.native.resolve() if args.native else None
     unittest.main(argv=[sys.argv[0], *remaining])
