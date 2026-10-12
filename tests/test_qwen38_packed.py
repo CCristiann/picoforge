@@ -24,6 +24,8 @@ spec.loader.exec_module(oracle)
 REFERENCE = None
 NATIVE = None
 PRODUCT_METRICS = []
+SLICE_DIRECTORIES = []
+SLICE_RESULTS = []
 
 
 def packed_fixture(kind, columns, count, rng):
@@ -78,6 +80,25 @@ def check_product(actual, weights, x, logical, label):
 
 
 class PackedReferenceTests(unittest.TestCase):
+    def test_native_real_slices(self):
+        if NATIVE is None or not SLICE_DIRECTORIES:
+            self.skipTest("native harness and explicit slice directories required")
+        for directory in SLICE_DIRECTORIES:
+            manifest = json.loads((directory / "manifest.json").read_text())
+            replayed = oracle.replay_slices(REFERENCE,directory)
+            for record in manifest["records"]:
+                blobs = {name:(directory / info["file"]).read_bytes()
+                         for name,info in record["artifacts"].items()}
+                kind, physical, logical = manifest["kind"], record["k_physical"], record["k_logical"]
+                values = self.decode(blobs["packed"],kind,physical,1)
+                self.assert_bits(values,np.frombuffer(blobs["decoded.f32"],dtype="<f4"))
+                x = np.frombuffer(blobs["input.f32"],dtype="<f4").reshape(record["input_rows"],logical)
+                actual = native_product(blobs["packed"],kind,physical,logical,1,1,0,x)
+                check_product(actual,values,x,logical,
+                              f"real:{record['tensor']}:expert{record['expert']}:row{record['row']}")
+            SLICE_RESULTS.append(dict(directory=str(directory),kind=manifest["kind"],rows=replayed,
+                payload_bytes=manifest["bytes_read"],manifest_sha256=oracle.digest((directory/"manifest.json").read_bytes())))
+
     def test_native_matmul_formats_shapes_strides_and_experts(self):
         if NATIVE is None:
             self.skipTest("native harness not requested")
@@ -374,10 +395,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--native", type=Path, help="also check the native CPU harness")
+    parser.add_argument("--slices", type=Path, action="append", default=[])
     parser.add_argument("--report", type=Path)
     args, remaining = parser.parse_known_args()
     REFERENCE = args.reference.resolve()
     NATIVE = args.native.resolve() if args.native else None
+    SLICE_DIRECTORIES = [p.resolve() for p in args.slices]
     program = unittest.main(argv=[sys.argv[0], *remaining], exit=False)
     result = program.result
     if args.report:
@@ -396,6 +419,7 @@ if __name__ == "__main__":
                           ROOT / "tests/test_qwen38_packed.c", ROOT / "src/qwen38_packed.h"]})
             report["source_sha256"]["src/qwen38_iq2_grid.inc"] = oracle.digest((ROOT / "src/qwen38_iq2_grid.inc").read_bytes())
             report["product_metrics"] = PRODUCT_METRICS
+            report["real_slices"] = SLICE_RESULTS
         with args.report.open("x") as output:
             output.write(json.dumps(report, indent=2) + "\n")
     sys.exit(0 if result.wasSuccessful() else 1)

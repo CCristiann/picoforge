@@ -176,6 +176,22 @@ def mathematical_rows(packed, kind, columns, *, grid=None):
     """
     import numpy as np
 
+    if kind in (0, 1, 8, 30):
+        block, size = FORMATS[kind]
+        if (columns <= 0 or columns % block or not len(packed) or
+                len(packed) % (columns // block * size) or len(packed) > BYTE_LIMIT or
+                len(packed) // size * block * 4 > BYTE_LIMIT):
+            raise ValueError("invalid scalar/Q8_0 row extent")
+        if kind == 0:
+            values = np.frombuffer(packed, dtype="<f4")
+        elif kind == 1:
+            values = np.frombuffer(packed, dtype="<f2").astype("<f4")
+        elif kind == 30:
+            values = (np.frombuffer(packed,dtype="<u2").astype("<u4") << 16).view("<f4")
+        else:
+            raw = np.frombuffer(packed,dtype=np.uint8).reshape(-1,34)
+            values = raw[:,:2].copy().view("<f2").astype(np.float32) * raw[:,2:].view(np.int8)
+        return values.reshape(-1,columns)
     if kind not in (10, 16) or columns <= 0 or columns % 256:
         raise ValueError("expected Q2_K or IQ2_XXS block-aligned physical rows")
     block_bytes = FORMATS[kind][1]
@@ -215,8 +231,8 @@ def extract_slices(reference, checkpoint, output, kind):
     import numpy as np
 
     checkpoint, output = Path(checkpoint).resolve(), Path(output).resolve()
-    if kind not in (10, 16) or not output.is_relative_to(ROOT / "build"):
-        raise ValueError("choose Q2_K/IQ2_XXS and an isolated build output directory")
+    if kind not in FORMATS or not output.is_relative_to(ROOT / "build"):
+        raise ValueError("choose an ordinary format and an isolated build output directory")
     verification = json.loads((ROOT / "bench/qwen38_q2_20261011_phase0/checkpoint.verification.json").read_text())
     if (verification["matched"] is not True or verification["sha256"] !=
             "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9"):
@@ -243,7 +259,7 @@ def extract_slices(reference, checkpoint, output, kind):
         logical = width if kind == 10 else hidden
         physical, nrows = ((width + 255) // 256 * 256, hidden) if kind == 10 else (hidden, width)
         selections = []
-        for layer in sorted({0, (trunk - 1) // 2, trunk - 1}):
+        for layer in (sorted({0, (trunk - 1) // 2, trunk - 1}) if kind in (10,16) else []):
             for projection in (("down",) if kind == 10 else ("gate", "up")):
                 tensor = tensors[f"blk.{layer}.ffn_{projection}_exps.weight"]
                 if tensor["type_id"] != kind or tensor["shape"] != [physical, nrows, experts]:
@@ -255,6 +271,28 @@ def extract_slices(reference, checkpoint, output, kind):
                         if offset + row_bytes > tensor["file_offset"] + tensor["size_bytes"]:
                             raise ValueError("slice crosses tensor boundary")
                         selections.append((tensor, expert, row, offset, row_bytes))
+        scalar_names = {
+            0: ["blk.0.ffn_gate_inp.weight", "blk.0.ssm_alpha.weight",
+                "blk.0.hc_attn_norm.weight", "blk.3.indexer.q_norm.weight"],
+            1: ["output_hc_down.weight", "output_hc_up.weight", "blk.0.hc_attn_inject.weight"],
+            30: ["token_embd.weight"],
+            8: ["output.weight", "blk.0.attn_qkv.weight", "blk.0.ssm_out.weight",
+                "blk.0.ffn_gate_shexp.weight", "blk.0.ffn_up_shexp.weight", "blk.0.ffn_down_shexp.weight",
+                "blk.3.attn_q.weight", "blk.3.attn_k.weight", "blk.3.attn_v.weight",
+                "blk.3.attn_output.weight", "blk.3.indexer.q_proj.weight", "blk.3.indexer.k_proj.weight"]}
+        for name in scalar_names.get(kind, []):
+            tensor = tensors[name]
+            block, size = FORMATS[kind]
+            shape = tensor["shape"]
+            if tensor["type_id"] != kind or len(shape) not in (1,2) or shape[0] % block:
+                raise ValueError("scalar projection layout differs from pinned inventory")
+            nrows = shape[1] if len(shape) == 2 else 1
+            row_bytes = shape[0] // block * size
+            for row in sorted({0,nrows//2,nrows-1}):
+                offset = tensor["file_offset"] + row * row_bytes
+                if offset + row_bytes > tensor["file_offset"] + tensor["size_bytes"]:
+                    raise ValueError("slice crosses tensor boundary")
+                selections.append((tensor,0,row,offset,row_bytes))
         total_bytes = sum(s[4] for s in selections)
         if total_bytes > BYTE_LIMIT:
             raise ValueError("real slice read budget exceeded")
@@ -263,6 +301,8 @@ def extract_slices(reference, checkpoint, output, kind):
         rng = np.random.default_rng(3811)
         records = []
         for tensor, expert, row, offset, size in selections:
+            physical = tensor["shape"][0]
+            logical = width if kind == 10 else physical
             raw = pread_exact(fd, offset, size)
             values = decode(reference, raw, kind, physical, 1)
             mathematical = mathematical_rows(raw, kind, physical, grid=grid)
@@ -313,13 +353,13 @@ def replay_slices(reference, directory):
     if manifest.get("schema_version") != 1 or manifest.get("complete") is not True:
         raise ValueError("incomplete or unsupported slice manifest")
     kind = manifest["kind"]
-    if kind not in (10, 16) or not manifest["records"]:
+    if kind not in FORMATS or not manifest["records"]:
         raise ValueError("invalid slice suite")
     grid = iq2_grid(reference) if kind == 16 else None
     read_bytes = 0
     for record in manifest["records"]:
         columns, logical, rows = record["k_physical"], record["k_logical"], record["input_rows"]
-        sizes = {"packed": columns // 256 * FORMATS[kind][1], "decoded.f32": columns * 4,
+        sizes = {"packed": columns // FORMATS[kind][0] * FORMATS[kind][1], "decoded.f32": columns * 4,
                  "input.f32": rows * logical * 4, "product.f64": rows * 8, "sum_abs.f64": rows * 8}
         if set(record["artifacts"]) != set(sizes):
             raise ValueError("incomplete slice artifacts")
@@ -360,7 +400,7 @@ if __name__ == "__main__":
     slices.add_argument("reference", type=Path)
     slices.add_argument("checkpoint", type=Path)
     slices.add_argument("output", type=Path)
-    slices.add_argument("--kind", type=int, choices=[10, 16], required=True)
+    slices.add_argument("--kind", type=int, choices=list(FORMATS), required=True)
     replay = commands.add_parser("replay", help="verify saved fixtures without reading the checkpoint")
     replay.add_argument("reference", type=Path)
     replay.add_argument("directory", type=Path)
