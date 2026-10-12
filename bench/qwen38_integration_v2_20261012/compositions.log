@@ -1,0 +1,65 @@
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 env MTL_DEBUG_LAYER=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_compositions.py --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --metallib "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/picoforge.metallib"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+Composition reports: /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-integration/compositions.x80u980s
+Integration report: /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-integration/compositions.x80u980s/c-controls.json
+test_real_conv_gain_gates_state (__main__.run_control_tests.<locals>.ControlTests.test_real_conv_gain_gates_state) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 1.815s
+
+OK
+Integration report: /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-integration/compositions.x80u980s/c-synthetic-cpu.json
+test_01_cpu_intermediates_and_independent_oracle (__main__.run_composition_tests.<locals>.CompositionTests.test_01_cpu_intermediates_and_independent_oracle) ... ok
+test_02_token_chunk_reset_continuation (__main__.run_composition_tests.<locals>.CompositionTests.test_02_token_chunk_reset_continuation) ... ok
+test_03_explicit_fixture_and_provenance (__main__.run_composition_tests.<locals>.CompositionTests.test_03_explicit_fixture_and_provenance) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 1.209s
+
+OK
+Integration report: /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-integration/compositions.x80u980s/c-synthetic-gpu.json
+test_01_cpu_intermediates_and_independent_oracle (__main__.run_composition_tests.<locals>.CompositionTests.test_01_cpu_intermediates_and_independent_oracle) ... ok
+test_02_token_chunk_reset_continuation (__main__.run_composition_tests.<locals>.CompositionTests.test_02_token_chunk_reset_continuation) ... ok
+test_03_explicit_fixture_and_provenance (__main__.run_composition_tests.<locals>.CompositionTests.test_03_explicit_fixture_and_provenance) ... ok
+test_04_metal_composition (__main__.run_composition_tests.<locals>.CompositionTests.test_04_metal_composition) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 2.622s
+
+OK
+Integration report: /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-integration/compositions.x80u980s/c-real-0-cpu.json
+test_01_cpu_intermediates_and_independent_oracle (__main__.run_composition_tests.<locals>.CompositionTests.test_01_cpu_intermediates_and_independent_oracle) ... ok
+test_02_token_chunk_reset_continuation (__main__.run_composition_tests.<locals>.CompositionTests.test_02_token_chunk_reset_continuation) ... ok
+test_03_explicit_fixture_and_provenance (__main__.run_composition_tests.<locals>.CompositionTests.test_03_explicit_fixture_and_provenance) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 24.459s
+
+OK
+Integration report: /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-integration/compositions.x80u980s/c-real-0-gpu.json
+test_01_cpu_intermediates_and_independent_oracle (__main__.run_composition_tests.<locals>.CompositionTests.test_01_cpu_intermediates_and_independent_oracle) ... ok
+test_02_token_chunk_reset_continuation (__main__.run_composition_tests.<locals>.CompositionTests.test_02_token_chunk_reset_continuation) ... ok
+test_03_explicit_fixture_and_provenance (__main__.run_composition_tests.<locals>.CompositionTests.test_03_explicit_fixture_and_provenance) ... ok
+test_04_metal_composition (__main__.run_composition_tests.<locals>.CompositionTests.test_04_metal_composition) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 31.163s
+
+OK
+{"read_bytes": 54750848, "max_abs_attention_error": 4.869872800157516e-08}
+[
+  {
+    "chunk": 1,
+    "delta_max_abs": 1.1920928955078125e-07,
+    "delta_relative_l2": 3.270023398727062e-07,
+    "projection_bound_max_ratio": 0.0024052122769707925,
+    "native": "PASS: PLE total=2 chunk=1 peak_bytes=1029958"
+  },
+  {
+    "chunk": 2,
+    "delta_max_abs": 1.1920928955078125e-07,
+    "delta_relative_l2": 3.270023398727062e-07,
+    "projection_bound_max_ratio": 0.0024052122769707925,
+    "native": "PASS: PLE total=2 chunk=2 peak_bytes=1255638"
+  }
+]

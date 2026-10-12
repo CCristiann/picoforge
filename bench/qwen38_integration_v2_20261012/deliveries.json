@@ -1,0 +1,60 @@
+[
+  {
+    "branch": "impl/qwen38-c-v2",
+    "sha": "8a65af3beeb48eb046d0cbc95b522b3dba396959",
+    "files": [
+      "docs/specs/qwen38/C.md",
+      "src/qwen38_base.c",
+      "src/qwen38_c_internal.h",
+      "src/qwen38_gdn.c",
+      "src/qwen38_recurrent_gpu.m",
+      "tests/test_qwen38_recurrent.c",
+      "tests/test_qwen38_recurrent.m",
+      "tests/test_qwen38_recurrent.py",
+      "tools/oracle/qwen38_recurrent.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-d-v2",
+    "sha": "fcacfbcdef24f6502beb815caca1cf5a87378d0a",
+    "files": [
+      "docs/specs/qwen38/D.md",
+      "src/qwen38_attention.c",
+      "src/qwen38_attention.metal",
+      "src/qwen38_attention_gpu.m",
+      "src/qwen38_d_internal.h",
+      "tests/test_qwen38_attention.c",
+      "tests/test_qwen38_attention.m",
+      "tests/test_qwen38_attention.py",
+      "tools/oracle/qwen38_attention.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-e-v2",
+    "sha": "4257c9c156d29dcf35acbcf5b7239122a917d963",
+    "files": [
+      "docs/specs/qwen38/E.md",
+      "src/qwen38_ngram.c",
+      "src/qwen38_ngram_internal.h",
+      "src/qwen38_ple.c",
+      "tests/test_qwen38_ngram.c",
+      "tests/test_qwen38_ngram.py",
+      "tools/oracle/qwen38_ngram.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-f-v2",
+    "sha": "aa96e33fff92cd2f02064fde4adba187cd831d90",
+    "files": [
+      "docs/specs/qwen38/F.md",
+      "src/qwen38_f_internal.h",
+      "src/qwen38_moe.c",
+      "src/qwen38_moe.m",
+      "src/qwen38_moe.metal",
+      "tests/test_qwen38_moe.c",
+      "tests/test_qwen38_moe.m",
+      "tests/test_qwen38_moe.py",
+      "tools/oracle/qwen38_moe.py"
+    ]
+  }
+]

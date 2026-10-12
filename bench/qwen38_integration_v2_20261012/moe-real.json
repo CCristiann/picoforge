@@ -1,0 +1,44 @@
+[
+  {
+    "layer": 0,
+    "bytes_read": 28354560,
+    "workspace_bytes": 235592,
+    "y": {
+      "max_abs": 2.062844469026548e-09,
+      "max_rel": 0.0010908688704568202,
+      "nrmse": 1.2093517792237898e-06
+    },
+    "probability_error": 2.561137080192566e-09,
+    "probability_margin": 1.3077398762106895e-05,
+    "internal_margin": 1.3077398762106895e-05,
+    "max_projection_bound_ratio": 0.00452674493691278
+  },
+  {
+    "layer": 3,
+    "bytes_read": 28354560,
+    "workspace_bytes": 235592,
+    "y": {
+      "max_abs": 2.105199776493167e-09,
+      "max_rel": 0.0009997872899427643,
+      "nrmse": 1.2845263309164396e-06
+    },
+    "probability_error": 1.1641532182693481e-09,
+    "probability_margin": 7.40797258913517e-06,
+    "internal_margin": 5.752546712756157e-06,
+    "max_projection_bound_ratio": 0.00462105418585887
+  },
+  {
+    "layer": 47,
+    "bytes_read": 28354560,
+    "workspace_bytes": 235592,
+    "y": {
+      "max_abs": 2.2797298094429097e-09,
+      "max_rel": 0.01896455095280231,
+      "nrmse": 1.3792995733237418e-06
+    },
+    "probability_error": 4.656612873077393e-10,
+    "probability_margin": 8.598901331424713e-06,
+    "internal_margin": 7.308553904294968e-07,
+    "max_projection_bound_ratio": 0.003878896536657954
+  }
+]

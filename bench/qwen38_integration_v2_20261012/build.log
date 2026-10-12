@@ -1,0 +1,54 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -dynamiclib src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm -o build/qwen38-c/libcpu.dylib
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_recurrent.m src/qwen38_recurrent_gpu.m src/qwen38_packed_gpu.m src/gpu_weights.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -framework Metal -framework Foundation -lm -o build/qwen38-c/test_gpu
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer tests/test_qwen38_attention.c src/qwen38_attention.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm -o build/qwen38-d/test_attention
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer tests/test_qwen38_recurrent.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm -o build/qwen38-c/test_cpu
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_attention.m src/qwen38_attention.c src/qwen38_attention_gpu.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_recurrent_gpu.m src/qwen38_packed_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-d/test_attention_gpu
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer tests/test_qwen38_moe.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm -o build/qwen38-f/test_moe
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_moe.m src/qwen38_moe.c src/qwen38_moe.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_recurrent_gpu.m src/qwen38_packed_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-f/test_moe_gpu
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/bench.o src/bench.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/config.o src/config.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/eval.o src/eval.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/expert_cost.o src/expert_cost.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/generate.o src/generate.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/gguf.o src/gguf.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/gguf_plan.o src/gguf_plan.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/gguf_reader.o src/gguf_reader.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/json.o src/json.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/main.o src/main.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/model.o src/model.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/normalize.o src/normalize.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/ops.o src/ops.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/quant.o src/quant.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_attention.o src/qwen38_attention.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_base.o src/qwen38_base.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_chat.o src/qwen38_chat.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_config.o src/qwen38_config.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_conv.o src/qwen38_conv.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_gdn.o src/qwen38_gdn.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_moe.o src/qwen38_moe.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_ngram.o src/qwen38_ngram.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_packed.o src/qwen38_packed.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_ple.o src/qwen38_ple.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_tokenizer.o src/qwen38_tokenizer.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_unicode.o src/qwen38_unicode.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -c -o src/qwen38_weights.o src/qwen38_weights.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/safetensors.o src/safetensors.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/speculate.o src/speculate.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/tokenizer.o src/tokenizer.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/unicode_tables.o src/unicode_tables.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -c -o src/util.o src/util.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -c -o src/gpu_forward.m.o src/gpu_forward.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -c -o src/gpu_weights.m.o src/gpu_weights.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -c -o src/metal.m.o src/metal.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -fobjc-arc -c -o src/qwen38_attention_gpu.m.o src/qwen38_attention_gpu.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -fobjc-arc -c -o src/qwen38_moe.m.o src/qwen38_moe.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -fobjc-arc -c -o src/qwen38_packed_gpu.m.o src/qwen38_packed_gpu.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -fobjc-arc -c -o src/qwen38_recurrent_gpu.m.o src/qwen38_recurrent_gpu.m
+# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
+xcrun -sdk macosx metal -std=metal4.0 -c src/kernels.metal -o build/kernels.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c src/qwen38_packed.metal -o build/qwen38-b/packed.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c src/qwen38_recurrent.metal -o build/qwen38-c/recurrent.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c src/qwen38_attention.metal -o build/qwen38-d/attention.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c src/qwen38_moe.metal -o build/qwen38-f/moe.air
+xcrun -sdk macosx metallib build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air -o picoforge.metallib
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o picoforge src/bench.o src/config.o src/eval.o src/expert_cost.o src/generate.o src/gguf.o src/gguf_plan.o src/gguf_reader.o src/json.o src/main.o src/model.o src/normalize.o src/ops.o src/quant.o src/qwen38_attention.o src/qwen38_base.o src/qwen38_chat.o src/qwen38_config.o src/qwen38_conv.o src/qwen38_gdn.o src/qwen38_moe.o src/qwen38_ngram.o src/qwen38_packed.o src/qwen38_ple.o src/qwen38_tokenizer.o src/qwen38_unicode.o src/qwen38_weights.o src/safetensors.o src/speculate.o src/tokenizer.o src/unicode_tables.o src/util.o src/gpu_forward.m.o src/gpu_weights.m.o src/metal.m.o src/qwen38_attention_gpu.m.o src/qwen38_moe.m.o src/qwen38_packed_gpu.m.o src/qwen38_recurrent_gpu.m.o -lm -framework Metal -framework Foundation

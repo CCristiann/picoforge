@@ -1,0 +1,1237 @@
+{
+  "upstream": "812a950d7037ba93bb624b154030e9068afdce4d",
+  "torch": "2.13.0",
+  "numpy": "2.5.1",
+  "tests": 35,
+  "passed": true,
+  "upstream_sha256": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+  "adapter_sha256": "39159ba5035cad97212425e710f37cda9120942a6f8560dd02747e38e8041cd9",
+  "tests_sha256": "e29a79c335a22a977ef9d5fb80173189fdd05cd9d4aee2cc58532d98284ce970",
+  "cpu_library_sha256": "20d39cc49bcf17924deaaa0a44da4fed6cd0a0caad66a496ecf920c965c3455f",
+  "measurements": [
+    {
+      "tokens": 1023,
+      "comparison": "output",
+      "limit": 5e-05,
+      "max_abs": 8.642673492431641e-07,
+      "scaled_inf": 8.642673492431641e-07,
+      "scaled_rms": 4.3847473898948834e-07,
+      "worst_index": [
+        894,
+        0,
+        0
+      ]
+    },
+    {
+      "tokens": 1023,
+      "comparison": "state",
+      "limit": 5e-05,
+      "max_abs": 5.662441253662109e-07,
+      "scaled_inf": 4.601163951332364e-07,
+      "scaled_rms": 2.3904961182438094e-07,
+      "worst_index": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "tokens": 1024,
+      "comparison": "output",
+      "limit": 5e-05,
+      "max_abs": 9.5367431640625e-07,
+      "scaled_inf": 9.5367431640625e-07,
+      "scaled_rms": 4.353715390264423e-07,
+      "worst_index": [
+        1018,
+        0,
+        4
+      ]
+    },
+    {
+      "tokens": 1024,
+      "comparison": "state",
+      "limit": 5e-05,
+      "max_abs": 7.152557373046875e-07,
+      "scaled_inf": 5.57591072743889e-07,
+      "scaled_rms": 3.077713182726713e-07,
+      "worst_index": [
+        0,
+        3,
+        1
+      ]
+    },
+    {
+      "tokens": 1025,
+      "comparison": "output",
+      "limit": 5e-05,
+      "max_abs": 8.940696716308594e-07,
+      "scaled_inf": 8.940696716308594e-07,
+      "scaled_rms": 4.4782885924009885e-07,
+      "worst_index": [
+        704,
+        0,
+        1
+      ]
+    },
+    {
+      "tokens": 1025,
+      "comparison": "state",
+      "limit": 5e-05,
+      "max_abs": 9.08970832824707e-07,
+      "scaled_inf": 5.841098227584815e-07,
+      "scaled_rms": 2.6686482088075625e-07,
+      "worst_index": [
+        1,
+        4,
+        1
+      ]
+    },
+    {
+      "tokens": 8192,
+      "comparison": "output",
+      "limit": 0.0002,
+      "max_abs": 1.043081283569336e-06,
+      "scaled_inf": 9.5367431640625e-07,
+      "scaled_rms": 5.331617983548944e-07,
+      "worst_index": [
+        8063,
+        1,
+        1
+      ]
+    },
+    {
+      "tokens": 8192,
+      "comparison": "state",
+      "limit": 0.0002,
+      "max_abs": 8.344650268554688e-07,
+      "scaled_inf": 5.364418029785156e-07,
+      "scaled_rms": 2.5250214404369156e-07,
+      "worst_index": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "tokens": 16384,
+      "comparison": "output",
+      "limit": 0.0002,
+      "max_abs": 1.1920928955078125e-06,
+      "scaled_inf": 1.1920928955078125e-06,
+      "scaled_rms": 6.406979484319467e-07,
+      "worst_index": [
+        5166,
+        0,
+        2
+      ]
+    },
+    {
+      "tokens": 16384,
+      "comparison": "state",
+      "limit": 0.0002,
+      "max_abs": 1.3709068298339844e-06,
+      "scaled_inf": 8.973428818939147e-07,
+      "scaled_rms": 2.8882946954104135e-07,
+      "worst_index": [
+        0,
+        4,
+        2
+      ]
+    },
+    {
+      "tokens": 32768,
+      "comparison": "output",
+      "limit": 0.0002,
+      "max_abs": 1.341104507446289e-06,
+      "scaled_inf": 1.341104507446289e-06,
+      "scaled_rms": 6.133778432458847e-07,
+      "worst_index": [
+        17725,
+        0,
+        1
+      ]
+    },
+    {
+      "tokens": 32768,
+      "comparison": "state",
+      "limit": 0.0002,
+      "max_abs": 6.556510925292969e-07,
+      "scaled_inf": 4.500009654566168e-07,
+      "scaled_rms": 2.0926421151080114e-07,
+      "worst_index": [
+        1,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T0",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": []
+    },
+    {
+      "comparison": "C/chunk/state/T0",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T0",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": []
+    },
+    {
+      "comparison": "C/recurrent/state/T0",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T0",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": []
+    },
+    {
+      "comparison": "C/affine/state/T0",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T1",
+      "limit": 5e-05,
+      "max_abs": 1.1920928955078125e-07,
+      "scaled_inf": 9.907807847974596e-08,
+      "scaled_rms": 5.659271694977589e-08,
+      "worst_index": [
+        0,
+        1,
+        4
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T1",
+      "limit": 5e-05,
+      "max_abs": 1.1920928955078125e-07,
+      "scaled_inf": 5.805547595504741e-08,
+      "scaled_rms": 1.8183050906510407e-08,
+      "worst_index": [
+        4,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T1",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T1",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T1",
+      "limit": 5e-05,
+      "max_abs": 8.045590799143909e-08,
+      "scaled_inf": 6.343871967623512e-08,
+      "scaled_rms": 3.693506325354392e-08,
+      "worst_index": [
+        0,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T1",
+      "limit": 5e-05,
+      "max_abs": 1.80681646089198e-07,
+      "scaled_inf": 9.233809505073572e-08,
+      "scaled_rms": 2.7686891680221677e-08,
+      "worst_index": [
+        2,
+        1,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T3",
+      "limit": 5e-05,
+      "max_abs": 2.384185791015625e-07,
+      "scaled_inf": 2.384185791015625e-07,
+      "scaled_rms": 1.1999830261044645e-07,
+      "worst_index": [
+        2,
+        1,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T3",
+      "limit": 5e-05,
+      "max_abs": 4.76837158203125e-07,
+      "scaled_inf": 3.468514043493085e-07,
+      "scaled_rms": 1.1028935001827382e-07,
+      "worst_index": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T3",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T3",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T3",
+      "limit": 5e-05,
+      "max_abs": 1.8350152453106006e-07,
+      "scaled_inf": 1.8350152453106006e-07,
+      "scaled_rms": 1.0121898655952444e-07,
+      "worst_index": [
+        2,
+        1,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T3",
+      "limit": 5e-05,
+      "max_abs": 3.0035440801157165e-07,
+      "scaled_inf": 1.7030990315457495e-07,
+      "scaled_rms": 6.672345559850783e-08,
+      "worst_index": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T4",
+      "limit": 5e-05,
+      "max_abs": 2.384185791015625e-07,
+      "scaled_inf": 2.384185791015625e-07,
+      "scaled_rms": 1.1250129990683123e-07,
+      "worst_index": [
+        3,
+        5,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T4",
+      "limit": 5e-05,
+      "max_abs": 3.1478703022003174e-07,
+      "scaled_inf": 1.7045274892131108e-07,
+      "scaled_rms": 6.708546597214431e-08,
+      "worst_index": [
+        4,
+        4,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T4",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T4",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T4",
+      "limit": 5e-05,
+      "max_abs": 1.1306931080312665e-07,
+      "scaled_inf": 1.0514993487031887e-07,
+      "scaled_rms": 6.302805404670538e-08,
+      "worst_index": [
+        2,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T4",
+      "limit": 5e-05,
+      "max_abs": 2.759875887825558e-07,
+      "scaled_inf": 1.2347054907478124e-07,
+      "scaled_rms": 5.96212813219011e-08,
+      "worst_index": [
+        4,
+        1,
+        1
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T5",
+      "limit": 5e-05,
+      "max_abs": 2.384185791015625e-07,
+      "scaled_inf": 2.290632207617406e-07,
+      "scaled_rms": 1.3287332933701011e-07,
+      "worst_index": [
+        2,
+        0,
+        3
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T5",
+      "limit": 5e-05,
+      "max_abs": 3.5762786865234375e-07,
+      "scaled_inf": 1.7563066042982677e-07,
+      "scaled_rms": 9.097130050766759e-08,
+      "worst_index": [
+        0,
+        3,
+        1
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T5",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T5",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T5",
+      "limit": 5e-05,
+      "max_abs": 2.0110015819252425e-07,
+      "scaled_inf": 2.0110015819252425e-07,
+      "scaled_rms": 1.0212157933053623e-07,
+      "worst_index": [
+        3,
+        2,
+        2
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T5",
+      "limit": 5e-05,
+      "max_abs": 2.617785423986163e-07,
+      "scaled_inf": 1.653012374254892e-07,
+      "scaled_rms": 6.822811713090698e-08,
+      "worst_index": [
+        1,
+        2,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T63",
+      "limit": 5e-05,
+      "max_abs": 8.940696716308594e-07,
+      "scaled_inf": 8.940696716308594e-07,
+      "scaled_rms": 4.648827959534886e-07,
+      "worst_index": [
+        53,
+        0,
+        1
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T63",
+      "limit": 5e-05,
+      "max_abs": 1.0728836059570312e-06,
+      "scaled_inf": 8.257658014414935e-07,
+      "scaled_rms": 3.0026841178944104e-07,
+      "worst_index": [
+        3,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T63",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T63",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T63",
+      "limit": 5e-05,
+      "max_abs": 2.5989681629035033e-07,
+      "scaled_inf": 2.5989681629035033e-07,
+      "scaled_rms": 1.194262334059765e-07,
+      "worst_index": [
+        34,
+        5,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T63",
+      "limit": 5e-05,
+      "max_abs": 2.401512104732717e-07,
+      "scaled_inf": 1.509826760419132e-07,
+      "scaled_rms": 7.317343553031295e-08,
+      "worst_index": [
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T64",
+      "limit": 5e-05,
+      "max_abs": 8.940696716308594e-07,
+      "scaled_inf": 8.642673492431641e-07,
+      "scaled_rms": 4.5707689316073993e-07,
+      "worst_index": [
+        55,
+        1,
+        1
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T64",
+      "limit": 5e-05,
+      "max_abs": 1.1920928955078125e-06,
+      "scaled_inf": 7.050711892753032e-07,
+      "scaled_rms": 3.3298344323601795e-07,
+      "worst_index": [
+        4,
+        3,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T64",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T64",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T64",
+      "limit": 5e-05,
+      "max_abs": 2.1444856890262542e-07,
+      "scaled_inf": 2.0605122857952907e-07,
+      "scaled_rms": 1.1005740809424126e-07,
+      "worst_index": [
+        35,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T64",
+      "limit": 5e-05,
+      "max_abs": 2.0789019417044585e-07,
+      "scaled_inf": 1.536975116335224e-07,
+      "scaled_rms": 7.051366209379258e-08,
+      "worst_index": [
+        4,
+        3,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T65",
+      "limit": 5e-05,
+      "max_abs": 6.854534149169922e-07,
+      "scaled_inf": 6.854534149169922e-07,
+      "scaled_rms": 4.073771443281623e-07,
+      "worst_index": [
+        61,
+        2,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T65",
+      "limit": 5e-05,
+      "max_abs": 1.043081283569336e-06,
+      "scaled_inf": 7.644726244100564e-07,
+      "scaled_rms": 2.5328018414544914e-07,
+      "worst_index": [
+        3,
+        0,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T65",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T65",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T65",
+      "limit": 5e-05,
+      "max_abs": 2.0234854170020355e-07,
+      "scaled_inf": 2.0234854170020355e-07,
+      "scaled_rms": 1.07720987409961e-07,
+      "worst_index": [
+        35,
+        2,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T65",
+      "limit": 5e-05,
+      "max_abs": 2.501614722039136e-07,
+      "scaled_inf": 1.5752500951330573e-07,
+      "scaled_rms": 6.573764680232394e-08,
+      "worst_index": [
+        4,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T127",
+      "limit": 5e-05,
+      "max_abs": 1.0728836059570312e-06,
+      "scaled_inf": 1.0728836059570312e-06,
+      "scaled_rms": 4.952927210460241e-07,
+      "worst_index": [
+        61,
+        5,
+        1
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T127",
+      "limit": 5e-05,
+      "max_abs": 2.0265579223632812e-06,
+      "scaled_inf": 1.4290722042934374e-06,
+      "scaled_rms": 4.628063812160444e-07,
+      "worst_index": [
+        3,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T127",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T127",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T127",
+      "limit": 5e-05,
+      "max_abs": 2.633267570661957e-07,
+      "scaled_inf": 2.633267570661957e-07,
+      "scaled_rms": 1.286937306544448e-07,
+      "worst_index": [
+        14,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T127",
+      "limit": 5e-05,
+      "max_abs": 1.4566846529007194e-07,
+      "scaled_inf": 1.3653583473728512e-07,
+      "scaled_rms": 5.877370987312592e-08,
+      "worst_index": [
+        1,
+        4,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T128",
+      "limit": 5e-05,
+      "max_abs": 8.344650268554688e-07,
+      "scaled_inf": 8.344650268554688e-07,
+      "scaled_rms": 4.480395351779512e-07,
+      "worst_index": [
+        63,
+        3,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T128",
+      "limit": 5e-05,
+      "max_abs": 8.344650268554688e-07,
+      "scaled_inf": 8.127609035068194e-07,
+      "scaled_rms": 3.8723455624111377e-07,
+      "worst_index": [
+        0,
+        2,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T128",
+      "limit": 5e-05,
+      "max_abs": 1.1920928955078125e-07,
+      "scaled_inf": 1.1920928955078125e-07,
+      "scaled_rms": 5.331201499700045e-08,
+      "worst_index": [
+        80,
+        3,
+        4
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T128",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T128",
+      "limit": 5e-05,
+      "max_abs": 2.910123557686717e-07,
+      "scaled_inf": 2.910123557686717e-07,
+      "scaled_rms": 1.4191136944678568e-07,
+      "worst_index": [
+        44,
+        1,
+        1
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T128",
+      "limit": 5e-05,
+      "max_abs": 1.974557932715726e-07,
+      "scaled_inf": 1.5141790509876223e-07,
+      "scaled_rms": 5.818010529456713e-08,
+      "worst_index": [
+        1,
+        3,
+        2
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T129",
+      "limit": 5e-05,
+      "max_abs": 7.152557373046875e-07,
+      "scaled_inf": 7.152557373046875e-07,
+      "scaled_rms": 3.6863436927953305e-07,
+      "worst_index": [
+        64,
+        4,
+        1
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T129",
+      "limit": 5e-05,
+      "max_abs": 1.0728836059570312e-06,
+      "scaled_inf": 6.848082517872544e-07,
+      "scaled_rms": 3.0032402254989147e-07,
+      "worst_index": [
+        4,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T129",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T129",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/output/T129",
+      "limit": 5e-05,
+      "max_abs": 1.9992607602770107e-07,
+      "scaled_inf": 1.9992607602770107e-07,
+      "scaled_rms": 1.106957113255277e-07,
+      "worst_index": [
+        3,
+        5,
+        0
+      ]
+    },
+    {
+      "comparison": "C/affine/state/T129",
+      "limit": 5e-05,
+      "max_abs": 2.3125534043266782e-07,
+      "scaled_inf": 1.7331674728926096e-07,
+      "scaled_rms": 6.17597062786432e-08,
+      "worst_index": [
+        2,
+        4,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T1023",
+      "limit": 5e-05,
+      "max_abs": 1.043081283569336e-06,
+      "scaled_inf": 1.043081283569336e-06,
+      "scaled_rms": 5.505974020136176e-07,
+      "worst_index": [
+        512,
+        3,
+        4
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T1023",
+      "limit": 5e-05,
+      "max_abs": 8.642673492431641e-07,
+      "scaled_inf": 6.809328025130401e-07,
+      "scaled_rms": 3.014390965497586e-07,
+      "worst_index": [
+        4,
+        3,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T1023",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T1023",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T1024",
+      "limit": 5e-05,
+      "max_abs": 1.2516975402832031e-06,
+      "scaled_inf": 1.1622815076805776e-06,
+      "scaled_rms": 5.337446164777067e-07,
+      "worst_index": [
+        638,
+        4,
+        3
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T1024",
+      "limit": 5e-05,
+      "max_abs": 1.0132789611816406e-06,
+      "scaled_inf": 5.960464477539062e-07,
+      "scaled_rms": 3.23484498568844e-07,
+      "worst_index": [
+        4,
+        2,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T1024",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T1024",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T1025",
+      "limit": 5e-05,
+      "max_abs": 1.3113021850585938e-06,
+      "scaled_inf": 1.3113021850585938e-06,
+      "scaled_rms": 6.454542508889301e-07,
+      "worst_index": [
+        254,
+        1,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T1025",
+      "limit": 5e-05,
+      "max_abs": 9.685754776000977e-07,
+      "scaled_inf": 6.884135300498648e-07,
+      "scaled_rms": 2.625951266386259e-07,
+      "worst_index": [
+        0,
+        4,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T1025",
+      "limit": 5e-05,
+      "max_abs": 1.7881393432617188e-07,
+      "scaled_inf": 1.7881393432617188e-07,
+      "scaled_rms": 8.107108180961277e-08,
+      "worst_index": [
+        592,
+        5,
+        0
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T1025",
+      "limit": 5e-05,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T8192",
+      "limit": 0.0002,
+      "max_abs": 1.4230608940124512e-06,
+      "scaled_inf": 1.4230608940124512e-06,
+      "scaled_rms": 6.595531525708829e-07,
+      "worst_index": [
+        1855,
+        2,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T8192",
+      "limit": 0.0002,
+      "max_abs": 9.5367431640625e-07,
+      "scaled_inf": 8.096489918604975e-07,
+      "scaled_rms": 3.2833956422319116e-07,
+      "worst_index": [
+        1,
+        4,
+        1
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T8192",
+      "limit": 0.0002,
+      "max_abs": 2.384185791015625e-07,
+      "scaled_inf": 2.384185791015625e-07,
+      "scaled_rms": 1.0745380149674383e-07,
+      "worst_index": [
+        7837,
+        5,
+        4
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T8192",
+      "limit": 0.0002,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T16384",
+      "limit": 0.0002,
+      "max_abs": 1.3113021850585938e-06,
+      "scaled_inf": 1.3113021850585938e-06,
+      "scaled_rms": 6.42084880309346e-07,
+      "worst_index": [
+        11187,
+        3,
+        3
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T16384",
+      "limit": 0.0002,
+      "max_abs": 8.046627044677734e-07,
+      "scaled_inf": 8.046627044677734e-07,
+      "scaled_rms": 3.3552990245342706e-07,
+      "worst_index": [
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T16384",
+      "limit": 0.0002,
+      "max_abs": 1.7881393432617188e-07,
+      "scaled_inf": 1.7881393432617188e-07,
+      "scaled_rms": 8.534086384341927e-08,
+      "worst_index": [
+        1575,
+        4,
+        4
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T16384",
+      "limit": 0.0002,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "comparison": "C/chunk/output/T32768",
+      "limit": 0.0002,
+      "max_abs": 1.4230608940124512e-06,
+      "scaled_inf": 1.4230608940124512e-06,
+      "scaled_rms": 6.956544502868212e-07,
+      "worst_index": [
+        947,
+        5,
+        4
+      ]
+    },
+    {
+      "comparison": "C/chunk/state/T32768",
+      "limit": 0.0002,
+      "max_abs": 9.5367431640625e-07,
+      "scaled_inf": 8.940696716308594e-07,
+      "scaled_rms": 4.2111711490604564e-07,
+      "worst_index": [
+        5,
+        2,
+        1
+      ]
+    },
+    {
+      "comparison": "C/recurrent/output/T32768",
+      "limit": 0.0002,
+      "max_abs": 2.086162567138672e-07,
+      "scaled_inf": 2.086162567138672e-07,
+      "scaled_rms": 9.329602624475078e-08,
+      "worst_index": [
+        5865,
+        0,
+        2
+      ]
+    },
+    {
+      "comparison": "C/recurrent/state/T32768",
+      "limit": 0.0002,
+      "max_abs": 0.0,
+      "scaled_inf": 0.0,
+      "scaled_rms": 0.0,
+      "worst_index": [
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

@@ -627,7 +627,7 @@ class NativeForwardTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]/"build/qwen38-f"
         if not (root/"slice-0/manifest.json").exists(): self.skipTest("prepare bounded real slices explicitly")
         if not os.environ.get("PICOFORGE_GPU_LOCK_FD"): self.skipTest("real slice replay requires common lock")
-        reference=root/"packed-reference/reference"
+        reference=Path(os.environ.get("Q38_F_PACKED_REFERENCE",root/"packed-reference/reference"))
         reports=[]
         for layer in (0,3,47):
             folder=root/f"slice-{layer}"; manifest=json.loads((folder/"manifest.json").read_text())

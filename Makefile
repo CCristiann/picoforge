@@ -11,10 +11,10 @@ PYTHON  ?= ./tools/venv/bin/python
 
 SRC     := $(wildcard src/*.c)
 OBJC    := $(wildcard src/*.m)
-OBJ     := $(SRC:.c=.o) $(OBJC:.m=.o)
+OBJ     := $(SRC:.c=.o) $(OBJC:.m=.m.o)
 METALLIB := picoforge.metallib
 
-# Objective-C appears exactly once, for Metal, and links the frameworks.
+# Objective-C contains Metal glue and links the platform frameworks.
 FRAMEWORKS := -framework Metal -framework Foundation
 
 picoforge: $(OBJ) $(METALLIB)
@@ -23,7 +23,7 @@ picoforge: $(OBJ) $(METALLIB)
 src/%.o: src/%.c src/picoforge.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-src/%.o: src/%.m src/picoforge.h
+src/%.m.o: src/%.m src/picoforge.h
 	$(CC) $(CFLAGS) -fobjc-arc -c -o $@ $<
 
 # Kernels compile to AIR, then link into a library loaded at runtime. Keeping
@@ -34,7 +34,7 @@ build/kernels.air: src/kernels.metal
 	# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
 	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/kernels.air
 
-$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air
+$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air
 	xcrun -sdk macosx metallib $^ -o $@
 
 # Differential test: the C primitives judged by the Python oracle.
@@ -53,9 +53,9 @@ ui: picoforge
 test-all: test test-expert-cost test-bench-speculate test-attention test-context test-nfc test-tokenizer test-encode test-forward test-generate \
           test-quant-formats test-quant-kernels test-forward-quant test-speculate test-spec-experts test-oracle-moe test-forward-moe test-forward-moe-quant test-shards test-routing-trace
 
-build/test_attention: tests/test_attention.m src/metal.o src/util.o src/picoforge.h
+build/test_attention: tests/test_attention.m src/metal.m.o src/util.o src/picoforge.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -fobjc-arc -Isrc -o $@ tests/test_attention.m src/metal.o src/util.o $(LDFLAGS) $(FRAMEWORKS)
+	$(CC) $(CFLAGS) -fobjc-arc -Isrc -o $@ tests/test_attention.m src/metal.m.o src/util.o $(LDFLAGS) $(FRAMEWORKS)
 
 test-attention: build/test_attention $(METALLIB)
 	@./build/test_attention
@@ -81,7 +81,7 @@ test-qwen38-tools: build/process_memory build/memory_budget
 	@$(PYTHON) tests/test_qwen38_grading.py
 	@$(PYTHON) tests/test_qwen38_evidence.py
 
-src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.o src/main.o: src/gguf.h
+src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.m.o src/main.o: src/gguf.h
 
 build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/util.c src/gguf.h src/picoforge.h
 	@mkdir -p build
@@ -206,7 +206,7 @@ clean:
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
 Q38_HEADERS := $(wildcard src/qwen38*.h)
 Q38_PUBLIC_HEADERS := $(filter-out %_internal.h,$(Q38_HEADERS))
-src/gpu_weights.o build/test_gpu_weights: $(Q38_HEADERS)
+src/gpu_weights.m.o build/test_gpu_weights: $(Q38_HEADERS)
 test-qwen38-contracts:
 	@for header in $(Q38_PUBLIC_HEADERS); do $(CC) $(CFLAGS) -Werror -x c -fsyntax-only $$header || exit; done
 	@printf '%s\n' $(foreach h,$(notdir $(Q38_PUBLIC_HEADERS)),'#include "$(h)"') | $(CC) $(CFLAGS) -Werror -Isrc -x objective-c -fsyntax-only -

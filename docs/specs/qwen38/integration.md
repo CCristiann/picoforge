@@ -584,3 +584,97 @@ transazione globale GPU, logits Qwen3.8 o generazione nativa. Le prove sono
 su primitive, core e collegamenti sintetici, più slice B; non misurano la
 perdita Q2 rispetto al BF16 originale né prestazioni end-to-end. Il lock
 rimane cooperativo e condiviso tramite il git-common-dir del repository.
+
+## 12. BASE_INTEGRATA_V2 — 2026-10-12
+
+Questo stato sostituisce disponibilità, limiti e comandi operativi del §11;
+formule, ABI, precisione, tolleranze e ownership dei §2–7 rimangono invariati.
+Base di partenza `6a6b886e985185d7c9104eda888e6a406553aedf`, nuovo branch
+`coord/qwen38-integrate-v2`, worktree esterno `../picoforge-qwen38-integrate-v2`.
+Il commit finale contenente questo aggiornamento è BASE_INTEGRATA_V2;
+lo SHA completo viene restituito nella consegna. Nessun merge/push su main.
+
+| Consegna acquisita | SHA completo |
+|---|---|
+| `impl/qwen38-c-v2` | `8a65af3beeb48eb046d0cbc95b522b3dba396959` |
+| `impl/qwen38-d-v2` | `fcacfbcdef24f6502beb815caca1cf5a87378d0a` |
+| `impl/qwen38-e-v2` | `4257c9c156d29dcf35acbcf5b7239122a917d963` |
+| `impl/qwen38-f-v2` | `aa96e33fff92cd2f02064fde4adba187cd831d90` |
+
+Quattro merge espliciti senza conflitti, file delle consegne disgiunti,
+header pubblici invariati. Acquisiti solo commit completati; gli altri
+worktree restano intatti. Il binario combinato definisce tutti gli **82
+simboli pubblici** censiti nella v1: le 23 dichiarazioni CPU allora mancanti
+sono implementate. Questo controllo di link non certifica un grafo GPU.
+
+**Disponibilità.** C compone HC/GDN con A+B, 18 intermedi, stato conv/GDN,
+residuo e prove CPU/Metal su fixture sintetica e pesi reali layer 0; controlli
+reali separati 0/1/46. D offre `qwen38_attention_cpu` completo su proiezioni,
+e stadi Metal prep/RoPE/pool/score/attention con selezione ancora CPU.
+E offre store/state/job, history candidata e PLE CPU completo con Delta;
+nessun PLE Metal consegnato. F offre create/work/forward CPU, route/grouping,
+confronti sui layer reali 0/3/47 e post-routing Metal su fixture sintetiche
+floating point/packed: routing e grouping restano CPU nel harness Metal.
+
+**Wiring.** Oggetti C `src/nome.o` e Objective-C `src/nome.m.o` distinti:
+`qwen38_moe.c` e `.m` non si sovrascrivono. Aggiornati anche i riferimenti
+legacy `metal.m.o`/`gpu_weights.m.o`. La metallib comune collega AIR legacy,
+B, C, D e F; pipeline Qwen38 private, registry Qwen3 invariato. Tutti i
+kernel Qwen38 e sorgenti numerici usano FP32/no-fast-math/no-FMA contraction.
+Harness ASan/UBSan fatali; dylib ctypes non sanitizzata affiancata dai harness.
+
+La composizione C introduce dipendenze A/B/GGUF anche per D/E/F: i target
+includono il gruppo CPU comune completo. Il harness E auto-compilato include
+GDN e planner GGUF. Entrambi i percorsi F packed usano la stessa reference
+indipendente configurabile; non è più richiesto duplicarla nella cartella F.
+D CPU seleziona le due classi CPU, D Metal la classe Metal con tutti gli asset;
+F Metal seleziona i quattro test post-routing supportati. I test CPU F restano
+28 inclusa la slice reale, non vengono esclusi per far passare la suite GPU.
+Il runner strict rifiuta qualsiasi skip nei test selezionati.
+
+**Ownership di integrazione.** Coordinatore: `tools/qwen38_v2.mk`,
+`tools/qwen38_prepare_compositions.py`, `tools/qwen38_compositions.py`,
+`docs/specs/qwen38/resume-v3.md`, `bench/qwen38_integration_v2_20261012/**`,
+oltre ai file build/contratti già assegnati. Le correzioni di collegamento in
+`tests/test_qwen38_ngram.py` e di percorso reference in
+`tests/test_qwen38_moe.py` sono manutenzione d'integrazione; ownership futura
+resta E/F. Nuovi file D/F acquisiti restano assegnati ai rispettivi componenti.
+
+**Preparazione ripetibile, esplicita e separata dai test.**
+
+```sh
+Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+"$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- \
+  make qwen38-test-assets PYTHON="$Q38_PY" \
+  Q38_SOURCE_DIR=/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-f/upstream
+make qwen38-composition-assets PYTHON="$Q38_PY"
+make test-qwen38-cpu PYTHON="$Q38_PY"
+make test-qwen38-gpu PYTHON="$Q38_PY"
+make test-qwen38-compositions PYTHON="$Q38_PY"
+```
+
+`make test-qwen38` esegue in ordine CPU, GPU, composizioni. Non avvolgerlo
+in un altro lock: i target pesanti lo acquisiscono già. `test-all` legacy
+resta separato e va avvolto una volta. Preparazione online solo su richiesta
+esplicita omettendo `Q38_SOURCE_DIR`; i test sono offline. I receipt delle
+fixture C/D/F controllano hash di input/binary e dati; fixture parziali o
+incompatibili falliscono senza sovrascrittura. Nessun nuovo checksum globale
+del GGUF, mapping completo o copia della tabella PLE. C/D/E/F usano letture
+limitate; la preparazione e le composizioni reali condividono il medesimo
+lock nel git-common-dir. I run di verifica hanno directory report nuove.
+
+**Evidenza e limiti.** Esiti, metriche, comandi, provenance e regressioni in
+[report v2](../../../bench/qwen38_integration_v2_20261012/README.md).
+169 test Python CPU A–F (20/25/35/44/17/28), oltre alle composizioni e ai gate
+Metal separati; nessuno skip equivale a parità. Attivazioni delle slice reali
+sono sintetiche: pesi reali non significano attivazioni catturate da prompt.
+Restano da costruire lifecycle GPU comune, PLE Metal, selezione QSA/routing
+MoE su device e grafo ordinario 48 layer con embedding/mixer finale/logits.
+Nessuna generazione Qwen3.8 nativa, perdita Q2/BF16, misura di fit 48–50 GiB
+o prestazione end-to-end è certificata dai harness componenti.
+
+**Ordine successivo:** contratto/lifecycle comune G0; adattatori C/E e
+selezione D, prodotto indicizzato B e routing F; grafo GPU e infine checkpoint
+completo. E Metal privato, selezione D, routing F e grafo CPU bounded possono
+iniziare subito. Ownership, dipendenze e incarichi concreti in
+[resume-v3.md](resume-v3.md). Non ripartire dai prompt v2 storici.

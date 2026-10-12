@@ -30,14 +30,15 @@ def prepare(args):
     else:
         moe.prepare_upstream()
     source = moe.checked_source(moe.CACHE, "modeling_qwen4_exp.py")
-    destination = ROOT / "build/qwen38-e/modeling_qwen4_exp.py"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        if destination.read_bytes() != source:
-            raise ValueError("existing E oracle differs from the pinned source")
-    else:
-        with destination.open("xb") as output:
-            output.write(source)
+    for component in ("qwen38-e", "qwen38-attention"):
+        destination = ROOT / "build" / component / "modeling_qwen4_exp.py"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            if destination.read_bytes() != source:
+                raise ValueError(f"existing {component} oracle differs from pinned source")
+        else:
+            with destination.open("xb") as output:
+                output.write(source)
     directory = ROOT / "build/qwen38-b/reference"
     if not directory.exists():
         reference = packed.build_reference(args.dwarfstar, directory, sanitize=True)

@@ -31,6 +31,7 @@ class NativeTests(unittest.TestCase):
                         "-Wshadow", "-Wconversion", "-Werror", "-fsanitize=address,undefined",
                         "-ffp-contract=off", "-fno-fast-math", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
                         "src/qwen38_ple.c", "src/qwen38_conv.c", "src/qwen38_base.c",
+                        "src/qwen38_gdn.c", "src/gguf_plan.c",
                         "src/qwen38_packed.c", "src/qwen38_config.c", "src/qwen38_weights.c", "src/gguf.c", "src/gguf_reader.c", "src/util.c",
                         "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
 
