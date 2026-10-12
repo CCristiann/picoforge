@@ -1,0 +1,28 @@
+{
+  "schema": "qwen38-c-cpu-recipes-v1",
+  "scope": "Synthetic CPU primitive references; no native/shared API, model weights, or BF16 quality claim.",
+  "upstream": {
+    "repository": "https://github.com/huggingface/transformers",
+    "revision": "812a950d7037ba93bb624b154030e9068afdce4d",
+    "path": "src/transformers/models/qwen4_exp/modeling_qwen4_exp.py",
+    "sha256": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+    "license": "Apache-2.0; Copyright 2026 Qwen Team and HuggingFace Inc."
+  },
+  "seed": 3820,
+  "gdn": {"tokens": 65, "key_heads": 2, "value_heads": 6, "key_dim": 3, "value_dim": 5, "chunk_size": 64},
+  "conv": [
+    {"name": "conv_d1", "tokens": 11, "channels": 33, "kernel": 4, "dilation": 1},
+    {"name": "conv_d3", "tokens": 11, "channels": 31, "kernel": 4, "dilation": 3}
+  ],
+  "hc": {"tokens": 5, "streams": 3, "width": 7, "rank": 5},
+  "rms_epsilon": 0.000001,
+  "tolerances_proposed": {"primitive": 0.00001, "hc": 0.00002, "gdn": 0.00005, "gdn_long": 0.0002},
+  "memory": {"max_export_bytes": 33554432, "upstream_source_max_bytes": 524288},
+  "interpretation": {
+    "gdn": "q/k/v are post-convolution in physical GGUF head order; upstream normalizes q/k and scales q once by 1/sqrt(Dk).",
+    "gates": "ssm_a is already -exp(A_log); log_decay=ssm_a*softplus(a+dt_bias); beta=sigmoid(b).",
+    "conv": "taps [C,K] oldest first; history [(K-1)*d,C] raw, oldest first; SiLU after convolution.",
+    "gain": "HC gain is effective 1+w; GDN norm gain is direct. Fixtures use exactly recoverable effective gains.",
+    "state": "State tensors are owned copies; reset means zeroing both recurrent state and raw conv history."
+  }
+}
