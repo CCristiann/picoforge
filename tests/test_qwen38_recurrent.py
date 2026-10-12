@@ -488,6 +488,10 @@ class CConv(ct.Structure):
     _fields_ = [(name, ct.c_size_t) for name in ("channels", "kernel", "dilation")] + [("apply_silu", ct.c_bool)]
 
 
+class CHc(ct.Structure):
+    _fields_ = [(name, ct.c_size_t) for name in ("streams", "hidden_size", "low_rank")] + [("rms_eps", ct.c_float)]
+
+
 def c_view(array):
     """Test-side ABI mirror of the frozen header; capacity includes row padding."""
     assert array.dtype == np.float32 and 1 <= array.ndim <= 4 and all(s >= 0 for s in array.strides)
@@ -518,6 +522,12 @@ class NativeTests(unittest.TestCase):
         cls.lib.qwen38_conv_state_info.argtypes = [ct.c_void_p]
         cls.lib.qwen38_conv_state_info.restype = CInfo
         cls.lib.qwen38_conv_causal.argtypes = [ct.POINTER(CConv), CView, CView, CView, ct.c_void_p, ct.c_uint64, error]
+        cls.lib.qwen38_activate.argtypes = [ct.c_int, CView, CView, error]
+        cls.lib.qwen38_rmsnorm_groups.argtypes = [CView, CView, CView, ct.c_float, error]
+        cls.lib.qwen38_hc_lowrank_activate.argtypes = [ct.POINTER(CHc), CView, CView, error]
+        cls.lib.qwen38_hc_inject_weights.argtypes = [ct.POINTER(CHc), CView, CView, error]
+        cls.lib.qwen38_hc_read.argtypes = [ct.POINTER(CHc), CView, CView, CView, error]
+        cls.lib.qwen38_hc_add.argtypes = [ct.POINTER(CHc), CView, CView, CView, error]
 
     def invoke(self, name, *args):
         error = CError()
@@ -575,6 +585,57 @@ class NativeTests(unittest.TestCase):
                         self.invoke("conv_state_export", state, c_view(final))
                         np.testing.assert_array_equal(final, history.numpy())
                         self.assertEqual(self.lib.qwen38_conv_state_info(state).next_pos, halo + tokens)
+
+    def test_activations_against_fp64_and_moe_gate(self):
+        x = np.concatenate((np.array([-100., -20., -1., -0., 0., 1., 20., 100.]), np.linspace(-8, 8, 129))).astype(np.float32)
+        sigmoid = np.exp(-np.logaddexp(0., -x.astype(np.float64)))
+        expected = (sigmoid, x.astype(np.float64) * sigmoid, np.logaddexp(0., x.astype(np.float64)))
+        for kind, reference in enumerate(expected):
+            output = np.full_like(x, np.nan)
+            self.invoke("activate", kind, c_view(x), c_view(output))
+            # Also meets the stricter elementwise F gate on moderate inputs.
+            np.testing.assert_allclose(output, reference, atol=2e-6, rtol=2e-5)
+
+    def test_native_rms_group_axes_direct_gain_and_padding(self):
+        rng = np.random.default_rng(3823)
+        for width in (1, 3, 128, 2560):
+            for shared in (False, True):
+                storage = np.full((3, 4, width + 2), np.nan, np.float32)
+                x = storage[:, :, :width]
+                x[:] = rng.normal(size=x.shape)
+                x[0] *= 1e-6
+                gain = rng.normal(size=(width,) if shared else (4, width)).astype(np.float32)
+                gain.flat[0] = 1e-10  # Native GGUF gain is direct, never reconstructed as 1+w.
+                expected = x.astype(np.float64) * gain / np.sqrt(np.square(x.astype(np.float64)).mean(-1, keepdims=True) + 1e-6)
+                output = np.full_like(storage, -123.)
+                self.invoke("rmsnorm_groups", c_view(x), c_view(gain), c_view(output[:, :, :width]), 1e-6)
+                metrics = oracle.error_metrics(torch.from_numpy(output[:, :, :width]), torch.from_numpy(expected))
+                self.assertLessEqual(metrics["scaled_inf"], 1e-5)
+                self.assertTrue(np.all(output[:, :, width:] == -123.))
+                self.invoke("rmsnorm_groups", c_view(x), c_view(gain), c_view(x), 1e-6)
+                np.testing.assert_array_equal(x, output[:, :, :width])
+                self.assertTrue(np.isnan(storage[:, :, width:]).all())
+
+    def test_native_hc_projected_stages_against_upstream(self):
+        gen = torch.Generator(device="cpu").manual_seed(3824)
+        shape = CHc(3, 7, 5, 1e-6)
+        residual = torch.randn(5, 3, 7, generator=gen)
+        gain = torch.tensor([.25, -.5, 1., 2., -1., 0., 1.5]).expand(3, 7).contiguous()
+        down, up = torch.randn(5, 21, generator=gen) / 5, torch.randn(21, 5, generator=gen) / 5
+        inject, block = torch.randn(3, 21, generator=gen) / 5, torch.randn(5, 7, generator=gen)
+        ref = oracle.hc_reference(self.ref, residual, gain, down, up, inject, block)
+        low = ref["low"].numpy().copy()
+        self.invoke("hc_lowrank_activate", ct.byref(shape), c_view(low), c_view(low))
+        torch.testing.assert_close(torch.from_numpy(low), torch.nn.functional.silu(ref["low"] / 3), atol=2e-5, rtol=0)
+        mixed = np.full((5, 7), np.nan, np.float32)
+        self.invoke("hc_read", ct.byref(shape), c_view(ref["normed"].numpy()), c_view(ref["gate_logits"].numpy()), c_view(mixed))
+        torch.testing.assert_close(torch.from_numpy(mixed), ref["mixed"], atol=2e-5, rtol=0)
+        weights = ref["injection_logits"].numpy().copy()
+        self.invoke("hc_inject_weights", ct.byref(shape), c_view(weights), c_view(weights))
+        torch.testing.assert_close(torch.from_numpy(weights), ref["injection"], atol=2e-5, rtol=0)
+        updated = residual.numpy().copy()
+        self.invoke("hc_add", ct.byref(shape), c_view(updated), c_view(block.numpy()), c_view(weights))
+        torch.testing.assert_close(torch.from_numpy(updated), ref["residual"], atol=2e-5, rtol=0)
 
 
 if __name__ == "__main__":
