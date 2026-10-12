@@ -44,5 +44,30 @@
       "./build/test_gguf_inspect \"$PF_MAIN/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf\" > build/qwen38-a-native-inventory.json",
       "QWEN38_A_NATIVE_INVENTORY=build/qwen38-a-native-inventory.json \"$PF_MAIN/tools/venv/bin/python\" -B tests/test_qwen38_a.py"
     ]
+  },
+  "text_fixture": {
+    "sha256": "c0200fcf87041f2e37f3f562bdda2546029a79232d3a544b355df12887d14335",
+    "encodes": 94,
+    "decodes": 5,
+    "templates": 27,
+    "expected_template_errors": 8,
+    "native_parity_tested": false,
+    "api_status": "Provisional until BASE_CONCORDATA; no shared header modified."
+  },
+  "text_verification": {
+    "date": "2026-10-12",
+    "python": "3.14.2",
+    "combined_tests_passed": 17,
+    "tests_skipped": 0,
+    "metadata_only_bytes_read": 10945596,
+    "gguf_tables_equal_to_hf": true,
+    "native_tokenizer_tested": false,
+    "gpu_used": false,
+    "command": "PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 QWEN38_A_REFERENCE_ROOT=\"$PF_MAIN\" QWEN38_A_GGUF=\"$PF_MAIN/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf\" QWEN38_A_NATIVE_INVENTORY=build/qwen38-a-native-inventory.json \"$PF_MAIN/tools/venv/bin/python\" -B tests/test_qwen38_a.py",
+    "limitations": [
+      "No native Qwen3.8 tokenizer or template exists yet.",
+      "No numerical graph, PLE hash derivation or Q2-versus-BF16 quality claim.",
+      "Shared API, source ownership changes and GPU lock require BASE_CONCORDATA."
+    ]
   }
 }
