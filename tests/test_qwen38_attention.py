@@ -474,6 +474,20 @@ class NativeAttentionTests(unittest.TestCase):
             np.testing.assert_allclose(got.reshape(cfg.heads, cfg.head_dim), result["q"][0],
                                        atol=2e-5, rtol=2e-5)
 
+    def test_native_real_rotary_at_long_absolute_positions(self):
+        cfg, _, _ = oracle.fixture_case("real-shape")
+        x = oracle.synthetic(cfg, 1).qg[:, :, 0].copy()
+        rope = self.hf.Qwen4ExpTextRotaryEmbedding(cfg.hf())
+        for pos in (0, 2051, 8192, 32768):
+            with self.subTest(pos=pos):
+                cos, sin = rope(torch.zeros(1, 1, 1), torch.tensor([[[pos]]]))
+                expected = self.hf.apply_rotary_pos_emb(torch.from_numpy(x)[None], cos=cos, sin=sin,
+                                                        unsqueeze_dim=2).numpy()
+                code, got = self.call("rope", (cfg.heads, cfg.head_dim, cfg.rotary_dim, pos),
+                                      np.array([cfg.theta], np.float32), x)
+                self.assertEqual(code, 0)
+                np.testing.assert_allclose(got.reshape(expected.shape), expected, atol=2e-5, rtol=2e-5)
+
     def test_native_scores_and_selection_match_independent_reference(self):
         cfg = oracle.Config()
         result = oracle.evaluate(self.hf, cfg, oracle.synthetic(cfg, 25))
@@ -550,6 +564,73 @@ class NativeAttentionTests(unittest.TestCase):
         for ids in ([], [1, 1], [2, 1], [3]):
             code, _ = self.attend(cfg, result, 2, np.array(ids, np.uint32))
             self.assertEqual(code, 5 if not ids else 4)  # SHAPE / RANGE
+
+    def append(self, cfg, x, result, ends):
+        config = struct.pack("=9I2f", cfg.heads, cfg.kv_heads, cfg.head_dim,
+                             cfg.index_heads, 1, cfg.index_dim, cfg.ratio, cfg.budget,
+                             cfg.rotary_dim, cfg.eps, cfg.theta)
+        header = struct.pack("=2I", len(x.qg), len(ends)) + np.array(ends, np.uint32).tobytes()
+        gate = torch.sigmoid(torch.from_numpy(result["gate"])).numpy()
+        arrays = [result["q"], gate, result["k"], result["v"], result["iq"], x.ik,
+                  result["block_keys_last"]]
+        payload = config + header + b"".join(a.tobytes() for a in arrays)
+        run = subprocess.run([str(NATIVE), "append"], input=payload, capture_output=True, check=True)
+        self.assertEqual(run.stderr, b"")
+        code, = struct.unpack("=i", run.stdout[:4])
+        return code, np.frombuffer(run.stdout[4:], np.float32).reshape(result["q"].shape)
+
+    def test_native_lifecycle_capacity_epoch_owner_and_busy(self):
+        run = subprocess.run([str(NATIVE), "lifecycle"], capture_output=True, check=True)
+        self.assertEqual(run.stdout, b"lifecycle OK\n")
+        self.assertEqual(run.stderr, b"")
+
+    def test_native_prefill_decode_chunk_append_and_zero_token(self):
+        cfg = oracle.Config()
+        x = oracle.synthetic(cfg, 33)
+        # Unique analytical scores; all selected sets must match HF. This
+        # fixture does not turn a near-tie mask disagreement into a PASS.
+        x.iq.fill(0); x.iq[..., -1] = 1
+        x.ik.fill(0)
+        angles = np.linspace(.1, .9, 9, dtype=np.float32).repeat(4)[:33]
+        x.ik[:, -1] = angles; x.ik[:, -2] = np.sqrt(1 - angles ** 2)
+        x.gamma_iq.fill(1); x.gamma_ik.fill(1)
+        result = oracle.evaluate(self.hf, cfg, x)
+        scores = result["indexer_scores_fp64_unscaled"][-1]
+        self.assertGreater(float(np.diff(scores).min()), 4e-4)
+        outputs = []
+        for ends in ([33], list(range(1, 34)), [0, 1, 3, 4, 4, 7, 12, 16, 17, 31, 32, 33]):
+            code, y = self.append(cfg, x, result, ends)
+            self.assertEqual(code, 0)
+            np.testing.assert_allclose(y, result["gated_fp64"], atol=3e-5, rtol=2e-4)
+            outputs.append(y)
+        np.testing.assert_array_equal(outputs[0], outputs[1])
+        np.testing.assert_array_equal(outputs[0], outputs[2])
+
+    def test_native_numeric_failure_invalidates_append_until_reset(self):
+        cfg = oracle.Config()
+        x = oracle.synthetic(cfg, 13)
+        result = oracle.evaluate(self.hf, cfg, x)
+        for key in ("q", "k", "v", "iq", "block_keys_last"):
+            changed = copy.deepcopy(result)
+            changed[key].flat[-1] = np.nan
+            code, _ = self.append(cfg, x, changed, [3, 7, 13])
+            self.assertEqual(code, 16, key)
+        x.ik[-1, -1] = np.inf
+        code, _ = self.append(cfg, x, result, [3, 7, 13])
+        self.assertEqual(code, 16)
+
+    def test_native_pool_is_mean_of_raw_keys_before_normalization(self):
+        cfg, _, _ = oracle.fixture_case("real-shape")
+        x = oracle.synthetic(cfg, 12)
+        result = oracle.evaluate(self.hf, cfg, x)
+        for block in range(3):
+            raw = x.ik[block * 4:(block + 1) * 4]
+            code, pooled = self.call("pool", (4, cfg.index_dim, 0, 0), raw)
+            self.assertEqual(code, 0)
+            np.testing.assert_allclose(pooled, raw.astype(np.float64).mean(0), atol=2e-5, rtol=2e-5)
+            np.testing.assert_allclose(pooled, result["pooled_last"][block], atol=2e-5, rtol=2e-5)
+        code, _ = self.call("pool", (4, 2, 0, 0), np.full((4, 2), np.finfo(np.float32).max, np.float32))
+        self.assertEqual(code, 16)
 
 
 if __name__ == "__main__":

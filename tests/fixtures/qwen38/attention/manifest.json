@@ -63,7 +63,7 @@
   },
   "verification": {
     "date": "2026-10-12",
-    "test_count": 33,
+    "test_count": 38,
     "device": "CPU only, one torch thread",
     "packages": {
       "numpy": "2.5.1",
@@ -92,7 +92,10 @@
       "Analytical indexer head scores: ReLU before summing heads, opposing heads, no per-head softmax",
       "Ratio one, one-block budget, oversized budget and whole-block selection across append",
       "Append completes pooled raw-key block without changing earlier causal queries or completed blocks",
-      "Native C11 tiled global softmax, gate factors, GQA, real shapes, masked poison and invalid selected IDs under ASan/UBSan"
+      "Native C11 tiled global softmax, gate factors, GQA, real shapes, masked poison and invalid selected IDs under ASan/UBSan",
+      "Native lifecycle: budget/overflow, owner, epoch, busy, zero-token, reset/replay and invalidation after numerical failure",
+      "Native cache and outputs: padded token pitch, guards, no alias, exact cache copies and prefill/decode/chunk equivalence",
+      "Native raw pooling and full-size partial RoPE at positions 0/2051/8192/32768"
     ],
     "online_fp64_tolerance": {
       "atol": 1e-12,
@@ -104,12 +107,12 @@
     "No Metal execution, checkpoint payload read or benchmark; native core tested on synthetic prepared inputs",
     "No comparison with an installed full qwen4_exp module; pinned extracted methods are executed",
     "Observed artifact hashes identify this environment's outputs; numerical tolerances govern other implementations",
-    "Raw-prefix cache hook is an oracle adapter, not native session lifetime/reset validation",
     "FP64 score diagnostics use HF-prepared F32 operands and omit HF's positive 1/sqrt(Di) ranking scale",
     "Exact HF top-k ties have unspecified order; no native lowest-index tie rule is claimed",
     "Dynamic RoPE, multimodality, arbitrary padding, non-divisible budgets and F16/BF16 caches are excluded",
     "Synthetic inputs and same-checkpoint arithmetic do not measure Q2 compression loss",
     "candidate_online_* arrays are diagnostic candidate outputs, not an independent reference; no native tiled implementation",
-    "Full projected-input preparation waits for C2 RMSNorm; no duplicate normalization in D"
+    "Full projected-input preparation waits for C2 RMSNorm; no duplicate normalization in D",
+    "Private prepared-input append validates native cache lifecycle; public qwen38_attention_cpu awaits actual C2, and normalized block keys/gate factors currently come from the oracle"
   ]
 }
