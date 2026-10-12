@@ -792,6 +792,74 @@ class NativeTests(unittest.TestCase):
         np.testing.assert_array_equal(copied, np.concatenate((initial[1:], token)))
 
 
+def run_control_tests(args):
+    """Small real coefficients before whole HC/GDN projection slices."""
+    measurements = []
+
+    class ControlTests(unittest.TestCase):
+        invoke = NativeTests.invoke
+        new_state = NativeTests.new_state
+        setUpClass = classmethod(NativeTests.setUpClass.__func__)
+
+        def test_real_conv_gain_gates_state(self):
+            for directory in args.controls:
+                weights = oracle.CompositionWeights(args.packed_reference, directory)
+                m = weights.metadata
+                self.assertEqual(m["scope"], "checkpoint_slice_controls")
+                self.assertLessEqual(m["packed_bytes"], 1200000)
+                c, t = 2*m["hk"]*m["dk"] + m["hv"]*m["dv"], m["tokens"]
+                rng = np.random.default_rng(3870 + m["layer"])
+                x = torch.from_numpy((.2*rng.standard_normal((t, c))).astype(np.float32))
+                mix = torch.from_numpy((.2*rng.standard_normal((t, m["hidden"]))).astype(np.float32))
+                alpha, raw_beta = weights.linear(6, mix), weights.linear(7, mix)
+                taps, gain = weights.constant(10), weights.constant(11).flatten()
+                out, prepared = np.empty((t,c), np.float32), np.empty((t,c), np.float32)
+                g, beta = np.empty((t,m["hv"]),np.float32), np.empty((t,m["hv"]),np.float32)
+                cs, gs = CConv(c,m["kernel"],1,True), CGdn(m["hk"],m["hv"],m["dk"],m["dv"],m["eps"],1e-6)
+                conv, state = self.new_state(cs), self.new_state(gs,"gdn")
+                history = torch.zeros(m["kernel"]-1,c)
+                want_conv, want_history = oracle.conv_reference(x,taps,history)
+                for pos, n in ((0,1),(1,t-1)):
+                    self.invoke("conv_causal",ct.byref(cs),c_view(x[pos:pos+n].numpy()),c_view(taps.numpy()),c_view(out[pos:pos+n]),conv,pos)
+                actual_history = np.empty_like(want_history.numpy())
+                self.invoke("conv_state_export",conv,c_view(actual_history))
+                np.testing.assert_array_equal(actual_history,want_history.numpy())
+                self.invoke("gdn_prepare",ct.byref(gs),*map(c_view,(out,alpha.numpy(),raw_beta.numpy(),
+                    weights.constant(8).numpy().flatten(),weights.constant(9).numpy().flatten(),prepared,g,beta)))
+                want_g, want_beta = oracle.gate_reference(alpha,raw_beta,weights.constant(9).flatten(),weights.constant(8).flatten())
+                q,k,v = oracle.composition_qkv(m,torch.from_numpy(out))
+                want_prepared = torch.cat(((self.ref.l2norm(q)/np.sqrt(m["dk"])).flatten(1),self.ref.l2norm(k).flatten(1),v.flatten(1)),-1)
+                scan=np.empty((t,m["hv"],m["dv"]),np.float32)
+                for pos,n in ((0,1),(1,t-1)):
+                    self.invoke("gdn_scan",ct.byref(gs),*map(c_view,(prepared[pos:pos+n],g[pos:pos+n],beta[pos:pos+n],scan[pos:pos+n])),state,pos)
+                final=np.empty((m["hv"],m["dv"],m["dk"]),np.float32)
+                self.invoke("gdn_state_export",state,c_view(final))
+                q,k,v=oracle.composition_qkv(m,torch.from_numpy(prepared))
+                want_scan,want_state=oracle.gdn_reference(self.ref,q*np.sqrt(m["dk"]),k,v,torch.from_numpy(g),torch.from_numpy(beta),torch.zeros_like(torch.from_numpy(final)),normalize_qk=False)
+                z=torch.from_numpy(rng.standard_normal(scan.shape).astype(np.float32)); norm=np.empty_like(scan)
+                self.invoke("gdn_norm_gate",ct.byref(gs),*map(c_view,(scan,z.numpy(),gain.numpy(),norm)))
+                want_norm=oracle.gdn_norm_reference(self.ref,torch.from_numpy(scan),z,gain,m["eps"])
+                r=np.fromfile(Path(directory)/"input.f32","<f4").reshape(t,m["streams"],m["hidden"])
+                hn=np.empty_like(r); hg=weights.constant(0).numpy().reshape(r.shape[1:])
+                self.invoke("rmsnorm_groups",c_view(r),c_view(hg),c_view(hn),m["eps"])
+                want_hn=oracle.grouped_rms_reference(self.ref,torch.from_numpy(r),torch.from_numpy(hg),m["eps"])
+                for name,got,want,tol in (("conv",out,want_conv,1e-5),("prepared",prepared,want_prepared,1e-5),
+                        ("log_decay",g,want_g,1e-5),("beta",beta,want_beta,1e-5),("scan",scan,want_scan,5e-5),
+                        ("state",final,want_state,5e-5),("norm",norm,want_norm,1e-5),("hc_norm",hn,want_hn,1e-5)):
+                    metric=oracle.error_metrics(torch.from_numpy(got),want,local_ndim=2 if name=="state" else 1)
+                    measurements.append(dict(layer=m["layer"],stage=name,tolerance=tol,**metric))
+                    self.assertLessEqual(max(metric["scaled_inf"],metric["scaled_rms"]),tol)
+                self.invoke("gdn_state_reset",state,2)
+                self.invoke("gdn_state_export",state,c_view(final)); self.assertFalse(np.any(final))
+                self.state_buffers=[]
+    result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(ControlTests))
+    if args.report:
+        args.report.write_text(json.dumps(dict(passed=result.wasSuccessful(),tests=result.testsRun,skipped=len(result.skipped),
+            measurements=measurements,source_sha256=oracle.UPSTREAM_SHA256,
+            fixtures=[dict(path=str(p),sha256=hashlib.sha256((p/"manifest.json").read_bytes()).hexdigest()) for p in args.controls]),indent=2)+"\n")
+    return not result.wasSuccessful()
+
+
 def run_composition_tests(args):
     """Explicit C4 suite: no implicit skips in the existing primitive runner."""
     import subprocess
@@ -890,6 +958,7 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--cpu-lib", type=Path)
+    parser.add_argument("--controls", type=Path, nargs="+")
     parser.add_argument("--composition", type=Path)
     parser.add_argument("--composed-native", type=Path)
     parser.add_argument("--packed-reference", type=Path)
@@ -897,6 +966,10 @@ if __name__ == "__main__":
     SOURCE = args.source
     CPU_LIB = args.cpu_lib
     torch.set_num_threads(1)
+    if args.controls:
+        if not args.cpu_lib or not args.packed_reference:
+            parser.error("--controls requires --cpu-lib and --packed-reference")
+        sys.exit(run_control_tests(args))
     if args.composition:
         if not args.composed_native or not args.packed_reference:
             parser.error("--composition requires --composed-native and --packed-reference")

@@ -1060,3 +1060,43 @@ rieseguire la stessa fixture immutabile; non scarica asset né usa GPU.
 GGUF quando mancanti. I sorgenti condivisi/build non sono stati modificati.
 Le slice reali e la composizione Metal sono incrementi successivi; questo
 primo risultato non è parità su attivazioni reali né misura di perdita BF16.
+
+### 12.2 Controlli e composizione CPU su slice reali
+
+**V.** Prima estratti conv, A/dt, norm GDN, gain HC e alpha/beta dei layer
+0, 1, 46: 1188736 byte ciascuno, totale 3566208 byte; 24 confronti su
+coefficienti reali e attivazioni sintetiche, massimo scaled-inf 9.913e-7.
+Conv/history in due append, prepare, scan/stato, norm sigmoid, HC norm e
+reset passano. La conv PLE resta un test di composizione E; nessuna lettura
+della tabella n-gram o del suo contenuto è necessaria a questi controlli C.
+
+**V.** Poi layer 0 completo HC/GDN: 75654016 byte packed (72.1493 MiB),
+E=2560,H=4,r=320,Hk=16,Hv=48,Dk=Dv=128,K=4,T=9. Workspace 2721408 byte,
+payload stato+history 3268608 byte. Tre test composti PASS, nessuno skip;
+ASan/UBSan e tutti i gate locali/proiezioni/composizione passano. Massimo
+scaled-inf 5.857e-6, massimo rapporto errore/bound B 0.015093. Contributo
+6.632e-7, residuo 7.965e-7, stato 8.196e-8 (scaled-inf separati).
+Whole/token/chunk e reset/replay bitwise identici su tutti gli intermedi.
+Massimo RSS processo oracle osservato 388513792 byte, sotto 2 GiB.
+
+Letture `pread` bounded con helper B (EINTR/short read/EOF), stat prima/dopo,
+offset e SHA-256 per tensor nel manifest. Nessun nuovo hash completo,
+nessuna dequantizzazione o mapping del checkpoint intero. Le proiezioni
+vengono dequantizzate una per volta, in tile <=4 MiB; mai tutti i pesi FP32
+del layer contemporaneamente. Il workload del layer è stato eseguito con
+il lock comune `.git/qwen38-gpu.lock`. Non è un benchmark.
+
+```sh
+CHECKPOINT=/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+for layer in 0 1 46; do
+  "$PY" -B tools/oracle/qwen38_recurrent.py --composition --controls-only --native build/qwen38-c/test_composed --packed-reference build/qwen38-b/reference/reference --checkpoint "$CHECKPOINT" --tokens 5 --layer "$layer" --out "build/qwen38-c/controls-$layer"
+done
+"$PY" -B tests/test_qwen38_recurrent.py --source build/qwen38-f/upstream/modeling_qwen4_exp.py --cpu-lib build/qwen38-c/libcomposed.dylib --controls build/qwen38-c/controls-0 build/qwen38-c/controls-1 build/qwen38-c/controls-46 --packed-reference build/qwen38-b/reference/reference --report build/qwen38-c/controls-report.json
+"$PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- "$PY" -B tools/oracle/qwen38_recurrent.py --composition --native build/qwen38-c/test_composed --packed-reference build/qwen38-b/reference/reference --checkpoint "$CHECKPOINT" --tokens 9 --out build/qwen38-c/composed-real-0
+"$PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- "$PY" -B tests/test_qwen38_recurrent.py --source build/qwen38-f/upstream/modeling_qwen4_exp.py --composition build/qwen38-c/composed-real-0 --composed-native build/qwen38-c/test_composed --packed-reference build/qwen38-b/reference/reference --report build/qwen38-c/composed-real-0/report.json
+```
+
+Limite verificato: pesi di un ramo HC/GDN del checkpoint Q2 con input
+sintetici, non tracce di generazione reale, MoE o perdita rispetto a BF16.
+Il test composto lungo oltre 129 token non è ancora acquisito; i test lunghi
+delle primitive della consegna precedente restano separati.

@@ -459,7 +459,7 @@ def export_synthetic(source, directory):
     return write_bundle(directory, tensors, metadata)
 
 
-def prepare_composition(native, reference, directory, *, checkpoint=None, layer=0, tokens=65):
+def prepare_composition(native, reference, directory, *, checkpoint=None, layer=0, tokens=65, controls_only=False):
     """C4 data only: A supplies shapes/roles, B supplies the pinned decoder.
 
     Real data is copied by bounded pread; the checkpoint is never writable or
@@ -491,13 +491,18 @@ def prepare_composition(native, reference, directory, *, checkpoint=None, layer=
         kind = "checkpoint_slice"
     checkpoint = Path(checkpoint).resolve()
     descriptor = json.loads(subprocess.check_output([str(native), "--describe", str(checkpoint), str(layer)], text=True))
-    if sum(w["bytes"] for w in descriptor["weights"]) > 96 * 1024**2:
+    selected = (0, 6, 7, 8, 9, 10, 11) if controls_only else tuple(range(13))
+    if controls_only and kind != "checkpoint_slice":
+        raise ValueError("real controls require --checkpoint")
+    if sum(w["bytes"] for w in descriptor["weights"] if w["slot"] in selected) > 96 * 1024**2:
         raise ValueError("selected C layer exceeds the 96 MiB packed payload budget")
     rng = np.random.default_rng(3842)
     fd = os.open(checkpoint, os.O_RDONLY)
     try:
         before = os.fstat(fd)
         for w in descriptor["weights"]:
+            if w["slot"] not in selected:
+                continue
             cols, rows, slot, fmt = (w[k] for k in ("columns", "rows", "slot", "type"))
             if kind == "checkpoint_slice":
                 raw = packed.pread_exact(fd, w["offset"], w["bytes"])
@@ -529,8 +534,8 @@ def prepare_composition(native, reference, directory, *, checkpoint=None, layer=
         os.close(fd)
     x = (.3 * rng.standard_normal((tokens, descriptor["streams"], descriptor["hidden"]))).astype("<f4")
     (directory / "input.f32").write_bytes(x.tobytes())
-    descriptor.update(schema="qwen38-c-composition-v1", scope=kind, tokens=tokens, checkpoint=str(checkpoint),
-        input_sha256=hashlib.sha256(x.tobytes()).hexdigest(), packed_bytes=sum(w["bytes"] for w in descriptor["weights"]),
+    descriptor.update(schema="qwen38-c-composition-v1", scope=kind + ("_controls" if controls_only else ""), selected_slots=selected, tokens=tokens, checkpoint=str(checkpoint),
+        input_sha256=hashlib.sha256(x.tobytes()).hexdigest(), packed_bytes=sum(w["bytes"] for w in descriptor["weights"] if w["slot"] in selected),
         reference_revision=packed.REVISION, reference_sha256=hashlib.sha256(Path(reference).read_bytes()).hexdigest(),
         model_revision="d600fe1a43d2e1cdcadb85144ce3142f66f9eefe" if kind == "checkpoint_slice" else None,
         source_stat=dict(device=before.st_dev, inode=before.st_ino, bytes=before.st_size, mtime_ns=before.st_mtime_ns),
@@ -546,6 +551,8 @@ class CompositionWeights:
         self.reference, self.directory = Path(reference), Path(directory)
         self.metadata = json.loads((self.directory / "manifest.json").read_text())
         for w in self.metadata["weights"]:
+            if w["slot"] not in self.metadata.get("selected_slots", range(13)):
+                continue
             raw = (self.directory / w["path"]).read_bytes()
             if len(raw) != w["bytes"] or hashlib.sha256(raw).hexdigest() != w["sha256"]:
                 raise ValueError("corrupt C4 packed fixture")
@@ -684,6 +691,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=UPSTREAM_DEFAULT)
     parser.add_argument("--fetch-upstream", action="store_true", help="explicitly download pinned Python source only")
+    parser.add_argument("--controls-only", action="store_true")
     parser.add_argument("--composition", action="store_true", help="prepare bounded A/B/C composition fixture")
     parser.add_argument("--native", type=Path)
     parser.add_argument("--packed-reference", type=Path)
@@ -705,7 +713,7 @@ def main():
             if not args.native or not args.packed_reference:
                 parser.error("--composition needs --native and --packed-reference")
             document = prepare_composition(args.native.resolve(), args.packed_reference.resolve(), args.out,
-                checkpoint=args.checkpoint, layer=args.layer, tokens=args.tokens)
+                checkpoint=args.checkpoint, layer=args.layer, tokens=args.tokens, controls_only=args.controls_only)
             print(f"Prepared {document['scope']}: {document['packed_bytes']} packed bytes, {args.tokens} tokens")
         if args.synthetic:
             document = export_synthetic(args.source, args.out)
