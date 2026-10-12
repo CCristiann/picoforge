@@ -2,6 +2,7 @@
 using namespace metal;
 #include "qwen38_c_internal.h"
 static_assert(sizeof(Q38CGpuView)==40 && sizeof(Q38CGpuArgs)==352,"C/Metal argument ABI");
+static_assert(__builtin_offsetof(Q38CGpuArgs,p)==320 && __builtin_offsetof(Q38CGpuArgs,eps)==348,"C/Metal offsets");
 #define Q38C_BUFFERS device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]], \
     device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], \
     device float *v4 [[buffer(4)]], device float *v5 [[buffer(5)]], \
