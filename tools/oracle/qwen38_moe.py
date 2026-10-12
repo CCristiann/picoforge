@@ -5,9 +5,12 @@ Only the optional expert-dispatch decorator is removed (eager CPU path).
 Upstream: Hugging Face / Qwen, Apache-2.0; LICENSE is cached with the source.
 """
 import ast
-from dataclasses import dataclass
+import argparse
+from dataclasses import asdict, dataclass, replace
 import hashlib
+import json
 from pathlib import Path
+import platform
 import urllib.request
 
 import numpy as np
@@ -215,3 +218,95 @@ def upstream_forward(config, x, weights, cache=CACHE):
         if any(not np.isfinite(a).all() for a in result.values()):
             raise FloatingPointError("nonfinite upstream MoE output")
         return result
+
+
+def error_metrics(actual, expected):
+    delta = actual.astype(np.float64) - expected.astype(np.float64)
+    if not delta.size:
+        return {"max_abs": 0.0, "max_rel": 0.0, "nrmse": 0.0}
+    return {"max_abs": float(np.abs(delta).max()),
+            "max_rel": float((np.abs(delta) / np.maximum(np.abs(expected), 1e-12)).max()),
+            "nrmse": float(np.sqrt(np.mean(delta**2)) /
+                           max(np.sqrt(np.mean(expected.astype(np.float64)**2)), 1e-6))}
+
+
+def export_fixtures(output, cache=CACHE):
+    """Save small FP32 payloads + both references; never overwrite evidence."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=False)
+    manifest = {"schema": 1, "complete": False, "upstream_revision": REVISION,
+                "upstream_hashes": HASHES, "numpy": np.__version__, "torch": torch.__version__,
+                "python": platform.python_version(), "device": "cpu", "seed": 3811,
+                "machine": platform.machine(), "torch_threads": torch.get_num_threads(),
+                "tolerances": {"routing_atol": 2e-6, "routing_rtol": 2e-5,
+                               "output_atol": 2e-5, "output_rtol": 2e-4, "output_nrmse": 1e-4},
+                "driver_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "transformation": "Four unchanged class bodies; remove expert backend decorator only",
+                "native_ties": "Lower ID wins equal FP32 probabilities; HF topk ties unspecified",
+                "quantization": "none", "fixtures": []}
+    manifest_path = output / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    configs = {"asymmetric": FixtureConfig(),
+               "router512": replace(FixtureConfig(), num_experts=512,
+                                    num_experts_per_tok=10, moe_intermediate_size=2),
+               "uniform_ties": replace(FixtureConfig(), hidden_size=1),
+               "rounded_ties": replace(FixtureConfig(), hidden_size=1)}
+    for name, config in configs.items():
+        x, weights = synthetic(config, tokens=3)
+        if name.endswith("ties"):
+            x[:] = 1
+            weights["gate.weight"][:] = (np.zeros((4, 1), dtype=np.float32)
+                if name == "uniform_ties" else np.array([[0], [1e-9], [0], [-1e-9]], dtype=np.float32))
+        native = numpy_forward(config, x, weights)
+        upstream = upstream_forward(config, x, weights, cache)
+        same_ids = np.array_equal(native["ids"], upstream["ids"])
+        np.testing.assert_allclose(native["weights"], upstream["weights"], atol=2e-6, rtol=2e-5)
+        if name.endswith("ties"):
+            # Demonstrably equal probabilities, not a tolerance-based excuse for differing routes.
+            np.testing.assert_array_equal(native["probabilities"], np.full((3, 4), 0.25, np.float32))
+        else:
+            np.testing.assert_array_equal(native["ids"], upstream["ids"])
+        metrics = None
+        if same_ids:
+            np.testing.assert_allclose(native["y"], upstream["y"], atol=2e-5, rtol=2e-4)
+            metrics = error_metrics(native["y"], upstream["y"])
+            if metrics["nrmse"] > 1e-4:
+                raise AssertionError("output NRMSE exceeds frozen tolerance")
+        arrays = {"input": x, **{"weight/"+k: v for k, v in weights.items()},
+                  **{"native/"+k: v for k, v in native.items()},
+                  **{"upstream/"+k: v for k, v in upstream.items()}}
+        path = output / (name + ".npz")
+        np.savez(path, **arrays)
+        manifest["fixtures"].append({"name": name, "config": asdict(config),
+            "file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "payload_bytes": sum(a.nbytes for a in arrays.values()),
+            "arrays": {k: {"shape": list(v.shape), "dtype": str(v.dtype)} for k, v in arrays.items()},
+            "same_ids": same_ids, "output_error_when_same_ids": metrics,
+            "native_ids": native["ids"].tolist(), "upstream_ids": upstream["ids"].tolist()})
+    manifest["complete"] = True
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    return manifest
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prepare-upstream", action="store_true", help="fetch pinned source + license")
+    parser.add_argument("--upstream", type=Path, default=CACHE)
+    parser.add_argument("--synthetic", action="store_true")
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args()
+    if args.synthetic != (args.out is not None):
+        parser.error("--synthetic requires --out and vice versa")
+    if not args.prepare_upstream and not args.synthetic:
+        parser.error("choose --prepare-upstream or --synthetic --out")
+    torch.set_num_threads(1)
+    if args.prepare_upstream:
+        prepare_upstream(args.upstream)
+    if args.synthetic:
+        manifest = export_fixtures(args.out, args.upstream)
+        print(json.dumps({"complete": manifest["complete"], "fixtures": len(manifest["fixtures"]),
+                          "payload_bytes": sum(f["payload_bytes"] for f in manifest["fixtures"])}, indent=2))
+
+
+if __name__ == "__main__":
+    main()

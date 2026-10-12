@@ -3,6 +3,8 @@
 The hash-pinned source cache must be prepared explicitly; tests never fetch.
 """
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -23,11 +25,12 @@ class UpstreamOracleTests(unittest.TestCase):
 
     def test_corrupt_source_refused_before_execution(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for name in moe.HASHES:
-                data = (moe.CACHE / name).read_bytes()
-                (Path(tmp) / name).write_bytes(data + b"\n")
-            with self.assertRaisesRegex(ValueError, "hash mismatch"):
-                moe.upstream_class(tmp)
+            for corrupt in moe.HASHES:
+                for name in moe.HASHES:
+                    data = (moe.CACHE / name).read_bytes()
+                    (Path(tmp) / name).write_bytes(data + (b"\n" if name == corrupt else b""))
+                with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                    moe.upstream_class(tmp)
 
     def test_seed_and_zero_input(self):
         x, weights = moe.synthetic()
@@ -109,6 +112,15 @@ class DifferentialTests(unittest.TestCase):
                 for name, ref in (("gate", gate), ("up", up), ("mid", mid), ("down", down)):
                     np.testing.assert_allclose(trace[name][token, slot], ref.numpy(),
                                                atol=2e-6, rtol=2e-5, err_msg=name)
+        xt = torch.tensor(x, dtype=torch.float64)
+        linear = lambda name, inp: torch.nn.functional.linear(inp, torch.tensor(w[name], dtype=torch.float64))
+        gs = linear("shared_expert.gate_proj.weight", xt)
+        us = linear("shared_expert.up_proj.weight", xt)
+        ms = torch.nn.functional.silu(gs) * us
+        ys = linear("shared_expert.down_proj.weight", ms)
+        for name, expected in (("shared_gate", gs), ("shared_up", us),
+                               ("shared_mid", ms), ("shared", ys)):
+            np.testing.assert_allclose(trace[name], expected.numpy(), atol=2e-6, rtol=2e-5)
 
     def test_shared_gate_zero_and_saturation(self):
         c = moe.FixtureConfig()
@@ -145,6 +157,149 @@ class DifferentialTests(unittest.TestCase):
                              ("norm_topk_prob", 1)):
             with self.assertRaises(ValueError):
                 replace(c, **{field: value})
+
+
+class EdgeCaseTests(unittest.TestCase):
+    def test_analytical_tied_experts_have_distinct_outputs(self):
+        c = moe.FixtureConfig(hidden_size=1, moe_intermediate_size=1,
+                              shared_expert_intermediate_size=1)
+        x, weights = moe.synthetic(c, tokens=1)
+        x[:] = 1
+        weights["gate.weight"][:] = 0
+        weights["experts.gate_up_proj"][:] = 1
+        weights["experts.down_proj"][:] = np.arange(1, 5).reshape(4, 1, 1)
+        weights["shared_expert.down_proj.weight"][:] = 0
+        actual = moe.numpy_forward(c, x, weights)
+        np.testing.assert_array_equal(actual["ids"], [[0, 1]])
+        np.testing.assert_allclose(actual["y"], 1.5 / (1 + np.exp(-1.0)), atol=2e-6, rtol=2e-5)
+        # HF result is correct for ITS selected IDs; identical output isn't promised at ties.
+        hf = moe.upstream_forward(c, x, weights)
+        expected = (hf["ids"].mean() + 1) / (1 + np.exp(-1.0))
+        np.testing.assert_allclose(hf["y"], expected, atol=2e-6, rtol=2e-5)
+
+    def test_probability_ties_choose_lower_id(self):
+        cases = (([0, 0, 0, 0], 2, [0, 1]),
+                 ([1, 2, 2, 0], 1, [1]),
+                 ([0, 1e-9, 0, -1e-9], 2, [0, 1]),
+                 ([-1000, -1001, 1000], 2, [2, 0]))
+        for values, k, expected in cases:
+            with self.subTest(values=values):
+                logits = np.array([values], dtype=np.float32)
+                p, ids, scores = moe.route_logits(logits, k)
+                np.testing.assert_array_equal(ids, [expected])
+                c = moe.FixtureConfig(hidden_size=1, num_experts=len(values),
+                                      num_experts_per_tok=k, moe_intermediate_size=1,
+                                      shared_expert_intermediate_size=1)
+                x, w = moe.synthetic(c, tokens=1)
+                x[:] = 1
+                w["gate.weight"][:] = logits.T
+                upstream = moe.upstream_forward(c, x, w)
+                # HF may choose different tied IDs; verify its selected probabilities.
+                np.testing.assert_allclose(scores, upstream["weights"], atol=2e-6, rtol=2e-5)
+                chosen = np.take_along_axis(p, upstream["ids"], -1)
+                np.testing.assert_array_equal(chosen, np.sort(p, axis=-1)[:, ::-1][:, :k])
+
+    def test_512_uniform_shift_and_extreme_logits(self):
+        logits = np.zeros((2, 512), dtype=np.float32)
+        p, ids, weights = moe.route_logits(logits, 10)
+        np.testing.assert_array_equal(ids, np.tile(np.arange(10), (2, 1)))
+        np.testing.assert_allclose(weights, 0.1, atol=2e-6, rtol=2e-5)
+        logits = np.array([[0, 1, 2, 3]], dtype=np.float32)
+        for norm in (False, True):
+            baseline = moe.route_logits(logits, 3, norm)
+            shifted = moe.route_logits(logits + 128, 3, norm)
+            for a, b in zip(baseline, shifted):
+                np.testing.assert_array_equal(a, b)
+        with np.errstate(all="raise"):
+            p, ids, weights = moe.route_logits(np.array([[-3e38, 3e38]], dtype=np.float32), 2)
+        np.testing.assert_array_equal(p, [[0, 1]])
+        np.testing.assert_array_equal(ids, [[1, 0]])
+        for k in (0, 3, True):
+            with self.assertRaises(ValueError):
+                moe.route_logits(p, k)
+
+    def test_chunks_empty_strides_and_input_immutability(self):
+        c = moe.FixtureConfig()
+        for count in (0, 1, 2, 31, 32, 33, 64, 65, 1024):
+            with self.subTest(tokens=count):
+                x, weights = moe.synthetic(c, tokens=count)
+                storage = np.zeros((count, 2*c.hidden_size), dtype=np.float32)
+                storage[:, ::2] = x
+                strided = storage[:, ::2]
+                before = {name: w.copy() for name, w in weights.items()}
+                full = moe.numpy_forward(c, strided, weights)
+                hf = moe.upstream_forward(c, strided, weights)
+                np.testing.assert_array_equal(full["ids"], hf["ids"])
+                np.testing.assert_allclose(full["y"], hf["y"], atol=2e-5, rtol=2e-4)
+                if count:
+                    parts, offset = [], 0
+                    while offset < count:
+                        size = (1, 7, 32)[len(parts) % 3]
+                        parts.append(moe.numpy_forward(c, x[offset:offset+size], weights))
+                        offset += size
+                    np.testing.assert_array_equal(np.concatenate([p["ids"] for p in parts]), full["ids"])
+                    np.testing.assert_allclose(np.concatenate([p["y"] for p in parts]), full["y"],
+                                               atol=2e-5, rtol=2e-4)
+                self.assertEqual(full["y"].shape, (count, c.hidden_size))
+                np.testing.assert_array_equal(strided, x)
+                for name in weights:
+                    np.testing.assert_array_equal(weights[name], before[name])
+
+    def test_repeated_tokens_and_independent_shared_contribution(self):
+        c = moe.FixtureConfig()
+        x, weights = moe.synthetic(c, tokens=1)
+        x = np.repeat(x, 65, axis=0)
+        first = moe.numpy_forward(c, x, weights)
+        np.testing.assert_array_equal(first["ids"], np.repeat(first["ids"][:1], 65, axis=0))
+        # No token capacity/drop: every repeated token receives the complete result.
+        np.testing.assert_allclose(first["y"], np.repeat(first["y"][:1], 65, axis=0),
+                                   atol=2e-5, rtol=2e-4)
+        for target in ("experts.down_proj", "shared_expert.down_proj.weight"):
+            changed = {name: value.copy() for name, value in weights.items()}
+            changed[target][:] = 0
+            actual = moe.numpy_forward(c, x, changed)
+            hf = moe.upstream_forward(c, x, changed)
+            np.testing.assert_allclose(actual["y"], hf["y"], atol=2e-5, rtol=2e-4)
+            expected = (first["shared"] * moe.sigmoid(first["shared_logit"])
+                        if target.startswith("experts.") else first["routed"])
+            np.testing.assert_allclose(actual["y"], expected, atol=2e-5, rtol=2e-4)
+        # An unrelated call cannot leave stale route/state in the next result.
+        moe.numpy_forward(c, -x, weights)
+        np.testing.assert_array_equal(moe.numpy_forward(c, x, weights)["y"], first["y"])
+
+
+class FixtureExportTests(unittest.TestCase):
+    def test_export_replay_manifest_and_no_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "fixtures"
+            report = moe.export_fixtures(folder)
+            self.assertTrue(report["complete"])
+            self.assertEqual(report["upstream_hashes"], moe.HASHES)
+            self.assertEqual(report, json.loads((folder / "manifest.json").read_text()))
+            self.assertLess(sum(f["payload_bytes"] for f in report["fixtures"]), 256*1024)
+            for fixture in report["fixtures"]:
+                path = folder / fixture["file"]
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), fixture["sha256"])
+                with np.load(path, allow_pickle=False) as arrays:
+                    w = {name.removeprefix("weight/"): arrays[name]
+                         for name in arrays.files if name.startswith("weight/")}
+                    c = moe.FixtureConfig(**fixture["config"])
+                    result = moe.upstream_forward(c, arrays["input"], w)
+                    for name, array in result.items():
+                        np.testing.assert_array_equal(array, arrays["upstream/"+name])
+                    for name in arrays.files:
+                        self.assertEqual(list(arrays[name].shape), fixture["arrays"][name]["shape"])
+            before = (folder / "manifest.json").read_bytes()
+            with self.assertRaises(FileExistsError):
+                moe.export_fixtures(folder)
+            self.assertEqual(before, (folder / "manifest.json").read_bytes())
+
+    def test_failed_export_is_marked_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "failed"
+            with self.assertRaises(FileNotFoundError):
+                moe.export_fixtures(folder, cache=Path(tmp) / "missing")
+            self.assertFalse(json.loads((folder / "manifest.json").read_text())["complete"])
 
 
 if __name__ == "__main__":
