@@ -680,6 +680,66 @@ class NativeAttentionTests(unittest.TestCase):
         np.testing.assert_array_equal(*outputs)
 
 
+    def public(self, cfg, x, ends):
+        config = struct.pack("=9I2f", cfg.heads, cfg.kv_heads, cfg.head_dim,
+                             cfg.index_heads, 1, cfg.index_dim, cfg.ratio, cfg.budget,
+                             cfg.rotary_dim, cfg.eps, cfg.theta)
+        n = len(x.qg)
+        payload = config + struct.pack("=2I", n, len(ends)) + np.array(ends, np.uint32).tobytes()
+        payload += b"".join(a.tobytes() for a in x.arrays().values())
+        run = subprocess.run([str(NATIVE), "public"], input=payload, capture_output=True, check=True)
+        self.assertEqual(run.stderr, b"")
+        code, = struct.unpack("=i", run.stdout[:4])
+        values = np.frombuffer(run.stdout[4:], np.float32)
+        offset = 0
+        result = {}
+        for key, shape in (("out", (n, cfg.heads, cfg.head_dim)),
+                           ("k", (n, cfg.kv_heads, cfg.head_dim)), ("ik", (n, cfg.index_dim)),
+                           ("blocks", (n // cfg.ratio, cfg.index_dim)),
+                           ("trace", (n, 2 * cfg.heads * cfg.head_dim + cfg.index_heads * cfg.index_dim))):
+            size = int(np.prod(shape))
+            result[key] = values[offset:offset+size].reshape(shape)
+            offset += size
+        self.assertEqual(offset, len(values))
+        return code, result
+
+    def test_public_prep_gain_gate_pooling_and_chunk_equivalence(self):
+        for case in ("tiny", "real-shape"):
+            cfg, n, _ = oracle.fixture_case(case)
+            x = oracle.synthetic(cfg, n)
+            # Stable, nondegenerate index ranking; other projections/gains
+            # and gates remain random and non-unit as in the original fixture.
+            x.iq.fill(0); x.iq[..., -1] = 1
+            coords = np.linspace(.1,.9,(n+3)//4,dtype=np.float32).repeat(4)[:n]
+            x.ik.fill(0); x.ik[:, -1] = coords; x.ik[:, -2] = np.sqrt(1-coords**2)
+            ref = oracle.evaluate(self.hf, cfg, x)
+            outputs = []
+            for ends in ([n], list(range(1,n+1)), [0,1,3,4,4,7,n]):
+                code, got = self.public(cfg, x, ends)
+                self.assertEqual(code, 0)
+                np.testing.assert_allclose(got["out"], ref["gated_fp64"], atol=3e-5, rtol=2e-4)
+                np.testing.assert_allclose(got["k"], ref["k"], atol=2e-5, rtol=2e-5)
+                np.testing.assert_allclose(got["blocks"], ref["block_keys_last"], atol=2e-5, rtol=2e-5)
+                np.testing.assert_array_equal(got["ik"], x.ik)
+                hd = cfg.heads * cfg.head_dim
+                for p in sorted(set(end-1 for end in ends if end)):
+                    np.testing.assert_allclose(got["trace"][p,:hd], ref["q"][p].ravel(), atol=2e-5, rtol=2e-5)
+                    gate = torch.sigmoid(torch.from_numpy(ref["gate"][p])).numpy().ravel()
+                    np.testing.assert_allclose(got["trace"][p,hd:2*hd], gate, atol=1e-5, rtol=1e-5)
+                    np.testing.assert_allclose(got["trace"][p,2*hd:], ref["iq"][p].ravel(), atol=2e-5, rtol=2e-5)
+                outputs.append(got["out"])
+            np.testing.assert_array_equal(outputs[0],outputs[1])
+            np.testing.assert_array_equal(outputs[0],outputs[2])
+
+    def test_public_nonfinite_invalidates_state(self):
+        cfg = oracle.Config()
+        for name in oracle.synthetic(cfg, 13).arrays():
+            x = oracle.synthetic(cfg, 13)
+            x.arrays()[name].flat[-1] = np.nan
+            code, _ = self.public(cfg, x, [3,7,13])
+            self.assertEqual(code,16,name)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE)

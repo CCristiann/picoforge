@@ -33,4 +33,7 @@ Qwen38Status q38d_append_prepared(Qwen38AttentionTicket *, const Q38DPrepared *,
 const float *q38d_cache_keys(const Qwen38AttentionState *);
 const float *q38d_cache_raw_index(const Qwen38AttentionState *);
 const float *q38d_cache_blocks(const Qwen38AttentionState *);
+/* Valid after a nonempty successful public cpu call, until next computation. */
+void q38d_last_query(const Qwen38AttentionWorkspace *, const float **q,
+    const float **gate, const float **iq, const float **scores, const uint32_t **ids);
 #endif

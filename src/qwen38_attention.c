@@ -1,5 +1,6 @@
 /* QSA CPU core, FP32 and no fast-math. See integration.md and spec D. */
 #include "qwen38_d_internal.h"
+#include "qwen38_ops.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,7 +178,7 @@ static Qwen38Status view(Qwen38F32 v, size_t rank, const size_t *shape, size_t *
     size_t row = sizeof(float);
     for (size_t i = rank; i-- > 0;) {
         if (v.dim[i] != shape[i]) return Q38_SHAPE;
-        if ((i > 0 && v.stride_bytes[i] != row) || v.stride_bytes[i] % sizeof(float))
+        if (((i > 0 || rank == 1) && v.stride_bytes[i] != row) || v.stride_bytes[i] % sizeof(float))
             return Q38_STRIDE;
         if (i > 0 && !mul_size(row, shape[i], &row)) return Q38_OVERFLOW;
     }
@@ -209,6 +210,23 @@ static Qwen38Status copy_rows(float *dst, Qwen38F32 v, uint32_t rows, size_t wid
         }
     }
     return Q38_OK;
+}
+
+static Qwen38Status attend_row(Qwen38AttentionState *s, uint32_t pos,
+    const float *q, const float *gate, const float *iq, float *out) {
+    const Qwen38AttentionConfig *c = &s->config;
+    Qwen38AttentionWorkspace *w = s->workspace;
+    uint32_t n = (pos + 1) / c->ratio;
+    Qwen38Status code = q38d_scores(iq, s->blocks, c->index_heads, c->index_dim, n, w->scores);
+    if (code != Q38_OK) return code;
+    code = q38d_select(w->scores, n, c->token_budget / c->ratio, w->heap, w->blocks);
+    if (code != Q38_OK) return code;
+    uint32_t selected = n < c->token_budget / c->ratio ? n : c->token_budget / c->ratio;
+    uint32_t count = 0;
+    for (uint32_t b = 0; b < selected; ++b)
+        for (uint32_t r = 0; r < c->ratio; ++r) w->ids[count++] = w->blocks[b] * c->ratio + r;
+    for (uint32_t tail = n * c->ratio; tail <= pos; ++tail) w->ids[count++] = tail;
+    return q38d_attend(c,q,gate,s->k,s->v,pos+1,w->ids,count,out,w->scratch);
 }
 
 Qwen38Status q38d_append_prepared(Qwen38AttentionTicket *t, const Q38DPrepared *in,
@@ -246,23 +264,97 @@ Qwen38Status q38d_append_prepared(Qwen38AttentionTicket *t, const Q38DPrepared *
     if (code == Q38_OK) code = copy_rows(s->ik + (size_t)begin * c->index_dim, in->ik, t->tokens, c->index_dim);
     if (code == Q38_OK) code = copy_rows(s->blocks + (size_t)old_blocks * c->index_dim, in->blocks, new_blocks, c->index_dim);
     for (uint32_t i = 0; i < t->tokens && code == Q38_OK; ++i) {
-        uint32_t pos = begin + i, n = (pos + 1) / c->ratio;
-        code = q38d_scores(row_at(in->iq, i), s->blocks, c->index_heads, c->index_dim, n, w->scores);
-        if (code != Q38_OK) break;
-        code = q38d_select(w->scores, n, c->token_budget / c->ratio, w->heap, w->blocks);
-        if (code != Q38_OK) break;
-        uint32_t selected = n < c->token_budget / c->ratio ? n : c->token_budget / c->ratio;
-        uint32_t count = 0;
-        for (uint32_t b = 0; b < selected; ++b)
-            for (uint32_t r = 0; r < c->ratio; ++r) w->ids[count++] = w->blocks[b] * c->ratio + r;
-        for (uint32_t tail = n * c->ratio; tail <= pos; ++tail) w->ids[count++] = tail;
         float *dest = (float *)((unsigned char *)out.data + (size_t)i * out.stride_bytes[0]);
-        code = q38d_attend(c, row_at(in->q, i), row_at(in->gate_factor, i),
-                         s->k, s->v, pos + 1, w->ids, count, dest, w->scratch);
+        code = attend_row(s,begin+i,row_at(in->q,i),row_at(in->gate_factor,i),row_at(in->iq,i),dest);
     }
     if (code != Q38_OK) s->info.valid = false;
     else t->computed = true;
     return report(e, code);
+}
+
+static Qwen38F32 head_view(const float *x, uint32_t h, uint32_t d, size_t step) {
+    return (Qwen38F32){x, ((h-1)*step+d)*4, 3, {1,h,d,0}, {h*step*4,step*4,4,0}};
+}
+void q38d_last_query(const Qwen38AttentionWorkspace *w, const float **q,
+    const float **gate, const float **iq, const float **scores, const uint32_t **ids) {
+    const Qwen38AttentionConfig *c=&w->owner->config;
+    size_t hd=(size_t)c->heads*c->head_dim, kd=(size_t)c->kv_heads*c->head_dim;
+    *q=w->scratch+c->head_dim+16; *gate=*q+hd; *iq=*gate+hd+kd;
+    *scores=w->scores; *ids=w->ids;
+}
+static Qwen38F32Mut head_out(float *x, uint32_t h, uint32_t d) {
+    return (Qwen38F32Mut){x,(size_t)h*d*4,3,{1,h,d,0},{(size_t)h*d*4,(size_t)d*4,4,0}};
+}
+static Qwen38Status norm_rope(Qwen38F32 x, Qwen38F32 gain, float *out,
+    const Qwen38AttentionConfig *c, uint32_t pos) {
+    uint32_t h = (uint32_t)x.dim[1], d = (uint32_t)x.dim[2];
+    Qwen38Status code = qwen38_rmsnorm_groups(x,gain,head_out(out,h,d),c->rms_eps,NULL);
+    if (code == Q38_OK) code = q38d_rope(out,h,d,c->rotary_dim,pos,c->rope_theta);
+    return code;
+}
+
+Qwen38Status qwen38_attention_cpu(Qwen38AttentionTicket *t,
+    const Qwen38AttentionInput *in, Qwen38F32Mut out,
+    Qwen38AttentionWorkspace *w, Qwen38Error *e) {
+    Qwen38Status code = ticket_valid(t);
+    if (code != Q38_OK) return report(e,code);
+    Qwen38AttentionState *s = t->state;
+    if (!w || w != s->workspace || w->owner != s) return report(e,Q38_OWNER);
+    if (!in) return report(e,Q38_INVALID_ARGUMENT);
+    if (t->computed && t->tokens) return report(e,Q38_BAD_STATE);
+    const Qwen38AttentionConfig *c = &s->config;
+    Qwen38F32 ov = {out.data,out.capacity_bytes,out.rank,{0},{0}};
+    memcpy(ov.dim,out.dim,sizeof(out.dim)); memcpy(ov.stride_bytes,out.stride_bytes,sizeof(out.stride_bytes));
+    Qwen38F32 inputs[] = {in->qg,in->k,in->v,in->iq,in->ik,
+                         in->gamma_q,in->gamma_k,in->gamma_iq,in->gamma_ik,ov};
+    size_t dims[10][4] = {{t->tokens,c->heads,2,c->head_dim}, {t->tokens,c->kv_heads,c->head_dim,0},
+        {t->tokens,c->kv_heads,c->head_dim,0}, {t->tokens,c->index_heads,c->index_dim,0},
+        {t->tokens,c->index_dim,0,0}, {c->head_dim,0,0,0}, {c->head_dim,0,0,0},
+        {c->index_dim,0,0,0}, {c->index_dim,0,0,0}, {t->tokens,c->heads,c->head_dim,0}};
+    const size_t ranks[] = {4,3,3,3,2,1,1,1,1,3};
+    size_t spans[10];
+    /* Structural admission is complete before any output or cache write.
+     * Read-only inputs may share backing (e.g. one gain for Q and K). */
+    for (size_t i=0;i<10;++i) {
+        code = view(inputs[i],ranks[i],dims[i],&spans[i]);
+        if (code != Q38_OK) return report(e,code);
+        if (overlap(inputs[i].data,spans[i],s,s->plan.cache_bytes)
+            || overlap(inputs[i].data,spans[i],w,s->plan.workspace_bytes)) return report(e,Q38_OWNER);
+    }
+    for (size_t i=0;i<9;++i)
+        if (overlap(inputs[i].data,spans[i],ov.data,spans[9])) return report(e,Q38_INVALID_ARGUMENT);
+    if (!t->tokens) return report(e,Q38_OK);
+    size_t hd=(size_t)c->heads*c->head_dim, kd=(size_t)c->kv_heads*c->head_dim;
+    float *q=w->scratch+c->head_dim+16, *gate=q+hd;
+    float *iq=gate+hd+kd, *pool=iq+(size_t)c->index_heads*c->index_dim;
+    uint32_t begin=(uint32_t)s->info.next_pos;
+    for (uint32_t i=0;i<t->tokens && code==Q38_OK;++i) {
+        uint32_t pos=begin+i;
+        const float *qg=row_at(in->qg,i);
+        code=norm_rope(head_view(qg,c->heads,c->head_dim,2*(size_t)c->head_dim),in->gamma_q,q,c,pos);
+        if (code==Q38_OK) code=qwen38_activate(Q38_SIGMOID,
+            head_view(qg+c->head_dim,c->heads,c->head_dim,2*(size_t)c->head_dim),
+            head_out(gate,c->heads,c->head_dim),NULL);
+        if (code==Q38_OK) code=norm_rope(head_view(row_at(in->k,i),c->kv_heads,c->head_dim,c->head_dim),
+            in->gamma_k,s->k+pos*kd,c,pos);
+        if (code==Q38_OK) code=norm_rope(head_view(row_at(in->iq,i),c->index_heads,c->index_dim,c->index_dim),
+            in->gamma_iq,iq,c,pos);
+        Qwen38F32 vr=in->v, ir=in->ik;
+        vr.data=row_at(in->v,i); ir.data=row_at(in->ik,i);
+        if (code==Q38_OK) code=copy_rows(s->v+pos*kd,vr,1,kd);
+        if (code==Q38_OK) code=copy_rows(s->ik+(size_t)pos*c->index_dim,ir,1,c->index_dim);
+        if (code==Q38_OK && (pos+1)%c->ratio==0) {
+            uint32_t b=pos/c->ratio, start=b*c->ratio;
+            code=q38d_pool(s->ik+(size_t)start*c->index_dim,c->ratio,c->index_dim,pool);
+            if (code==Q38_OK) code=norm_rope(head_view(pool,1,c->index_dim,c->index_dim),
+                in->gamma_ik,s->blocks+(size_t)b*c->index_dim,c,start);
+        }
+        float *dest=(float *)((unsigned char *)out.data+(size_t)i*out.stride_bytes[0]);
+        if (code==Q38_OK) code=attend_row(s,pos,q,gate,iq,dest);
+    }
+    if (code!=Q38_OK) s->info.valid=false;
+    else t->computed=true;
+    return report(e,code);
 }
 
 Qwen38Status q38d_rope(float *x, uint32_t heads, uint32_t dim,

@@ -169,10 +169,84 @@ static void append_fixture(void) {
     assert(getchar() == EOF);
 }
 
+static void public_fixture(void) {
+    Qwen38AttentionConfig c; uint32_t count,chunks;
+    read_items(&c,sizeof(c),1); read_items(&count,4,1); read_items(&chunks,4,1);
+    assert(count && count<=32768 && chunks && chunks<=32768);
+    uint32_t *ends=calloc(chunks,4); assert(ends); read_items(ends,4,chunks);
+    assert(ends[chunks-1]==count);
+    size_t hd=(size_t)c.heads*c.head_dim,kd=(size_t)c.kv_heads*c.head_dim;
+    size_t id=(size_t)c.index_heads*c.index_dim, bd=(size_t)(count/c.ratio)*c.index_dim;
+    float *qg=read_floats(count*hd*2), *k=read_floats(count*kd), *v=read_floats(count*kd);
+    float *iq=read_floats(count*id), *ik=read_floats((size_t)count*c.index_dim);
+    float *gq=read_floats(c.head_dim), *gk=read_floats(c.head_dim);
+    float *giq=read_floats(c.index_dim), *gik=read_floats(c.index_dim);
+    size_t pitch=hd+3;
+    float *out=calloc(count*pitch,4), *trace=calloc(count*(2*hd+id),4); assert(out&&trace);
+    Qwen38AttentionPlan plan; Qwen38Error e;
+    assert(qwen38_attention_plan(&c,count,count,&plan,&e)==Q38_OK);
+    Qwen38AttentionState *s; Qwen38AttentionWorkspace *w;
+    assert(qwen38_attention_create(&c,&plan,(Qwen38StateKey){&c,3,1},
+           plan.cache_bytes+plan.workspace_bytes,&s,&w,&e)==Q38_OK);
+    Qwen38F32 gains[]={{gq,c.head_dim*4,1,{c.head_dim},{4}}, {gk,c.head_dim*4,1,{c.head_dim},{4}},
+        {giq,c.index_dim*4,1,{c.index_dim},{4}}, {gik,c.index_dim*4,1,{c.index_dim},{4}}};
+    Qwen38Status code=Q38_OK;
+    uint32_t begin=0;
+    for (uint32_t j=0;j<chunks;++j) {
+        assert(ends[j]>=begin && ends[j]<=count); uint32_t n=ends[j]-begin;
+        Qwen38AttentionInput in={.qg={qg+begin*hd*2,n*hd*8,4,{n,c.heads,2,c.head_dim},
+            {hd*8,(size_t)c.head_dim*8,(size_t)c.head_dim*4,4}},
+            .k=dense(k+begin*kd,n,c.kv_heads,c.head_dim,false), .v=dense(v+begin*kd,n,c.kv_heads,c.head_dim,false),
+            .iq=dense(iq+begin*id,n,c.index_heads,c.index_dim,false), .ik=dense(ik+(size_t)begin*c.index_dim,n,1,c.index_dim,true),
+            .gamma_q=gains[0],.gamma_k=gains[1],.gamma_iq=gains[2],.gamma_ik=gains[3]};
+        Qwen38F32Mut y={out+begin*pitch,n*pitch*4,3,{n,c.heads,c.head_dim},{pitch*4,(size_t)c.head_dim*4,4}};
+        Qwen38AttentionTicket *t;
+        assert(qwen38_attention_begin(s,begin,n,1,&t,&e)==Q38_OK);
+        Qwen38AttentionInput bad=in; bad.gamma_q.stride_bytes[0]=8;
+        assert(qwen38_attention_cpu(t,&bad,y,w,&e)==Q38_STRIDE);
+        bad=in; bad.qg.dim[2]=1;
+        assert(qwen38_attention_cpu(t,&bad,y,w,&e)==Q38_SHAPE);
+        if(n) {
+            Qwen38F32Mut short_out=y; short_out.capacity_bytes=0;
+            assert(qwen38_attention_cpu(t,&in,short_out,w,&e)==Q38_CAPACITY);
+            assert(qwen38_attention_cpu(t,&in,y,NULL,&e)==Q38_OWNER);
+        }
+        assert(qwen38_attention_state_info(s).valid);
+        code=qwen38_attention_cpu(t,&in,y,w,&e); assert(e.code==code);
+        assert(qwen38_attention_state_info(s).next_pos==begin);
+        if(code!=Q38_OK) {
+            assert(!qwen38_attention_state_info(s).valid);
+            assert(qwen38_attention_finish(t,false,&e)==Q38_OK);
+            assert(qwen38_attention_reset(s,2,&e)==Q38_OK); break;
+        }
+        if(n) {
+            const float *pq,*pg,*pi,*scores; const uint32_t *ids;
+            q38d_last_query(w,&pq,&pg,&pi,&scores,&ids);
+            float *dst=trace+(ends[j]-1)*(2*hd+id);
+            memcpy(dst,pq,hd*4); memcpy(dst+hd,pg,hd*4); memcpy(dst+2*hd,pi,id*4);
+            assert(qwen38_attention_cpu(t,&in,y,w,&e)==Q38_BAD_STATE);
+        }
+        assert(qwen38_attention_finish(t,true,&e)==Q38_OK); begin=ends[j];
+    }
+    write_items(&code,sizeof(code),1);
+    for(uint32_t i=0;i<count;++i) {
+        write_items(out+i*pitch,4,hd);
+        for(size_t g=hd;g<pitch;++g) assert(out[i*pitch+g]==0);
+    }
+    write_items(q38d_cache_keys(s),4,count*kd);
+    write_items(q38d_cache_raw_index(s),4,(size_t)count*c.index_dim);
+    write_items(q38d_cache_blocks(s),4,bd);
+    write_items(trace,4,count*(2*hd+id));
+    assert(qwen38_attention_destroy(s,w,&e)==Q38_OK);
+    free(ends); free(qg); free(k); free(v); free(iq); free(ik); free(gq); free(gk); free(giq); free(gik);
+    free(out); free(trace); assert(getchar()==EOF);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     if (!strcmp(argv[1], "lifecycle")) { lifecycle(); puts("lifecycle OK"); return 0; }
     if (!strcmp(argv[1], "append")) { append_fixture(); return 0; }
+    if (!strcmp(argv[1], "public")) { public_fixture(); return 0; }
     uint32_t dims[4];
     read_items(dims, sizeof(uint32_t), 4);
     for (size_t i = 0; i < 4; ++i) assert(dims[i] <= 32768);
