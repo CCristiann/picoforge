@@ -167,11 +167,15 @@ def verify(args):
         subprocess.run(flags+["-Ibuild/qwen38-a"]+sources+["-lm","-o",str(build/f"test_{name}")],cwd=ROOT,check=True)
         paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn")]
         if args.checkpoint: paths.append(args.checkpoint)
-        for path in paths: subprocess.run([str(build/f"test_{name}"),str(path)],cwd=ROOT,check=True)
+        for path in paths:
+            command = [str(build/f"test_{name}"),str(path)]
+            if name == "config" and path == args.checkpoint: command.append(str(build/"native-config.json"))
+            subprocess.run(command,cwd=ROOT,check=True)
     if args.reference_root:
         env = {**os.environ,"PYTHONDONTWRITEBYTECODE":"1","HF_HUB_OFFLINE":"1",
                "QWEN38_A_REFERENCE_ROOT":str(args.reference_root),"QWEN38_A_TEXT_EXE":str(build/"test_text")}
         if args.checkpoint:
+            env["QWEN38_A_NATIVE_CONFIG"] = str(build/"native-config.json")
             env["QWEN38_A_GGUF"] = str(args.checkpoint)
             subprocess.run(flags+["tests/gguf_inspect.c"]+common[1:]+["-lm","-o",str(build/"inspect")],cwd=ROOT,check=True)
             path = build/"native-inventory.json"

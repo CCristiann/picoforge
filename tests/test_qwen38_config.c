@@ -3,6 +3,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
+
+static void snapshot(const Qwen38Config *c, const char *path) {
+    const Qwen38ConfigView *v = qwen38_config_view(c);
+    const Qwen38AttentionConfig *a = &v->attention; const Qwen38MoeConfig *m = &v->moe;
+    const Qwen38NgramConfig *ngram = NULL;
+    FILE *f = fopen(path,"wb"); assert(f);
+    fprintf(f,"{\"profile\":\"%s\",\"dimensions\":[%u,%u,%u,%u,%u,%u,%u],",
+        v->semantic_profile,v->hidden_size,v->vocab_size,v->blocks,v->trunk_blocks,v->mtp_blocks,v->max_positions,v->gdn_conv_kernel);
+    fprintf(f,"\"gdn\":[%zu,%zu,%zu,%zu,%.9g,%.9g],\"hc\":[%zu,%zu,%zu,%.9g],",
+        v->gdn.key_heads,v->gdn.value_heads,v->gdn.key_dim,v->gdn.value_dim,(double)v->gdn.rms_eps,(double)v->gdn.l2_eps,
+        v->hc.streams,v->hc.hidden_size,v->hc.low_rank,(double)v->hc.rms_eps);
+    fprintf(f,"\"attention\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%.9g,%.9g],",
+        a->heads,a->kv_heads,a->head_dim,a->index_heads,a->index_kv_heads,a->index_dim,a->ratio,a->token_budget,a->rotary_dim,
+        (double)a->rms_eps,(double)a->rope_theta);
+    fprintf(f,"\"moe\":[%u,%u,%u,%u,%u,%u,%s],\"layers\":[",
+        m->hidden_size,m->experts,m->top_k,m->intermediate,m->shared_intermediate,m->down_physical,m->norm_topk_prob?"true":"false");
+    for (uint32_t i = 0; i < v->blocks; ++i) {
+        const Qwen38Layer *l; assert(qwen38_config_layer(c,i,&l,NULL) == Q38_OK);
+        fprintf(f,"%s[%d,%d,%u,%s]",i?",":"",l->kind,l->domain,l->compress_ratio,l->has_ple?"true":"false");
+        if (l->has_ple) assert(qwen38_config_ngram(c,i,&ngram,NULL) == Q38_OK);
+    }
+    assert(ngram);
+    fprintf(f,"],\"ngram\":[%u,%u,%u,%u,%u,%u,%u,%u,%u,%.9g,%" PRIu64 "],",
+        ngram->vocab_size,ngram->eos_id,ngram->layer,ngram->order,ngram->heads_per_order,ngram->head_dim,
+        ngram->hidden_size,ngram->streams,ngram->conv_kernel,(double)ngram->rms_eps,ngram->row_count);
+    const uint64_t *arrays[] = {ngram->multipliers,ngram->head_offsets,ngram->head_vocab_sizes};
+    const char *names[] = {"multipliers","offsets","vocabs"};
+    for (size_t i = 0; i < 3; ++i) {
+        fprintf(f,"%s\"%s\":[",i?",":"",names[i]);
+        size_t n = i ? ngram->head_count : ngram->multiplier_count;
+        for (size_t j = 0; j < n; ++j) fprintf(f,"%s%" PRIu64,j?",":"",arrays[i][j]);
+        fputc(']',f);
+    }
+    fputs("}\n",f); assert(!fclose(f));
+}
 
 static GgufMetadata *field(Gguf *g, const char *key) {
     for (size_t i = 0; i < g->metadata_count; ++i)
@@ -21,7 +57,7 @@ static void rejected(Gguf *g, const char *key, uint64_t value, size_t relative,
     memcpy(p, old, width);
 }
 int main(int argc, char **argv) {
-    assert(argc == 2);
+    assert(argc == 2 || argc == 3);
     Gguf source; gguf_open(argv[1], &source);
     /* Copy only the header (not the mapping's payload tail) for fault injection. */
     Gguf g = source;
@@ -30,6 +66,7 @@ int main(int argc, char **argv) {
     assert(g.header); memcpy(g.header, source.header, g.header_size);
     Qwen38Config *c; Qwen38Error error;
     assert(qwen38_config_load(&g, &c, &error) == Q38_OK);
+    if (argc == 3) snapshot(c,argv[2]);
     const Qwen38ConfigView *v = qwen38_config_view(c);
     assert(v && !strcmp(v->semantic_profile, "qwen38-q2-text-f32-v1"));
     assert(v->blocks == v->trunk_blocks+v->mtp_blocks);

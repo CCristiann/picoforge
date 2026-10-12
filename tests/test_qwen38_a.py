@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import struct
 from pathlib import Path
 import sys
 import tempfile
@@ -101,6 +102,37 @@ class ConfigTests(unittest.TestCase):
         fields = ("name", "shape", "type_id", "format", "size_bytes", "file_offset")
         normalized = lambda ts: sorted(({k: t[k] for k in fields} for t in ts), key=lambda t: t["name"])
         self.assertEqual(normalized(native["tensors"]), normalized(self.inventory["tensors"]))
+
+    @unittest.skipUnless(os.environ.get("QWEN38_A_NATIVE_CONFIG"), "native config not supplied")
+    def test_native_config_accessors(self):
+        got = json.loads(Path(os.environ["QWEN38_A_NATIVE_CONFIG"]).read_text())
+        c = self.hf["text_config"]
+        pick = lambda *keys: [c[k] for k in keys]
+        eps = c["rms_norm_eps"]
+        expected = dict(profile="qwen38-q2-text-f32-v1",
+            dimensions=pick("hidden_size","vocab_size")+[c["num_hidden_layers"]+c["mtp_num_hidden_layers"]]+
+                pick("num_hidden_layers","mtp_num_hidden_layers","max_position_embeddings","linear_conv_kernel_dim"),
+            gdn=pick("linear_num_key_heads","linear_num_value_heads","linear_key_head_dim","linear_value_head_dim")+[eps,1e-6],
+            hc=pick("hc_count","hidden_size","hc_lowrank")+[eps],
+            attention=pick("num_attention_heads","num_key_value_heads","head_dim","indexer_n_heads","indexer_kv_heads",
+                           "indexer_head_dim","indexer_compress_ratio","indexer_budget")+
+                [int(c["head_dim"]*c["partial_rotary_factor"]),eps,c["rope_parameters"]["rope_theta"]],
+            moe=pick("hidden_size","num_experts","num_experts_per_tok","moe_intermediate_size","shared_expert_intermediate_size")+
+                [(c["moe_intermediate_size"]+255)//256*256,True],
+            layers=[[int(k=="full_attention"),int(i>=c["num_hidden_layers"]),
+                     c["indexer_compress_ratio"] if k=="full_attention" else 0,i+1 in c["ple_layer_ids"]]
+                    for i,k in enumerate(c["layer_types"]+c["mtp"]["layer_types"])],
+            ngram=pick("vocab_size","eos_token_id")+[c["ple_layer_ids"][0]-1]+pick("ngram_size","heads_per_ngram")+
+                [c["ple_embed_dim"]//((c["ngram_size"]-1)*c["heads_per_ngram"])]+
+                pick("hidden_size","hc_count","ple_conv_kernel_size")+[eps,self.metadata[oracle.PREFIX+"ple.row_count"]],
+            multipliers=self.metadata[oracle.PREFIX+"ple.layer_multipliers"],
+            offsets=self.metadata[oracle.PREFIX+"ple.head_offsets"],vocabs=self.metadata[oracle.PREFIX+"ple.head_vocab_sizes"])
+        # C exports decimal FP32 round-trips; compare storage bits for float fields.
+        for key, indexes in {"gdn":[4,5],"hc":[3],"attention":[9,10],"ngram":[9]}.items():
+            for i in indexes:
+                self.assertEqual(struct.pack("<f",got[key][i]),struct.pack("<f",expected[key][i]))
+                got[key][i] = expected[key][i]
+        self.assertEqual(got,expected)
 
 
 class TextFixtureTests(unittest.TestCase):
