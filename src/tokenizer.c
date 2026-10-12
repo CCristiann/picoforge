@@ -13,6 +13,7 @@
  * byte is wrong in ways that only show up on non-ASCII input.
  */
 #include "picoforge.h"
+#include "qwen38_a_internal.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -389,6 +390,67 @@ void tokenizer_summary(const Tokenizer *t) {
            t->n_specials, t->specials[0].id, t->specials[t->n_specials - 1].id);
 }
 
+/* GGUF adapter to the SAME string/merge tables and BPE loop as Qwen3.
+ * Inputs borrowed only during construction. No CLI die() on this path. */
+static int alphabet_bytes(Qwen38Bytes s, unsigned char *out, const int *alphabet) {
+    size_t pos = 0; int n = 0;
+    while (pos < s.len) {
+        unsigned cp; int k = q38a_utf8(s.data+pos, s.len-pos, &cp);
+        if (k <= 0 || cp >= ALPHABET_CP || alphabet[cp] < 0 || n >= 512) return -1;
+        out[n++] = (unsigned char)alphabet[cp]; pos += (size_t)k;
+    }
+    return n;
+}
+Qwen38Status q38a_bpe_load(Tokenizer *t, const Qwen38Bytes *tokens, size_t count,
+    const Qwen38Bytes *merges, size_t merge_count, Qwen38Error *e) {
+    int alphabet[ALPHABET_CP]; build_alphabet(alphabet);
+    if (!count || count > 1000000 || merge_count > 1000000)
+        return q38a_error(e, Q38_RANGE, "BPE", "table admission limit");
+    t->n_tokens = (int)count; t->n_merges = (int)merge_count;
+    t->offset = calloc(count+1, sizeof *t->offset);
+    if (!t->offset) return q38a_error(e, Q38_OOM, "BPE", "offsets");
+    unsigned char bytes[1024];
+    for (size_t i = 0; i < count; ++i) {
+        int len = alphabet_bytes(tokens[i], bytes, alphabet);
+        if (len <= 0) return q38a_error(e, Q38_FORMAT, "BPE", "invalid byte alphabet token");
+        if (t->offset[i] > 16*1024*1024-len) return q38a_error(e, Q38_CAPACITY, "BPE", "blob budget");
+        t->offset[i+1] = t->offset[i]+len;
+    }
+    t->blob = malloc((size_t)t->offset[count]);
+    t->str_mask = pow2_at_least((int)count)-1;
+    t->str_slot = calloc((size_t)t->str_mask+1, sizeof *t->str_slot);
+    t->merge_mask = pow2_at_least((int)merge_count)-1;
+    t->merge_key = calloc((size_t)t->merge_mask+1, sizeof *t->merge_key);
+    t->merge_rank = malloc(((size_t)t->merge_mask+1)*sizeof *t->merge_rank);
+    if (!t->blob || !t->str_slot || !t->merge_key || !t->merge_rank)
+        return q38a_error(e, Q38_OOM, "BPE", "tables");
+    for (unsigned i = 0; i <= t->merge_mask; ++i) t->merge_rank[i] = -1;
+    for (size_t i = 0; i < count; ++i) {
+        int n = alphabet_bytes(tokens[i], bytes, alphabet);
+        if (tokenizer_find(t, bytes, n) >= 0) return q38a_error(e, Q38_FORMAT, "BPE", "duplicate spelling");
+        memcpy(t->blob+t->offset[i], bytes, (size_t)n); str_insert(t, (int)i);
+    }
+    for (unsigned i = 0; i < 256; ++i) {
+        unsigned char b = (unsigned char)i;
+        if (tokenizer_find(t, &b, 1) < 0) return q38a_error(e, Q38_MISSING, "BPE", "byte token absent");
+    }
+    for (size_t i = 0; i < merge_count; ++i) {
+        Qwen38Bytes m = merges[i]; const uint8_t *space = memchr(m.data, ' ', m.len);
+        if (!space) return q38a_error(e, Q38_FORMAT, "BPE", "merge separator");
+        size_t left_len = (size_t)(space-m.data);
+        int ln = alphabet_bytes((Qwen38Bytes){m.data,left_len}, bytes, alphabet);
+        int rn = alphabet_bytes((Qwen38Bytes){space+1,m.len-left_len-1}, bytes+512, alphabet);
+        if (ln <= 0 || rn <= 0) return q38a_error(e, Q38_FORMAT, "BPE", "merge alphabet");
+        int left = tokenizer_find(t, bytes, ln), right = tokenizer_find(t, bytes+512, rn);
+        memmove(bytes+ln, bytes+512, (size_t)rn);
+        if (left < 0 || right < 0 || tokenizer_find(t, bytes, ln+rn) < 0 ||
+            tokenizer_rank(t, left, right) >= 0)
+            return q38a_error(e, Q38_FORMAT, "BPE", "invalid or duplicate merge");
+        merge_insert(t, left, right, (int)i);
+    }
+    return Q38_OK;
+}
+
 /* --------------------------------------------------- codepoint classes */
 
 static bool in_ranges(const CodepointRange *r, int n, int cp) {
@@ -443,7 +505,10 @@ static const char *cp_at(const char *p, const char *end, int *cp) {
  * Why any of this exists: merges are forbidden from crossing these
  * boundaries. Without the split, BPE would happily learn a single token for
  * "the cat", and every word's tokenisation would depend on its neighbour. */
-static int pretoken_len(const char *p, const char *end) {
+static unsigned qwen3_category(unsigned cp) {
+    return (is_letter((int)cp) ? 1u : 0u) | (is_number((int)cp) ? 2u : 0u);
+}
+static int pretoken_len(const char *p, const char *end, unsigned (*category)(unsigned)) {
     int cp;
 
     /* 1. contractions, case-insensitively */
@@ -464,24 +529,30 @@ static int pretoken_len(const char *p, const char *end) {
     {
         const char *q = p;
         const char *after = cp_at(q, end, &cp);
-        if (cp >= 0 && !is_nl(cp) && !is_letter(cp) && !is_number(cp)) q = after;
+        if (cp >= 0 && !is_nl(cp) && !(category((unsigned)cp)&3)) q = after;
 
         const char *r = q;
         int letters = 0;
         for (;;) {
             const char *nx = cp_at(r, end, &cp);
-            if (cp < 0 || !is_letter(cp)) break;
+            if (cp < 0 || !(category((unsigned)cp)&5)) break;
             r = nx;
             letters++;
         }
         if (letters > 0) return (int)(r - p);
+        /* In qwen35 the optional prefix can itself be a mark. Regex must
+         * backtrack when it consumed the only mark in the segment. */
+        if (q != p) {
+            cp_at(p, end, &cp);
+            if (category((unsigned)cp)&4) return (int)(q-p);
+        }
     }
 
     /* 3. exactly ONE digit. Not \p{N}+ — Qwen splits numbers per digit, so
      * "2026" is four tokens. Deliberate: it keeps arithmetic tractable. */
     {
         const char *q = cp_at(p, end, &cp);
-        if (cp >= 0 && is_number(cp)) return (int)(q - p);
+        if (cp >= 0 && (category((unsigned)cp)&2)) return (int)(q - p);
     }
 
     /* 4. optional space, then punctuation/symbols, then trailing newlines */
@@ -492,7 +563,7 @@ static int pretoken_len(const char *p, const char *end) {
         int n = 0;
         for (;;) {
             const char *nx = cp_at(r, end, &cp);
-            if (cp < 0 || is_space(cp) || is_letter(cp) || is_number(cp)) break;
+            if (cp < 0 || is_space(cp) || category((unsigned)cp)) break;
             r = nx;
             n++;
         }
@@ -565,9 +636,7 @@ static int bpe_chunk(const Tokenizer *t, const unsigned char *b, int n,
         int merged = tokenizer_find(t, b + start[best], merged_len);
         /* A merge rule exists for this pair, so its result must be a token.
          * If it is not, the two files disagree with each other. */
-        if (merged < 0)
-            die("bpe: rule %d merges a pair whose result is not in the vocabulary",
-                best_rank);
+        if (merged < 0) return -1;
 
         len[best] = merged_len;
         id[best] = merged;
@@ -577,9 +646,20 @@ static int bpe_chunk(const Tokenizer *t, const unsigned char *b, int n,
         m--;
     }
 
-    if (m > cap) die("bpe: %d tokens do not fit in %d slots", m, cap);
+    if (m > cap) return -1;
     memcpy(out, id, (size_t)m * sizeof *out);
     return m;
+}
+int q38a_bpe_segment(const Tokenizer *t, const char *text, int len,
+    int *start, int *sizes, int *ids, int *out, unsigned (*category)(unsigned)) {
+    int n = 0;
+    for (const char *p = text, *end = text+len; p < end;) {
+        int part = pretoken_len(p, end, category);
+        int got = bpe_chunk(t, (const unsigned char *)p, part, start, sizes, ids, out+n, len-n);
+        if (got < 0) return -1;
+        n += got; p += part;
+    }
+    return n;
 }
 
 /* ------------------------------------------------------ added tokens */
@@ -706,9 +786,11 @@ int tokenizer_encode(const Tokenizer *t, const char *text, int len, int *out, in
 
         const char *seg_end = hit ? hit : end;
         while (p < seg_end) {
-            int plen = pretoken_len(p, seg_end);
-            n += bpe_chunk(t, (const unsigned char *)p, plen, start, slen, sid,
-                           out + n, cap - n);
+            int plen = pretoken_len(p, seg_end, qwen3_category);
+            int got = bpe_chunk(t, (const unsigned char *)p, plen, start, slen, sid,
+                                out + n, cap - n);
+            if (got < 0) die("bpe: invalid merge or insufficient output capacity");
+            n += got;
             p += plen;
         }
         if (hit) {

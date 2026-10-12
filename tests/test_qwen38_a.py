@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -123,6 +124,23 @@ class TextReferenceTests(unittest.TestCase):
 
     def test_all_cases_reproduce_from_pinned_hf(self):
         self.assertEqual(self.actual, json.loads((FIXTURES / "text.json").read_text()))
+
+    def test_extended_cases_reproduce(self):
+        self.assertEqual(text_oracle.extended_cases(self.reference_root),
+                         json.loads((FIXTURES / "text_extended.json").read_text()))
+
+    @unittest.skipUnless(os.environ.get("QWEN38_A_TEXT_EXE"), "native text harness not supplied")
+    def test_native_nfc_all_unicode_scalars(self):
+        tokenizer, _ = text_oracle.load_reference(self.reference_root)
+        directory = ROOT / "build/qwen38-a"
+        directory.mkdir(parents=True, exist_ok=True)
+        for part in range(5):
+            text = "".join(chr(cp) for cp in range(part*0x40000, min((part+1)*0x40000, 0x110000))
+                           if not 0xD800 <= cp < 0xE000)
+            source, result = directory / f"nfc-{part}.in", directory / f"nfc-{part}.out"
+            source.write_bytes(text.encode())
+            subprocess.run([os.environ["QWEN38_A_TEXT_EXE"], "--nfc", str(source), str(result)], check=True)
+            self.assertEqual(result.read_bytes(), tokenizer.normalizer.normalize_str(text).encode())
 
     def test_nul_unicode_and_special_semantics(self):
         encodes = {case["text"]: case for case in self.actual["encodes"]}

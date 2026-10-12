@@ -3,7 +3,6 @@
 Writes sparse, zero payloads solely to exercise descriptors, never inference.
 All generated files belong in the current worktree's build/qwen38-a directory.
 """
-import copy
 import json
 import math
 from pathlib import Path
@@ -73,7 +72,40 @@ def write_fixture(path, hf):
     return expected
 
 
+def text_cases():
+    """Embed the frozen independent oracle as C data, not C algorithms."""
+    cases = json.loads((ROOT / "tests/fixtures/qwen38/a/text.json").read_text())
+    extra_path = ROOT / "tests/fixtures/qwen38/a/text_extended.json"
+    if extra_path.exists():
+        extra = json.loads(extra_path.read_text())
+        for group in ("encodes", "decodes"): cases[group] += extra[group]
+    lines = []
+
+    def blob(name, text):
+        b = text.encode()
+        lines.append(f"static const uint8_t {name}[] = {{"+",".join(map(str,b or b'\0'))+"};")
+        return f"{{{name},{len(b)}}}"
+
+    enc = []
+    for i, case in enumerate(cases["encodes"]):
+        name = f"enc{i}"
+        text = blob(name,case["text"])
+        decoded = blob(name+"_decoded",case["decoded"])
+        lines.append(f"static const int32_t {name}_ids[] = {{"+",".join(map(str,case["ids"] or [0]))+"};")
+        enc.append(f"{{{text},{name}_ids,{len(case['ids'])},{decoded}}}")
+    lines.append("static const EncodeCase encodes[] = {"+",\n".join(enc)+"};")
+    dec = []
+    for i, case in enumerate(cases["decodes"]):
+        name = f"dec{i}"
+        keep, skip = blob(name+"_keep",case["keep"]), blob(name+"_skip",case["skip"])
+        lines.append(f"static const int32_t {name}_ids[] = {{"+",".join(map(str,case["ids"]))+"};")
+        dec.append(f"{{{name}_ids,{len(case['ids'])},{keep},{skip}}}")
+    lines.append("static const DecodeCase decodes[] = {"+",\n".join(dec)+"};")
+    (ROOT / "build/qwen38-a/text_cases.inc").write_text("\n".join(lines)+"\n")
+
+
 if __name__ == "__main__":
     destination = ROOT / "build/qwen38-a/small.gguf"
     write_fixture(destination, small_config())
+    text_cases()
     print(destination)

@@ -190,6 +190,35 @@ def check_gguf_tables(checkpoint, reference_root):
             "hf_vs_gguf_special_flag_differences": mask_difference}
 
 
+def extended_cases(reference_root):
+    """Unicode contraction/boundaries and lossy byte decoding, actual HF backend."""
+    tokenizer, _ = load_reference(reference_root)
+    texts = ["'ſ", "a'ſb", "\u0301", "!\u0301", "\u0301!", "a\u0345b", "\u00ad\u0301",
+             "\u1c89\u1c8a", "\U0001e5d0\U0001e5ee", "x\x1cy\x85z",
+             "ᄀ<tool_call>ᅡ", "e<|im_start|>\u0301", "\u0301\u0300!", "\0<tool_call>\0"]
+    rng = random.Random(3812)
+    alphabet = [chr(c) for c in range(128)]+list("éअा\u0301\u0327\u20dd\u00ad\u0345\u200d👋")
+    texts += ["".join(rng.choice(alphabet) for _ in range(48)) for _ in range(256)]
+    printable = list(range(33,127))+list(range(161,173))+list(range(174,256))
+    inverse = {b: chr(b) for b in printable}
+    for b in range(256):
+        if b not in inverse: inverse[b] = chr(256+sum(x not in printable for x in range(b)))
+    byte_ids = {b: tokenizer.token_to_id(s) for b, s in inverse.items()}
+    raw = [bytes([b]) for b in range(256)]
+    raw += [bytes(rng.randrange(256) for _ in range(rng.randrange(2,13))) for _ in range(256)]
+    raw += [bytes.fromhex(s) for s in ("e28241", "e08080", "eda080", "f4908080", "f0908080", "f09f918b", "e282")]
+    encodes = []
+    for text in texts:
+        ids = tokenizer.encode(text,add_special_tokens=False).ids
+        encodes.append(dict(text=text,ids=ids,decoded=tokenizer.decode(ids,skip_special_tokens=False)))
+    decodes = []
+    for b in raw:
+        ids = [byte_ids[x] for x in b]
+        value = tokenizer.decode(ids,skip_special_tokens=False)
+        decodes.append(dict(ids=ids,keep=value,skip=value))
+    return dict(schema_version=1,encodes=encodes,decodes=decodes)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("reference_root", type=Path)
