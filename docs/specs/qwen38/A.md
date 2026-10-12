@@ -1,7 +1,10 @@
 # A — Configurazione, binding, tokenizer e template Qwen3.8
 
-Stato: **SPEC**, proposta da consolidare; nessun componente implementato.
-Data dell'ispezione: 2026-10-12. `BASE_CONCORDATA`: **da determinare**.
+Stato corrente: **ESEGUI A completato nel perimetro §8 di integration**;
+risultati, limiti e comandi al §11. Nessuna generazione Qwen3.8 completa.
+`BASE_CONCORDATA`: `c674b23bd1377b2ce0acef2d06fac8b160809446`.
+I §1–10 conservano la proposta SPEC del 2026-10-12: decisioni allora aperte
+e comandi allora proposti non prevalgono su integration/header v1 e §11.
 Base ispezionata: `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
 Branch di questa spec: `spec/qwen38-a`; worktree esterno:
 `/Users/cristiancirje/Desktop/Dev/picoforge-spec-a`.
@@ -826,3 +829,150 @@ collegamento al grafo completo.
 [ds4-code]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/ds4.c
 [ds4-converter]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/gguf-tools/qwen4_pack_to_qwen4exp.py
 [ds4-guide]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/docs/QWEN38_FLASH_NEXT.md
+
+## 11. Consegna ESEGUI sulla base consolidata
+
+**Verificato il 2026-10-12.** Branch `impl/qwen38-a-v1`, worktree
+`/Users/cristiancirje/Desktop/Dev/picoforge-a-v1`, creato dalla base sopra.
+Preservati main, `picoforge-spec-a`, `picoforge-a-oracle` e gli altri worktree.
+Recuperati soltanto i due commit oracle propri; nessuna nuova acquisizione
+della spec o di implementazioni B–F. Nessun merge/push.
+
+### Risultato e contratti effettivi
+
+- `qwen38_config.c`: accessor v1, metadati a tipi stretti, dimensioni e array
+  copiati, overflow/shape/profilo/errori verificati. Il profilo esplicito
+  registra i parametri assenti dal GGUF; nessun default Qwen3. Riconosciuti
+  E=2560, V=248320, 48 trunk (36 GDN/12 QSA), un MTP QSA, PLE al layer 1.
+- `qwen38_weights.c`: tutti i 1256 descrittori classificati: 1223 ordinari,
+  32 MTP, una tabella PLE disco. Sei ruoli extra MTP restano interni alla v1.
+  `storage.shape[0]=768` e `logical_shape[0]=640` per routed down ordinario;
+  shared down resta 640. Gain/scaling/permutazioni dei pesi non modificati.
+  Lookup per ruolo senza ricerca del nome nel percorso token. Attach atomico
+  sul medesimo `Gguf` vivo, `GgufPlan.source` e owner verificati; una seconda
+  attach restituisce BUSY. PLE esclusa da tutte le viste Metal.
+- `tokenizer.c` mantiene un unico algoritmo BPE e il profilo Qwen3 originale.
+  `qwen38_tokenizer.c` implementa import GGUF, qwen35/NFC, NUL, aggiunti prima
+  della normalizzazione, skip-special HF, UNUSED vuoti, stop 248044/248046,
+  nessun BOS implicito. Decode lossy UTF-8 dopo concatenazione; streaming
+  con carry <=3 byte, finish/reset e retry dopo CAPACITY senza mutazione.
+- `qwen38_chat.c`: renderer del solo template fissato, confronto letterale
+  completo al load, albero JSON ordinato v1, thinking/preserve/effort, tools,
+  cronologia e grouping delle risposte. Float finiti serializzati con locale C
+  privato e forma shortest-roundtrip; escape e ordine controllati contro HF.
+  Schema sconosciuto, duplicati, cicli, nonfinite e multimodale rifiutati.
+
+Config e tokenizer possiedono le copie necessarie: il reader può essere chiuso
+dopo la costruzione. I puntatori degli accessor durano fino al free del relativo
+oggetto. Il catalogo copia i descrittori, ma richiede il medesimo reader vivo
+fino all'attach; successivamente prende in prestito il piano/binding. Piano e
+store devono sopravvivere a tutti i consumatori dei binding. Il decoder prende
+in prestito il tokenizer. Alberi JSON/input/output sono del chiamante, validi
+per la chiamata. Misura con `out=NULL, capacity=0`; nessuna terminazione NUL
+implicita. CAPACITY indica output insufficiente; RANGE indica limite di
+ammissione. Errori e misura non pubblicano output parziali né avanzano decoder.
+
+**Correzione Unicode verificata:** riutilizzare i dati NFC Unicode 16 di
+Python/Qwen3 produceva differenze dal backend `tokenizers==0.22.2` (es. U+0897).
+Le tabelle A ora provengono da NFD/NFC e Regex del backend effettivo, con
+generator pin e fixture sui confini di versione. Non si è cambiata la tolleranza
+né la tabella Qwen3. L'algoritmo nativo deriva da `normalize.c`; l'oracle è
+il backend HF originale, non una seconda copia dell'algoritmo C.
+
+### Verifiche passate e riproduzione
+
+Il [manifest](../../../tests/fixtures/qwen38/a/manifest.json) conserva revisioni,
+hash dei sorgenti/fixture, versioni, prove pre-base e risultati nativi distinti.
+Tutti i confronti testuali sono esatti; float del config confrontati come bit
+FP32 dopo conversione del config HF. Nessuna tolleranza numerica B–F modificata.
+
+| Controllo eseguito | Risultato |
+|---|---|
+| Tre GGUF sintetici (`small`, `no-mtp`, `last-gdn`) e header reale | Config/catalogo/attach CPU, negativi e lifetime passati sotto ASan/UBSan |
+| Config HF e inventario indipendente | 37 metadati, tutti gli accessor esportati e 1256 descrittori esatti |
+| Testo nativo contro HF congelato | 364 encode, 524 decode (keep/skip e streaming), 36 chat di cui 8 errori attesi; byte e ID esatti |
+| NFC esteso | Stream dei 1.112.064 scalar Unicode in cinque chunk identico al backend HF; non prova tutte le sequenze combinatorie possibili |
+| Suite Python con tutti gli asset dichiarati | 20 test, zero skip; riproduzione delle fixture con HF originale |
+| Storage Metal sintetico sotto lock, API validation | Attach/span CPU/owner estraneo/PLE esclusa passati, fixture <16 MiB |
+| Regressione Qwen3 sotto lock comune | 151643 token e 151387 merge identici, encode 30/30, NFC 4017/4017 |
+| Build e gate esistenti | `make -j4`; `test-qwen38-contracts` (4 lock test); `test-gguf` (7 test), passati |
+
+Comando autonomo realmente eseguito, dal worktree A (nessun target Makefile
+nuovo necessario):
+
+```sh
+PF_MAIN=/Users/cristiancirje/Desktop/Dev/picoforge
+PF_PY="$PF_MAIN/tools/venv/bin/python"
+PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 "$PF_PY" -B \
+  tools/synth/make_qwen38_a.py --verify \
+  --checkpoint "$PF_MAIN/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" \
+  --reference-root "$PF_MAIN"
+make -j4
+make PYTHON="$PF_PY" test-qwen38-contracts test-gguf
+```
+
+Il runner compila i tre harness C11 con i warning del progetto come errori,
+`-ffp-contract=off -fsanitize=address,undefined`, legge soltanto header/catalogo
+reali, genera il dump config e inventario e confronta i riferimenti. Output
+isolati in `build/qwen38-a/`. Per ripetere anche la prova storage già passata,
+aggiungere `--gpu` dopo `make`: il runner acquisisce automaticamente il lock
+canonico e abilita `MTL_DEBUG_LAYER=1` per la sola fixture piccola. Non avvolgere
+questa opzione in un secondo wrapper. Nessun accesso al payload Qwen3.8:
+il loader esistente mappa un prefisso CPU di 128 MiB, che comprende anche
+byte successivi all'header, ma A non li legge né li rende residenti in Metal.
+
+Regressioni Qwen3 eseguite senza copiare asset o venv, dopo la build locale:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TMPDIR="$PWD/build/qwen38-a" \
+  "$PF_PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- "$PF_PY" -B -c \
+  'import subprocess,sys; [subprocess.run([sys.executable,"-B",t,"/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3-0.6B"],check=True) for t in ("tests/test_tokenizer.py","tests/test_encode.py","tests/test_nfc.py")]'
+```
+
+### Memoria e limiti misurati
+
+Ammissione runtime: config/catalogo/indici <=4 MiB; import tokenizer <=1 milione
+di voci per tabella e blob <=16 MiB (tabelle permanenti complessive <64 MiB).
+Encode: input <=4 MiB, segmento NFC <=8 MiB; scratch totale <256 MiB. Il renderer
+ammette <=4 MiB di stringhe JSON, 100000 nodi, profondità <64 e output <=16 MiB.
+Decode UTF-8: scratch raw <=64 MiB per chiamata; l'output appartiene al chiamante.
+Gli estremi di ammissione sono limiti calcolati, non carichi misurati. BPE e
+riordino di combining mark possono avere costo quadratico; nessuna promessa
+di latenza per input avversari. Profilo iniziale: un sito PLE, GDN Dk=Dv,
+ricetta Q2 fissata; varianti non rappresentate sono rifiutate esplicitamente.
+
+Diagnostica singola `/usr/bin/time -l`, senza benchmark prestazionale: harness
+testo con ASan/UBSan, RSS 62.930.944 byte, footprint 64.099.920 byte. Suite Python:
+inizialmente RSS 1.176.829.952 e footprint 1.081.984.584 byte, oltre il target
+1 GiB; riutilizzando le due istanze HF validate, RSS 585.760.768 e footprint
+481.166.440 byte. Stessi 20 test verdi, hash ricontrollati a ogni accesso,
+contatore swap dei processi zero. Non sono misure della pressione di sistema,
+del runtime completo o del fit 48–50 GiB. Nessun modello BF16 caricato o
+checksum del file da 137 GiB ripetuto; metadati tokenizer letti: 10.945.596 byte.
+
+### Integrazione e dipendenze residue
+
+Modificati esclusivamente i file A di integration §7: cinque sorgenti
+`qwen38_{config,weights,tokenizer,chat,unicode}.c`, `tokenizer.c`, header **privato**
+`qwen38_a_internal.h`, generatore Unicode, due oracle, runner sintetico, tre
+harness C, test Python, fixture/manifest A e questo documento. Header pubblici,
+Makefile, entrypoint, fonti B–F e report aggregati invariati.
+
+Le decisioni A-01/02/04/05/06/08 sono chiuse dal contratto v1; A-07 è verificata
+con backend e regressioni qui riportati. Le formule di A-03 sono congelate da
+integration; la loro prova numerica con operatori e slice reali, insieme ad
+A-09, resta a C–F e al coordinatore. Nessuna API alternativa o stub introdotto.
+
+Al coordinatore restano: target `test-qwen38-a-cpu`/`test-qwen38-a-header`
+che invochino il runner con venv/asset esistenti (e un target storage separato
+che usi `--gpu`); wiring del grafo/CLI; composizione A+B–F sulle slice e sullo
+stato; `make test-all`, logits/generazione, misure globali e qualità. La wildcard
+C esistente include già i sorgenti A nella build. Il runner elenca esattamente
+i sorgenti per ciascun harness; non è necessario ricopiare un BPE o decoder.
+Il lock comune effettivamente usato è
+`/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock`.
+I controlli A passati non certificano operatori numerici, MTP o perdita Q2/BF16.
+
+Commit di codice da integrare in ordine (lo SHA della consegna documentale è
+comunicato separatamente): `5d918bb`, `cb48f84`, `4df72eb`, `c445a5b`, `e54c798`,
+`7316db4`, `298fec6`, `71f1368`, `343d8b4`, `16f5add`, `bc1aca6`.

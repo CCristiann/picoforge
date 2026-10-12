@@ -137,13 +137,21 @@ class ConfigTests(unittest.TestCase):
 
 class TextFixtureTests(unittest.TestCase):
     def test_frozen_fixture_hash_and_case_counts(self):
-        manifest = json.loads((FIXTURES / "manifest.json").read_text())["text_fixture"]
+        provenance = json.loads((FIXTURES / "manifest.json").read_text())
+        manifest = provenance["text_fixture"]
         raw = (FIXTURES / "text.json").read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(), manifest["sha256"])
         data = json.loads(raw)
         for group in ("encodes", "decodes", "templates"):
             self.assertEqual(len(data[group]), manifest[group])
-        self.assertFalse(manifest["native_parity_tested"])
+        self.assertTrue(manifest["native_parity_tested"])
+        for name, entry in provenance["extended_fixtures"].items():
+            raw = (FIXTURES / name).read_bytes()
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), entry["sha256"])
+            data = json.loads(raw)
+            if isinstance(data, list): data = {"templates": data}
+            for group, count in entry.items():
+                if group != "sha256": self.assertEqual(len(data[group]), count)
 
 
 @unittest.skipUnless(os.environ.get("QWEN38_A_REFERENCE_ROOT"), "HF reference root not supplied")

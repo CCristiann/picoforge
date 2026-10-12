@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "scope": "CPU references only; no native Qwen3.8 implementation or BF16 quality claim",
+  "scope": "Native component A against independent CPU references; no Qwen3.8 forward or Q2-versus-BF16 quality claim",
   "source_revision": "de4b8e4d43b917e7706784d8bb445c9af86a3540",
   "config": {
     "url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json",
@@ -30,7 +30,16 @@
     "source": "https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/gguf-tools/qwen4_pack_to_qwen4exp.py",
     "independence_limit": "Descriptor checks are not numerical verification of conversion transforms or PLE hashes."
   },
-  "config_verification": {
+  "text_fixture": {
+    "sha256": "c0200fcf87041f2e37f3f562bdda2546029a79232d3a544b355df12887d14335",
+    "encodes": 94,
+    "decodes": 5,
+    "templates": 27,
+    "expected_template_errors": 8,
+    "native_parity_tested": true,
+    "api_status": "Implemented against unmodified public v1 headers at BASE_CONCORDATA c674b23bd1377b2ce0acef2d06fac8b160809446."
+  },
+  "pre_base_config_verification": {
     "date": "2026-10-12",
     "tests_passed": 9,
     "metadata_fields_compared_to_hf": 37,
@@ -45,16 +54,7 @@
       "QWEN38_A_NATIVE_INVENTORY=build/qwen38-a-native-inventory.json \"$PF_MAIN/tools/venv/bin/python\" -B tests/test_qwen38_a.py"
     ]
   },
-  "text_fixture": {
-    "sha256": "c0200fcf87041f2e37f3f562bdda2546029a79232d3a544b355df12887d14335",
-    "encodes": 94,
-    "decodes": 5,
-    "templates": 27,
-    "expected_template_errors": 8,
-    "native_parity_tested": false,
-    "api_status": "Provisional until BASE_CONCORDATA; no shared header modified."
-  },
-  "text_verification": {
+  "pre_base_text_verification": {
     "date": "2026-10-12",
     "python": "3.14.2",
     "combined_tests_passed": 17,
@@ -68,6 +68,78 @@
       "No native Qwen3.8 tokenizer or template exists yet.",
       "No numerical graph, PLE hash derivation or Q2-versus-BF16 quality claim.",
       "Shared API, source ownership changes and GPU lock require BASE_CONCORDATA."
+    ]
+  },
+  "extended_fixtures": {
+    "text_extended.json": {
+      "sha256": "a4e5fa4b984c74bb81ffa2c58039881efa62c12e55a6bd4c32fc45ff8e66330f",
+      "encodes": 270,
+      "decodes": 519
+    },
+    "chat_extended.json": {
+      "sha256": "4d0b4a0e53b96e5726b779dd9506287f5954a42fff9471c45359dc8f290c302b",
+      "templates": 9
+    }
+  },
+  "native_verification": {
+    "date": "2026-10-12",
+    "base_concordata": "c674b23bd1377b2ce0acef2d06fac8b160809446",
+    "branch": "impl/qwen38-a-v1",
+    "python": "3.14.2",
+    "python_tests_passed": 20,
+    "tests_skipped": 0,
+    "native_sanitizers": [
+      "address",
+      "undefined"
+    ],
+    "float_contract": "FP32 config bits exact; text bytes and token IDs exact; no numerical operator tolerance claim",
+    "metadata_fields_compared_to_hf": 37,
+    "native_descriptors_equal_to_python": 1256,
+    "config_accessors_equal_to_hf": true,
+    "gguf_tables_equal_to_hf": true,
+    "metadata_only_bytes_read": 10945596,
+    "native_encode_cases": 364,
+    "native_decode_cases": 524,
+    "native_template_cases": 36,
+    "expected_template_errors": 8,
+    "nfc_scalar_stream_codepoints": 1112064,
+    "nfc_source": "Installed tokenizers 0.22.2 NFD/NFC backend; Python Unicode 16 NFC data are not equivalent.",
+    "unicode_source_sha256": "c511738c75f615285d8c88a63c5f3bf875d6c1d0a5d6f184f3878cb42de3b13b",
+    "template_utf8_sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+    "synthetic_variants": [
+      "small",
+      "no-mtp",
+      "last-gdn"
+    ],
+    "gpu_test": "Only small synthetic storage attach/CPU byte-span, MTL_DEBUG_LAYER=1, common lock; no real payload",
+    "lock": "/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock",
+    "qwen3_regressions": {
+      "vocabulary": 151643,
+      "merges": 151387,
+      "encode_cases": 30,
+      "nfc_cases": 4017
+    },
+    "memory": {
+      "method": "Single /usr/bin/time -l diagnostic, bytes; not a performance benchmark or full-model fit",
+      "native_text": {
+        "max_rss": 62930944,
+        "peak_footprint": 64099920
+      },
+      "python_oracle_before_reference_reuse": {
+        "max_rss": 1176829952,
+        "peak_footprint": 1081984584
+      },
+      "python_oracle_after_reference_reuse": {
+        "max_rss": 585760768,
+        "peak_footprint": 481166440
+      },
+      "process_swap_counts": 0
+    },
+    "command": "PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 \"$PF_MAIN/tools/venv/bin/python\" -B tools/synth/make_qwen38_a.py --verify --checkpoint \"$PF_MAIN/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf\" --reference-root \"$PF_MAIN\"",
+    "limitations": [
+      "Makefile targets and graph wiring belong to the coordinator.",
+      "No numerical Qwen3.8 forward, logits, full-model memory fit or quality result.",
+      "make test-all remains the coordinator integration gate; focused Qwen3 regressions passed."
     ]
   }
 }
