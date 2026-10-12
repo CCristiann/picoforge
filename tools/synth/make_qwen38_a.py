@@ -152,6 +152,11 @@ def chat_cases():
 if __name__ == "__main__":
     destination = ROOT / "build/qwen38-a/small.gguf"
     write_fixture(destination, small_config())
+    no_mtp = small_config()
+    no_mtp["text_config"].update(mtp_num_hidden_layers=0,mtp={"layer_types":[],"num_hidden_layers":0})
+    write_fixture(destination.with_name("no-mtp.gguf"),no_mtp)
+    no_mtp["text_config"].update(num_hidden_layers=1,layer_types=["linear_attention"],ple_layer_ids=[1])
+    write_fixture(destination.with_name("last-gdn.gguf"),no_mtp)
     text_cases()
     chat_cases()
     print(destination)

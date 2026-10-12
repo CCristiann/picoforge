@@ -45,6 +45,7 @@ for cp in range(0x110000):
     char = chr(cp)
     dec = nfd(char)
     if dec != char:
+        assert len(dec) <= 4, "NFD runtime expansion bound changed"
         decomps.append((cp, len(payload), len(dec)))
         payload += list(map(ord, dec))
         if len(dec) >= 2 and nfc(dec) == char and len(nfc(dec[:-1])) == 1:

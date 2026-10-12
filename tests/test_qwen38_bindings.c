@@ -2,6 +2,27 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef Q38_A_GPU
+#include "picoforge.h"
+#include "qwen38_packed.h"
+static void storage_bridge(const Gguf *g, const Qwen38Config *c) {
+    /* Run ONLY with the small sparse fixture, under the common GPU lock. */
+    assert(g->file_size < 16*1024*1024);
+    MetalContext *metal = metal_init("picoforge.metallib");
+    GpuWeightStore *store = gpu_weights_open(metal_device(metal),g,1024*1024);
+    Qwen38Weights *w; const Qwen38Tensor *t; Qwen38Error e; Qwen38CpuSpan span;
+    assert(qwen38_weights_describe(g,c,&w,&e) == Q38_OK);
+    assert(qwen38_weights_attach(w,g,gpu_weights_plan(store),&e) == Q38_OK);
+    assert(qwen38_weights_get(w,0,Q38_MOE_DOWN,&t,&e) == Q38_OK);
+    assert(qwen38_weights_cpu_span(store,t->gpu,&span,&e) == Q38_OK && span.bytes == t->storage.bytes);
+    for (size_t i = 0; i < span.bytes; ++i) assert(span.data[i] == 0);
+    GgufBinding forged = *t->gpu;
+    assert(qwen38_weights_cpu_span(store,&forged,&span,&e) == Q38_OWNER && !span.data && !span.bytes);
+    assert(qwen38_weights_get(w,QWEN38_GLOBAL_LAYER,Q38_PLE_TABLE,&t,&e) == Q38_OK && !t->gpu);
+    qwen38_weights_free(w); gpu_weights_close(store); metal_shutdown(metal);
+    puts("small Metal storage attach/CPU span/forged owner OK");
+}
+#endif
 
 static void bad_descriptor(Gguf *g, Qwen38Config *c, size_t i, GgufTensor bad, Qwen38Status expected) {
     GgufTensor old = g->tensors[i]; g->tensors[i] = bad;
@@ -68,6 +89,9 @@ int main(int argc, char **argv) {
     assert(qwen38_weights_attach(w, &g, &plan, &e) == Q38_BUSY);
     printf("bindings OK: ordinary=%zu MTP=%zu(+%u internal) disk=%zu views=%zu\n",
         count[0], count[1], 6*v->mtp_blocks, count[2], plan.view_count);
+#ifdef Q38_A_GPU
+    storage_bridge(&g,c);
+#endif
     qwen38_config_free(c); gguf_close(&g);
     assert(down->gpu->tensor.bytes == down->storage.bytes); /* independent copies */
     qwen38_weights_free(w); gguf_plan_free(&plan);

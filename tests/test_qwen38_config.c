@@ -51,6 +51,8 @@ int main(int argc, char **argv) {
     rejected(&g, "qwen4exp.embedding_length", 0, 0, 4, Q38_RANGE);
     rejected(&g, "qwen4exp.attention.head_count_kv", 5, 0, 4, Q38_SHAPE);
     rejected(&g, "qwen4exp.vocab_size", 1, 0, 4, Q38_RANGE);
+    rejected(&g, "qwen4exp.attention.head_count", UINT32_MAX-1u, 0, 4, Q38_OVERFLOW);
+    rejected(&g, "qwen4exp.block_count", 4097, 0, 4, Q38_RANGE);
     rejected(&g, "qwen4exp.attention.layer_norm_rms_epsilon", 0x7fc00000, 0, 4, Q38_NONFINITE);
     rejected(&g, "qwen4exp.ple.layer_multipliers", UINT64_MAX, 12, 8, Q38_RANGE);
     rejected(&g, "qwen4exp.ple.head_offsets", 1, 12, 8, Q38_RANGE);
@@ -65,6 +67,8 @@ int main(int argc, char **argv) {
     assert(qwen38_config_load(&g, &bad, &error) == Q38_FORMAT && !bad); m->bytes = bytes;
     char name[128]; memcpy(name, m->name, sizeof name); m->name[0] = 'X';
     assert(qwen38_config_load(&g, &bad, &error) == Q38_MISSING && !bad); memcpy(m->name, name, sizeof name);
+    strcpy(m->name,"qwen4exp.unknown");
+    assert(qwen38_config_load(&g, &bad, &error) == Q38_UNSUPPORTED && !bad); memcpy(m->name,name,sizeof name);
     assert(qwen38_config_load(NULL, &bad, NULL) == Q38_INVALID_ARGUMENT && !bad);
     /* Config remains usable after reader close: arrays and scalar fields owned. */
     free(g.header); gguf_close(&source);

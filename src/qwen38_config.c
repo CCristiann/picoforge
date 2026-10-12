@@ -38,6 +38,8 @@ static Qwen38Status validate_fields(Qwen38Config *c, Qwen38Error *e) {
         c->inner % v->gdn.value_heads || m->top_k > m->experts)
         return q38a_error(e, Q38_SHAPE, "config", "head/rotary/expert dimensions");
     v->gdn.value_dim = c->inner/v->gdn.value_heads;
+    if (v->gdn.value_dim != v->gdn.key_dim)
+        return q38a_error(e, Q38_UNSUPPORTED, "GDN", "profile requires equal key/value dimensions");
     uint64_t padded = ((uint64_t)m->intermediate+255)/256*256;
     if (padded > UINT32_MAX || padded != m->down_physical)
         return q38a_error(e, Q38_SHAPE, "down", "physical K must round logical K to 256");
@@ -46,11 +48,34 @@ static Qwen38Status validate_fields(Qwen38Config *c, Qwen38Error *e) {
         return q38a_error(e, Q38_SHAPE, "PLE", "embedding width or EOS");
     /* Kernel dimensions must eventually narrow to uint32, never wrap first. */
     if ((uint64_t)v->hidden_size*v->hc.streams > UINT32_MAX ||
-        (uint64_t)a->heads*a->head_dim*2 > UINT32_MAX ||
+        (uint64_t)a->heads*a->head_dim > UINT32_MAX/2 ||
         (uint64_t)a->index_heads*a->index_dim > UINT32_MAX ||
-        2*(uint64_t)v->gdn.key_heads*v->gdn.key_dim+c->inner > UINT32_MAX)
+        (uint64_t)v->gdn.key_heads*v->gdn.key_dim > (UINT32_MAX-c->inner)/2 ||
+        (v->mtp_blocks && v->hidden_size > UINT32_MAX/2))
         return q38a_error(e, Q38_OVERFLOW, "config", "derived dimension exceeds uint32");
     n->head_count = (size_t)heads; n->multiplier_count = n->order;
+    return Q38_OK;
+}
+static Qwen38Status known_fields(const Gguf *g, Qwen38Error *e) {
+    static const char *const names[] = {
+        "block_count","nextn_predict_layers","context_length","embedding_length","vocab_size",
+        "attention.head_count","attention.head_count_kv","attention.key_length","attention.value_length",
+        "attention.layer_norm_rms_epsilon","attention.indexer.head_count","attention.indexer.key_length",
+        "attention.indexer.top_k","expert_count","expert_used_count","expert_feed_forward_length",
+        "expert_shared_feed_forward_length","ssm.conv_kernel","ssm.state_size","ssm.group_count",
+        "ssm.time_step_rank","ssm.inner_size","full_attention_interval","hyper_connection.count",
+        "hyper_connection.low_rank","rope.dimension_count","rope.freq_base","attention.compress_ratios",
+        "ple.layers","ple.ngram_size","ple.heads_per_ngram","ple.conv_kernel","ple.eos_token_id",
+        "embedding_length_per_layer_input","ple.seed","ple.vocab_base","ple.vocab_divisor","ple.row_count",
+        "ple.row_dimension","ple.layer_multipliers","ple.head_offsets","ple.head_vocab_sizes"
+    };
+    for (size_t i = 0; i < g->metadata_count; ++i) {
+        const char *key = g->metadata[i].name;
+        if (strncmp(key,"qwen4exp.",9)) continue;
+        bool known = false;
+        for (size_t j = 0; j < sizeof names/sizeof *names; ++j) if (!strcmp(key+9,names[j])) known = true;
+        if (!known) return q38a_error(e,Q38_UNSUPPORTED,"config","unknown computational metadata");
+    }
     return Q38_OK;
 }
 Qwen38Status q38a_array(const Gguf *g, const char *name, uint32_t type,
@@ -206,7 +231,8 @@ Qwen38Status qwen38_config_load(const Gguf *g, Qwen38Config **out, Qwen38Error *
         return q38a_error(e, Q38_UNSUPPORTED, "architecture", "expected qwen4exp");
     Qwen38Config *c = calloc(1, sizeof *c);
     if (!c) return q38a_error(e, Q38_OOM, "config", "allocation");
-    s = load_fields(g, c, e);
+    s = known_fields(g, e);
+    if (!s) s = load_fields(g, c, e);
     if (!s) s = validate_fields(c, e);
     if (!s) s = load_arrays(g, c, e);
     if (s) { qwen38_config_free(c); return s; }
