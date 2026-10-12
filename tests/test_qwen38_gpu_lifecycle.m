@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define EXPECT(call, want) do { Qwen38Status got_ = (call); \
     if (got_ != (want)) { fprintf(stderr, "line %d: %s -> %d, want %d\n", \
@@ -191,6 +192,81 @@ static void session_tickets_busy_and_owner(void) {
     EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK);
 }
 
+/* ---- claims: alias, reuse and lifetime ------------------------------ */
+static Qwen38GpuSpan span(id<MTLBuffer> b, size_t offset, size_t bytes) {
+    return (Qwen38GpuSpan){(__bridge void *)b, offset, bytes};
+}
+static id<MTLBuffer> no_copy(void *p, size_t bytes) {
+    id<MTLBuffer> b = [dev newBufferWithBytesNoCopy:p length:bytes
+        options:MTLResourceStorageModeShared deallocator:nil];
+    IS(b); return b;
+}
+#define CLAIM(s, t, sp, use, want) EXPECT(qwen38_gpu_session_claim(s, &t, sp, use, NULL), want)
+static void session_claims_refuse_aliases(void) {
+    Qwen38GpuSession *s = session(); Qwen38GpuTicket t, old; Qwen38GpuCommand c;
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    void *mem; IS(posix_memalign(&mem, page, 4 * page) == 0);
+    /* Three separate Metal objects over one allocation: weights, an overlapping
+     * view of it, and a disjoint tail. Only the address can reveal the overlap. */
+    id<MTLBuffer> weights = no_copy(mem, 2 * page), overlap = no_copy((char *)mem + page, 2 * page);
+    id<MTLBuffer> tail = no_copy((char *)mem + 3 * page, page);
+    id<MTLBuffer> priv = [dev newBufferWithLength:1024 options:MTLResourceStorageModePrivate];
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
+    CLAIM(s, t, span(weights, 0, 2 * page), Q38_GPU_USE_READ, Q38_OK);
+    CLAIM(s, t, span(overlap, 0, page), Q38_GPU_USE_WRITE, Q38_INVALID_ARGUMENT);   /* scratch over weights */
+    CLAIM(s, t, span(overlap, 0, 2 * page), Q38_GPU_USE_READ, Q38_OK);              /* shared read-only */
+    CLAIM(s, t, span(tail, 0, page), Q38_GPU_USE_WRITE, Q38_OK);
+    CLAIM(s, t, span(tail, 0, page), Q38_GPU_USE_WRITE, Q38_INVALID_ARGUMENT);      /* scratch reused in-command */
+    CLAIM(s, t, span(tail, 0, 64), Q38_GPU_USE_READ, Q38_INVALID_ARGUMENT);         /* reading what is written */
+    Qwen38GpuSpan word = c.error_word;                                              /* the error word itself */
+    CLAIM(s, t, word, Q38_GPU_USE_READ, Q38_INVALID_ARGUMENT);
+    CLAIM(s, t, word, Q38_GPU_USE_WRITE, Q38_INVALID_ARGUMENT);
+    CLAIM(s, t, span(priv, 0, 512), Q38_GPU_USE_WRITE, Q38_OK);                     /* private: by offset */
+    CLAIM(s, t, span(priv, 256, 512), Q38_GPU_USE_READ, Q38_INVALID_ARGUMENT);
+    CLAIM(s, t, span(priv, 512, 512), Q38_GPU_USE_WRITE, Q38_OK);
+    CLAIM(s, t, span(tail, 2, 4), Q38_GPU_USE_READ, Q38_STRIDE);
+    CLAIM(s, t, span(tail, page, 4), Q38_GPU_USE_READ, Q38_CAPACITY);
+    CLAIM(s, t, span(tail, 0, page + 4), Q38_GPU_USE_READ, Q38_CAPACITY);
+    CLAIM(s, t, span(tail, 0, 0), Q38_GPU_USE_READ, Q38_INVALID_ARGUMENT);
+    CLAIM(s, t, ((Qwen38GpuSpan){0}), Q38_GPU_USE_READ, Q38_INVALID_ARGUMENT);
+    old = t;
+    encode(c, 0);
+    EXPECT(qwen38_gpu_session_submit(s, &t, NULL), Q38_OK);
+    CLAIM(s, t, span(tail, 0, 64), Q38_GPU_USE_READ, Q38_BAD_STATE);                /* in flight: no new claims */
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 1, 1, &t, &c, NULL), Q38_BUSY);
+    EXPECT(qwen38_gpu_session_finish(s, &old, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 1, 1, &t, &c, NULL), Q38_OK);      /* claims were released */
+    CLAIM(s, t, span(tail, 0, page), Q38_GPU_USE_WRITE, Q38_OK);                    /* same scratch, new command */
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 1, 1, &t, &c, NULL), Q38_OK);
+    CLAIM(s, t, span(tail, 0, page), Q38_GPU_USE_WRITE, Q38_OK);                    /* abort released them too */
+    CLAIM(s, old, span(priv, 0, 64), Q38_GPU_USE_READ, Q38_BAD_STATE);              /* finished ticket is dead */
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_reset(s, &model_a, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
+    CLAIM(s, old, span(tail, 0, 64), Q38_GPU_USE_READ, Q38_STALE);                  /* previous epoch */
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK);
+    free(mem);
+}
+static void session_retains_buffers_until_completion(void) {
+    Qwen38GpuSession *s = session(); Qwen38GpuTicket t; Qwen38GpuCommand c;
+    __weak id<MTLBuffer> weak;
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
+    @autoreleasepool {      /* the caller's only reference dies at the end of this block */
+        id<MTLBuffer> scratch = [dev newBufferWithLength:64 options:MTLResourceStorageModeShared];
+        weak = scratch;
+        CLAIM(s, t, span(scratch, 0, 64), Q38_GPU_USE_WRITE, Q38_OK);
+    }
+    IS(weak);                                                   /* kept alive by the session */
+    encode(c, 0);
+    EXPECT(qwen38_gpu_session_submit(s, &t, NULL), Q38_OK);
+    IS(weak);                                                   /* ... and while the GPU may use it */
+    EXPECT(qwen38_gpu_session_finish(s, &t, NULL), Q38_OK);
+    IS(!weak);                                                  /* released at completion */
+    EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK);
+}
+
 int main(void) {
     const char *lock = getenv("PICOFORGE_GPU_LOCK_FD");
     if (!lock || fcntl(atoi(lock), F_GETFD) < 0) {
@@ -206,8 +282,9 @@ int main(void) {
         pso = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"write_then_flag"] error:&err];
         state_buf = [dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; IS(pso && state_buf);
         session_publishes_only_clean_commands(); session_failure_before_submit();
-        session_tickets_busy_and_owner();
+        session_tickets_busy_and_owner(); session_claims_refuse_aliases();
+        session_retains_buffers_until_completion();
     }
-    puts("qwen38 gpu lifecycle: 6 ledger + 3 session groups passed");
+    puts("qwen38 gpu lifecycle: 6 ledger + 5 session groups passed");
     return 0;
 }

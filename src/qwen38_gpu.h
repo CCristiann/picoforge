@@ -61,6 +61,10 @@ Qwen38Status qwen38_gpu_ledger_complete(Qwen38GpuLedger *, const Qwen38GpuTicket
 Qwen38Status qwen38_gpu_ledger_reset(Qwen38GpuLedger *, const void *model,
     Qwen38Error *);
 Qwen38StateInfo qwen38_gpu_ledger_info(const Qwen38GpuLedger *);
+/* OK only if the ticket is exactly the open command and the ledger is in `want`:
+ * OWNER for another model, STALE for an old epoch, BAD_STATE otherwise. */
+Qwen38Status qwen38_gpu_ledger_check(const Qwen38GpuLedger *, const Qwen38GpuTicket *,
+    Qwen38SessionState want, Qwen38Error *);
 
 /* The session is the ledger plus what it protects: a command queue, one command
  * buffer per command and the shared error word. Components receive only the
@@ -73,6 +77,13 @@ Qwen38Status qwen38_gpu_session_create(void *device, const void *model,
 Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *, const void *model,
     uint64_t start_pos, uint64_t count, Qwen38GpuTicket *, Qwen38GpuCommand *,
     Qwen38Error *);
+/* Every range a command touches is declared while it is ENCODING. The session
+ * retains the buffer until finish/abort, and refuses any overlap with a WRITE
+ * claim, including the error word and separate no-copy views of one memory.
+ * READ/READ overlap is allowed (shared weights); in-place state claims once. */
+typedef enum { Q38_GPU_USE_READ, Q38_GPU_USE_WRITE } Qwen38GpuUse;
+Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *, const Qwen38GpuTicket *,
+    Qwen38GpuSpan, Qwen38GpuUse, Qwen38Error *);
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *, const Qwen38GpuTicket *,
     Qwen38Error *);
 Qwen38Status qwen38_gpu_session_abort(Qwen38GpuSession *, const Qwen38GpuTicket *,

@@ -25,6 +25,10 @@ static Qwen38Status check(const Qwen38GpuLedger *l, const Qwen38GpuTicket *t,
     return Q38_OK;
 }
 
+Qwen38Status qwen38_gpu_ledger_check(const Qwen38GpuLedger *l, const Qwen38GpuTicket *t,
+    Qwen38SessionState want, Qwen38Error *e) {
+    return report(e, check(l, t, want));
+}
 Qwen38Status qwen38_gpu_ledger_init(Qwen38GpuLedger *l, const void *model,
     uint64_t capacity, Qwen38Error *e) {
     if (l) memset(l, 0, sizeof(*l));
@@ -94,13 +98,54 @@ Qwen38StateInfo qwen38_gpu_ledger_info(const Qwen38GpuLedger *l) {
 
 /* Retained Metal objects are held as void * (bridge-retained), like the other
  * Qwen38 GPU glue, so this struct stays a plain C struct under ARC. */
+typedef struct {
+    void *buffer;                      /* retained until the command ends */
+    const void *ident;                 /* NULL for CPU-visible memory, else the buffer */
+    uintptr_t lo, hi;                  /* address range, or offsets when ident is set */
+    bool write;
+} Claim;
 struct Qwen38GpuSession {
     Qwen38GpuLedger ledger;
     void *device, *queue, *error_word;
     void *command, *encoder;           /* alive only from begin to finish/abort */
+    Claim *claims;
+    size_t claim_count, claim_capacity;
 };
 static void drop(void **p) {
     if (*p) { (void)(__bridge_transfer id)*p; *p = NULL; }
+}
+static void release_claims(Qwen38GpuSession *g) {
+    for (size_t i = 0; i < g->claim_count; i++) drop(&g->claims[i].buffer);
+    g->claim_count = 0;
+}
+static Qwen38Status add_claim(Qwen38GpuSession *g, Qwen38GpuSpan span, Qwen38GpuUse use,
+    Qwen38Error *e) {
+    if (!span.buffer || !span.bytes) return report(e, Q38_INVALID_ARGUMENT);
+    id<MTLBuffer> b = (__bridge id<MTLBuffer>)span.buffer;
+    if (b.device != (__bridge id<MTLDevice>)g->device) return report(e, Q38_OWNER);
+    if (span.offset_bytes % 4) return report(e, Q38_STRIDE);
+    if (span.offset_bytes > b.length || span.bytes > b.length - span.offset_bytes)
+        return report(e, Q38_CAPACITY);
+    if (b.hazardTrackingMode == MTLHazardTrackingModeUntracked)
+        return report(e, Q38_UNSUPPORTED);
+    /* Separate no-copy buffers may wrap the same memory, so CPU-visible buffers
+     * are compared by address; private ones can only overlap themselves. */
+    uintptr_t base = b.storageMode == MTLStorageModeShared ? (uintptr_t)b.contents : 0;
+    Claim c = {.ident = base ? NULL : span.buffer, .write = use == Q38_GPU_USE_WRITE};
+    c.lo = base + span.offset_bytes; c.hi = c.lo + span.bytes;
+    for (size_t i = 0; i < g->claim_count; i++) {
+        const Claim *o = &g->claims[i];
+        if (o->ident == c.ident && c.lo < o->hi && o->lo < c.hi && (c.write || o->write))
+            return report(e, Q38_INVALID_ARGUMENT);
+    }
+    if (g->claim_count == g->claim_capacity) {
+        Claim *grown = realloc(g->claims, 2 * g->claim_capacity * sizeof(*grown));
+        if (!grown) return report(e, Q38_OOM);
+        g->claims = grown; g->claim_capacity *= 2;
+    }
+    c.buffer = (__bridge_retained void *)b;
+    g->claims[g->claim_count++] = c;
+    return report(e, Q38_OK);
 }
 static id<MTLBuffer> word_of(const Qwen38GpuSession *g) {
     return (__bridge id<MTLBuffer>)g->error_word;
@@ -112,11 +157,14 @@ Qwen38Status qwen38_gpu_session_create(void *device, const void *model,
     if (!out || !device) return report(e, Q38_INVALID_ARGUMENT);
     Qwen38GpuSession *g = calloc(1, sizeof(*g));
     if (!g) return report(e, Q38_OOM);
+    g->claim_capacity = 64;
+    g->claims = calloc(g->claim_capacity, sizeof(*g->claims));
+    if (!g->claims) { free(g); return report(e, Q38_OOM); }
     Qwen38Status s = qwen38_gpu_ledger_init(&g->ledger, model, capacity, e);
     id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
     id<MTLCommandQueue> queue = s ? nil : [dev newCommandQueue];
     id<MTLBuffer> word = s ? nil : [dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
-    if (s || !queue || !word) { free(g); return s ? s : report(e, Q38_OOM); }
+    if (s || !queue || !word) { free(g->claims); free(g); return s ? s : report(e, Q38_OOM); }
     g->device = (__bridge_retained void *)dev;
     g->queue = (__bridge_retained void *)queue;
     g->error_word = (__bridge_retained void *)word;
@@ -138,10 +186,18 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *g, const void *model,
         return report(e, Q38_GPU_ERROR);
     }
     *(uint32_t *)word_of(g).contents = 0;   /* the only reset of the error word */
+    /* The empty, preallocated list cannot refuse this: nothing may alias the word. */
+    (void)add_claim(g, (Qwen38GpuSpan){g->error_word, 0, 4}, Q38_GPU_USE_WRITE, NULL);
     g->command = (__bridge_retained void *)cb;
     g->encoder = (__bridge_retained void *)enc;
     *cmd = (Qwen38GpuCommand){g->device, g->encoder, {g->error_word, 0, 4}};
     return report(e, Q38_OK);
+}
+Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
+    Qwen38GpuSpan span, Qwen38GpuUse use, Qwen38Error *e) {
+    if (!g) return report(e, Q38_INVALID_ARGUMENT);
+    Qwen38Status s = qwen38_gpu_ledger_check(&g->ledger, t, Q38_SESSION_ENCODING, e);
+    return s ? s : add_claim(g, span, use, e);
 }
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
     Qwen38Error *e) {
@@ -160,6 +216,7 @@ Qwen38Status qwen38_gpu_session_abort(Qwen38GpuSession *g, const Qwen38GpuTicket
     if (s) return s;
     [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding];
     drop(&g->encoder); drop(&g->command);   /* never committed, so nothing runs */
+    release_claims(g);
     return s;
 }
 Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
@@ -176,7 +233,9 @@ Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *g, const Qwen38GpuTicke
         bits = *(const volatile uint32_t *)word_of(g).contents;
     }
     Qwen38Status s = qwen38_gpu_ledger_complete(&g->ledger, t, ok, bits, e);
-    if (s == Q38_OK || s == Q38_GPU_ERROR) { drop(&g->command); drop(&g->encoder); }
+    if (s == Q38_OK || s == Q38_GPU_ERROR) {
+        drop(&g->command); drop(&g->encoder); release_claims(g);   /* only now may scratch be reused */
+    }
     if (s == Q38_GPU_ERROR && e && why) {
         size_t n = strlen(e->detail);
         snprintf(e->detail + n, sizeof(e->detail) - n, " metal=%s", why.UTF8String);
@@ -195,6 +254,6 @@ Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
     if (qwen38_gpu_ledger_info(&g->ledger).busy) return report(e, Q38_BUSY);
     drop(&g->command); drop(&g->encoder); drop(&g->error_word);
     drop(&g->queue); drop(&g->device);
-    free(g);
+    release_claims(g); free(g->claims); free(g);
     return report(e, Q38_OK);
 }
