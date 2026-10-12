@@ -1,10 +1,11 @@
 /* F v1: routing on caller-owned projected logits. Packed products belong to B. */
-#include "qwen38_moe.h"
+#include "qwen38_f_internal.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 typedef struct { uintptr_t first, end; } MoeSpan;
+_Static_assert(sizeof(float) == 4 && sizeof(uint32_t) == 4, "requires 32-bit elements");
 
 static Qwen38Status moe_error(Qwen38Error *err, Qwen38Status code, const char *detail) {
     if (err) {
@@ -26,6 +27,20 @@ static Qwen38Status moe_config(const Qwen38MoeConfig *c, Qwen38Error *err) {
     return Q38_OK;
 }
 
+static Qwen38Status moe_memory(const void *data, size_t cap, size_t bytes, size_t alignment,
+                              MoeSpan *span, Qwen38Error *err) {
+    span->first = span->end = 0;
+    if (!bytes) return Q38_OK;
+    if (cap < bytes) return moe_error(err, Q38_CAPACITY, "view capacity too small");
+    if (!data) return moe_error(err, Q38_INVALID_ARGUMENT, "null nonempty view");
+    uintptr_t first = (uintptr_t)data;
+    if (first % alignment) return moe_error(err, Q38_STRIDE, "unaligned view");
+    if (bytes > UINTPTR_MAX - first)
+        return moe_error(err, Q38_OVERFLOW, "address extent overflow");
+    *span = (MoeSpan){first, first + bytes};
+    return Q38_OK;
+}
+
 /* Bounding spans include row padding: aliasing through a gap is rejected too.
  * Empty batches validate shape/stride but neither inspect nor require data. */
 static Qwen38Status moe_span(const void *data, size_t cap, size_t rows, size_t cols,
@@ -39,14 +54,7 @@ static Qwen38Status moe_span(const void *data, size_t cap, size_t rows, size_t c
     if (rows - 1 > (SIZE_MAX - row_bytes) / pitch)
         return moe_error(err, Q38_OVERFLOW, "view extent overflow");
     size_t bytes = (rows - 1) * pitch + row_bytes;
-    if (cap < bytes) return moe_error(err, Q38_CAPACITY, "view capacity too small");
-    if (!data) return moe_error(err, Q38_INVALID_ARGUMENT, "null nonempty view");
-    uintptr_t first = (uintptr_t)data;
-    if (first % 4) return moe_error(err, Q38_STRIDE, "unaligned view");
-    if (bytes > UINTPTR_MAX - first)
-        return moe_error(err, Q38_OVERFLOW, "address extent overflow");
-    *span = (MoeSpan){first, first + bytes};
-    return Q38_OK;
+    return moe_memory(data, cap, bytes, 4, span, err);
 }
 
 static Qwen38Status moe_f32(Qwen38F32 v, size_t rows, size_t cols,
@@ -132,6 +140,60 @@ Qwen38Status qwen38_moe_route(const Qwen38MoeConfig *c, Qwen38F32 logits,
         }
         if (c->norm_topk_prob)
             for (size_t slot = 0; slot < k; slot++) w[slot] /= selected_sum;
+    }
+    return moe_error(err, Q38_OK, "");
+}
+
+Qwen38Status q38_moe_group_pairs(const Qwen38MoeConfig *c, Qwen38U32Mut ids,
+                               Q38MoeGrouping g, Qwen38Error *err) {
+    Qwen38Status st = moe_config(c, err);
+    if (st != Q38_OK) return st;
+    if (ids.cols != c->top_k) return moe_error(err, Q38_SHAPE, "group ID shape mismatch");
+    const size_t e_count = c->experts, k = c->top_k;
+    if (ids.rows > SIZE_MAX / k || e_count == SIZE_MAX)
+        return moe_error(err, Q38_OVERFLOW, "group count overflow");
+    const size_t pairs = ids.rows * k;
+    MoeSpan spans[5];
+    st = moe_span(ids.data, ids.capacity_bytes, ids.rows, ids.cols,
+                  ids.row_stride_bytes, &spans[0], err);
+    if (st != Q38_OK) return st;
+    const void *data[] = {g.offsets, g.cursors, g.pair_to_row, g.row_to_pair};
+    const size_t counts[] = {e_count+1, e_count, pairs, pairs};
+    const size_t caps[] = {g.offsets_capacity_bytes, g.cursors_capacity_bytes,
+                          g.pair_to_row_capacity_bytes, g.row_to_pair_capacity_bytes};
+    for (size_t a = 0; a < 4; a++) {
+        if (counts[a] > SIZE_MAX / sizeof(size_t))
+            return moe_error(err, Q38_OVERFLOW, "group array bytes overflow");
+        st = moe_memory(data[a], caps[a], counts[a]*sizeof(size_t), _Alignof(size_t),
+                        &spans[a+1], err);
+        if (st != Q38_OK) return st;
+    }
+    st = moe_disjoint(spans, 5, err);
+    if (st != Q38_OK) return st;
+    for (size_t t = 0; t < ids.rows; t++) {
+        const uint32_t *row = ids.data + t*(ids.row_stride_bytes/4);
+        for (size_t s = 0; s < k; s++) {
+            if (row[s] >= e_count) return moe_error(err, Q38_RANGE, "expert ID out of range");
+            for (size_t j = 0; j < s; j++)
+                if (row[j] == row[s]) return moe_error(err, Q38_INVALID_ARGUMENT, "duplicate expert ID");
+        }
+    }
+    memset(g.offsets, 0, (e_count+1)*sizeof(size_t));
+    for (size_t t = 0; t < ids.rows; t++)
+        for (size_t s = 0; s < k; s++)
+            g.offsets[ids.data[t*(ids.row_stride_bytes/4)+s]+1]++;
+    for (size_t e = 0; e < e_count; e++) {
+        g.offsets[e+1] += g.offsets[e];
+        g.cursors[e] = g.offsets[e];
+    }
+    for (size_t t = 0; t < ids.rows; t++) {
+        for (size_t s = 0; s < k; s++) {
+            size_t pair = t*k+s;
+            uint32_t expert = ids.data[t*(ids.row_stride_bytes/4)+s];
+            size_t row = g.cursors[expert]++;
+            g.pair_to_row[pair] = row;
+            g.row_to_pair[row] = pair;
+        }
     }
     return moe_error(err, Q38_OK, "");
 }

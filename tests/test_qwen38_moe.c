@@ -1,5 +1,5 @@
 /* Isolated F harness: clang + qwen38_moe.c, no B/C or GPU dependencies. */
-#include "qwen38_moe.h"
+#include "qwen38_f_internal.h"
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -129,8 +129,99 @@ static void stream_route(void) {
     free(ids); free(w); free(p); free(z);
 }
 
+static void group_tests(void) {
+    _Alignas(size_t) uint32_t ids[]={2,0,99,1,2,99,2,0,99};
+    size_t offsets[6], cursors[5], p2r[7], r2p[7];
+    Qwen38MoeConfig c={8,4,2,5,3,5,true};
+    Qwen38U32Mut v={ids,sizeof ids,3,2,12};
+    Q38MoeGrouping original={offsets,sizeof offsets,cursors,sizeof cursors,
+                            p2r,r2p,sizeof p2r,sizeof r2p};
+    const Qwen38Status errors[]={Q38_RANGE,Q38_INVALID_ARGUMENT,Q38_CAPACITY,
+        Q38_INVALID_ARGUMENT,Q38_INVALID_ARGUMENT,Q38_STRIDE,Q38_OVERFLOW,
+        Q38_SHAPE,Q38_INVALID_ARGUMENT};
+    for (size_t i=0;i<sizeof errors/sizeof *errors;i++) {
+        for (size_t j=0;j<6;j++) offsets[j]=SIZE_MAX;
+        for (size_t j=0;j<5;j++) cursors[j]=SIZE_MAX;
+        for (size_t j=0;j<7;j++) p2r[j]=r2p[j]=SIZE_MAX;
+        Q38MoeGrouping g=original; Qwen38U32Mut bad=v; Qwen38Error err;
+        switch (i) {
+        case 0: ids[7]=4; break;
+        case 1: ids[7]=2; break;
+        case 2: g.row_to_pair_capacity_bytes=6*sizeof(size_t)-1; break;
+        case 3: g.pair_to_row=g.row_to_pair; break;
+        case 4: g.offsets=NULL; break;
+        case 5: bad.row_stride_bytes=7; break;
+        case 6: bad.rows=SIZE_MAX; break;
+        case 7: bad.cols=1; break;
+        case 8: g.offsets=(size_t *)(void *)ids; break;
+        }
+        assert(q38_moe_group_pairs(&c,bad,g,&err)==errors[i]);
+        assert(err.code==errors[i]);
+        for (size_t j=0;j<6;j++) assert(offsets[j]==SIZE_MAX);
+        for (size_t j=0;j<5;j++) assert(cursors[j]==SIZE_MAX);
+        for (size_t j=0;j<7;j++) assert(p2r[j]==SIZE_MAX && r2p[j]==SIZE_MAX);
+        ids[7]=0;
+    }
+    assert(q38_moe_group_pairs(&c,v,original,NULL)==Q38_OK);
+    const size_t expected_offsets[]={0,2,3,6,6}, expected_pairs[]={1,5,2,0,3,4};
+    assert(memcmp(offsets,expected_offsets,sizeof expected_offsets)==0);
+    assert(memcmp(r2p,expected_pairs,sizeof expected_pairs)==0);
+    for (size_t j=0;j<6;j++) assert(p2r[r2p[j]]==j);
+    assert(offsets[5]==SIZE_MAX && cursors[4]==SIZE_MAX);
+    assert(p2r[6]==SIZE_MAX && r2p[6]==SIZE_MAX);
+    assert(ids[2]==99 && ids[5]==99 && ids[8]==99);
+    v.rows=0; v.data=NULL;
+    original.pair_to_row=NULL; original.row_to_pair=NULL;
+    original.pair_to_row_capacity_bytes=original.row_to_pair_capacity_bytes=0;
+    assert(q38_moe_group_pairs(&c,v,original,NULL)==Q38_OK);
+    for (size_t j=0;j<5;j++) assert(offsets[j]==0);
+    for (size_t j=0;j<4;j++) assert(cursors[j]==0);
+    puts("F grouping: stable pairs, empty experts/batch, preflight and inverse maps OK");
+}
+
+/* Local test wire format: uint32 T,E,K, then IDs; uint32 status followed by
+ * uint64 offsets[E+1], pair_to_row[T*K], row_to_pair[T*K]. */
+static void stream_group(void) {
+    uint32_t h[3]; assert(fread(h,4,3,stdin)==3);
+    size_t t=h[0], e=h[1], k=h[2], pitch=k+3;
+    assert(t<=1024 && e>0 && e<=2048 && k>0 && k<=e && t*k<=1048576);
+    size_t n=t*k;
+    uint32_t *ids=malloc((t*pitch+1)*sizeof *ids);
+    size_t *off=malloc((e+2)*sizeof *off), *cur=malloc((e+1)*sizeof *cur);
+    size_t *p2r=malloc((n+1)*sizeof *p2r), *r2p=malloc((n+1)*sizeof *r2p);
+    assert(ids && off && cur && p2r && r2p);
+    for (size_t j=0;j<t*pitch+1;j++) ids[j]=UINT32_MAX;
+    for (size_t j=0;j<e+2;j++) off[j]=SIZE_MAX;
+    for (size_t j=0;j<e+1;j++) cur[j]=SIZE_MAX;
+    for (size_t j=0;j<n+1;j++) p2r[j]=r2p[j]=SIZE_MAX;
+    for (size_t j=0;j<t;j++) assert(fread(ids+j*pitch,4,k,stdin)==k);
+    Qwen38MoeConfig c={8,h[1],h[2],5,3,5,true};
+    Q38MoeGrouping g={off,(e+1)*sizeof *off,cur,e*sizeof *cur,
+                     p2r,r2p,n*sizeof *p2r,n*sizeof *r2p};
+    Qwen38Error err;
+    Qwen38Status st=q38_moe_group_pairs(&c,(Qwen38U32Mut){ids,t*pitch*4,t,k,pitch*4},g,&err);
+    assert(err.code==st);
+    uint32_t code=(uint32_t)st; assert(fwrite(&code,4,1,stdout)==1);
+    if (st==Q38_OK) {
+        size_t *arrays[]={off,p2r,r2p}, lengths[]={e+1,n,n};
+        for (size_t a=0;a<3;a++) for (size_t j=0;j<lengths[a];j++) {
+            uint64_t item=(uint64_t)arrays[a][j];
+            assert(fwrite(&item,8,1,stdout)==1);
+        }
+    } else {
+        for (size_t j=0;j<e+1;j++) assert(off[j]==SIZE_MAX);
+        for (size_t j=0;j<e;j++) assert(cur[j]==SIZE_MAX);
+        for (size_t j=0;j<n;j++) assert(p2r[j]==SIZE_MAX && r2p[j]==SIZE_MAX);
+    }
+    for (size_t j=0;j<t;j++) for (size_t a=k;a<pitch;a++) assert(ids[j*pitch+a]==UINT32_MAX);
+    assert(off[e+1]==SIZE_MAX && cur[e]==SIZE_MAX && p2r[n]==SIZE_MAX && r2p[n]==SIZE_MAX);
+    assert(ids[t*pitch]==UINT32_MAX);
+    free(r2p); free(p2r); free(cur); free(off); free(ids);
+}
+
 int main(int argc, char **argv) {
     if (argc==2 && strcmp(argv[1],"--route")==0) stream_route();
-    else { assert(argc==1); unit_tests(); }
+    else if (argc==2 && strcmp(argv[1],"--group")==0) stream_group();
+    else { assert(argc==1); unit_tests(); group_tests(); }
     return 0;
 }

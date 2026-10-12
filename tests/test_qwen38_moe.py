@@ -375,5 +375,74 @@ class NativeRoutingTests(unittest.TestCase):
             self.assertNotEqual(status,0)
 
 
+@unittest.skipUnless(os.environ.get("Q38_F_NATIVE"), "set Q38_F_NATIVE to the isolated ASan/UBSan harness")
+class NativeGroupingTests(unittest.TestCase):
+    route = NativeRoutingTests.route
+
+    def group(self, ids, experts):
+        t, k = ids.shape
+        payload = struct.pack("<3I", t, experts, k) + ids.astype("<u4").tobytes()
+        proc = subprocess.run([os.environ["Q38_F_NATIVE"], "--group"], input=payload,
+                              capture_output=True, check=True)
+        status, = struct.unpack_from("<I", proc.stdout)
+        if status:
+            self.assertEqual(len(proc.stdout), 4)
+            return status, None
+        self.assertEqual(len(proc.stdout), 4 + 8*(experts+1+2*t*k))
+        values = np.frombuffer(proc.stdout, "<u8", offset=4).astype(np.int64)
+        return status, (values[:experts+1], values[experts+1:experts+1+t*k],
+                        values[experts+1+t*k:])
+
+    def test_grouping_against_independent_stable_sort(self):
+        rng = np.random.default_rng(3812)
+        for t, e, k in ((0,4,2), (1,1,1), (1,512,10), (7,4,4), (33,512,10),
+                         (65,513,11), (1024,17,5)):
+            for seed in range(4):
+                ids = np.empty((t,k), np.uint32)
+                for row in ids:
+                    row[:] = rng.choice(e, k, replace=False)
+                if seed == 0 and t:
+                    ids[:] = ids[0]  # concentrated load; empty expert groups
+                with self.subTest(t=t, e=e, k=k, seed=seed):
+                    status, (offsets, p2r, r2p) = self.group(ids,e)
+                    self.assertEqual(status,0)
+                    expected = np.argsort(ids.ravel(), kind="stable")
+                    counts = np.bincount(ids.ravel(), minlength=e)
+                    np.testing.assert_array_equal(r2p, expected)
+                    np.testing.assert_array_equal(offsets, np.r_[0, np.cumsum(counts)])
+                    np.testing.assert_array_equal(r2p[p2r], np.arange(t*k))
+                    np.testing.assert_array_equal(p2r[r2p], np.arange(t*k))
+
+    def test_route_group_scatter_preserves_weights_and_pair_identity(self):
+        c = replace(moe.FixtureConfig(), num_experts=17, num_experts_per_tok=5)
+        for seed in range(4):
+            x, weights = moe.synthetic(c,tokens=33,seed=seed)
+            expected = moe.numpy_forward(c,x,weights)
+            _, (_, ids, scores) = self.route(expected["logits"],5)
+            np.testing.assert_array_equal(ids,expected["ids"])
+            _, (_, p2r, r2p) = self.group(ids,17)
+            # Existing floating oracle produces expert outputs; grouping only
+            # reorders and restores these values. No second runtime matmul.
+            pairs = expected["down"].reshape(33*5,c.hidden_size)
+            grouped = pairs[r2p]
+            restored = grouped[p2r].reshape(33,5,c.hidden_size)
+            np.testing.assert_array_equal(restored,expected["down"])
+            routed = (restored*scores[...,None]).sum(axis=1)
+            np.testing.assert_allclose(routed,expected["routed"],atol=2e-5,rtol=2e-4)
+            # Splitting token batches may change row IDs but not restored pairs.
+            for start, end in ((0,1),(1,8),(8,33)):
+                _, (_, sub_p2r, sub_r2p) = self.group(ids[start:end],17)
+                block = pairs[start*5:end*5]
+                np.testing.assert_array_equal(block[sub_r2p][sub_p2r],block)
+
+    def test_invalid_ids_fail_before_publishing_groups(self):
+        for ids in (np.array([[0,1],[2,2]],np.uint32),
+                    np.array([[0,1],[2,4]],np.uint32),
+                    np.array([[0,1],[2,2**32-1]],np.uint32)):
+            status, value = self.group(ids,4)
+            self.assertNotEqual(status,0)
+            self.assertIsNone(value)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

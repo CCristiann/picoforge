@@ -564,6 +564,48 @@ nessun test GPU, carico sul checkpoint o benchmark in questo incremento.
 Piccoli test CPU bounded eseguiti senza lock, come consentito dal §9;
 qualsiasi futuro GPU/workload pesante userà `tools/qwen38_gpu_lock.py`.
 
+### Secondo incremento: grouping CPU delle coppie
+
+`q38_moe_group_pairs` è un helper **privato** di F, dichiarato soltanto in
+`src/qwen38_f_internal.h`. I contratti pubblici restano immutati. Data la
+coppia `pair=t*K+slot`, ordina per esperto crescente e poi pair crescente:
+`row_to_pair[row]=pair`, `pair_to_row[pair]=row`. Il gruppo e occupa
+`[offsets[e],offsets[e+1])`. Counting/prefix/scatter, senza scartare token,
+imporre capacità per esperto o cambiare pesi. Per la futura riduzione si
+torna alle coppie originali, nell'ordine slot stabilito dall'integrazione.
+
+ID strided `[T,K]` in sola lettura logica; quattro array caller-owned,
+allineati a size_t e disgiunti: offsets `[E+1]`, cursors scratch `[E]`,
+due permutazioni `[T*K]`. Tutte le capacità sono in byte e la durata è quella
+della chiamata sincrona. Nessuna allocazione o stato persistente. Validazione
+di shape, stride, capacità, alias, overflow, ID fuori range e duplicati nel
+medesimo token prima delle scritture. T=0 permette puntatori NULL per ID e
+permutazioni, ma richiede offsets/cursors e li azzera. I gruppi vuoti hanno
+offset consecutivi identici. Non è un nuovo ABI di composizione MoE.
+
+**23 test passati** con lo stesso comando ASan/UBSan riportato sopra, nessuno
+saltato. Il grouping C è confrontato con `np.argsort(kind="stable")` e
+`bincount`, indipendenti dall'implementazione counting/scatter nativa:
+28 casi comprendono E=1/4/17/512/513, T=0/1/7/33/65/1024, K=1/4/5/10/11,
+carico concentrato sugli stessi esperti, gruppi vuoti e K=E. Verificata
+identità esatta delle permutazioni e degli inversi; guard di righe e array
+intatti e output invariati sui nove errori del harness C.
+Quattro fixture floating point del riferimento già confrontato con upstream
+verificano route C → grouping C → ripristino bitwise degli output per coppia
+→ somma pesata entro atol=2e-5/rtol=2e-4, anche a chunk 1/7/25.
+Quest'ultimo test usa i prodotti dell'oracle: **non certifica un forward C**.
+
+Budget runtime routing: logits+probabilità `8*T*E` byte, ID+pesi `8*T*K`;
+grouping `sizeof(size_t)*(2*E+1+2*T*K)`. Con T=1024/E=512/K=10 su macchina
+64-bit, totale 4.45 MB decimali (4.24 MiB), esclusi pesi e guard di test;
+solo grouping 172040 byte. Il routing corrente è scalare e privilegia la
+verifica: ricerca top-k O(T*E*K²); non è una misura prestazionale.
+Il grouping impiega O(E+T*K²) tempo, inclusa la verifica dei duplicati.
+Le API create/work/forward restano dichiarazioni senza stub: B scalar/F32
+e C attivazioni non sono implementati nella base di questo worktree.
+I successivi incrementi richiedono quei commit reali dal coordinatore,
+poi IQ2_XXS/Q2_K/Q8_0 per pesi compressi e binding/slice da A.
+
 [config]: https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json
 [hf-model]: https://github.com/huggingface/transformers/blob/812a950d7037ba93bb624b154030e9068afdce4d/src/transformers/models/qwen4_exp/modeling_qwen4_exp.py#L895-L991
 [hf-config]: https://github.com/huggingface/transformers/blob/812a950d7037ba93bb624b154030e9068afdce4d/src/transformers/models/qwen4_exp/configuration_qwen4_exp.py#L162
