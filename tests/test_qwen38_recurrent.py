@@ -1,4 +1,4 @@
-"""Small CPU-only oracle checks; no models, Metal, MPS or network access."""
+"""CPU oracle checks with explicit opt-in native CPU/Metal composition harnesses."""
 
 import argparse
 import ctypes as ct
@@ -849,6 +849,26 @@ def run_control_tests(args):
                     metric=oracle.error_metrics(torch.from_numpy(got),want,local_ndim=2 if name=="state" else 1)
                     measurements.append(dict(layer=m["layer"],stage=name,tolerance=tol,**metric))
                     self.assertLessEqual(max(metric["scaled_inf"],metric["scaled_rms"]),tol)
+                exported = Path(directory) / "oracle-bundle"
+                if not exported.exists():
+                    tensors = dict(raw=("input", ("T", "C"), x), mixed=("input", ("T", "E"), mix),
+                        alpha=("input", ("T", "Hv"), alpha), beta_raw=("input", ("T", "Hv"), raw_beta),
+                        prepare_input=("input", ("T", "C"), torch.from_numpy(out)),
+                        scan_input=("input", ("T", "C"), torch.from_numpy(prepared)),
+                        scan_log_decay=("input", ("T", "Hv"), torch.from_numpy(g)),
+                        scan_beta=("input", ("T", "Hv"), torch.from_numpy(beta)),
+                        norm_input=("input", ("T", "Hv", "Dv"), torch.from_numpy(scan)),
+                        z=("input", ("T", "Hv", "Dv"), z), residual=("input", ("T", "H", "E"), torch.from_numpy(r)),
+                        history_initial=("state_initial", ("L", "C"), history),
+                        state_initial=("state_initial", ("Hv", "Dv", "Dk"), torch.zeros_like(want_state)),
+                        history_final=("state_final", ("L", "C"), want_history),
+                        state_final=("state_final", ("Hv", "Dv", "Dk"), want_state),
+                        convolved=("output", ("T", "C"), want_conv), prepared=("output", ("T", "C"), want_prepared),
+                        log_decay=("output", ("T", "Hv"), want_g), beta=("output", ("T", "Hv"), want_beta),
+                        scan=("output", ("T", "Hv", "Dv"), want_scan), norm=("output", ("T", "Hv", "Dv"), want_norm),
+                        hc_norm=("output", ("T", "H", "E"), want_hn))
+                    oracle.write_bundle(exported, tensors, dict(catalog=m, upstream=oracle.UPSTREAM_REV,
+                        source_sha256=oracle.UPSTREAM_SHA256, purpose="Local operator controls on exact native upstream inputs"))
                 self.invoke("gdn_state_reset",state,2)
                 self.invoke("gdn_state_export",state,c_view(final)); self.assertFalse(np.any(final))
                 self.state_buffers=[]
@@ -925,6 +945,27 @@ def run_composition_tests(args):
                 for name, value in load_output(out).items():
                     self.assertTrue(torch.equal(value, full[name]), f"{suffix}/{name} not bitwise equal")
 
+        def test_04_metal_composition(self):
+            # Explicit opt-in below removes this test from CPU-only suites.
+            whole = None
+            for size, suffix in ((0, "whole"), (1, "token"), (7, "chunks")):
+                out = directory / ("gpu-" + suffix)
+                out.mkdir(exist_ok=True)
+                result = subprocess.run([str(args.composed_gpu.resolve()), str(args.metallib.resolve()), "--compose", m["checkpoint"],
+                    str(m["layer"]), str(directory), str(out), str(m["tokens"]), str(size)], text=True, capture_output=True, check=True)
+                native_reports.append(dict(backend="Metal", **json.loads(result.stdout)))
+                actual = load_output(out)
+                if whole is not None:
+                    for name, value in actual.items():
+                        self.assertTrue(torch.equal(value, whole[name]), f"GPU {suffix}/{name} not bitwise equal")
+                    continue
+                whole = actual
+                measurements.extend(dict(scope="gpu_projection", **v) for v in oracle.composition_projection_gate(weights, actual))
+                for name, want in oracle.composition_local_reference(ref, weights, residual, actual).items():
+                    check(name, actual[name], want, 5e-5 if name in ("scan", "state") else 2e-5 if name in ("mixed", "residual") else 1e-5, "gpu_local")
+                for name, want in expected.items():
+                    check(name, actual[name], want, 5e-4, "gpu_composed")
+
         def test_03_explicit_fixture_and_provenance(self):
             exported = directory / "oracle-bundle"
             if not exported.exists():
@@ -937,15 +978,27 @@ def run_composition_tests(args):
                     tensors[name] = role, axes, value
                 oracle.write_bundle(exported, tensors, dict(upstream=oracle.UPSTREAM_REV, source_sha256=oracle.UPSTREAM_SHA256,
                     catalog=m, state_contract="initial zero; history raw oldest-first; S[Hv,Dv,Dk]", projection="external B decode + FP64 products rounded FP32"))
+            saved_manifest = json.loads((exported / "manifest.json").read_text())
+            saved_data = (exported / "tensors.bin").read_bytes()
+            self.assertEqual(hashlib.sha256(saved_data).hexdigest(), saved_manifest["data"]["sha256"])
+            for name, want in expected.items():
+                item = saved_manifest["tensors"][name]
+                raw_value = saved_data[item["offset_bytes"]:item["offset_bytes"] + item["nbytes"]]
+                self.assertEqual(hashlib.sha256(raw_value).hexdigest(), item["sha256"])
+                np.testing.assert_array_equal(np.frombuffer(raw_value, item["dtype"]).reshape(item["shape"]), want.numpy())
             self.assertEqual(m["reference_sha256"], hashlib.sha256(args.packed_reference.read_bytes()).hexdigest())
             self.assertEqual(len(m["weights"]), 13)
             self.assertLessEqual(m["packed_bytes"], 96 * 1024**2)
 
+    if not args.composed_gpu:
+        delattr(CompositionTests, "test_04_metal_composition")
     result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CompositionTests))
     if args.report:
         args.report.write_text(json.dumps(dict(passed=result.wasSuccessful(), tests=result.testsRun, skipped=len(result.skipped),
             scope=m["scope"], tokens=m["tokens"], upstream=oracle.UPSTREAM_REV, upstream_sha256=oracle.UPSTREAM_SHA256,
             native_sha256=hashlib.sha256(args.composed_native.read_bytes()).hexdigest(),
+            gpu_sha256=hashlib.sha256(args.composed_gpu.read_bytes()).hexdigest() if args.composed_gpu else None,
+            metallib_sha256=hashlib.sha256(args.metallib.read_bytes()).hexdigest() if args.composed_gpu else None,
             adapter_sha256=hashlib.sha256(Path(oracle.__file__).read_bytes()).hexdigest(),
             tests_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             fixture_sha256=hashlib.sha256((directory / "manifest.json").read_bytes()).hexdigest(),
@@ -960,6 +1013,8 @@ if __name__ == "__main__":
     parser.add_argument("--cpu-lib", type=Path)
     parser.add_argument("--controls", type=Path, nargs="+")
     parser.add_argument("--composition", type=Path)
+    parser.add_argument("--composed-gpu", type=Path)
+    parser.add_argument("--metallib", type=Path, default=ROOT / "picoforge.metallib")
     parser.add_argument("--composed-native", type=Path)
     parser.add_argument("--packed-reference", type=Path)
     args, remaining = parser.parse_known_args()

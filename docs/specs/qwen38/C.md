@@ -1067,7 +1067,9 @@ primo risultato non è parità su attivazioni reali né misura di perdita BF16.
 0, 1, 46: 1188736 byte ciascuno, totale 3566208 byte; 24 confronti su
 coefficienti reali e attivazioni sintetiche, massimo scaled-inf 9.913e-7.
 Conv/history in due append, prepare, scan/stato, norm sigmoid, HC norm e
-reset passano. La conv PLE resta un test di composizione E; nessuna lettura
+reset passano. I tre bundle esportano coefficienti referenziati dal manifest,
+input esatti di ciascun controllo locale e stato/history iniziali/finali
+espliciti (8519296 byte per bundle, oltre ai pesi packed). La conv PLE resta un test di composizione E; nessuna lettura
 della tabella n-gram o del suo contenuto è necessaria a questi controlli C.
 
 **V.** Poi layer 0 completo HC/GDN: 75654016 byte packed (72.1493 MiB),
@@ -1100,3 +1102,82 @@ Limite verificato: pesi di un ramo HC/GDN del checkpoint Q2 con input
 sintetici, non tracce di generazione reale, MoE o perdita rispetto a BF16.
 Il test composto lungo oltre 129 token non è ancora acquisito; i test lunghi
 delle primitive della consegna precedente restano separati.
+
+### 12.3 Composizione Metal privata verificata
+
+**V.** `q38c_block_encode` è soltanto un'interfaccia privata: usa
+`q38_packed_encode` B per le otto proiezioni e `q38c_gpu_encode` C per tutti
+gli operatori già verificati. Nessun nuovo kernel, matmul o decoder.
+Le costanti sono decodificate con B e trasferite in buffer Shared distinti.
+La funzione riceve encoder, catalogo/binding reali dello store, viste dei
+18 intermedi, residuo e raw history/stato. Non alloca, sottomette o attende;
+inserisce barrier fra le proiezioni B e i consumatori C. Un solo command
+buffer comprende anche tutti i chunk di ciascuna esecuzione del harness.
+
+Tutte le viste GPU sono disgiunte; controllo globale di ownership, span,
+alias (anche fra oggetti no-copy distinti), descrittori A/store e budget
+fisico <=512 MiB, inclusi gli stride. I controlli specifici rimangono in B/C.
+Un errore host durante encode richiede di **scartare tutto il comando non
+sottomesso**, anche se contiene operatori precedenti. Dopo completion il
+chiamante controlla sia status Metal sia error word: in caso di errore,
+scarta/resetta entrambe le history e ripete l'esecuzione. Il harness verifica
+entrambi i casi, compreso NaN nella norm finale dopo l'update dello stato.
+Il test no-copy `shared_aliases` corretto dal coordinatore è preservato e
+passa. Il reset GPU qui è del harness sui raw buffer; non è il lifecycle
+pubblico della sessione, che rimane da integrare con il coordinatore.
+
+Il harness crea uno store reale con i soli 13 payload selezionati, in un
+file temporaneo subito unlinked nel build. Trasporto analogo al test B:
+nomi, rank, shape, formato e byte originali A; soli offset rilocati e
+controllati. `q38_packed_encode` usa i binding live del nuovo store. Non si
+simula `qwen38_weights_attach` del checkpoint originale e non si passa il
+checkpoint intero a `gpu_weights_open`. Il mapping reale selezionato è
+75710464 byte; picco osservato `device.currentAllocatedSize` durante le
+allocazioni del caso reale 83099648 byte (non una misura RSS universale).
+Payload originali + trasporto temporaneo <145 MiB, sotto il cap disco
+256 MiB; gli artifact C persistenti, inclusi i bundle dei controlli, binari/report e
+senza asset B, <157 MiB; sommando il file temporaneo il totale resta <230 MiB. Rilascio completo dello store verificato a fine autoreleasepool.
+
+**V.** ASan/UBSan, Metal API Validation e lock comune, senza skip:
+
+| suite | esito | massimo scaled-inf Metal composto | rapporto massimo errore/bound B |
+|---|---|---:|---:|
+| sintetico, T=65 | 4/4 PASS (CPU + Metal) | 2.087e-6 | 0.054802 |
+| layer 0 reale, T=9 | 4/4 PASS (CPU + Metal) | 5.803e-6 | 0.014886 |
+
+Sul reale: gate locali Metal massimo 9.913e-7; contributo 5.216e-7,
+residuo 7.080e-7, stato 8.964e-8 (scaled-inf separati). Ogni proiezione
+è confrontata con FP64 sul proprio input GPU, ogni primitiva con upstream
+sui propri ingressi intermedi; il confronto composto usa la catena upstream
+indipendente, non la sola uscita C. Whole/token/chunk e reset/replay bitwise
+identici per tutti i 18 intermedi, residuo, history e stato GPU.
+
+La suite Metal delle primitive precedente passa anch'essa, incluso no-copy,
+error word e scan T=0..32768 a forme piccole e T=1/65 a dimensioni reali;
+massimo scaled-inf 3.607e-5 contro il limite lungo 2e-4. `make -j4` PASS e
+`make test PYTHON=.../tools/venv/bin/python` PASS (cinque primitive legacy).
+Non eseguito `make test-all`: i target isolati condivisi devono prima ricevere
+le dipendenze di link C4 dal coordinatore; non sono stati modificati qui.
+
+Build e verifica Metal, dopo i comandi CPU/fixture di §12.1–12.2:
+
+```sh
+sh -c "clang $CC_FLAGS -g -fsanitize=address,undefined -fno-sanitize-recover=all -fobjc-arc tests/test_qwen38_recurrent.m src/qwen38_recurrent_gpu.m $CC_SOURCES src/qwen38_packed_gpu.m src/gpu_weights.m -lm -framework Metal -framework Foundation -o build/qwen38-c/test_composed_gpu"
+make -j4 picoforge.metallib
+"$PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 build/qwen38-c/test_composed_gpu picoforge.metallib
+for fixture in composed-synthetic composed-real-0; do
+  "$PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 "$PY" -B tests/test_qwen38_recurrent.py --source build/qwen38-f/upstream/modeling_qwen4_exp.py --composition "build/qwen38-c/$fixture" --composed-native build/qwen38-c/test_composed --packed-reference build/qwen38-b/reference/reference --composed-gpu build/qwen38-c/test_composed_gpu --report "build/qwen38-c/$fixture/metal-report.json"
+done
+make -j4
+make test PYTHON="$PY"
+```
+
+I report includono hash di manifest, sorgente/adattatore/test, binari CPU/GPU
+e metallib; le fixture includono i singoli hash dei pesi. Le tolleranze sono
+quelle di integration.md, immutate. Questo completa C4 per il ramo HC/GDN
+CPU e la sua composizione Metal privata sui casi indicati. Rimangono:
+lifecycle pubblico GPU/epoch/posizione e grafo del coordinatore, collegamenti
+di build condivisi (aggiungere anche `qwen38_packed_gpu.m`, `gpu_weights.m`
+al target Metal C), integrazione MoE/PLE/QSA, tracce di prompt reali e test
+composti lunghi. Non equivale a generazione Qwen3.8 completa né a confronto
+con i pesi BF16 originali.

@@ -212,3 +212,71 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     }
     return q38c_error(e,Q38_OK,NULL);
 }
+
+static Qwen38GpuF32 group_view(Qwen38GpuF32 v, size_t groups, size_t width) {
+    v.rank=3; v.dim[1]=groups; v.dim[2]=width; v.stride_bytes[1]=width*4; v.stride_bytes[2]=4; return v;
+}
+Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd,
+        const Q38CLayer *l, const GpuWeightStore *store, const GgufBinding *const bindings[Q38CW_COUNT],
+        const Q38CGpuWork *w, Qwen38Error *e) {
+    if (!g || !b || !l || !l->bound || !store || !bindings || !w)
+        return q38c_error(e,Q38_INVALID_ARGUMENT,"missing composed GPU inputs");
+    if (!cmd.compute_encoder || !cmd.device || cmd.device!=g->device)
+        return q38c_error(e,Q38_OWNER,"foreign composed GPU command");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)cmd.device;
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    if (enc.device!=dev) return q38c_error(e,Q38_OWNER,"foreign composed GPU encoder");
+    Q38C_TRY(gpu_span(cmd.error_word,dev,e));
+    size_t t=w->residual.dim[0], bytes; Q38C_TRY(q38c_work_size(l,t,&bytes,e));
+    Qwen38GpuF32 all[Q38CT_COUNT+8]; size_t extent[Q38CT_COUNT+8], count=0;
+    all[count++]=w->residual; all[count++]=w->history; all[count++]=w->state;
+    for (size_t i=0;i<Q38CT_COUNT;++i) all[count++]=w->trace[i];
+    const size_t constants[]={Q38CW_HN,Q38CW_A,Q38CW_DT,Q38CW_CONV,Q38CW_GN};
+    for (size_t i=0;i<5;++i) all[count++]=w->constant[constants[i]];
+    size_t physical_bytes=0;
+    for (size_t i=0;i<count;++i) {
+        Q38CGpuView v={0}; Q38C_TRY(gpu_view(all[i],dev,&v,&extent[i],e));
+        if (!q38c_add(physical_bytes,extent[i],&physical_bytes) || physical_bytes>512u*1024u*1024u)
+            return q38c_error(e,Q38_CAPACITY,"composed GPU physical views exceed 512 MiB");
+        if (gpu_overlap(all[i].span,extent[i],cmd.error_word,4))
+            return q38c_error(e,Q38_INVALID_ARGUMENT,"composed view aliases error word");
+        for (size_t j=0;j<i;++j)
+            if (gpu_overlap(all[i].span,extent[i],all[j].span,extent[j]))
+                return q38c_error(e,Q38_INVALID_ARGUMENT,"composed GPU views overlap");
+    }
+    for (size_t i=0;i<Q38CW_COUNT;++i) {
+        Qwen38CpuSpan span; Q38C_TRY(qwen38_weights_cpu_span(store,bindings[i],&span,e));
+        const GgufTensor *got=&bindings[i]->tensor,*want=&l->tensor[i].storage;
+        if (strcmp(got->name,want->name) || got->type!=want->type || got->rank!=want->rank ||
+            memcmp(got->shape,want->shape,got->rank*sizeof(size_t)) || got->bytes!=want->bytes)
+            return q38c_error(e,Q38_FORMAT,"C catalog and GPU weight descriptor differ");
+        Qwen38GpuSpan weight={gpu_weights_buffer(store,bindings[i]),bindings[i]->offset,got->bytes};
+        for (size_t j=0;j<count;++j)
+            if (gpu_overlap(weight,weight.bytes,all[j].span,extent[j]))
+                return q38c_error(e,Q38_INVALID_ARGUMENT,"composed GPU view aliases weights");
+    }
+    Q38CGpuSpec spec={.hc=l->config.hc,.gdn=l->config.gdn,.conv=l->conv,.eps=l->config.hc.rms_eps};
+    size_t h=l->config.hc.streams, width=l->config.hidden_size, hv=l->config.gdn.value_heads, dv=l->config.gdn.value_dim;
+#define V(name) w->trace[Q38CT_##name]
+#define K(name) w->constant[Q38CW_##name]
+#define OP(op,...) do { Qwen38GpuF32 views[]={__VA_ARGS__}; \
+    Q38C_TRY(q38c_gpu_encode(g,cmd,Q38C_##op,&spec,views,sizeof(views)/sizeof(*views),e)); } while (0)
+#define LINEAR(slot,input,output) do { Q38C_TRY(q38_packed_encode(b,&cmd,store,bindings[Q38CW_##slot], \
+    &l->weight[Q38CW_##slot].layout,0,V(input),V(output),e)); \
+    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
+    OP(RMS,w->residual,K(HN),group_view(V(N),h,width));
+    LINEAR(HD,N,LOW); OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
+    OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
+    LINEAR(HI,N,IL); OP(HC_INJECT,V(IL),V(INJECT));
+    LINEAR(QKV,MIX,QKV); LINEAR(Z,MIX,Z); LINEAR(AP,MIX,ALPHA); LINEAR(BP,MIX,BR);
+    OP(CONV,V(QKV),K(CONV),V(CONV),w->history);
+    OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));
+    OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));
+    OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));
+    LINEAR(OUT,NORM,OUT); OP(HC_ADD,w->residual,V(OUT),V(INJECT));
+#undef LINEAR
+#undef OP
+#undef V
+#undef K
+    return q38c_error(e,Q38_OK,NULL);
+}

@@ -238,6 +238,16 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Erro
 void q38c_gpu_destroy(Q38CGpu *);
 Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,
     const Q38CGpuSpec *, const Qwen38GpuF32 *, size_t count, Qwen38Error *);
+/* C4 raw-buffer composition, deliberately private. On ANY encode failure,
+ * discard the unsubmitted command. On completion error discard/reset both
+ * histories and replay. No lifecycle/epoch/position ABI is introduced here. */
+typedef struct {
+    Qwen38GpuF32 residual, history, state;
+    Qwen38GpuF32 trace[Q38CT_COUNT], constant[Q38CW_COUNT];
+} Q38CGpuWork;
+Qwen38Status q38c_block_encode(Q38CGpu *, Q38PackedGpu *, Qwen38GpuCommand,
+    const Q38CLayer *, const GpuWeightStore *, const GgufBinding *const[Q38CW_COUNT],
+    const Q38CGpuWork *, Qwen38Error *);
 typedef uint32_t Q38CUint;
 #else
 typedef uint Q38CUint;
