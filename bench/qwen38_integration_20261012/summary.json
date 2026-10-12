@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-12",
+  "base_concordata": "c674b23bd1377b2ce0acef2d06fac8b160809446",
+  "branch": "coord/qwen38-integrate",
+  "acquired_merge_head": "b834b6fac6674b610671696b735972cef39bcd86",
+  "model": "Qwen3.8-Flash-Next Q2",
+  "environment": {
+    "cpu": "Apple M5 Pro",
+    "memory_bytes": 68719476736,
+    "macos": "27.0.1",
+    "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+    "xcode": "Xcode 26.6\nBuild version 17F113",
+    "python": "3.14.2 (main, Dec  5 2025, 16:49:16) [Clang 17.0.0 (clang-1700.6.3.2)]",
+    "numpy": "2.5.1",
+    "torch": "2.13.0"
+  },
+  "cpu": {
+    "exit_code": 0,
+    "tests_by_delivery": {
+      "A": 20,
+      "B": 25,
+      "C": 35,
+      "D": 40,
+      "E": 15,
+      "F": 23
+    },
+    "skipped": 0,
+    "lock_tests": 4,
+    "strict_runner_tests": 1,
+    "cross_component_harness": "PASS",
+    "aggregate_runs": 2
+  },
+  "gpu": {
+    "exit_code": 0,
+    "packed_tests": 25,
+    "skipped": 0,
+    "library_sha256": "908df324533ae8cf7aac4ad968861b3eb2ea6f3a3ccb3a3b316d5788cc12d738",
+    "lock": "/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock",
+    "api_validation": true,
+    "A": "small synthetic storage bridge",
+    "C": "primitive CPU/Metal differential and state/error tests",
+    "C_max_scaled_error": 3.60608101e-05,
+    "C_peak_metal_allocated_bytes": 87130112
+  },
+  "packed": {
+    "products_per_backend": 245,
+    "real_rows": 137,
+    "raw_payload_bytes": 400164,
+    "cpu_max_bound_fraction": 0.005362122088118356,
+    "gpu_max_bound_fraction": 0.005362122088118356
+  },
+  "recurrent_cpu": {
+    "measurements": 102,
+    "max_scaled_error": 1.4290722042934374e-06
+  },
+  "assets": {
+    "preparation_exit_code": 0,
+    "replay_exit_code": 0,
+    "new_dependencies": false,
+    "full_checkpoint_rehashed": false
+  },
+  "regression": {
+    "target": "test-all",
+    "exit_code": 0,
+    "skipped": 0,
+    "first_attempt": "failed only at shard harness interpreter path; corrected and entire aggregate rerun",
+    "command": "python tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 UBSAN_OPTIONS=halt_on_error=1 make test-all -o models/Qwen3-0.6B-q8_row-embed -o models/Qwen3-0.6B-q4_g32 -o models/Qwen3-0.6B-q4_g32-embed PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python",
+    "scope": [
+      "primitives",
+      "attention/context",
+      "NFC/tokenizer/encode",
+      "forward/generate CPU+GPU",
+      "quantized formats/kernels/forward",
+      "55 speculative runs",
+      "speculative experts",
+      "MoE oracle/forward/quantized",
+      "shards",
+      "routing through 4096 tokens",
+      "20 phase-0 utility tests",
+      "7 GGUF tests",
+      "GPU weight storage"
+    ]
+  },
+  "review_fixes": [
+    "C Shared no-copy alias admission and regression test",
+    "Public-only standalone contract headers",
+    "Strict skip rejection and fatal UBSan in A",
+    "Qwen3 shard test uses selected interpreter"
+  ],
+  "preservation": {
+    "main_head": "7c0b2379b93c478a46b0d6e75c3bde91a57b1bce",
+    "six_source_heads_unchanged": true,
+    "six_source_worktrees_clean": true,
+    "main_merged_or_pushed": false
+  },
+  "limitations": [
+    "D public preparation missing",
+    "E public lifecycle and full PLE missing",
+    "F native forward missing",
+    "C full Q2 projections/composition not verified",
+    "No 48-layer native graph, logits or generation",
+    "No composed public GPU lifecycle or global transaction",
+    "No end-to-end quality/performance or Q2-vs-BF16 claim"
+  ],
+  "build": {
+    "exit_code": 0,
+    "combined_metallib": true
+  },
+  "artifact_sha256": {
+    "README.md": "ed34342c5267ded6089563dc2b62c5169880d565e96e913c505cad9dd96b3f48",
+    "alias-before-fix.log": "b55111d3a4a242929f1ac53da9535177f825f692c2835674def1d53036206ff3",
+    "api.json": "9c15f41dcc11d2a1d9e9836a91cef22a24a69adb4e3a747a05e910d66dccf4e5",
+    "assets-replay.log": "35ee817b2591c4f23f59215ac2d7c16e4aeff0a89ee1ad34afe62a510f37a99d",
+    "build.log": "032497f7f45fd4f51b6dc2e37350109f98445d39f158485d6befde14161bd1ac",
+    "cpu.log": "07fb01b2bbaddd3e2e74c6658b042160109f022db942e074071130bd45922470",
+    "deliveries.json": "942f1b377d65bb2f0a6d032bfcfcb36048dd411c92cdfcd61b63d5b11adf5478",
+    "gpu.log": "e47739d1dafef64b07331cc3b3cece606c4d7597e4186a5764e07f96e333a693",
+    "packed-cpu.json": "7548a0a93c722d6d08e9b50e8a5c9c2bbdce15232e583b38958124e7a7291fe5",
+    "packed-gpu.json": "e4b56f069621e700d40fa5cf1aab8d1a48ccaf23715026b2da36d62beb86a260",
+    "recurrent-cpu.json": "4b6bc4ac92a5940ad49460c61e8d3d3bb494a4d7f221754c39a36993a8305796",
+    "regression-first-failure.txt": "4a4d0936b51aff877727ec06eaf436c904d3f37de358be78e9a31c5590eb14f2",
+    "regression.log": "37f922df5ecd754253668a3251331568044b12322f13e7642e9528d498738c0f",
+    "source-sha256.json": "b99fcf86ac2d5b06974ebaec0284333a0a74dd2d165f902941e56c59a9fbe888"
+  }
+}

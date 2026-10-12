@@ -60,7 +60,16 @@ static Qwen38Status gpu_view(Qwen38GpuF32 v, id<MTLDevice> dev, Q38CGpuView *pac
     return Q38_OK;
 }
 static bool gpu_overlap(Qwen38GpuSpan a, size_t na, Qwen38GpuSpan b, size_t nb) {
-    return a.buffer==b.buffer && na && nb && a.offset_bytes<b.offset_bytes+nb && b.offset_bytes<a.offset_bytes+na;
+    if (!na || !nb) return false;
+    if (a.buffer==b.buffer)
+        return a.offset_bytes<b.offset_bytes+nb && b.offset_bytes<a.offset_bytes+na;
+    /* Separate no-copy Metal objects may still wrap the same Shared memory. */
+    id<MTLBuffer> ba=(__bridge id<MTLBuffer>)a.buffer, bb=(__bridge id<MTLBuffer>)b.buffer;
+    if (ba.storageMode==MTLStorageModeShared && bb.storageMode==MTLStorageModeShared) {
+        uintptr_t pa=(uintptr_t)ba.contents+a.offset_bytes, pb=(uintptr_t)bb.contents+b.offset_bytes;
+        return pa<=pb ? pb-pa<na : pa-pb<nb;
+    }
+    return false;
 }
 static void dispatch(id<MTLComputeCommandEncoder> enc, void *pipeline, size_t count) {
     id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)pipeline;
@@ -179,7 +188,8 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     for (size_t i=0;i<count;++i) {
         if (a.read_mask&(1u<<i)) check_count=MAX(check_count,a.v[i].count);
         for (size_t j=0;j<count;++j) if (i!=j && (writes&(1u<<i)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j])) {
-            if ((inplace&(UINT64_C(1)<<(i*8+j))) && v[i].span.offset_bytes==v[j].span.offset_bytes &&
+            if ((inplace&(UINT64_C(1)<<(i*8+j))) && v[i].span.buffer==v[j].span.buffer &&
+                v[i].span.offset_bytes==v[j].span.offset_bytes &&
                 gpu_same(a.v[i],a.v[j]) && !memcmp(a.v[i].stride,a.v[j].stride,sizeof(a.v[i].stride))) continue;
             return q38c_error(e,Q38_INVALID_ARGUMENT,"forbidden GPU alias");
         }

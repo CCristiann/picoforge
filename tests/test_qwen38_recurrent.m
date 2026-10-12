@@ -4,6 +4,7 @@
 #include "qwen38_c_internal.h"
 #include <assert.h>
 #include <stdlib.h>
+#include <unistd.h>
 static id<MTLDevice> device;
 static id<MTLCommandQueue> queue;
 static id<MTLCommandBuffer> command;
@@ -341,6 +342,25 @@ static void state_errors(void) {
     assert(state.cpu.data[0]==0.25f && out.cpu.data[0]==0.25f);
     release_view(q); release_view(g); release_view(b); release_view(state); release_view(out);
 }
+static void shared_aliases(void) {
+    size_t page=(size_t)sysconf(_SC_PAGESIZE); void *memory=NULL;
+    assert(posix_memalign(&memory,page,page)==0); memset(memory,0,page);
+    id<MTLBuffer> a=[device newBufferWithBytesNoCopy:memory length:page
+        options:MTLResourceStorageModeShared deallocator:nil];
+    id<MTLBuffer> b=[device newBufferWithBytesNoCopy:memory length:page
+        options:MTLResourceStorageModeShared deallocator:nil];
+    assert(a && b && a!=b);
+    Qwen38GpuF32 x={.span={(__bridge void *)a,0,8},.rank=1,.dim={2},.stride_bytes={4}};
+    Qwen38GpuF32 y=x; y.span=(Qwen38GpuSpan){(__bridge void *)b,4,8};
+    Q38CGpuSpec spec={.activation=Q38_SIGMOID}; Qwen38GpuF32 views[]={x,y};
+    assert(q38c_gpu_encode(gpu,begin(0),Q38C_ACT,&spec,views,2,NULL)==Q38_INVALID_ARGUMENT);
+    finish(0);
+    /* Distinct wrappers also must not hide an alias of the error word. */
+    y.span.offset_bytes=16; views[1]=y;
+    Qwen38GpuCommand cmd=begin(0); cmd.error_word=(Qwen38GpuSpan){(__bridge void *)b,0,4};
+    assert(q38c_gpu_encode(gpu,cmd,Q38C_ACT,&spec,views,2,NULL)==Q38_INVALID_ARGUMENT);
+    finish(0); a=nil; b=nil; free(memory);
+}
 int main(int argc, char **argv) {
     assert(argc==2);
     @autoreleasepool {
@@ -350,7 +370,7 @@ int main(int argc, char **argv) {
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
         assert(q38c_gpu_create((__bridge void *)device,(__bridge void *)lib,&gpu,NULL)==Q38_OK);
         error_buffer=[device newBufferWithLength:4 options:MTLResourceStorageModeShared];
-        activations(); norms(); hc(); convolutions(); gdn_preparation(); gdn_scans(); admission(); state_errors();
+        shared_aliases(); activations(); norms(); hc(); convolutions(); gdn_preparation(); gdn_scans(); admission(); state_errors();
         q38c_gpu_destroy(gpu);
         printf("PASS: Metal C stages; max scaled error %.9g; observed Metal allocation peak %zu bytes\n",maximum_error,peak_metal_bytes);
         error_buffer=nil; queue=nil; device=nil;

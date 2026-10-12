@@ -29,11 +29,13 @@ src/%.o: src/%.m src/picoforge.h
 # Kernels compile to AIR, then link into a library loaded at runtime. Keeping
 # them out of the binary means a kernel can be edited and re-tested without
 # relinking the engine.
-$(METALLIB): src/kernels.metal
+build/kernels.air: src/kernels.metal
 	@mkdir -p build
 	# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
 	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/kernels.air
-	xcrun -sdk macosx metallib build/kernels.air -o $@
+
+$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air
+	xcrun -sdk macosx metallib $^ -o $@
 
 # Differential test: the C primitives judged by the Python oracle.
 tests/test_ops: tests/test_ops.c src/ops.o src/picoforge.h
@@ -203,9 +205,12 @@ clean:
 
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
 Q38_HEADERS := $(wildcard src/qwen38*.h)
+Q38_PUBLIC_HEADERS := $(filter-out %_internal.h,$(Q38_HEADERS))
 src/gpu_weights.o build/test_gpu_weights: $(Q38_HEADERS)
 test-qwen38-contracts:
-	@for header in $(Q38_HEADERS); do $(CC) $(CFLAGS) -Werror -x c -fsyntax-only $$header || exit; done
-	@printf '%s\n' $(foreach h,$(notdir $(Q38_HEADERS)),'#include "$(h)"') | $(CC) $(CFLAGS) -Werror -Isrc -x objective-c -fsyntax-only -
+	@for header in $(Q38_PUBLIC_HEADERS); do $(CC) $(CFLAGS) -Werror -x c -fsyntax-only $$header || exit; done
+	@printf '%s\n' $(foreach h,$(notdir $(Q38_PUBLIC_HEADERS)),'#include "$(h)"') | $(CC) $(CFLAGS) -Werror -Isrc -x objective-c -fsyntax-only -
 	@$(PYTHON) tests/test_qwen38_gpu_lock.py
 .PHONY: test-qwen38-contracts
+
+include tools/qwen38.mk

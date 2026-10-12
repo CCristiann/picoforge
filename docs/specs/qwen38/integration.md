@@ -1,5 +1,8 @@
 # Qwen3.8 Q2 — contratto consolidato v1
 
+Stato implementativo aggiornato: **BASE_INTEGRATA v1, §11**. Le sezioni
+precedenti conservano contratto e provenienza del consolidamento.
+
 2026-10-12 · MODALITA=CONSOLIDA · SPEC_ID=ALL.
 Questa è la base normativa per ESEGUI. **Tutte le spec A–F sono acquisite**.
 Le loro proposte restano conservate integralmente; in caso di differenza
@@ -493,3 +496,91 @@ working tree sporchi e non cherry-pickare di nuovo la spec già acquisita.**
 Ogni consegna ESEGUI riporta SHA, file modificati, comandi/esiti, copertura
 sintetica o slice reale e dipendenze ancora necessarie. Il coordinatore
 integra incrementi verificati; le sessioni non fanno merge/push su main.
+
+## 11. BASE_INTEGRATA v1 — 2026-10-12
+
+Questo aggiornamento sostituisce soltanto lo stato implementativo e i comandi
+storici dei §8–10; formule, ABI, precisione, ownership ed errori dei §2–7
+restano vincolanti. Branch `coord/qwen38-integrate`, worktree esterno
+`/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate`, partito da
+BASE_CONCORDATA `c674b23bd1377b2ce0acef2d06fac8b160809446`.
+Il commit finale con questo aggiornamento è BASE_INTEGRATA; il coordinatore
+ne restituisce lo SHA completo. Nessun merge/push su main.
+
+Acquisiti con merge espliciti, senza conflitti, i seguenti head completati:
+
+| Consegna | Branch | SHA acquisito |
+|---|---|---|
+| A | `impl/qwen38-a-v1` | `01b2333ba1ee284f9214758de97a8b1452b4781f` |
+| B | `impl/qwen38-b-cpu` | `ee871bc3718898e0cee39e12fe6f678579ba9499` |
+| C | `impl/qwen38-c` | `9b03f2554536745aed787371bcd2e54e3321f085` |
+| D | `impl/qwen38-d-cpu` | `d9b148ae8d4d9b0c1efa12b746a76b3fb5bc491b` |
+| E | `impl/qwen38-e-v1` | `b3321fb75266c7e44daa3a5b5b1a35a06fcfd222` |
+| F | `impl/qwen38-f-v1` | `a2c78ba9002d75dcf636ec8b77b08ecd55e36cf7` |
+
+Le modifiche delle sei consegne non hanno file in comune; nessun header
+pubblico riscritto e nessun oracle non committato acquisito. Gli oracle già
+contenuti nella storia di questi branch non vanno cherry-pickati di nuovo.
+I rispettivi documenti A–F conservano le consegne originali: le vecchie
+indicazioni “dipendenza assente” vanno lette insieme a questa sezione.
+
+Disponibili: A config/catalogo/testo; B scalar e packed CPU/Metal in tutti i
+sei formati; C conv/stato, RMS, attivazioni, HC, GDN e kernel per stadio;
+D lifecycle e core privato su input preparati; E hash, reader privato e gate;
+F routing e grouping. I 59 simboli pubblici implementati e le 23 dichiarazioni
+ancora senza implementazione sono elencati nel report API. Non ci sono stub
+che restituiscano successo per sostituire queste ultime.
+
+**Build e verifica.** `tools/qwen38.mk` aggiunge target CPU/GPU espliciti.
+La metallib comune collega ora AIR legacy, B e C; B/C usano
+`-fno-fast-math -ffp-contract=off`, come gli oggetti C11 Qwen38. Registry Qwen3
+invariato; pipeline B/C private. Harness nativi ASan/UBSan con errori fatali;
+la dylib C caricata da Python resta senza sanitizer, affiancata dal harness.
+I test ricevono sempre native harness, sorgente fissato e slice richieste;
+`tools/qwen38_test.py` rende uno skip un errore di processo. I report B/C usano
+directory nuove a ogni run, senza sovrascrivere l'evidenza precedente.
+
+Correzioni d'integrazione: il test header controlla quelli pubblici, mentre
+quelli privati vengono compilati nei harness; C rileva anche alias tra due
+oggetti Metal no-copy sulla stessa memoria Shared, incluso l'error word.
+Un test ha riprodotto il difetto prima della correzione e passa dopo.
+La regressione shard Qwen3 ora usa `sys.executable` per i subprocess Python,
+rispettando il venv scelto da Makefile anche nei worktree senza venv locale.
+Alias esatto in-place C è ammesso usando lo stesso oggetto buffer e offset;
+wrapper distinti con memoria sovrapposta sono rifiutati conservativamente.
+Nessuna tolleranza è stata allargata.
+
+Nuovi file del coordinatore: `tools/qwen38.mk`, `tools/qwen38_prepare_tests.py`,
+`tools/qwen38_test.py`, `tests/test_qwen38_integration.c`,
+`tests/test_qwen38_test.py`, `docs/specs/qwen38/resume.md` e
+`bench/qwen38_integration_20261012/**`. Le correzioni locali in
+`src/qwen38_recurrent_gpu.m`, `tests/test_qwen38_recurrent.m` e il raccordo
+strict/sanitizer in `tools/synth/make_qwen38_a.py` sono manutenzione di
+integrazione del coordinatore; ownership futura dei file resta C/A.
+
+**Verificato:** 158 test CPU A–F (20/25/35/40/15/23), nessuno saltato;
+harness ASan/UBSan, 4 test lock, controllo strict runner e test API collegate
+A→B→F, C→E, A→D/E. B: 25 test Metal, 245 prodotti per backend, 137 slice
+reali e 400164 byte packed complessivi. C Metal: primitive, errori/stato,
+fixture lunghe fino a 32768 con head ridotte e T=1/65 a shape GDN reale;
+max errore scalato 3.60608101e-5 entro i gate congelati. Il picco osservato
+87130112 byte è allocazione Metal del harness, non footprint del modello.
+A storage: piccolo GGUF sintetico, senza mapping completo del checkpoint.
+Dettagli, comandi, regressioni ed evidenza nel
+[report integrato](../../../bench/qwen38_integration_20261012/README.md).
+
+**Ripartenza:** C4 può usare A+B per HC/GDN composto; D può implementare
+`qwen38_attention_cpu` riusando RMS/attivazioni C; E può completare
+store/state/job e PLE con C1/C2+B; F può implementare create/work/forward
+con B+C, prima floating point poi packed. Prompt e ordine in
+[resume.md](resume.md). Questi quattro incrementi CPU sono indipendenti
+fra loro sulla BASE_INTEGRATA. Non attendere gli altri branch per iniziare.
+Gli entrypoint pubblici GPU composti, nuovi link/target Metal D/E/F e grafo
+restano al coordinatore; i test GPU privati possono avanzare dopo i gate CPU.
+
+**Limiti:** nessun HC/GDN composto su proiezioni Q2 reali, prep pubblica D,
+PLE completo o forward MoE nativo ancora certificati; nessun grafo 48 layer,
+transazione globale GPU, logits Qwen3.8 o generazione nativa. Le prove sono
+su primitive, core e collegamenti sintetici, più slice B; non misurano la
+perdita Q2 rispetto al BF16 originale né prestazioni end-to-end. Il lock
+rimane cooperativo e condiviso tramite il git-common-dir del repository.

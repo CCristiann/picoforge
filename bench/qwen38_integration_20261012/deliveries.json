@@ -1,0 +1,109 @@
+[
+  {
+    "branch": "impl/qwen38-a-v1",
+    "sha": "01b2333ba1ee284f9214758de97a8b1452b4781f",
+    "files": [
+      "docs/specs/qwen38/A.md",
+      "src/qwen38_a_internal.h",
+      "src/qwen38_chat.c",
+      "src/qwen38_config.c",
+      "src/qwen38_tokenizer.c",
+      "src/qwen38_unicode.c",
+      "src/qwen38_weights.c",
+      "src/tokenizer.c",
+      "tests/fixtures/qwen38/a/chat_extended.json",
+      "tests/fixtures/qwen38/a/config.json",
+      "tests/fixtures/qwen38/a/manifest.json",
+      "tests/fixtures/qwen38/a/text.json",
+      "tests/fixtures/qwen38/a/text_extended.json",
+      "tests/test_qwen38_a.py",
+      "tests/test_qwen38_bindings.c",
+      "tests/test_qwen38_config.c",
+      "tests/test_qwen38_text.c",
+      "tools/gen_qwen38_unicode.py",
+      "tools/oracle/qwen38_config.py",
+      "tools/oracle/qwen38_text.py",
+      "tools/synth/make_qwen38_a.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-b-cpu",
+    "sha": "ee871bc3718898e0cee39e12fe6f678579ba9499",
+    "files": [
+      "src/qwen38_b_internal.h",
+      "src/qwen38_iq2_grid.inc",
+      "src/qwen38_packed.c",
+      "src/qwen38_packed.metal",
+      "src/qwen38_packed_gpu.m",
+      "tests/fixtures/qwen38_packed/README.md",
+      "tests/fixtures/qwen38_packed/manifest.json",
+      "tests/fixtures/qwen38_packed/native-slices.jsonl",
+      "tests/fixtures/qwen38_packed/native.json",
+      "tests/fixtures/qwen38_packed/native.md",
+      "tests/fixtures/qwen38_packed/slices.jsonl",
+      "tests/test_qwen38_packed.c",
+      "tests/test_qwen38_packed.py",
+      "tests/test_qwen38_packed_gpu.m",
+      "tools/oracle/qwen38_packed.py",
+      "tools/oracle/qwen38_packed_reference.c"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-c",
+    "sha": "9b03f2554536745aed787371bcd2e54e3321f085",
+    "files": [
+      "docs/specs/qwen38/C.md",
+      "src/qwen38_base.c",
+      "src/qwen38_c_internal.h",
+      "src/qwen38_conv.c",
+      "src/qwen38_gdn.c",
+      "src/qwen38_recurrent.metal",
+      "src/qwen38_recurrent_gpu.m",
+      "tests/fixtures/qwen38/c/analytic.json",
+      "tests/fixtures/qwen38/c/manifest.json",
+      "tests/test_qwen38_recurrent.c",
+      "tests/test_qwen38_recurrent.m",
+      "tests/test_qwen38_recurrent.py",
+      "tools/oracle/qwen38_recurrent.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-d-cpu",
+    "sha": "d9b148ae8d4d9b0c1efa12b746a76b3fb5bc491b",
+    "files": [
+      "docs/specs/qwen38/D.md",
+      "src/qwen38_attention.c",
+      "src/qwen38_d_internal.h",
+      "tests/fixtures/qwen38/attention/manifest.json",
+      "tests/test_qwen38_attention.c",
+      "tests/test_qwen38_attention.py",
+      "tools/oracle/qwen38_attention.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-e-v1",
+    "sha": "b3321fb75266c7e44daa3a5b5b1a35a06fcfd222",
+    "files": [
+      "docs/specs/qwen38/E.md",
+      "src/qwen38_ngram.c",
+      "src/qwen38_ngram_internal.h",
+      "src/qwen38_ple.c",
+      "tests/fixtures/qwen38/ngram.json",
+      "tests/test_qwen38_ngram.c",
+      "tests/test_qwen38_ngram.py",
+      "tools/oracle/qwen38_ngram.py"
+    ]
+  },
+  {
+    "branch": "impl/qwen38-f-v1",
+    "sha": "a2c78ba9002d75dcf636ec8b77b08ecd55e36cf7",
+    "files": [
+      "docs/specs/qwen38/F.md",
+      "src/qwen38_f_internal.h",
+      "src/qwen38_moe.c",
+      "tests/test_qwen38_moe.c",
+      "tests/test_qwen38_moe.py",
+      "tools/oracle/qwen38_moe.py"
+    ]
+  }
+]

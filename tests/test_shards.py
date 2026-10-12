@@ -51,7 +51,7 @@ def main() -> None:
     ok &= check("GPU refuses a sharded checkpoint", p.returncode != 0 and "sharded" in p.stderr + p.stdout)
 
     for src in (SINGLE, SHARDED):
-        subprocess.run([str(ROOT / "tools/venv/bin/python"), str(ROOT / "tools/quant/quantize.py"),
+        subprocess.run([sys.executable, str(ROOT / "tools/quant/quantize.py"),
                         str(src), "q8_row"], check=True, capture_output=True, cwd=ROOT)
     same = filecmp.cmp(ROOT / "build/tiny-qwen3-moe-q8_row/model.safetensors",
                        ROOT / "build/tiny-qwen3-moe-sharded-q8_row/model.safetensors", shallow=False)

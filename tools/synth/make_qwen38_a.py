@@ -153,10 +153,10 @@ def chat_cases():
 
 
 def verify(args):
-    """Explicit harness build until the coordinator adds Makefile targets."""
+    """Build the A harnesses used by the coordinator Makefile targets."""
     build = ROOT / "build/qwen38-a"
     flags = ["clang","-std=c11","-O1","-g","-Wall","-Wextra","-Wpedantic","-Wshadow",
-             "-Wconversion","-Werror","-ffp-contract=off","-fsanitize=address,undefined","-Isrc"]
+             "-Wconversion","-Werror","-ffp-contract=off","-fsanitize=address,undefined","-fno-sanitize-recover=all","-Isrc"]
     common = ["src/qwen38_config.c","src/gguf.c","src/gguf_reader.c","src/util.c"]
     groups = {
         "config": ["tests/test_qwen38_config.c"]+common,
@@ -181,7 +181,7 @@ def verify(args):
             path = build/"native-inventory.json"
             with path.open("w") as f: subprocess.run([str(build/"inspect"),str(args.checkpoint)],stdout=f,check=True)
             env["QWEN38_A_NATIVE_INVENTORY"] = str(path)
-        subprocess.run([sys.executable,"-B","tests/test_qwen38_a.py"],cwd=ROOT,env=env,check=True)
+        subprocess.run([sys.executable,"-B","tools/qwen38_test.py","tests/test_qwen38_a.py"],cwd=ROOT,env=env,check=True)
     if args.gpu:
         sources = groups["bindings"]+["src/gpu_weights.m","src/metal.m"]
         exe = build/"test_storage"
