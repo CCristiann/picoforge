@@ -724,3 +724,55 @@ staging; va osservata e non confusa con memoria malloc/Metal.
 [config]: https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json
 [hf]: https://github.com/huggingface/transformers/blob/db2304e8694db3ecd6f39d353beba361688afe97/src/transformers/models/qwen4_exp/modeling_qwen4_exp.py
 [paper]: https://arxiv.org/html/2608.30320v1#S2.SS3
+
+## 11. ESEGUI dalla base consolidata — hash e reader CPU
+
+Base effettiva `c674b23bd1377b2ce0acef2d06fac8b160809446`, branch
+`impl/qwen38-e-v1`, worktree `../picoforge-e-execute`. Le sezioni SPEC
+precedenti sono conservate; prevalgono `integration.md` e gli header v1.
+Recuperati soltanto i file oracle/fixture di `c1a219a` e codice/test CPU di
+`4fbc52c`, senza reimportare la vecchia spec o file di altre sessioni.
+Il primo recupero verificato è `9a34fb0`.
+
+Implementato `qwen38_ngram_ids` con i tipi pubblici: array uint64,
+storia int32 newest-first immutabile e candidata separata; batch vuoto copia
+la storia. Checked bounds, dominio signed-int64 dei prodotti HF, intervalli
+contigui, capacità e alias rifiutati prima di scrivere. Nessun limite di
+ordine/head/token hardcoded nel runtime hash; i limiti dell'oracle restano
+esplicitamente quelli delle fixture bounded. Righe oltre UINT32_MAX testate
+separatamente, senza assumere il limite fisico del checkpoint nel contratto.
+
+Reader ancora **privato**, pronto per essere incorporato nel futuro store/job:
+usa solo `Qwen38Status`/`Qwen38Error`, fd duplicato read-only/CLOEXEC,
+nessun mapping/cache, staging allocato al setup, dedup globale, accorpamento
+di righe consecutive entro 64 KiB. CAPACITY distingue budget insufficiente
+da OOM dell'allocatore. Lease valide solo dopo successo completo; ogni nuova
+richiesta invalida la precedente, anche in caso di errore. OWNER per lease
+estranee; STALE per file modificato/generazione invalida. Errori I/O riportano
+errno, offset assoluto, riga e progresso dell'intervallo. Immutabilità del file
+rimane precondizione: fstat non garantisce integrità crittografica.
+
+Verifica ripetibile, Python esistente, nessun checkpoint aperto:
+
+```sh
+Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+# Solo al primo setup, oppure copiare la piccola cache verificata dal vecchio worktree:
+"$Q38_PY" tools/oracle/qwen38_ngram.py --fetch-source
+"$Q38_PY" tests/test_qwen38_ngram.py -v
+```
+
+11 test passati, harness clang C11 con warning come errori,
+`-ffp-contract=off -fsanitize=address,undefined -fno-omit-frame-pointer`.
+ID bit-esatti contro i metodi Transformers originali fissati, EOS e chunk
+1/2/3/7/9/10/255/256/1023/1024; BF16 bit-esatto contro PyTorch per tutti i
+65.280 pattern finiti. Fixture fino a 128 KiB, boundary pagina, duplicati,
+ultima riga, intervalli >64 KiB divisi; short read di 3 byte, EINTR e
+EOF/EIO/EBADF a ogni byte di un batch di 32 byte (96 errori), troncamento
+reale, NaN/Inf, fallimenti delle quattro allocazioni e limite esatto del
+budget. Errori e successo successivo non riabilitano lease precedenti.
+Il test controlla anche offset/errno/progresso, non soltanto il codice.
+Nessuna prova di perdita Q2 rispetto a BF16 originale, GPU o prestazioni.
+
+Store/state/job pubblico e history candidata richiedono ancora C1;
+PLE completo C2, B Q8_0 e A. Le dichiarazioni non implementate non hanno
+stub: questa consegna non certifica transazioni complete o generazione.
