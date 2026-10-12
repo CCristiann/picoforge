@@ -1,0 +1,4239 @@
+{
+  "schema_version": 1,
+  "encodes": [
+    {
+      "text": "",
+      "ids": [],
+      "decoded": ""
+    },
+    {
+      "text": "A\u0000B",
+      "ids": [
+        32,
+        188,
+        33
+      ],
+      "decoded": "A\u0000B"
+    },
+    {
+      "text": "2026 3.14159",
+      "ids": [
+        17,
+        15,
+        17,
+        21,
+        220,
+        18,
+        13,
+        16,
+        19,
+        16,
+        20,
+        24
+      ],
+      "decoded": "2026 3.14159"
+    },
+    {
+      "text": "don't IT'S we're I'VE",
+      "ids": [
+        14572,
+        914,
+        8435,
+        12887,
+        567,
+        2224,
+        353,
+        6,
+        4343
+      ],
+      "decoded": "don't IT'S we're I'VE"
+    },
+    {
+      "text": "#include <stdio.h>\n## titolo",
+      "ids": [
+        1032,
+        361,
+        10038,
+        834,
+        29,
+        198,
+        550,
+        175515
+      ],
+      "decoded": "#include <stdio.h>\n## titolo"
+    },
+    {
+      "text": "Caffè: perché?",
+      "ids": [
+        34,
+        2562,
+        4311,
+        25,
+        58902,
+        30
+      ],
+      "decoded": "Caffè: perché?"
+    },
+    {
+      "text": "é vs é",
+      "ids": [
+        933,
+        5972,
+        3825
+      ],
+      "decoded": "é vs é"
+    },
+    {
+      "text": "́",
+      "ids": [
+        52033
+      ],
+      "decoded": "́"
+    },
+    {
+      "text": "́a",
+      "ids": [
+        52033,
+        64
+      ],
+      "decoded": "́a"
+    },
+    {
+      "text": "á̧",
+      "ids": [
+        1886,
+        136,
+        100
+      ],
+      "decoded": "á̧"
+    },
+    {
+      "text": "अा",
+      "ids": [
+        168948,
+        23121
+      ],
+      "decoded": "अा"
+    },
+    {
+      "text": "a⃝",
+      "ids": [
+        64,
+        158,
+        28429
+      ],
+      "decoded": "a⃝"
+    },
+    {
+      "text": "각",
+      "ids": [
+        149252
+      ],
+      "decoded": "각"
+    },
+    {
+      "text": "日本語 中文",
+      "ids": [
+        247359,
+        220,
+        99986
+      ],
+      "decoded": "日本語 中文"
+    },
+    {
+      "text": "مرحبا بِالعالم",
+      "ids": [
+        148739,
+        28850,
+        150027,
+        156172,
+        179415,
+        149650
+      ],
+      "decoded": "مرحبا بِالعالم"
+    },
+    {
+      "text": "👨‍👩‍👧‍👦 🇮🇹",
+      "ids": [
+        9008,
+        239,
+        101,
+        373,
+        235,
+        9008,
+        239,
+        102,
+        373,
+        235,
+        9008,
+        239,
+        100,
+        373,
+        235,
+        9008,
+        239,
+        99,
+        10838,
+        229,
+        106,
+        9008,
+        229,
+        117
+      ],
+      "decoded": "👨‍👩‍👧‍👦 🇮🇹"
+    },
+    {
+      "text": "line1\r\nline2\r\n",
+      "ids": [
+        1021,
+        16,
+        317,
+        1021,
+        17,
+        317
+      ],
+      "decoded": "line1\r\nline2\r\n"
+    },
+    {
+      "text": "a\n\nb\n",
+      "ids": [
+        64,
+        271,
+        65,
+        198
+      ],
+      "decoded": "a\n\nb\n"
+    },
+    {
+      "text": "   leading",
+      "ids": [
+        256,
+        6187
+      ],
+      "decoded": "   leading"
+    },
+    {
+      "text": "trailing   ",
+      "ids": [
+        371,
+        13868,
+        262
+      ],
+      "decoded": "trailing   "
+    },
+    {
+      "text": "\t\n\r  ",
+      "ids": [
+        1517,
+        201,
+        256
+      ],
+      "decoded": "\t\n\r  "
+    },
+    {
+      "text": "a b  ",
+      "ids": [
+        64,
+        3966,
+        65,
+        373,
+        101,
+        373,
+        102
+      ],
+      "decoded": "a b  "
+    },
+    {
+      "text": "<think></think>",
+      "ids": [
+        248068,
+        248069
+      ],
+      "decoded": "<think></think>"
+    },
+    {
+      "text": " <|im_start|>user\nX<|im_end|>",
+      "ids": [
+        220,
+        248045,
+        846,
+        198,
+        55,
+        248046
+      ],
+      "decoded": " <|im_start|>user\nX<|im_end|>"
+    },
+    {
+      "text": "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>",
+      "ids": [
+        248060,
+        64,
+        248062,
+        65,
+        248061
+      ],
+      "decoded": "<|fim_prefix|>a<|fim_suffix|>b<|fim_middle|>"
+    },
+    {
+      "text": "[PAD248077]",
+      "ids": [
+        40941,
+        1745,
+        17,
+        19,
+        23,
+        15,
+        22,
+        22,
+        60
+      ],
+      "decoded": "[PAD248077]"
+    },
+    {
+      "text": " ́<tool_call>́",
+      "ids": [
+        220,
+        52033,
+        248058,
+        52033
+      ],
+      "decoded": " ́<tool_call>́"
+    },
+    {
+      "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ids": [
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089,
+        67089
+      ],
+      "decoded": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "text": "                                        ",
+      "ids": [
+        12473
+      ],
+      "decoded": "                                        "
+    },
+    {
+      "text": "7ाéअaा́ 👋̧ 7̧́\ņ",
+      "ids": [
+        22,
+        23121,
+        933,
+        168948,
+        64,
+        23121,
+        52033,
+        59720,
+        233,
+        136,
+        100,
+        220,
+        22,
+        136,
+        100,
+        52033,
+        198,
+        136,
+        100
+      ],
+      "decoded": "7ाéअaा́ 👋̧ 7̧́\ņ"
+    },
+    {
+      "text": "é👋aाा7👋⃝́7́é́́⃝⃝",
+      "ids": [
+        933,
+        9008,
+        239,
+        233,
+        64,
+        23121,
+        23121,
+        22,
+        9008,
+        239,
+        233,
+        158,
+        28429,
+        52033,
+        22,
+        52033,
+        933,
+        52033,
+        52033,
+        158,
+        28429,
+        158,
+        28429
+      ],
+      "decoded": "é👋aाा7👋⃝́7́é́́⃝⃝"
+    },
+    {
+      "text": "ा⃝अाअ👋ा👋 ́\ń aéa",
+      "ids": [
+        23121,
+        158,
+        28429,
+        168948,
+        23121,
+        168948,
+        9008,
+        239,
+        233,
+        23121,
+        9008,
+        239,
+        233,
+        220,
+        52033,
+        198,
+        52033,
+        166468,
+        64
+      ],
+      "decoded": "ा⃝अाअ👋ा👋 ́\ń aéa"
+    },
+    {
+      "text": "अ⃝👋\u0000ȩ̧́\n👋ाé\u0000\u0000a \u0000",
+      "ids": [
+        168948,
+        158,
+        28429,
+        9008,
+        239,
+        233,
+        188,
+        132,
+        102,
+        136,
+        100,
+        52033,
+        198,
+        9008,
+        239,
+        233,
+        23121,
+        933,
+        188,
+        188,
+        64,
+        220,
+        188
+      ],
+      "decoded": "अ⃝👋\u0000ȩ̧́\n👋ाé\u0000\u0000a \u0000"
+    },
+    {
+      "text": "̧\n⃝é ा👋é\u0000ा👋\u0000̧́⃝\n",
+      "ids": [
+        136,
+        100,
+        198,
+        158,
+        28429,
+        933,
+        14494,
+        122,
+        9008,
+        239,
+        233,
+        933,
+        188,
+        23121,
+        9008,
+        239,
+        233,
+        188,
+        136,
+        100,
+        52033,
+        158,
+        28429,
+        198
+      ],
+      "decoded": "̧\n⃝é ा👋é\u0000ा👋\u0000̧́⃝\n"
+    },
+    {
+      "text": "  ⃝अा👋अ⃝̧̧̧̧a\n⃝\u0000",
+      "ids": [
+        220,
+        2765,
+        28429,
+        168948,
+        23121,
+        9008,
+        239,
+        233,
+        168948,
+        158,
+        28429,
+        136,
+        100,
+        136,
+        100,
+        136,
+        100,
+        136,
+        100,
+        64,
+        198,
+        158,
+        28429,
+        188
+      ],
+      "decoded": "  ⃝अा👋अ⃝̧̧̧̧a\n⃝\u0000"
+    },
+    {
+      "text": "👋अ\u0000̧́a👋\ņ7\u0000\n\u0000अ⃝अ",
+      "ids": [
+        9008,
+        239,
+        233,
+        168948,
+        188,
+        136,
+        100,
+        52033,
+        64,
+        9008,
+        239,
+        233,
+        198,
+        136,
+        100,
+        22,
+        188,
+        198,
+        188,
+        168948,
+        158,
+        28429,
+        168948
+      ],
+      "decoded": "👋अ\u0000̧́a👋\ņ7\u0000\n\u0000अ⃝अ"
+    },
+    {
+      "text": "⃝अ̧7ȩ́a\ńaअ 7अ7́",
+      "ids": [
+        158,
+        28429,
+        168948,
+        136,
+        100,
+        22,
+        132,
+        102,
+        52033,
+        64,
+        198,
+        52033,
+        64,
+        168948,
+        220,
+        22,
+        168948,
+        22,
+        52033
+      ],
+      "decoded": "⃝अ̧7ȩ́a\ńaअ 7अ7́"
+    },
+    {
+      "text": "7⃝̧̧é\né\n \u0000́aaȩ́7",
+      "ids": [
+        22,
+        158,
+        28429,
+        136,
+        100,
+        136,
+        100,
+        933,
+        198,
+        933,
+        198,
+        220,
+        188,
+        52033,
+        5137,
+        132,
+        102,
+        52033,
+        22
+      ],
+      "decoded": "7⃝̧̧é\né\n \u0000́aaȩ́7"
+    },
+    {
+      "text": "a👋a ा 7⃝ अ⃝̧\n👋⃝̧",
+      "ids": [
+        64,
+        9008,
+        239,
+        233,
+        64,
+        14494,
+        122,
+        220,
+        22,
+        158,
+        28429,
+        148953,
+        158,
+        28429,
+        136,
+        100,
+        198,
+        9008,
+        239,
+        233,
+        158,
+        28429,
+        136,
+        100
+      ],
+      "decoded": "a👋a ा 7⃝ अ⃝̧\n👋⃝̧"
+    },
+    {
+      "text": "̧é\u0000́aा́ा⃝\na\ņ́⃝́",
+      "ids": [
+        136,
+        100,
+        933,
+        188,
+        52033,
+        64,
+        23121,
+        52033,
+        23121,
+        158,
+        28429,
+        198,
+        64,
+        198,
+        136,
+        100,
+        52033,
+        158,
+        28429,
+        52033
+      ],
+      "decoded": "̧é\u0000́aा́ा⃝\na\ņ́⃝́"
+    },
+    {
+      "text": "\n ⃝ 7👋é́7⃝अ́7👋́\n",
+      "ids": [
+        198,
+        2765,
+        28429,
+        220,
+        22,
+        9008,
+        239,
+        233,
+        933,
+        52033,
+        22,
+        158,
+        28429,
+        168948,
+        52033,
+        22,
+        9008,
+        239,
+        233,
+        52033,
+        198
+      ],
+      "decoded": "\n ⃝ 7👋é́7⃝अ́7👋́\n"
+    },
+    {
+      "text": "👋á \nअ ाा\u0000 é\n\u0000अ\u0000",
+      "ids": [
+        9008,
+        239,
+        233,
+        1886,
+        695,
+        168948,
+        14494,
+        122,
+        23121,
+        188,
+        3825,
+        198,
+        188,
+        168948,
+        188
+      ],
+      "decoded": "👋á \nअ ाा\u0000 é\n\u0000अ\u0000"
+    },
+    {
+      "text": "́é\n ा⃝\u0000 é\u0000̧́a̧\u0000\u0000",
+      "ids": [
+        52033,
+        933,
+        198,
+        14494,
+        122,
+        158,
+        28429,
+        188,
+        3825,
+        188,
+        136,
+        100,
+        52033,
+        64,
+        136,
+        100,
+        188,
+        188
+      ],
+      "decoded": "́é\n ा⃝\u0000 é\u0000̧́a̧\u0000\u0000"
+    },
+    {
+      "text": "7  7̧\u0000अ̧a👋\u00007̧ा́👋",
+      "ids": [
+        22,
+        220,
+        220,
+        22,
+        136,
+        100,
+        188,
+        168948,
+        136,
+        100,
+        64,
+        9008,
+        239,
+        233,
+        188,
+        22,
+        136,
+        100,
+        23121,
+        52033,
+        9008,
+        239,
+        233
+      ],
+      "decoded": "7  7̧\u0000अ̧a👋\u00007̧ा́👋"
+    },
+    {
+      "text": "a̧a\n⃝aé👋é \u00007 ́ é",
+      "ids": [
+        64,
+        136,
+        100,
+        64,
+        198,
+        158,
+        28429,
+        64,
+        933,
+        9008,
+        239,
+        233,
+        933,
+        220,
+        188,
+        22,
+        220,
+        52033,
+        3825
+      ],
+      "decoded": "a̧a\n⃝aé👋é \u00007 ́ é"
+    },
+    {
+      "text": "7⃝अ⃝⃝अा⃝éाअ\n7👋👋\n",
+      "ids": [
+        22,
+        158,
+        28429,
+        168948,
+        158,
+        28429,
+        158,
+        28429,
+        168948,
+        23121,
+        158,
+        28429,
+        933,
+        23121,
+        168948,
+        198,
+        22,
+        9008,
+        239,
+        233,
+        9008,
+        239,
+        233,
+        198
+      ],
+      "decoded": "7⃝अ⃝⃝अा⃝éाअ\n7👋👋\n"
+    },
+    {
+      "text": "̧👋 ा\n\néअ7á\u00007 ⃝̧",
+      "ids": [
+        136,
+        100,
+        9008,
+        239,
+        233,
+        14494,
+        122,
+        271,
+        933,
+        168948,
+        22,
+        1886,
+        188,
+        22,
+        2765,
+        28429,
+        136,
+        100
+      ],
+      "decoded": "̧👋 ा\n\néअ7á\u00007 ⃝̧"
+    },
+    {
+      "text": "👋a7́ा\u0000́ा́ a\u0000a👋ा́",
+      "ids": [
+        9008,
+        239,
+        233,
+        64,
+        22,
+        52033,
+        23121,
+        188,
+        52033,
+        23121,
+        52033,
+        264,
+        188,
+        64,
+        9008,
+        239,
+        233,
+        23121,
+        52033
+      ],
+      "decoded": "👋a7́ा\u0000́ा́ a\u0000a👋ा́"
+    },
+    {
+      "text": "a👋 \n⃝⃝́éa⃝́aé⃝\u0000é",
+      "ids": [
+        64,
+        9008,
+        239,
+        233,
+        695,
+        158,
+        28429,
+        158,
+        28429,
+        52033,
+        933,
+        64,
+        158,
+        28429,
+        52033,
+        64,
+        933,
+        158,
+        28429,
+        188,
+        933
+      ],
+      "decoded": "a👋 \n⃝⃝́éa⃝́aé⃝\u0000é"
+    },
+    {
+      "text": "\u00007́́ा7\n⃝अ\u0000⃝👋́अ\na",
+      "ids": [
+        188,
+        22,
+        52033,
+        52033,
+        23121,
+        22,
+        198,
+        158,
+        28429,
+        168948,
+        188,
+        158,
+        28429,
+        9008,
+        239,
+        233,
+        52033,
+        168948,
+        198,
+        64
+      ],
+      "decoded": "\u00007́́ा7\n⃝अ\u0000⃝👋́अ\na"
+    },
+    {
+      "text": "é ा7\n\u00007⃝  अा́ ⃝ा",
+      "ids": [
+        933,
+        14494,
+        122,
+        22,
+        198,
+        188,
+        22,
+        158,
+        28429,
+        220,
+        148953,
+        23121,
+        52033,
+        2765,
+        28429,
+        23121
+      ],
+      "decoded": "é ा7\n\u00007⃝  अा́ ⃝ा"
+    },
+    {
+      "text": "अ\n⃝ा\u0000́aााa⃝7\n👋 a",
+      "ids": [
+        168948,
+        198,
+        158,
+        28429,
+        23121,
+        188,
+        52033,
+        64,
+        23121,
+        23121,
+        64,
+        158,
+        28429,
+        22,
+        198,
+        9008,
+        239,
+        233,
+        264
+      ],
+      "decoded": "अ\n⃝ा\u0000́aााa⃝7\n👋 a"
+    },
+    {
+      "text": "अ\n👋̧a7ा̧aé7अअााa",
+      "ids": [
+        168948,
+        198,
+        9008,
+        239,
+        233,
+        136,
+        100,
+        64,
+        22,
+        23121,
+        136,
+        100,
+        64,
+        933,
+        22,
+        168948,
+        168948,
+        23121,
+        23121,
+        64
+      ],
+      "decoded": "अ\n👋̧a7ा̧aé7अअााa"
+    },
+    {
+      "text": "\u0000\n\u0000 अ \u0000अ́7अा👋⃝a̧",
+      "ids": [
+        188,
+        198,
+        188,
+        148953,
+        220,
+        188,
+        168948,
+        52033,
+        22,
+        168948,
+        23121,
+        9008,
+        239,
+        233,
+        158,
+        28429,
+        64,
+        136,
+        100
+      ],
+      "decoded": "\u0000\n\u0000 अ \u0000अ́7अा👋⃝a̧"
+    },
+    {
+      "text": "👋\u0000\n⃝̧अ⃝̧\nाéaé ाअ",
+      "ids": [
+        9008,
+        239,
+        233,
+        188,
+        198,
+        158,
+        28429,
+        136,
+        100,
+        168948,
+        158,
+        28429,
+        136,
+        100,
+        198,
+        23121,
+        933,
+        64,
+        933,
+        14494,
+        122,
+        168948
+      ],
+      "decoded": "👋\u0000\n⃝̧अ⃝̧\nाéaé ाअ"
+    },
+    {
+      "text": "ाा ⃝ ̧7👋⃝̧̧\u0000 ́ा⃝",
+      "ids": [
+        23121,
+        23121,
+        2765,
+        28429,
+        220,
+        136,
+        100,
+        22,
+        9008,
+        239,
+        233,
+        158,
+        28429,
+        136,
+        100,
+        136,
+        100,
+        188,
+        220,
+        52033,
+        23121,
+        158,
+        28429
+      ],
+      "decoded": "ाा ⃝ ̧7👋⃝̧̧\u0000 ́ा⃝"
+    },
+    {
+      "text": "⃝é ̧ aा̧̧ा77अ \n\n",
+      "ids": [
+        158,
+        28429,
+        933,
+        220,
+        136,
+        100,
+        264,
+        23121,
+        136,
+        100,
+        136,
+        100,
+        23121,
+        22,
+        22,
+        168948,
+        4558
+      ],
+      "decoded": "⃝é ̧ aा̧̧ा77अ \n\n"
+    },
+    {
+      "text": " aअ\u0000é\u0000अ\u0000́ाअा👋\n👋a",
+      "ids": [
+        264,
+        168948,
+        188,
+        933,
+        188,
+        168948,
+        188,
+        52033,
+        23121,
+        168948,
+        23121,
+        9008,
+        239,
+        233,
+        198,
+        9008,
+        239,
+        233,
+        64
+      ],
+      "decoded": " aअ\u0000é\u0000अ\u0000́ाअा👋\n👋a"
+    },
+    {
+      "text": "👋7\n👋👋́⃝̧́⃝\néअ̧aé",
+      "ids": [
+        9008,
+        239,
+        233,
+        22,
+        198,
+        9008,
+        239,
+        233,
+        9008,
+        239,
+        233,
+        52033,
+        158,
+        28429,
+        136,
+        100,
+        52033,
+        158,
+        28429,
+        198,
+        933,
+        168948,
+        136,
+        100,
+        64,
+        933
+      ],
+      "decoded": "👋7\n👋👋́⃝̧́⃝\néअ̧aé"
+    },
+    {
+      "text": "⃝̧́́7👋ȩ̧́éé\u0000ाaा⃝",
+      "ids": [
+        158,
+        28429,
+        136,
+        100,
+        52033,
+        52033,
+        22,
+        9008,
+        239,
+        233,
+        132,
+        102,
+        136,
+        100,
+        52033,
+        933,
+        933,
+        188,
+        23121,
+        64,
+        23121,
+        158,
+        28429
+      ],
+      "decoded": "⃝̧́́7👋ȩ̧́éé\u0000ाaा⃝"
+    },
+    {
+      "text": "̧ा\nȩ́\u0000अ́́\u0000 \u0000⃝\ń⃝",
+      "ids": [
+        136,
+        100,
+        23121,
+        198,
+        132,
+        102,
+        52033,
+        188,
+        168948,
+        52033,
+        52033,
+        188,
+        220,
+        188,
+        158,
+        28429,
+        198,
+        52033,
+        158,
+        28429
+      ],
+      "decoded": "̧ा\nȩ́\u0000अ́́\u0000 \u0000⃝\ń⃝"
+    },
+    {
+      "text": "<|endoftext|>",
+      "ids": [
+        248044
+      ],
+      "decoded": "<|endoftext|>"
+    },
+    {
+      "text": "<|im_start|>",
+      "ids": [
+        248045
+      ],
+      "decoded": "<|im_start|>"
+    },
+    {
+      "text": "<|im_end|>",
+      "ids": [
+        248046
+      ],
+      "decoded": "<|im_end|>"
+    },
+    {
+      "text": "<|object_ref_start|>",
+      "ids": [
+        248047
+      ],
+      "decoded": "<|object_ref_start|>"
+    },
+    {
+      "text": "<|object_ref_end|>",
+      "ids": [
+        248048
+      ],
+      "decoded": "<|object_ref_end|>"
+    },
+    {
+      "text": "<|box_start|>",
+      "ids": [
+        248049
+      ],
+      "decoded": "<|box_start|>"
+    },
+    {
+      "text": "<|box_end|>",
+      "ids": [
+        248050
+      ],
+      "decoded": "<|box_end|>"
+    },
+    {
+      "text": "<|quad_start|>",
+      "ids": [
+        248051
+      ],
+      "decoded": "<|quad_start|>"
+    },
+    {
+      "text": "<|quad_end|>",
+      "ids": [
+        248052
+      ],
+      "decoded": "<|quad_end|>"
+    },
+    {
+      "text": "<|vision_start|>",
+      "ids": [
+        248053
+      ],
+      "decoded": "<|vision_start|>"
+    },
+    {
+      "text": "<|vision_end|>",
+      "ids": [
+        248054
+      ],
+      "decoded": "<|vision_end|>"
+    },
+    {
+      "text": "<|vision_pad|>",
+      "ids": [
+        248055
+      ],
+      "decoded": "<|vision_pad|>"
+    },
+    {
+      "text": "<|image_pad|>",
+      "ids": [
+        248056
+      ],
+      "decoded": "<|image_pad|>"
+    },
+    {
+      "text": "<|video_pad|>",
+      "ids": [
+        248057
+      ],
+      "decoded": "<|video_pad|>"
+    },
+    {
+      "text": "<tool_call>",
+      "ids": [
+        248058
+      ],
+      "decoded": "<tool_call>"
+    },
+    {
+      "text": "</tool_call>",
+      "ids": [
+        248059
+      ],
+      "decoded": "</tool_call>"
+    },
+    {
+      "text": "<|fim_prefix|>",
+      "ids": [
+        248060
+      ],
+      "decoded": "<|fim_prefix|>"
+    },
+    {
+      "text": "<|fim_middle|>",
+      "ids": [
+        248061
+      ],
+      "decoded": "<|fim_middle|>"
+    },
+    {
+      "text": "<|fim_suffix|>",
+      "ids": [
+        248062
+      ],
+      "decoded": "<|fim_suffix|>"
+    },
+    {
+      "text": "<|fim_pad|>",
+      "ids": [
+        248063
+      ],
+      "decoded": "<|fim_pad|>"
+    },
+    {
+      "text": "<|repo_name|>",
+      "ids": [
+        248064
+      ],
+      "decoded": "<|repo_name|>"
+    },
+    {
+      "text": "<|file_sep|>",
+      "ids": [
+        248065
+      ],
+      "decoded": "<|file_sep|>"
+    },
+    {
+      "text": "<tool_response>",
+      "ids": [
+        248066
+      ],
+      "decoded": "<tool_response>"
+    },
+    {
+      "text": "</tool_response>",
+      "ids": [
+        248067
+      ],
+      "decoded": "</tool_response>"
+    },
+    {
+      "text": "<think>",
+      "ids": [
+        248068
+      ],
+      "decoded": "<think>"
+    },
+    {
+      "text": "</think>",
+      "ids": [
+        248069
+      ],
+      "decoded": "</think>"
+    },
+    {
+      "text": "<|audio_start|>",
+      "ids": [
+        248070
+      ],
+      "decoded": "<|audio_start|>"
+    },
+    {
+      "text": "<|audio_end|>",
+      "ids": [
+        248071
+      ],
+      "decoded": "<|audio_end|>"
+    },
+    {
+      "text": "<tts_pad>",
+      "ids": [
+        248072
+      ],
+      "decoded": "<tts_pad>"
+    },
+    {
+      "text": "<tts_text_bos>",
+      "ids": [
+        248073
+      ],
+      "decoded": "<tts_text_bos>"
+    },
+    {
+      "text": "<tts_text_eod>",
+      "ids": [
+        248074
+      ],
+      "decoded": "<tts_text_eod>"
+    },
+    {
+      "text": "<tts_text_bos_single>",
+      "ids": [
+        248075
+      ],
+      "decoded": "<tts_text_bos_single>"
+    },
+    {
+      "text": "<|audio_pad|>",
+      "ids": [
+        248076
+      ],
+      "decoded": "<|audio_pad|>"
+    }
+  ],
+  "decodes": [
+    {
+      "ids": [
+        248044,
+        248045,
+        248046,
+        248047,
+        248048,
+        248049,
+        248050,
+        248051,
+        248052,
+        248053,
+        248054,
+        248055,
+        248056,
+        248057,
+        248058,
+        248059,
+        248060,
+        248061,
+        248062,
+        248063,
+        248064,
+        248065,
+        248066,
+        248067,
+        248068,
+        248069,
+        248070,
+        248071,
+        248072,
+        248073,
+        248074,
+        248075,
+        248076
+      ],
+      "keep": "<|endoftext|><|im_start|><|im_end|><|object_ref_start|><|object_ref_end|><|box_start|><|box_end|><|quad_start|><|quad_end|><|vision_start|><|vision_end|><|vision_pad|><|image_pad|><|video_pad|><tool_call></tool_call><|fim_prefix|><|fim_middle|><|fim_suffix|><|fim_pad|><|repo_name|><|file_sep|><tool_response></tool_response><think></think><|audio_start|><|audio_end|><tts_pad><tts_text_bos><tts_text_eod><tts_text_bos_single><|audio_pad|>",
+      "skip": "<tool_call></tool_call><|fim_prefix|><|fim_middle|><|fim_suffix|><|fim_pad|><|repo_name|><|file_sep|><tool_response></tool_response><think></think>"
+    },
+    {
+      "ids": [
+        248077,
+        248319
+      ],
+      "keep": "",
+      "skip": ""
+    },
+    {
+      "ids": [
+        248060,
+        248068,
+        248044
+      ],
+      "keep": "<|fim_prefix|><think><|endoftext|>",
+      "skip": "<|fim_prefix|><think>"
+    },
+    {
+      "ids": [
+        136
+      ],
+      "keep": "�",
+      "skip": "�"
+    },
+    {
+      "ids": [
+        136,
+        100
+      ],
+      "keep": "̧",
+      "skip": "̧"
+    }
+  ],
+  "templates": [
+    {
+      "name": "thinking-default",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "thinking-disabled",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "enable_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "ids": [
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ]
+      }
+    },
+    {
+      "name": "effort-xhigh",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "reasoning_effort": "xhigh"
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "effort-medium",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "reasoning_effort": "medium"
+      },
+      "expected": {
+        "rendered": "<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "effort-low",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "enable_thinking": true,
+        "reasoning_effort": "low"
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          3238,
+          13,
+          13262,
+          678,
+          7047,
+          9522,
+          321,
+          10419,
+          11,
+          6992,
+          5774,
+          310,
+          279,
+          16198,
+          1973,
+          24366,
+          24150,
+          362,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "no-generation-prompt",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198
+        ]
+      }
+    },
+    {
+      "name": "empty-system",
+      "messages": [
+        {
+          "role": "system",
+          "content": ""
+        },
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "enable_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "ids": [
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ]
+      }
+    },
+    {
+      "name": "system-trim",
+      "messages": [
+        {
+          "role": "system",
+          "content": "  Regole \u001c"
+        },
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\nRegole<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          271,
+          3365,
+          1219,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "multipart-text",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "text": "Ciao"
+            },
+            {
+              "type": "text",
+              "text": " mondo"
+            }
+          ]
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nCiao mondo<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          67348,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "null-content",
+      "messages": [
+        {
+          "role": "user",
+          "content": null
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "enable_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "ids": [
+          248045,
+          846,
+          198,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ]
+      }
+    },
+    {
+      "name": "preserve-default",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Prima"
+        },
+        {
+          "role": "assistant",
+          "content": " Risposta ",
+          "reasoning_content": " Ragiono "
+        },
+        {
+          "role": "user",
+          "content": "Poi"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nPrima<|im_end|>\n<|im_start|>assistant\n<think>\nRagiono\n</think>\n\nRisposta<|im_end|>\n<|im_start|>user\nPoi<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          3417,
+          7287,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198,
+          49,
+          346,
+          175879,
+          198,
+          248069,
+          271,
+          239941,
+          37251,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          47,
+          6517,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "preserve-false",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Prima"
+        },
+        {
+          "role": "assistant",
+          "content": " Risposta ",
+          "reasoning_content": " Ragiono "
+        },
+        {
+          "role": "user",
+          "content": "Poi"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "preserve_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nPrima<|im_end|>\n<|im_start|>assistant\nRisposta<|im_end|>\n<|im_start|>user\nPoi<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          3417,
+          7287,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          239941,
+          37251,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          47,
+          6517,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "preserve-true",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Prima"
+        },
+        {
+          "role": "assistant",
+          "content": " Risposta ",
+          "reasoning_content": " Ragiono "
+        },
+        {
+          "role": "user",
+          "content": "Poi"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "preserve_thinking": true
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nPrima<|im_end|>\n<|im_start|>assistant\n<think>\nRagiono\n</think>\n\nRisposta<|im_end|>\n<|im_start|>user\nPoi<|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          3417,
+          7287,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198,
+          49,
+          346,
+          175879,
+          198,
+          248069,
+          271,
+          239941,
+          37251,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          47,
+          6517,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "assistant-after-query",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Prima"
+        },
+        {
+          "role": "assistant",
+          "content": " Risposta ",
+          "reasoning_content": " Ragiono "
+        },
+        {
+          "role": "user",
+          "content": "Poi"
+        },
+        {
+          "role": "assistant",
+          "content": "Fine",
+          "reasoning_content": "R"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": false,
+        "preserve_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nPrima<|im_end|>\n<|im_start|>assistant\nRisposta<|im_end|>\n<|im_start|>user\nPoi<|im_end|>\n<|im_start|>assistant\n<think>\nR\n</think>\n\nFine<|im_end|>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          3417,
+          7287,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          239941,
+          37251,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          47,
+          6517,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198,
+          49,
+          198,
+          248069,
+          271,
+          61566,
+          248046,
+          198
+        ]
+      }
+    },
+    {
+      "name": "tools-and-responses",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        },
+        {
+          "role": "assistant",
+          "content": "Controllo",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "read",
+                "arguments": {
+                  "path": "a.py",
+                  "flags": [
+                    true,
+                    null,
+                    1,
+                    1.0
+                  ],
+                  "nested": {
+                    "z": "è",
+                    "a": "<&>"
+                  }
+                }
+              }
+            },
+            {
+              "function": {
+                "name": "read",
+                "arguments": {
+                  "path": "a.py",
+                  "flags": [
+                    true,
+                    null,
+                    1,
+                    1.0
+                  ],
+                  "nested": {
+                    "z": "è",
+                    "a": "<&>"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "one\n"
+        },
+        {
+          "role": "tool",
+          "content": "two"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "read",
+              "description": "leggi <&> caffè",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read\", \"description\": \"leggi <&> caffè\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nControllo\n\n<tool_call>\n<function=read>\n<parameter=path>\na.py\n</parameter>\n<parameter=flags>\n[true, null, 1, 1.0]\n</parameter>\n<parameter=nested>\n{\"z\": \"è\", \"a\": \"<&>\"}\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=read>\n<parameter=path>\na.py\n</parameter>\n<parameter=flags>\n[true, null, 1, 1.0]\n</parameter>\n<parameter=nested>\n{\"z\": \"è\", \"a\": \"<&>\"}\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\none\n</tool_response>\n<tool_response>\ntwo\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          271,
+          2,
+          13455,
+          271,
+          2523,
+          599,
+          2528,
+          310,
+          279,
+          2614,
+          5568,
+          25,
+          271,
+          27,
+          15449,
+          29,
+          198,
+          4754,
+          1267,
+          763,
+          328,
+          1628,
+          487,
+          328,
+          1628,
+          763,
+          5046,
+          591,
+          763,
+          328,
+          851,
+          487,
+          328,
+          4532,
+          763,
+          328,
+          1871,
+          7955,
+          361,
+          5,
+          29,
+          192488,
+          487,
+          328,
+          13390,
+          763,
+          5046,
+          1267,
+          763,
+          328,
+          1640,
+          487,
+          328,
+          12811,
+          763,
+          5046,
+          2267,
+          763,
+          5046,
+          1267,
+          763,
+          328,
+          889,
+          29958,
+          72964,
+          198,
+          510,
+          15449,
+          29,
+          271,
+          2592,
+          488,
+          4992,
+          310,
+          1562,
+          264,
+          709,
+          25835,
+          9559,
+          303,
+          279,
+          2614,
+          3443,
+          440,
+          5486,
+          19900,
+          25,
+          271,
+          248058,
+          198,
+          27,
+          1628,
+          28,
+          8422,
+          8901,
+          1224,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          8422,
+          24109,
+          62,
+          16,
+          29,
+          198,
+          927,
+          62,
+          16,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          8422,
+          24109,
+          62,
+          17,
+          29,
+          198,
+          1919,
+          369,
+          279,
+          869,
+          364,
+          279,
+          2018,
+          5555,
+          198,
+          8761,
+          628,
+          9111,
+          198,
+          34493,
+          4965,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          271,
+          27,
+          95328,
+          29,
+          198,
+          92065,
+          25,
+          198,
+          12,
+          5534,
+          6526,
+          26834,
+          1732,
+          279,
+          5024,
+          3443,
+          25,
+          449,
+          8906,
+          361,
+          1628,
+          28,
+          1076,
+          1419,
+          1628,
+          29,
+          2424,
+          1902,
+          381,
+          23283,
+          2785,
+          220,
+          248058,
+          248059,
+          11535,
+          9212,
+          198,
+          12,
+          12296,
+          4868,
+          26834,
+          381,
+          5024,
+          198,
+          12,
+          1394,
+          1189,
+          3300,
+          9801,
+          31626,
+          364,
+          678,
+          709,
+          1562,
+          303,
+          5629,
+          3992,
+          54588,
+          279,
+          709,
+          1562,
+          11,
+          694,
+          4045,
+          1238,
+          198,
+          12,
+          1368,
+          1017,
+          369,
+          874,
+          709,
+          1562,
+          2420,
+          11,
+          4087,
+          279,
+          3296,
+          1040,
+          4472,
+          440,
+          678,
+          1428,
+          6337,
+          321,
+          635,
+          524,
+          3184,
+          279,
+          1156,
+          883,
+          709,
+          6526,
+          198,
+          510,
+          95328,
+          29,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271,
+          3168,
+          379,
+          271,
+          248058,
+          198,
+          27,
+          1628,
+          86779,
+          29,
+          198,
+          27,
+          15704,
+          79114,
+          29,
+          198,
+          64,
+          6971,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          10837,
+          29,
+          198,
+          58,
+          1802,
+          11,
+          819,
+          11,
+          220,
+          16,
+          11,
+          220,
+          16,
+          13,
+          15,
+          60,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          21076,
+          9685,
+          29,
+          198,
+          4754,
+          89,
+          763,
+          328,
+          4311,
+          487,
+          328,
+          64,
+          763,
+          3919,
+          5,
+          29,
+          8934,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          198,
+          248058,
+          198,
+          27,
+          1628,
+          86779,
+          29,
+          198,
+          27,
+          15704,
+          79114,
+          29,
+          198,
+          64,
+          6971,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          10837,
+          29,
+          198,
+          58,
+          1802,
+          11,
+          819,
+          11,
+          220,
+          16,
+          11,
+          220,
+          16,
+          13,
+          15,
+          60,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          21076,
+          9685,
+          29,
+          198,
+          4754,
+          89,
+          763,
+          328,
+          4311,
+          487,
+          328,
+          64,
+          763,
+          3919,
+          5,
+          29,
+          8934,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          248066,
+          198,
+          588,
+          198,
+          248067,
+          198,
+          248066,
+          198,
+          19186,
+          198,
+          248067,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "tool-call-empty-content",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "read",
+                "arguments": {
+                  "path": "a.py",
+                  "flags": [
+                    true,
+                    null,
+                    1,
+                    1.0
+                  ],
+                  "nested": {
+                    "z": "è",
+                    "a": "<&>"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "read",
+              "description": "leggi <&> caffè",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "enable_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read\", \"description\": \"leggi <&> caffè\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT><|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=read>\n<parameter=path>\na.py\n</parameter>\n<parameter=flags>\n[true, null, 1, 1.0]\n</parameter>\n<parameter=nested>\n{\"z\": \"è\", \"a\": \"<&>\"}\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          2,
+          13455,
+          271,
+          2523,
+          599,
+          2528,
+          310,
+          279,
+          2614,
+          5568,
+          25,
+          271,
+          27,
+          15449,
+          29,
+          198,
+          4754,
+          1267,
+          763,
+          328,
+          1628,
+          487,
+          328,
+          1628,
+          763,
+          5046,
+          591,
+          763,
+          328,
+          851,
+          487,
+          328,
+          4532,
+          763,
+          328,
+          1871,
+          7955,
+          361,
+          5,
+          29,
+          192488,
+          487,
+          328,
+          13390,
+          763,
+          5046,
+          1267,
+          763,
+          328,
+          1640,
+          487,
+          328,
+          12811,
+          763,
+          5046,
+          2267,
+          763,
+          5046,
+          1267,
+          763,
+          328,
+          889,
+          29958,
+          72964,
+          198,
+          510,
+          15449,
+          29,
+          271,
+          2592,
+          488,
+          4992,
+          310,
+          1562,
+          264,
+          709,
+          25835,
+          9559,
+          303,
+          279,
+          2614,
+          3443,
+          440,
+          5486,
+          19900,
+          25,
+          271,
+          248058,
+          198,
+          27,
+          1628,
+          28,
+          8422,
+          8901,
+          1224,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          8422,
+          24109,
+          62,
+          16,
+          29,
+          198,
+          927,
+          62,
+          16,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          8422,
+          24109,
+          62,
+          17,
+          29,
+          198,
+          1919,
+          369,
+          279,
+          869,
+          364,
+          279,
+          2018,
+          5555,
+          198,
+          8761,
+          628,
+          9111,
+          198,
+          34493,
+          4965,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          271,
+          27,
+          95328,
+          29,
+          198,
+          92065,
+          25,
+          198,
+          12,
+          5534,
+          6526,
+          26834,
+          1732,
+          279,
+          5024,
+          3443,
+          25,
+          449,
+          8906,
+          361,
+          1628,
+          28,
+          1076,
+          1419,
+          1628,
+          29,
+          2424,
+          1902,
+          381,
+          23283,
+          2785,
+          220,
+          248058,
+          248059,
+          11535,
+          9212,
+          198,
+          12,
+          12296,
+          4868,
+          26834,
+          381,
+          5024,
+          198,
+          12,
+          1394,
+          1189,
+          3300,
+          9801,
+          31626,
+          364,
+          678,
+          709,
+          1562,
+          303,
+          5629,
+          3992,
+          54588,
+          279,
+          709,
+          1562,
+          11,
+          694,
+          4045,
+          1238,
+          198,
+          12,
+          1368,
+          1017,
+          369,
+          874,
+          709,
+          1562,
+          2420,
+          11,
+          4087,
+          279,
+          3296,
+          1040,
+          4472,
+          440,
+          678,
+          1428,
+          6337,
+          321,
+          635,
+          524,
+          3184,
+          279,
+          1156,
+          883,
+          709,
+          6526,
+          198,
+          510,
+          95328,
+          29,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271,
+          248058,
+          198,
+          27,
+          1628,
+          86779,
+          29,
+          198,
+          27,
+          15704,
+          79114,
+          29,
+          198,
+          64,
+          6971,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          10837,
+          29,
+          198,
+          58,
+          1802,
+          11,
+          819,
+          11,
+          220,
+          16,
+          11,
+          220,
+          16,
+          13,
+          15,
+          60,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          21076,
+          9685,
+          29,
+          198,
+          4754,
+          89,
+          763,
+          328,
+          4311,
+          487,
+          328,
+          64,
+          763,
+          3919,
+          5,
+          29,
+          8934,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ]
+      }
+    },
+    {
+      "name": "tools-with-system",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Regole"
+        },
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        },
+        {
+          "role": "assistant",
+          "content": "Controllo",
+          "tool_calls": [
+            {
+              "function": {
+                "name": "read",
+                "arguments": {
+                  "path": "a.py",
+                  "flags": [
+                    true,
+                    null,
+                    1,
+                    1.0
+                  ],
+                  "nested": {
+                    "z": "è",
+                    "a": "<&>"
+                  }
+                }
+              }
+            },
+            {
+              "function": {
+                "name": "read",
+                "arguments": {
+                  "path": "a.py",
+                  "flags": [
+                    true,
+                    null,
+                    1,
+                    1.0
+                  ],
+                  "nested": {
+                    "z": "è",
+                    "a": "<&>"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "one\n"
+        },
+        {
+          "role": "tool",
+          "content": "two"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "read",
+              "description": "leggi <&> caffè",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.\n\n# Tools\n\nYou have access to the following functions:\n\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"read\", \"description\": \"leggi <&> caffè\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}}}}}\n</tools>\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\nvalue_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n<IMPORTANT>\nReminder:\n- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n- Required parameters MUST be specified\n- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n</IMPORTANT>\n\nRegole<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nControllo\n\n<tool_call>\n<function=read>\n<parameter=path>\na.py\n</parameter>\n<parameter=flags>\n[true, null, 1, 1.0]\n</parameter>\n<parameter=nested>\n{\"z\": \"è\", \"a\": \"<&>\"}\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=read>\n<parameter=path>\na.py\n</parameter>\n<parameter=flags>\n[true, null, 1, 1.0]\n</parameter>\n<parameter=nested>\n{\"z\": \"è\", \"a\": \"<&>\"}\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\none\n</tool_response>\n<tool_response>\ntwo\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          271,
+          2,
+          13455,
+          271,
+          2523,
+          599,
+          2528,
+          310,
+          279,
+          2614,
+          5568,
+          25,
+          271,
+          27,
+          15449,
+          29,
+          198,
+          4754,
+          1267,
+          763,
+          328,
+          1628,
+          487,
+          328,
+          1628,
+          763,
+          5046,
+          591,
+          763,
+          328,
+          851,
+          487,
+          328,
+          4532,
+          763,
+          328,
+          1871,
+          7955,
+          361,
+          5,
+          29,
+          192488,
+          487,
+          328,
+          13390,
+          763,
+          5046,
+          1267,
+          763,
+          328,
+          1640,
+          487,
+          328,
+          12811,
+          763,
+          5046,
+          2267,
+          763,
+          5046,
+          1267,
+          763,
+          328,
+          889,
+          29958,
+          72964,
+          198,
+          510,
+          15449,
+          29,
+          271,
+          2592,
+          488,
+          4992,
+          310,
+          1562,
+          264,
+          709,
+          25835,
+          9559,
+          303,
+          279,
+          2614,
+          3443,
+          440,
+          5486,
+          19900,
+          25,
+          271,
+          248058,
+          198,
+          27,
+          1628,
+          28,
+          8422,
+          8901,
+          1224,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          8422,
+          24109,
+          62,
+          16,
+          29,
+          198,
+          927,
+          62,
+          16,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          8422,
+          24109,
+          62,
+          17,
+          29,
+          198,
+          1919,
+          369,
+          279,
+          869,
+          364,
+          279,
+          2018,
+          5555,
+          198,
+          8761,
+          628,
+          9111,
+          198,
+          34493,
+          4965,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          271,
+          27,
+          95328,
+          29,
+          198,
+          92065,
+          25,
+          198,
+          12,
+          5534,
+          6526,
+          26834,
+          1732,
+          279,
+          5024,
+          3443,
+          25,
+          449,
+          8906,
+          361,
+          1628,
+          28,
+          1076,
+          1419,
+          1628,
+          29,
+          2424,
+          1902,
+          381,
+          23283,
+          2785,
+          220,
+          248058,
+          248059,
+          11535,
+          9212,
+          198,
+          12,
+          12296,
+          4868,
+          26834,
+          381,
+          5024,
+          198,
+          12,
+          1394,
+          1189,
+          3300,
+          9801,
+          31626,
+          364,
+          678,
+          709,
+          1562,
+          303,
+          5629,
+          3992,
+          54588,
+          279,
+          709,
+          1562,
+          11,
+          694,
+          4045,
+          1238,
+          198,
+          12,
+          1368,
+          1017,
+          369,
+          874,
+          709,
+          1562,
+          2420,
+          11,
+          4087,
+          279,
+          3296,
+          1040,
+          4472,
+          440,
+          678,
+          1428,
+          6337,
+          321,
+          635,
+          524,
+          3184,
+          279,
+          1156,
+          883,
+          709,
+          6526,
+          198,
+          510,
+          95328,
+          29,
+          271,
+          3365,
+          1219,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271,
+          3168,
+          379,
+          271,
+          248058,
+          198,
+          27,
+          1628,
+          86779,
+          29,
+          198,
+          27,
+          15704,
+          79114,
+          29,
+          198,
+          64,
+          6971,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          10837,
+          29,
+          198,
+          58,
+          1802,
+          11,
+          819,
+          11,
+          220,
+          16,
+          11,
+          220,
+          16,
+          13,
+          15,
+          60,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          21076,
+          9685,
+          29,
+          198,
+          4754,
+          89,
+          763,
+          328,
+          4311,
+          487,
+          328,
+          64,
+          763,
+          3919,
+          5,
+          29,
+          8934,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          198,
+          248058,
+          198,
+          27,
+          1628,
+          86779,
+          29,
+          198,
+          27,
+          15704,
+          79114,
+          29,
+          198,
+          64,
+          6971,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          28,
+          10837,
+          29,
+          198,
+          58,
+          1802,
+          11,
+          819,
+          11,
+          220,
+          16,
+          11,
+          220,
+          16,
+          13,
+          15,
+          60,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          27,
+          15704,
+          21076,
+          9685,
+          29,
+          198,
+          4754,
+          89,
+          763,
+          328,
+          4311,
+          487,
+          328,
+          64,
+          763,
+          3919,
+          5,
+          29,
+          8934,
+          198,
+          510,
+          15704,
+          29,
+          198,
+          510,
+          1628,
+          29,
+          198,
+          248059,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          248066,
+          198,
+          588,
+          198,
+          248067,
+          198,
+          248066,
+          198,
+          19186,
+          198,
+          248067,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "tool-response-user",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        },
+        {
+          "role": "user",
+          "content": "<tool_response>ok</tool_response>"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "rendered": "<|im_start|>system\nReasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.<|im_end|>\n<|im_start|>user\nCiao<|im_end|>\n<|im_start|>user\n<tool_response>ok</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n",
+        "ids": [
+          248045,
+          8678,
+          198,
+          24342,
+          286,
+          4879,
+          369,
+          716,
+          310,
+          830,
+          11553,
+          13,
+          5044,
+          1683,
+          15060,
+          1472,
+          279,
+          3274,
+          11,
+          9307,
+          1328,
+          30800,
+          11,
+          2814,
+          47675,
+          25605,
+          11,
+          321,
+          60445,
+          55404,
+          11,
+          27224,
+          11,
+          321,
+          30246,
+          303,
+          279,
+          1534,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          248066,
+          547,
+          248067,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          198
+        ]
+      }
+    },
+    {
+      "name": "invalid-effort",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "reasoning_effort": "invalid"
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "Unexpected reasoning effort invalid. Supported types are xhigh (default), medium, and low."
+      }
+    },
+    {
+      "name": "ignored-effort-when-disabled",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true,
+        "reasoning_effort": "invalid",
+        "enable_thinking": false
+      },
+      "expected": {
+        "rendered": "<|im_start|>user\nCiao<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        "ids": [
+          248045,
+          846,
+          198,
+          34,
+          21817,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ]
+      }
+    },
+    {
+      "name": "late-system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        },
+        {
+          "role": "system",
+          "content": "no"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "System message must be at the beginning."
+      }
+    },
+    {
+      "name": "invalid-role",
+      "messages": [
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        },
+        {
+          "role": "invalid",
+          "content": "no"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "Unexpected message role."
+      }
+    },
+    {
+      "name": "no-user-query",
+      "messages": [
+        {
+          "role": "system",
+          "content": "only"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "No user query found in messages."
+      }
+    },
+    {
+      "name": "only-tool-response",
+      "messages": [
+        {
+          "role": "user",
+          "content": "<tool_response>x</tool_response>"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "No user query found in messages."
+      }
+    },
+    {
+      "name": "invalid-part",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "unexpected": 1
+            }
+          ]
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "Unexpected item type in content."
+      }
+    },
+    {
+      "name": "system-image",
+      "messages": [
+        {
+          "role": "system",
+          "content": [
+            {
+              "type": "image"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "  Ciao\n"
+        }
+      ],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "TemplateError",
+        "error": "System message cannot contain images."
+      }
+    },
+    {
+      "name": "empty-messages",
+      "messages": [],
+      "options": {
+        "add_generation_prompt": true
+      },
+      "expected": {
+        "error_type": "ValueError",
+        "error": "Cannot apply chat template to an empty conversation. Provide at least one message."
+      }
+    }
+  ]
+}
