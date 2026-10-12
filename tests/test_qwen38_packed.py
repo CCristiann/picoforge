@@ -21,11 +21,24 @@ spec = importlib.util.spec_from_file_location("packed_oracle", ROOT / "tools/ora
 oracle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oracle)
 REFERENCE = None
+NATIVE = None
 
 
 class PackedReferenceTests(unittest.TestCase):
     def decode(self, data, kind=10, columns=256, rows=1):
-        return oracle.decode(REFERENCE, data, kind, columns, rows)
+        expected = oracle.decode(REFERENCE, data, kind, columns, rows)
+        if NATIVE is not None:
+            result = subprocess.run([str(NATIVE), str(kind), str(columns), str(rows)],
+                                    input=data, capture_output=True, timeout=30)
+            if np.isfinite(expected).all():
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertFalse(result.stderr, result.stderr.decode())
+                self.assertEqual(len(result.stdout), expected.nbytes)
+                self.assert_bits(np.frombuffer(result.stdout, dtype="<f4").reshape(expected.shape), expected)
+            else:
+                self.assertEqual(result.returncode, 16, result.stderr.decode())  # Q38_NONFINITE
+                self.assertFalse(result.stdout)
+        return expected
 
     def assert_bits(self, actual, expected):
         expected = np.asarray(expected, dtype="<f4").reshape(actual.shape)
@@ -274,9 +287,11 @@ class PackedReferenceTests(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--native", type=Path, help="also check the native CPU harness")
     parser.add_argument("--report", type=Path)
     args, remaining = parser.parse_known_args()
     REFERENCE = args.reference.resolve()
+    NATIVE = args.native.resolve() if args.native else None
     program = unittest.main(argv=[sys.argv[0], *remaining], exit=False)
     result = program.result
     if args.report:
@@ -288,6 +303,11 @@ if __name__ == "__main__":
                       reference_manifest=json.loads(REFERENCE.with_name("manifest.json").read_text()),
                       source_sha256={str(p.relative_to(ROOT)): oracle.digest(p.read_bytes()) for p in
                                      [Path(__file__).resolve(), Path(oracle.__file__), oracle.ADAPTER]})
+        if NATIVE:
+            report["native"] = dict(path=str(NATIVE), sha256=oracle.digest(NATIVE.read_bytes()))
+            report["source_sha256"].update({str(p.relative_to(ROOT)): oracle.digest(p.read_bytes())
+                for p in [ROOT / "src/qwen38_packed.c", ROOT / "src/qwen38_b_internal.h",
+                          ROOT / "tests/test_qwen38_packed.c", ROOT / "src/qwen38_packed.h"]})
         with args.report.open("x") as output:
             output.write(json.dumps(report, indent=2) + "\n")
     sys.exit(0 if result.wasSuccessful() else 1)

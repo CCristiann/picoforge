@@ -1,0 +1,46 @@
+/* Private B helpers; the public ABI remains in qwen38_packed.h. */
+#ifndef PICOFORGE_QWEN38_B_INTERNAL_H
+#define PICOFORGE_QWEN38_B_INTERNAL_H
+#include "qwen38_packed.h"
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+static inline Qwen38Status q38_b_result(Qwen38Error *err, Qwen38Status code,
+                                       const char *detail) {
+    if (err) {
+        memset(err, 0, sizeof *err);
+        err->code = code;
+        if (code != Q38_OK) {
+            snprintf(err->subject, sizeof err->subject, "packed weights");
+            snprintf(err->detail, sizeof err->detail, "%s", detail);
+        }
+    }
+    return code;
+}
+static inline bool q38_b_mul(size_t a, size_t b, size_t *out) {
+    if (a && b > SIZE_MAX / a) return false;
+    *out = a * b;
+    return true;
+}
+static inline bool q38_b_address(const void *p, size_t bytes) {
+    return p && bytes <= UINTPTR_MAX - (uintptr_t)p;
+}
+static inline bool q38_b_overlap(const void *a, size_t na, const void *b, size_t nb) {
+    return na && nb && (uintptr_t)a < (uintptr_t)b + nb &&
+                      (uintptr_t)b < (uintptr_t)a + na;
+}
+static inline bool q38_b_same_layout(const Q38PackedLayout *a, const Q38PackedLayout *b) {
+    return a->gguf_type == b->gguf_type && a->k_storage == b->k_storage &&
+        a->k_logical == b->k_logical && a->n_out == b->n_out &&
+        a->n_experts == b->n_experts && a->row_bytes == b->row_bytes &&
+        a->expert_bytes == b->expert_bytes && a->tensor_bytes == b->tensor_bytes;
+}
+/* Nonfatal admission before the existing registry's fatal unknown-ID path. */
+static inline Qwen38Status q38_b_format(uint32_t type, const GgufFormat **format) {
+    if (type == 10) { *format = gguf_format(type); return Q38_OK; }
+    if (type == 0 || type == 1 || type == 8 || type == 12 || type == 16 ||
+        type == 30 || type == 39) return Q38_UNSUPPORTED;
+    return Q38_FORMAT;
+}
+#endif
