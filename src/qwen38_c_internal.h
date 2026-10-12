@@ -1,7 +1,9 @@
 /* Private CPU plumbing for component C; public contracts stay in qwen38_ops.h. */
 #ifndef PICOFORGE_QWEN38_C_INTERNAL_H
 #define PICOFORGE_QWEN38_C_INTERNAL_H
+#ifndef __METAL_VERSION__
 #include "qwen38_ops.h"
+#include "qwen38_gpu.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,7 +32,8 @@ static inline Qwen38F32 q38c_ro(Qwen38F32Mut v) {
     memcpy(r.dim, v.dim, sizeof(r.dim)); memcpy(r.stride_bytes, v.stride_bytes, sizeof(r.stride_bytes));
     return r;
 }
-static inline Qwen38Status q38c_view(Qwen38F32 v, Qwen38Error *e) {
+/* Layout validation does not inspect a CPU pointer; also used by Metal glue. */
+static inline Qwen38Status q38c_layout(Qwen38F32 v, size_t *extent, Qwen38Error *e) {
     if (v.rank < 1 || v.rank > QWEN38_MAX_RANK) return q38c_error(e, Q38_SHAPE, "rank must be 1..4");
     size_t span = sizeof(float);
     for (size_t i = v.rank; i-- > 0;) {
@@ -42,7 +45,13 @@ static inline Qwen38Status q38c_view(Qwen38F32 v, Qwen38Error *e) {
         if (v.dim[i] && (!q38c_mul(v.dim[i]-1, stride, &extra) || !q38c_add(span, extra, &span)))
             return q38c_error(e, Q38_OVERFLOW, "view span overflows");
     }
-    if (!v.dim[0]) return Q38_OK;
+    *extent = v.dim[0] ? span : 0;
+    return Q38_OK;
+}
+static inline Qwen38Status q38c_view(Qwen38F32 v, Qwen38Error *e) {
+    size_t span;
+    Q38C_TRY(q38c_layout(v, &span, e));
+    if (!span) return Q38_OK;
     if (!v.data) return q38c_error(e, Q38_INVALID_ARGUMENT, "null nonempty view");
     if ((uintptr_t)v.data % _Alignof(float)) return q38c_error(e, Q38_STRIDE, "unaligned float pointer");
     if (span > UINTPTR_MAX - (uintptr_t)v.data) return q38c_error(e, Q38_OVERFLOW, "pointer span overflows");
@@ -155,4 +164,25 @@ static inline Qwen38Status q38c_state_reset(Q38CState *s, uint64_t magic, uint64
     s->info.key.epoch=epoch; s->info.next_pos=0; s->info.valid=true;
     return q38c_error(e, Q38_OK, NULL);
 }
+/* Private harness interface only; session lifecycle remains in the CPU API.
+ * Caller owns command completion, error checking and all resource lifetimes. */
+typedef struct Q38CGpu Q38CGpu;
+typedef enum { Q38C_ACT, Q38C_GPU_OPS } Q38CGpuOp;
+typedef struct { Qwen38Activation activation; } Q38CGpuSpec;
+Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Error *);
+void q38c_gpu_destroy(Q38CGpu *);
+Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,
+    const Q38CGpuSpec *, const Qwen38GpuF32 *, size_t count, Qwen38Error *);
+typedef uint32_t Q38CUint;
+#else
+typedef uint Q38CUint;
+#endif
+/* Fixed-width wire format, strides in FLOAT ELEMENTS after host admission.
+ * Slot numbers and operation parameters are private to these kernels/glue. */
+typedef struct { Q38CUint dim[4], stride[4], rank, count; } Q38CGpuView;
+typedef struct { Q38CGpuView v[8]; Q38CUint p[6], read_mask; float eps; } Q38CGpuArgs;
+#ifndef __METAL_VERSION__
+_Static_assert(sizeof(Q38CGpuView)==40 && sizeof(Q38CGpuArgs)==352, "Metal argument ABI");
+_Static_assert(offsetof(Q38CGpuArgs,p)==320 && offsetof(Q38CGpuArgs,eps)==348, "Metal offsets");
+#endif
 #endif
