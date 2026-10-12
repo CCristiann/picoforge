@@ -5,6 +5,7 @@ Subsequent runs are offline and never open the model checkpoint.
 """
 import copy
 import json
+import math
 from pathlib import Path
 import random
 import subprocess
@@ -29,11 +30,78 @@ class NativeTests(unittest.TestCase):
         subprocess.run(["clang", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Wpedantic",
                         "-Wshadow", "-Wconversion", "-Werror", "-fsanitize=address,undefined",
                         "-ffp-contract=off", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
-                        "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
+                        "src/qwen38_ple.c", "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
 
     def test_native_errors(self):
         result = subprocess.run([str(BINARY)], cwd=ROOT, capture_output=True, text=True, check=True)
         self.assertIn("PASS", result.stdout)
+
+    def native_gate(self, key, query, value, pad=0):
+        fields = list(key.shape) + [pad]
+        for x in (key, query, value):
+            fields += x.flatten().tolist()
+        run = subprocess.run([str(BINARY), "--gate"], input=" ".join(map(str, fields)),
+                             cwd=ROOT, capture_output=True, text=True, check=True)
+        lines = run.stdout.splitlines()
+        self.assertEqual(lines[0], "status 0")
+        tensors = [torch.tensor([float(v) for v in line.split()], dtype=torch.float32)
+                   for line in lines[1:]]
+        return tensors[0].reshape(key.shape[:2]), tensors[1].reshape(key.shape[:2]), tensors[2].reshape(key.shape)
+
+    def test_native_gate_signed_root_and_cancellation(self):
+        oracle = GateOracle()
+        for case in GOLDEN["gate_cases"]:
+            inputs = [torch.tensor(case[k], dtype=torch.float32) for k in ("key", "query", "value")]
+            ref_dot, ref_g, ref_u = oracle.gate(*inputs)
+            for pad in (0, 1, 7):
+                dot, gate, output = self.native_gate(*inputs, pad=pad)
+                self.assertTrue(torch.equal(dot, ref_dot), (case["name"], dot, ref_dot))
+                self.assertTrue(torch.equal(torch.sign(dot), torch.sign(ref_dot)))
+                self.assertTrue(torch.all(gate[ref_dot == 0] == 0.5))
+                self.assertLessEqual((gate-ref_g).abs().max().item(), 1e-4)
+                torch.testing.assert_close(output, ref_u, atol=2e-4, rtol=2e-4)
+
+    def test_native_gate_normalized_inputs_strides_and_chunks(self):
+        generator = torch.Generator(device="cpu").manual_seed(3812)
+        oracle = GateOracle()
+        worst_gate, worst_dot = 0.0, 0.0
+        for t, s, d in ((1, 1, 1), (3, 2, 7), (17, 4, 160), (3, 4, 2560)):
+            key, query = [torch.randn(t, s, d, generator=generator) for _ in range(2)]
+            key = key / torch.sqrt(key.square().mean(-1, keepdim=True)+1e-6)
+            query = query / torch.sqrt(query.square().mean(-1, keepdim=True)+1e-6)
+            value = torch.randn(t, d, generator=generator)*3
+            ref_dot, ref_g, ref_u = oracle.gate(key, query, value)
+            reference64 = (key.double()*query.double()).sum(-1)/math.sqrt(d)
+            # Independent FP64 sum and a conservative FP32 reduction bound,
+            # fixed analytically rather than fitted to measured differences.
+            eps = 2**-24
+            gamma = (2*d+4)*eps/(1-(2*d+4)*eps)
+            bound = gamma*(key.double()*query.double()).abs().sum(-1)/math.sqrt(d)
+            for pad in (0, 1, 7):
+                dot, gate, output = self.native_gate(key, query, value, pad)
+                self.assertTrue(torch.all((dot.double()-reference64).abs() <= bound+1e-45))
+                self.assertTrue(torch.equal(torch.sign(dot), torch.sign(ref_dot)))
+                worst_dot = max(worst_dot, (dot-ref_dot).abs().max().item())
+                worst_gate = max(worst_gate, (gate-ref_g).abs().max().item())
+                self.assertLessEqual((gate-ref_g).abs().max().item(), 1e-4)
+                torch.testing.assert_close(output, ref_u, atol=2e-4, rtol=2e-4)
+                relative_l2 = torch.linalg.vector_norm(output-ref_u)/torch.linalg.vector_norm(ref_u)
+                self.assertLessEqual(relative_l2.item(), 1e-4)
+                streamed = [self.native_gate(key[i:i+1], query[i:i+1], value[i:i+1], pad) for i in range(t)]
+                for idx, full in enumerate((dot, gate, output)):
+                    self.assertTrue(torch.equal(torch.cat([x[idx] for x in streamed]), full))
+        print(f"PLE measured max |gate-ref|={worst_gate:.9g}, |dot-ref|={worst_dot:.9g}")
+
+    def test_native_gate_empty_and_saturated(self):
+        key = torch.empty(0, 2, 3)
+        dot, gate, output = self.native_gate(key, key.clone(), torch.empty(0, 3), pad=7)
+        self.assertEqual(output.shape, (0, 2, 3))
+        self.assertEqual(dot.numel()+gate.numel(), 0)
+        key = torch.tensor([[[100.], [-100.]]])
+        dot, gate, output = self.native_gate(key, torch.full_like(key, 100.), torch.tensor([[1.]]))
+        self.assertEqual(gate[0, 0], 1.)
+        self.assertLess(gate[0, 1], 1e-40)
+        self.assertTrue(torch.isfinite(output).all())
 
     def native_ids(self, cfg, tokens, chunk):
         fields = [cfg[k] for k in ("ngram_size", "heads_per_ngram", "vocab", "eos", "rows")]
@@ -147,7 +215,7 @@ class OracleTests(unittest.TestCase):
         self.assertEqual(first["gate"][0][0], 0.5)
         self.assertGreater(first["gate"][0][1], 0.5)
         self.assertLess(first["gate"][0][2], 0.5)
-        self.assertAlmostEqual(first["gate"][0][3], 1/(1+__import__("math").exp(-2)), places=7)
+        self.assertAlmostEqual(first["gate"][0][3], 1/(1+math.exp(-2)), places=7)
 
     def test_frozen_provenance_and_golden(self):
         actual = fixture()

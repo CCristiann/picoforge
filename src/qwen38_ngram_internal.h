@@ -36,4 +36,6 @@ Qwen38Status q38e_reader_copy(const Q38eReader *reader, Q38eLease lease,
     float *dst, size_t float_capacity, Qwen38Error *);
 Q38eReadStats q38e_reader_stats(const Q38eReader *reader);
 void q38e_reader_close(Q38eReader *reader);
+/* Test-visible exact FP32 reduction used by the normalized PLE core. */
+float q38e_ple_scaled_dot(const float *key, const float *query, size_t width);
 #endif

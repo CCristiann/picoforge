@@ -4,6 +4,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
+#include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -332,7 +334,112 @@ static int hash_cli(void) {
     return 0;
 }
 
+static Qwen38F32Mut gate_view(float *data, size_t rank, size_t t, size_t s, size_t d, size_t pad) {
+    size_t pitch=rank==3 ? s*(d+pad)+pad : s+pad;
+    return (Qwen38F32Mut){.data=data,.capacity_bytes=t*pitch*4,.rank=rank,
+        .dim={t,s,d,0},.stride_bytes={pitch*4,rank==3 ? (d+pad)*4 : 4,4,0}};
+}
+static Qwen38F32 gate_const(Qwen38F32Mut v) {
+    Qwen38F32 r={.data=v.data,.rank=v.rank,.capacity_bytes=v.capacity_bytes};
+    memcpy(r.dim,v.dim,sizeof r.dim); memcpy(r.stride_bytes,v.stride_bytes,sizeof r.stride_bytes);
+    return r;
+}
+
+static void gate_errors(void) {
+    float k[4]={1,2,3,4}, q[4]={1,2,3,4}, v[2]={-2,3}, g[2]={-7,-7}, u[4]={-7,-7,-7,-7};
+    Qwen38F32 key=gate_const(gate_view(k,3,1,2,2,0)), query=gate_const(gate_view(q,3,1,2,2,0));
+    Qwen38F32 value=gate_const(gate_view(v,2,1,2,1,0));
+    Qwen38F32Mut gate=gate_view(g,2,1,2,1,0), output=gate_view(u,3,1,2,2,0);
+    Qwen38Error e;
+    Qwen38F32 bad=key; bad.rank=2;
+    assert(qwen38_ple_gate(bad,query,value,gate,output,&e)==Q38_SHAPE);
+    bad=key; bad.dim[1]=0;
+    assert(qwen38_ple_gate(bad,bad,value,gate,output,&e)==Q38_SHAPE);
+    bad=key; bad.stride_bytes[1]=4;
+    assert(qwen38_ple_gate(bad,query,value,gate,output,&e)==Q38_STRIDE);
+    bad=key; bad.stride_bytes[0]=17;
+    assert(qwen38_ple_gate(bad,query,value,gate,output,&e)==Q38_STRIDE);
+    bad=key; bad.capacity_bytes=15;
+    assert(qwen38_ple_gate(bad,query,value,gate,output,&e)==Q38_CAPACITY);
+    bad=key; bad.data=(const float *)((const unsigned char *)k+1);
+    assert(qwen38_ple_gate(bad,query,value,gate,output,&e)==Q38_INVALID_ARGUMENT);
+    bad=key; bad.data=NULL;
+    assert(qwen38_ple_gate(bad,query,value,gate,output,&e)==Q38_INVALID_ARGUMENT);
+    Qwen38F32Mut alias=output; alias.data=k+1;
+    assert(qwen38_ple_gate(key,query,value,gate,alias,&e)==Q38_INVALID_ARGUMENT);
+    alias=output; alias.data=g;
+    assert(qwen38_ple_gate(key,query,value,gate,alias,&e)==Q38_INVALID_ARGUMENT);
+    assert(qwen38_ple_gate(key,key,value,gate,output,&e)==Q38_INVALID_ARGUMENT);
+    for (int i=0;i<3;i++) {
+        float *p=i==0 ? k : i==1 ? q : v;
+        float saved=p[0]; p[0]=i==1 ? INFINITY : NAN;
+        assert(qwen38_ple_gate(key,query,value,gate,output,&e)==Q38_NONFINITE);
+        assert(e.code==Q38_NONFINITE && g[0]==-7 && u[3]==-7); p[0]=saved;
+    }
+    k[0]=FLT_MAX; q[0]=2;
+    assert(qwen38_ple_gate(key,query,value,gate,output,&e)==Q38_NONFINITE);
+    k[0]=1; k[1]=1; q[0]=FLT_MAX; q[1]=FLT_MAX;
+    assert(qwen38_ple_gate(key,query,value,gate,output,&e)==Q38_NONFINITE);
+    k[1]=2; q[0]=1; q[1]=2;
+    assert(qwen38_ple_gate(key,query,value,gate,output,&e)==Q38_OK);
+    assert(e.code==Q38_OK && !e.os_errno && g[0]>0.5f && g[0]<=1.0f);
+    /* Empty T still validates shape/stride; pointers are not dereferenced. */
+    key.dim[0]=query.dim[0]=value.dim[0]=gate.dim[0]=output.dim[0]=0;
+    key.data=query.data=value.data=NULL; gate.data=output.data=NULL;
+    key.capacity_bytes=query.capacity_bytes=value.capacity_bytes=gate.capacity_bytes=output.capacity_bytes=0;
+    assert(qwen38_ple_gate(key,query,value,gate,output,&e)==Q38_OK);
+    key.stride_bytes[2]=8;
+    assert(qwen38_ple_gate(key,query,value,gate,output,&e)==Q38_STRIDE);
+}
+
+static size_t gate_index(Qwen38F32Mut v, size_t t, size_t s, size_t d) {
+    return (t*v.stride_bytes[0]+s*v.stride_bytes[1])/4+d;
+}
+
+static int gate_cli(void) {
+    size_t t,s,d,pad;
+    assert(scanf("%zu %zu %zu %zu",&t,&s,&d,&pad)==4);
+    assert(t<=17 && s && s<=8 && d && d<=4096 && pad<=17);
+    Qwen38F32Mut views[]={gate_view(NULL,3,t,s,d,pad),gate_view(NULL,3,t,s,d,pad),
+        gate_view(NULL,2,t,d,1,pad),gate_view(NULL,2,t,s,1,pad),gate_view(NULL,3,t,s,d,pad)};
+    for (size_t i=0;i<5;i++) {
+        views[i].data=malloc(views[i].capacity_bytes+4); assert(views[i].data);
+        for (size_t j=0;j<=views[i].capacity_bytes/4;j++) views[i].data[j]=987.25f;
+    }
+    for (size_t i=0;i<3;i++) for (size_t ti=0;ti<t;ti++)
+        for (size_t si=0;si<(i==2 ? 1 : s);si++) for (size_t di=0;di<d;di++)
+            assert(scanf("%f",views[i].data+gate_index(views[i],ti,si,di))==1);
+    Qwen38Error e;
+    Qwen38Status status=qwen38_ple_gate(gate_const(views[0]),gate_const(views[1]),
+        gate_const(views[2]),views[3],views[4],&e);
+    printf("status %d\n",(int)status);
+    if (status==Q38_OK) {
+        for (size_t ti=0;ti<t;ti++) for (size_t si=0;si<s;si++)
+            printf("%.9g ",(double)q38e_ple_scaled_dot(views[0].data+gate_index(views[0],ti,si,0),
+                views[1].data+gate_index(views[1],ti,si,0),d));
+        putchar('\n');
+        for (size_t ti=0;ti<t;ti++) for (size_t si=0;si<s;si++)
+            printf("%.9g ",(double)views[3].data[gate_index(views[3],ti,si,0)]);
+        putchar('\n');
+        for (size_t ti=0;ti<t;ti++) for (size_t si=0;si<s;si++) for (size_t di=0;di<d;di++)
+            printf("%.9g ",(double)views[4].data[gate_index(views[4],ti,si,di)]);
+        putchar('\n');
+    }
+    for (size_t i=0;i<5;i++) {
+        Qwen38F32Mut v=views[i];
+        for (size_t j=0;j<=v.capacity_bytes/4;j++) {
+            size_t offset=j*4, ti=offset/v.stride_bytes[0], rem=offset%v.stride_bytes[0];
+            bool live=ti<t && (v.rank==2 ? rem/4<v.dim[1] :
+                rem/v.stride_bytes[1]<s && rem%v.stride_bytes[1]/4<d);
+            if (!live) assert(v.data[j]==987.25f);
+        }
+        free(v.data);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "--gate")) return gate_cli();
     if (argc == 2 && !strcmp(argv[1], "--hash")) return hash_cli();
     if (argc == 3 && !strcmp(argv[1], "--lookup")) return lookup_cli(argv[2]);
     hash_errors();
@@ -340,6 +447,7 @@ int main(int argc, char **argv) {
     reader_faults();
     reader_limits();
     reader_stale();
-    puts("PASS: native hash, bounded deduplicated BF16 reads and every-byte I/O faults");
+    gate_errors();
+    puts("PASS: native hash, bounded BF16 I/O faults, normalized PLE gate contracts");
     return 0;
 }

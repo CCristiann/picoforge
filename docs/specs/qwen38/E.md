@@ -776,3 +776,64 @@ Nessuna prova di perdita Q2 rispetto a BF16 originale, GPU o prestazioni.
 Store/state/job pubblico e history candidata richiedono ancora C1;
 PLE completo C2, B Q8_0 e A. Le dichiarazioni non implementate non hanno
 stub: questa consegna non certifica transazioni complete o generazione.
+
+### Gate PLE normalizzato — incremento indipendente completato
+
+Oracle `1109265`: `GateOracle` estrae via AST soltanto le tre assegnazioni
+del gate originale `Qwen4ExpTextPLELayer.forward`, con corpi matematici
+invariati; aggiunge esclusivamente catture per dot/g/u. Source hash completo
+verificato prima di eseguire, hash delle espressioni nel manifest,
+provenienza/licenza Apache-2.0 conservate nella piccola cache upstream.
+Nessuna proiezione, RMS o convoluzione simulata nell'oracle.
+
+`src/qwen38_ple.c` implementa l'entrypoint pubblico `qwen38_ple_gate`:
+input key/query normalizzati `[T,S,D]`, value `[T,D]`; output g `[T,S]`,
+u `[T,S,D]`. FP32, riduzione scalare con contrazione disabilitata nei test,
+exp del negativo della radice per evitare overflow della sigmoid;
+`dot==0` produce esattamente 0.5. È l'espressione fusa del gate PLE, senza
+esportare un secondo operatore di attivazione C. Non alloca memoria,
+non modifica input/stato. Stride/capacità in byte, feature contigua,
+outer pitch ammesso, input/output disgiunti. Batch vuoto senza accessi.
+Preflight di forme, stride, overflow, capacità, alias e finitezza; overflow
+del dot produce NONFINITE e rende inutilizzabile l'intero output, anche
+se alcune righe erano già calcolate. Nessuna promessa di rollback numerico.
+
+Suite aggiornata: **15 test passati** ASan/UBSan, più harness release O2
+con tutti i warning come errori. Fixture `[1,1,1]`, `[3,2,7]`, `[17,4,160]`,
+`[3,4,2560]`, pitch aggiuntivo 0/1/7 float, guardie intatte,
+parità token/chunk bitwise sul core, zero e near-zero con segno verificato,
+cancellazione, saturazione, NaN/Inf e overflow prodotto/somma. Le fixture
+analitiche verificano dot esatto; sulle fixture normalizzate si usa anche
+un oracle FP64 e il bound analitico `gamma(2*D+4)*sum(abs(k*q))/sqrt(D)`.
+Massimi osservati contro HF sulle fixture normalizzate: gate abs
+**2.68220901e-7** (soglia 1e-4), dot abs **3.33786011e-6**;
+u passa atol/rtol 2e-4 e relativo L2 1e-4. Questi dati non certificano
+PLE Delta/z/history, non ancora calcolati, né input arbitrari mal condizionati.
+
+Controlli eseguiti dalla radice del nuovo worktree:
+
+```sh
+"$Q38_PY" tests/test_qwen38_ngram.py -v
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -Isrc src/qwen38_ngram.c src/qwen38_ple.c \
+  tests/test_qwen38_ngram.c -o build/qwen38-e/test_ngram_release
+build/qwen38-e/test_ngram_release
+make -j4
+make PYTHON="$Q38_PY" test-qwen38-contracts test-gguf
+```
+
+Build generale e contratti/GGUF passati. `make` non cambia i flag globali:
+il coordinatore deve conservare `-ffp-contract=off` quando collega i target
+numerici E. Nessun header pubblico/Makefile modificato, nessun test GPU,
+nessun payload del checkpoint letto, nessun benchmark; lock non necessario
+per questi piccoli test CPU. `make test-all` e test GPU del grafo sono
+rimandati all'integrazione dei componenti.
+
+Per integrazione: acquisire i nuovi commit E in ordine sopra BASE_CONCORDATA,
+non riacquisire `c1a219a`/`4fbc52c` né `340d026`. Gli entrypoint disponibili
+sono hash pubblico, gate pubblico e reader privato; gli altri simboli del
+contratto restano dichiarazioni, senza stub. Il coordinatore aggiungerà il
+target della suite al Makefile. Restano C1 per history candidata e lifecycle
+store/state/job, C2+B Q8_0+A per PLE completo, poi kernel/staging Metal,
+commit globale, slice reali e integrazione del grafo. Nessun commit di altre
+sessioni è stato importato o dipendenza dichiarata implicitamente soddisfatta.
