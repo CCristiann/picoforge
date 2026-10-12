@@ -1,11 +1,12 @@
 # C — Ricorrenza e operatori di base Qwen3.8
 
-Modalità **SPEC**, 2026-10-12. Stato: proposta per il consolidamento, nessun
-operatore implementato o test numerico eseguito da questa sessione.
-`BASE_CONCORDATA`: **da determinare dal coordinatore**.
-Base ispezionata: `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
-Branch: `spec/qwen38-c`; worktree esterno:
-`/Users/cristiancirje/Desktop/Dev/picoforge-spec-c`.
+Modalità **ESEGUI**, 2026-10-12. C0–C3 implementati e verificati; C5 verificato
+per stadio su fixture sintetiche. Risultati e limiti effettivi nel §11.
+`BASE_CONCORDATA`: `c674b23bd1377b2ce0acef2d06fac8b160809446`;
+[integration.md](integration.md) prevale sulle proposte storiche dei §1–10.
+Branch `impl/qwen38-c`, worktree `/Users/cristiancirje/Desktop/Dev/picoforge-c-impl`.
+La SPEC originaria ispezionava `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`
+su `spec/qwen38-c`; quel worktree e quello oracle sono stati preservati.
 
 Le etichette **V** (verificato su documenti/codice), **P** (contratto proposto)
 e **A** (decisione/evidenza aperta) distinguono lo stato delle affermazioni.
@@ -764,7 +765,219 @@ footprint e allocazioni Metal come se fossero categorie disgiunte.
 8. **Concorrenza tra sessioni:** il lock comune non è ancora concordato;
    fino ad allora niente test GPU o carichi pesanti sul checkpoint.
 
-Consegna SPEC: questo documento soltanto; commit isolato senza push o merge.
+Consegna SPEC originaria: questo documento soltanto; commit isolato senza push o merge.
 La base comune, i prototypes definitivi, l'ownership delle proiezioni semplici,
 il budget numerico del layer composto e il protocollo GPU restano decisioni
-esplicite della fase CONSOLIDA.
+esplicite della fase CONSOLIDA, ora fissate in integration.md.
+
+## 11. Implementazione dalla base consolidata
+
+### 11.1 Consegna e revisioni
+
+**V.** Nuovo branch/worktree dalla BASE, senza merge o push. Recuperati solo
+oracle/test C: i primi due commit sono cherry-pick; dal terzo originale sono
+stati ripresi solo `tools/oracle/qwen38_recurrent.py`, test e fixture C, senza
+reimportare la vecchia spec. Nessun header pubblico, Makefile o file altrui
+modificato. Repository principale e precedente worktree oracle sono rimasti
+puliti, rispettivamente a `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce` e
+`8c7e5bb989c3206ac0dd5dc7a5a5d56a0d1928e5`.
+
+Commit in ordine, tutti discendenti dalla BASE:
+
+| SHA | Incremento |
+|---|---|
+| `0fb5f3892265316549cc022e0e27feb5420273fe` | Oracle upstream fissato; origine `0c55b85255033456af3c35707ba5bafbd67781bf` |
+| `70b81b5e9778ee9a0d71b28d15a5a171f60b0fc8` | Riferimento FP64 e stream lunghi; origine `41c14d648d4c91a61d0d3be3db7fb7d1ea6ec8b5` |
+| `d21b08df9cbf83bf311e55581f216f41cf09d23a` | Fixture complete da `8c7e5bb989c3206ac0dd5dc7a5a5d56a0d1928e5`, senza spec |
+| `7bbc406d948485018bba3c1f4b4f5710b4573d33` | C1: convoluzione, history dilatata, lifecycle e copia candidata |
+| `bc2efe7c1285eda0cfc28bbedad0a8ece2ebcc31` | C2: RMS, attivazioni e HC post-proiezione |
+| `4f27e7b443461dcf73de04383cd03ce39f26bb7b` | C3: prepare, scan, gated RMS e stato GDN |
+| `d0319e018a379b70c1e90ce30016908129d969cf` | C5: dispatch privato Metal e attivazioni |
+| `a23204c0cddf943ac515301c3798c9aad84e1943` | C5: RMS e HC Metal |
+| `591b9194d08fb6b2f280f6427ded0db784e08272` | C5: convoluzione e commit della history raw |
+| `55399efc802a901c4a1d25ee0cf92eb289d9de9c` | C5: GDN prepare e gated RMS Metal |
+| `c59d9a79878461f0ca0ef68d90fc556f55d0d76f` | C5: scan Metal, continuazioni e reset/replay |
+| `3bf75483990eb5d949fbc2c578396e7bb78158ba` | C5: errori, admission, misure e ABI fixed-width |
+
+Il commit documentale successivo contiene questo resoconto. Per l'integrazione
+usare la serie dalla BASE; non cherry-pickare nuovamente gli originali oracle.
+
+### 11.2 Contratti implementati
+
+**V. CPU.** Tutte le funzioni di `qwen38_ops.h` sono implementate nei tre `.c`
+assegnati. `qwen38_c_internal.h` contiene soltanto plumbing privato. Nessuna
+allocazione per token: metadata/payload sono caller-owned, allineati a 64 byte;
+stati non copiabili con memcpy, export canonico, append con posizione esatta,
+reset a epoch maggiore, errori numerici dopo mutazione richiedono reset/replay.
+`qwen38_conv_state_copy` copia in backing distinto con key e shape identiche:
+è utilizzabile dalla history candidata E. Le chiamate restano sincrone e il
+caller serializza gli accessi; `busy` non è una primitiva di sincronizzazione.
+
+FP32 per somme, output, history e S; FP64 soltanto nei riferimenti. GDN legge
+la testa `h % Hk`, decade S **prima** della previsione e legge S **dopo**
+l'update. La normalizzazione Q usa SUM dei quadrati + epsilon e scala
+`1/sqrt(Dk)` una sola volta. A è già `-exp(A_log)` e deve essere **<=0**,
+incluso zero come consolidato. Gain GGUF diretto, senza +1. L'adattatore
+upstream rifiuta gain non rappresentabili esattamente come `float32(1+w)`;
+i test nativi separati coprono anche gain arbitrari, incluso `1e-10`.
+
+`qwen38_activate` generica richiede output disgiunto; gli alias esatti sono
+ammessi soltanto dalle funzioni previste: RMS, HC low/inject, GDN prepare sui
+tre input corrispondenti, gated RMS sull'uscita dello scan. Alias parziali
+rifiutati. `T=0` valida forma/config/stato senza leggere pesi o avanzare.
+Padding delle view non letto né scritto. Overflow di range/capacità/posizione
+e input non finiti sono coperti dal harness C e dai test Python.
+
+**V. Metal privato.** `qwen38_recurrent_gpu.m` usa `Qwen38GpuCommand` e buffer
+Metal reali. Il glue valida dimensioni, stride, offset, lunghezza accessibile,
+alias, device e storage Shared della parola di errore prima dell'encoding.
+La baseline privata ammette indici/stride in elementi entro uint32 e richiede
+un MTLBuffer valido anche per view vuote; un buffer minimo è sufficiente.
+Metadata host non reinterpretati come MSL: wire format di 352 byte, view di
+40 byte, offset controllati con assert statici host e Metal. Nessun cast di
+puntatori CPU a buffer Metal. Nessun calcolo numerico runtime in Objective-C.
+
+Nove kernel distinti, cache privata separata dal registry globale da 32 voci:
+`q38c_check`, `q38c_activate`, `q38c_rms`, `q38c_hc_read`, `q38c_hc_add`,
+`q38c_conv`, `q38c_history`, `q38c_gdn_prepare`, `q38c_gdn_scan`.
+Preflight GPU di tutti gli input finiti e dei domini A/log-decay/beta,
+barriere tra check, calcolo e history, atomic-OR della parola condivisa.
+Dominio invalido usa STATE; NaN/Inf/overflow usa NONFINITE. Lo scan assegna
+una riga `(h,v)` di S a ciascun thread e mantiene l'ordine FP32 sequenziale.
+La conv legge la vecchia history per l'intero chunk, poi la aggiorna raw con
+un dispatch separato che non procede se la parola di errore è nonzero.
+
+Il contesto privato trattiene device e pipeline; caller/command buffer
+trattengono tutte le risorse fino a completion. Nessun commit/wait nel glue,
+nessun azzeramento locale della parola di errore, niente hazard untracked.
+Il harness verifica stato Metal **e** parola, prima di consumare o riusare
+risorse. Gli stati GPU sono snapshot espliciti del harness: **non esiste
+ancora un'API GPU pubblica di epoch/posizione/finish**. Non usare questo
+entrypoint privato come secondo ABI del grafo.
+
+### 11.3 Oracle, fixture e risultati effettivi
+
+Fonte indipendente: Transformers `modeling_qwen4_exp.py`, revisione
+`812a950d7037ba93bb624b154030e9068afdce4d`, SHA-256
+`f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa`.
+L'adattatore verifica hash e dimensione **prima** di estrarre otto definizioni
+numeriche tramite AST; non importa il modulo/modello completo. Riutilizzata
+in sola lettura la copia nel precedente worktree oracle. Nessuna dipendenza
+installata e nessun checkpoint caricato.
+
+Confronti: GDN upstream recurrent **e** chunk, riferimento affine FP64 su
+teste piccole, casi scalari analitici; conv `torch.nn.functional.conv1d` e
+Toeplitz FP64; HC e norme upstream più formule FP64. Per confrontare lo scan
+C con FP64 si passano gli stessi Q/K preparati, senza una seconda norma o
+scalatura. La semplice copia dell'algoritmo C non è l'oracle indipendente.
+
+`tests/fixtures/qwen38/c/{manifest,analytic}.json` fissano ricetta e casi
+analitici. L'export genera 49 tensori in un bundle little-endian FP32/FP64
+con input, intermedi, output, S/history iniziali e finali, assi, dtype,
+offset, SHA-256 e provenienza; non sovrascrive un bundle esistente. Il nome
+storico `tolerances_proposed` nella ricetta conserva gli stessi valori ora
+congelati da integration.md, non concede tolleranze modificabili.
+Export standalone verificato: 87,140 byte in `tensors.bin`, SHA-256
+`a3f7ed9832a79b81c757dbe8c83c8684ee5377a45cb3a481c013ceaec387aa0a`.
+
+Verifica del 2026-10-12: Apple clang 21.0.0 (`clang-2100.1.1.101`), Metal
+32023.883, macOS 27.0.1 build 26A434; Python esistente con torch 2.13.0 e
+NumPy 2.5.1. Nessuna modifica di SDK o impostazioni di memoria.
+
+| Verifica eseguita | Risultato |
+|---|---|
+| Harness C, warning come errori, ASan/UBSan | PASS: conv, GDN, RMS, attivazioni, HC, stato e admission |
+| Python, sorgente upstream fissato + dylib C | **35/35 PASS**, 102 misure nel report |
+| Massimo scalato nei confronti C GDN registrati | `1.4290722042934374e-6`, contro chunk upstream, stato a T=127; soglia `5e-5` |
+| Metal conv | 36 combinazioni C=1/31/33, K=1/2/4, d=1/3, con/senza SiLU; history esatta |
+| Metal RMS/HC/prepare/gate | Padding, gain per gruppo, alias ammessi, epsilon, A=0; massimo prima dello scan `2.01932229e-7` |
+| Metal scan piccolo, T<=1025 | massimo `2.62260437e-6`; soglia `5e-5` |
+| Metal scan piccolo, T=8192/16384/32768 | `2.92658806e-5` / `3.60608101e-5` / `3.4570694e-5`; soglia `2e-4` |
+| Metal scan Hk=16, Hv=48, Dk=Dv=128, T=1/65 | `1.1920929e-7` / `1.96695328e-6`; soglia `5e-5` |
+| Chunk/append a algoritmo identico | CPU e Metal: bitwise, output e stato; conv history raw esatta |
+| Errori GPU | PASS: preflight NaN/domini, overflow, capacità/stride/alias, flag preesistente, reset/replay |
+| Build `make -j4` | PASS, senza modifiche al Makefile |
+
+Le misure GPU confrontano C e Metal sugli stessi input FP32 e controllano
+separatamente ciascuna riga di output e S, senza nascondere l'errore in una
+norma globale. Le attivazioni soddisfano anche il gate elementwise di F.
+Il test lungo usa dimensioni piccole e decay vicino a uno; **non** dimostra
+32K token a forme reali o su attivazioni autentiche. Il massimo Metal osservato
+da `device.currentAllocatedSize` ai punti di allocazione del harness è
+**87,097,344 byte (~83.1 MiB)**. Non è RSS/footprint né una misura del modello.
+Nessun benchmark prestazionale eseguito; budget runtime C <=512 MiB invariato.
+
+### 11.4 Comandi riproducibili
+
+Dal worktree `picoforge-c-impl`, output solo sotto `build/qwen38-c/` salvo
+artefatti del Makefile confinati a questo worktree. L'ambiente esistente è:
+
+```sh
+Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_SOURCE=/Users/cristiancirje/Desktop/Dev/picoforge-c-oracle/build/qwen38-c/upstream/modeling_qwen4_exp.py
+mkdir -p build/qwen38-c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fsanitize=address,undefined -Isrc \
+  tests/test_qwen38_recurrent.c src/qwen38_conv.c src/qwen38_base.c src/qwen38_gdn.c \
+  -lm -o build/qwen38-c/test_cpu
+build/qwen38-c/test_cpu
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -Isrc -dynamiclib src/qwen38_conv.c src/qwen38_base.c src/qwen38_gdn.c \
+  -lm -o build/qwen38-c/libcpu.dylib
+"$Q38_PY" -B tests/test_qwen38_recurrent.py --source "$Q38_SOURCE" \
+  --cpu-lib build/qwen38-c/libcpu.dylib --report build/qwen38-c/cpu-report.json -v
+```
+
+Esito atteso: PASS del harness, 35 test Python e `OK`. Senza `--cpu-lib` i
+test nativi vengono esplicitamente saltati: quel comando non certifica C.
+L'export standalone è `"$Q38_PY" -B tools/oracle/qwen38_recurrent.py
+--source "$Q38_SOURCE" --synthetic --out build/qwen38-c/fixture` (directory nuova).
+
+```sh
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc \
+  -c src/qwen38_recurrent.metal -o build/qwen38-c/recurrent.air
+xcrun -sdk macosx metallib build/qwen38-c/recurrent.air -o build/qwen38-c/recurrent.metallib
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fobjc-arc -Isrc tests/test_qwen38_recurrent.m \
+  src/qwen38_recurrent_gpu.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c \
+  -lm -framework Foundation -framework Metal -o build/qwen38-c/test_gpu
+"$Q38_PY" -B tools/qwen38_gpu_lock.py --print-path
+"$Q38_PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 \
+  build/qwen38-c/test_gpu build/qwen38-c/recurrent.metallib > build/qwen38-c/gpu-report.txt
+cat build/qwen38-c/gpu-report.txt
+make -j4
+```
+
+Esito atteso: lock `/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock`,
+Metal API Validation Enabled, misure per lunghezza e PASS finale. Non saltare
+il wrapper: il binario del harness non acquisisce autonomamente un secondo lock.
+Il test non usa acceleratori TensorOps né precisione ridotta. MSL non dispone
+di `log1p`: softplus usa `log(1+x)` compensato per l'arrotondamento di `1+x`,
+confrontato con C anche sulle code. Fast-math disabilitato, FMA non contratto.
+
+### 11.5 Dipendenze residue e richieste concrete al coordinatore
+
+1. **C4, A+B:** configurazione/binding e linear del checkpoint Q2 non sono
+   presenti come implementazioni in questa BASE. Collegare le proiezioni B
+   su slice bounded ai buffer proiettati delle API C; validare separatamente
+   le proiezioni, ogni primitiva e il layer composto. Nessun decoder o matmul
+   duplicato in C, nessuno stub per dichiarare il layer completo.
+2. **C5 integrazione pubblica:** aggiungere entrypoint di composizione GPU
+   con shape già concordate, stato `(model,layer,epoch,next_pos,valid,busy)`,
+   begin/finish o equivalente gestito dal coordinatore, drain/reset/replay
+   globale. Riutilizzare questi kernel; gli snapshot del harness non fissano
+   una nuova API pubblica di stato. E può già usare la history candidata CPU.
+3. **Build condivisa:** aggiungere AIR C alla metallib, target isolati CPU/GPU
+   e relativo wrapper lock. Conservare `-ffp-contract=off` per i tre file C
+   e `-fno-fast-math -ffp-contract=off` per Metal nei gate di correttezza.
+   Il `make` corrente compila i nuovi C/ObjC via wildcard ma include ancora
+   solo `src/kernels.metal`: il suo PASS non integra i nove kernel C nel grafo.
+   Il cache privato non consuma entry del registry globale; valutarne il
+   riuso quando si aggiungeranno gli entrypoint pubblici.
+4. **C6, evidenza reale:** trace di attivazioni Q2, composizione con D/E/F,
+   commit globale, logits e generazione ordinaria restano da verificare.
+   Nessuna evidenza sulla perdita Q2 rispetto al checkpoint BF16 originale.
+   Nessun modello completo caricato e nessuna tabella n-gram mappata in Metal.
+5. `make test-all` non eseguito in questa sessione: richiede il wiring e le
+   verifiche aggregate del coordinatore. Nessuna certificazione di generazione
+   Qwen3.8 completa o di regressione completa Qwen3 deriva dai gate di primitive.
