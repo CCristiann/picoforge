@@ -139,6 +139,46 @@ static void hc(void) {
         release_view(low); release_view(inj); release_view(norm); release_view(gate); release_view(mixed); release_view(residual);
     }
 }
+static Qwen38GpuF32 slice(View v, size_t start, size_t tokens) {
+    Qwen38GpuF32 s=v.gpu; s.dim[0]=tokens;
+    if (tokens) { size_t offset=start*s.stride_bytes[0]; s.span.offset_bytes+=offset; s.span.bytes-=offset; }
+    return s;
+}
+static void *backing(size_t bytes) {
+    void *p=NULL; assert(posix_memalign(&p,64,bytes ? bytes : 64)==0); return p;
+}
+static void convolutions(void) {
+    size_t channels[]={1,31,33}, kernels[]={1,2,4};
+    for (size_t ci=0;ci<3;++ci) for (size_t ki=0;ki<3;++ki) for (size_t d=1;d<=3;d+=2) for (size_t silu=0;silu<2;++silu) {
+        size_t c=channels[ci], k=kernels[ki], l=(k-1)*d;
+        Q38CGpuSpec spec={.conv={c,k,d,silu!=0}}; Qwen38StateSize bytes;
+        assert(qwen38_conv_state_bytes(&spec.conv,&bytes,NULL)==Q38_OK);
+        void *metadata=backing(bytes.metadata_bytes), *payload=backing(bytes.payload_bytes); Qwen38ConvState *state=NULL;
+        assert(qwen38_conv_state_init(&spec.conv,(Qwen38StateKey){&spec,0,1},
+            (Qwen38Memory){metadata,bytes.metadata_bytes},(Qwen38Memory){payload,bytes.payload_bytes},&state,NULL)==Q38_OK);
+        View x=view(2,(size_t[]){13,c},5), taps=view(2,(size_t[]){c,k},3);
+        View history=view(2,(size_t[]){l,c},7), split_history=view(2,(size_t[]){l,c},7);
+        View y=view(2,(size_t[]){13,c},9), split_y=view(2,(size_t[]){13,c},9);
+        pattern(x,0.7f); pattern(taps,0.2f); pattern(history,0.6f); pattern(split_history,0.6f);
+        float *warm=expected(history); Qwen38F32Mut warm_out=history.cpu; warm_out.data=warm;
+        assert(qwen38_conv_causal(&spec.conv,q38c_ro(history.cpu),q38c_ro(taps.cpu),warm_out,state,0,NULL)==Q38_OK);
+        float *ref=expected(y), *href=expected(history); Qwen38F32Mut out=y.cpu; out.data=ref;
+        assert(qwen38_conv_causal(&spec.conv,q38c_ro(x.cpu),q38c_ro(taps.cpu),out,state,l,NULL)==Q38_OK);
+        Qwen38F32Mut ho=history.cpu; ho.data=href;
+        assert(qwen38_conv_state_export(state,ho,NULL)==Q38_OK);
+        Qwen38GpuF32 v[]={x.gpu,taps.gpu,y.gpu,history.gpu}; Qwen38GpuCommand cmd=begin(0);
+        assert(q38c_gpu_encode(gpu,cmd,Q38C_CONV,&spec,v,4,NULL)==Q38_OK);
+        size_t chunks[]={0,1,3,0,2,7}, start=0;
+        for (size_t j=0;j<6;++j) {
+            Qwen38GpuF32 sv[]={slice(x,start,chunks[j]),taps.gpu,slice(split_y,start,chunks[j]),split_history.gpu};
+            assert(q38c_gpu_encode(gpu,cmd,Q38C_CONV,&spec,sv,4,NULL)==Q38_OK); start+=chunks[j];
+        }
+        finish(0); compare(y,ref,1e-5); compare(split_y,ref,1e-5);
+        compare(history,href,0); compare(split_history,href,0); compare(split_y,y.cpu.data,0);
+        guards(x); guards(taps); free(warm); free(ref); free(href); free(metadata); free(payload);
+        release_view(x); release_view(taps); release_view(history); release_view(split_history); release_view(y); release_view(split_y);
+    }
+}
 int main(int argc, char **argv) {
     assert(argc==2);
     @autoreleasepool {
@@ -148,7 +188,7 @@ int main(int argc, char **argv) {
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
         assert(q38c_gpu_create((__bridge void *)device,(__bridge void *)lib,&gpu,NULL)==Q38_OK);
         error_buffer=[device newBufferWithLength:4 options:MTLResourceStorageModeShared];
-        activations(); norms(); hc(); q38c_gpu_destroy(gpu);
+        activations(); norms(); hc(); convolutions(); q38c_gpu_destroy(gpu);
         printf("PASS: Metal C stages; max scaled error %.9g\n",maximum_error);
         error_buffer=nil; queue=nil; device=nil;
     }

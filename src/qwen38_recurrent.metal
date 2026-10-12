@@ -71,3 +71,26 @@ kernel void q38c_hc_add(Q38C_BUFFERS) {
     float y=v0[at(a.v[0],i)]+v2[at(a.v[2],th)]*v1[at(a.v[1],(th/h)*width+i%width)];
     if (valid(y,error)) v0[at(a.v[0],i)]=y;
 }
+kernel void q38c_conv(Q38C_BUFFERS) {
+    if (i>=a.v[0].count || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint c=a.v[0].dim[1], t=i/c, channel=i%c, l=a.v[3].dim[0]; float sum=0;
+    for (uint j=0;j<a.p[0];++j) {
+        ulong row=ulong(t)+ulong(j)*a.p[1];
+        float x=row<l ? v3[at(a.v[3],uint(row)*c+channel)] : v0[at(a.v[0],uint(row-l)*c+channel)];
+        sum+=v1[at(a.v[1],channel*a.p[0]+j)]*x;
+    }
+    if (!valid(sum,error)) return;
+    float y=a.p[2] ? sum*sigmoid(sum) : sum;
+    if (valid(y,error)) v2[at(a.v[2],i)]=y;
+}
+/* One thread owns a channel. Ascending history rows read strictly later old
+ * rows, so a short append needs no scratch copy and cannot race another lane. */
+kernel void q38c_history(Q38C_BUFFERS) {
+    uint c=a.v[0].dim[1], t=a.v[0].dim[0], l=a.v[3].dim[0];
+    if (i>=c || atomic_load_explicit(error,memory_order_relaxed)) return;
+    for (uint j=0;j<l;++j) {
+        ulong row=ulong(t)+j;
+        float x=row<l ? v3[at(a.v[3],uint(row)*c+i)] : v0[at(a.v[0],uint(row-l)*c+i)];
+        v3[at(a.v[3],j*c+i)]=x;
+    }
+}

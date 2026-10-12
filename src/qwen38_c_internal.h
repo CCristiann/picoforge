@@ -168,10 +168,11 @@ static inline Qwen38Status q38c_state_reset(Q38CState *s, uint64_t magic, uint64
  * Caller owns command completion, error checking and all resource lifetimes. */
 typedef struct Q38CGpu Q38CGpu;
 /* Slots: ACT/HC_LOW/HC_INJECT x,out; RMS x,gain,out;
- * HC_READ normed,logits,mixed; HC_ADD residual,block,inject. */
+ * HC_READ normed,logits,mixed; HC_ADD residual,block,inject;
+ * CONV x,taps,out,history[L,C] (raw oldest-first, mutable after success). */
 typedef enum { Q38C_ACT, Q38C_RMS, Q38C_HC_LOW, Q38C_HC_INJECT,
-    Q38C_HC_READ, Q38C_HC_ADD, Q38C_GPU_OPS } Q38CGpuOp;
-typedef struct { Qwen38Activation activation; float eps; Qwen38HcShape hc; } Q38CGpuSpec;
+    Q38C_HC_READ, Q38C_HC_ADD, Q38C_CONV, Q38C_GPU_OPS } Q38CGpuOp;
+typedef struct { Qwen38Activation activation; float eps; Qwen38HcShape hc; Qwen38ConvShape conv; } Q38CGpuSpec;
 Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Error *);
 void q38c_gpu_destroy(Q38CGpu *);
 Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,

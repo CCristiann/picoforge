@@ -2,11 +2,12 @@
 #import <Metal/Metal.h>
 #include "qwen38_c_internal.h"
 #include <stdlib.h>
-struct Q38CGpu { void *device, *check, *pipeline[Q38C_GPU_OPS]; };
+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS]; };
 void q38c_gpu_destroy(Q38CGpu *g) {
     if (!g) return;
     if (g->device) CFRelease(g->device);
     if (g->check) CFRelease(g->check);
+    if (g->history) CFRelease(g->history);
     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
     free(g);
 }
@@ -21,12 +22,13 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
     if (!g) return q38c_error(e,Q38_OOM,"GPU context allocation failed");
     g->device=(__bridge_retained void *)dev;
     NSString *names[]={@"q38c_activate",@"q38c_rms",@"q38c_activate",@"q38c_activate",
-        @"q38c_hc_read",@"q38c_hc_add",@"q38c_check"};
-    for (size_t i=0;i<Q38C_GPU_OPS+1;++i) {
+        @"q38c_hc_read",@"q38c_hc_add",@"q38c_conv",@"q38c_check",@"q38c_history"};
+    for (size_t i=0;i<Q38C_GPU_OPS+2;++i) {
         id<MTLFunction> fn=[lib newFunctionWithName:names[i]];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
         if (!p) { q38c_gpu_destroy(g); return q38c_error(e,Q38_GPU_ERROR,"missing or invalid C pipeline"); }
-        if (i==Q38C_GPU_OPS) g->check=(__bridge_retained void *)p;
+        if (i==Q38C_GPU_OPS+1) g->history=(__bridge_retained void *)p;
+        else if (i==Q38C_GPU_OPS) g->check=(__bridge_retained void *)p;
         else g->pipeline[i]=(__bridge_retained void *)p;
     }
     *out=g; return q38c_error(e,Q38_OK,NULL);
@@ -104,6 +106,13 @@ static Qwen38Status stage(Q38CGpuOp op, const Q38CGpuSpec *s, Q38CGpuArgs *a,
         if (!isfinite(s->eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite RMS epsilon");
         if (s->eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive RMS epsilon");
         a->eps=s->eps; a->read_mask=3; *writes=4; *inplace=UINT64_C(1)<<16; *work=t*groups;
+    } else if (op==Q38C_CONV) {
+        Qwen38StateSize size; Q38C_TRY(qwen38_conv_state_bytes(&s->conv,&size,e));
+        size_t c=s->conv.channels, k=s->conv.kernel, d=s->conv.dilation, l=(k-1)*d;
+        if (!gpu_dims(v[0],2,(size_t[]){t,c}) || !gpu_dims(v[1],2,(size_t[]){c,k}) ||
+            !gpu_same(v[0],v[2]) || !gpu_dims(v[3],2,(size_t[]){l,c})) goto shape;
+        a->p[0]=(uint32_t)k; a->p[1]=(uint32_t)d; a->p[2]=s->conv.apply_silu;
+        a->read_mask=11; *writes=12;
     } else {
         size_t h=s->hc.streams, width=s->hc.hidden_size;
         if (!gpu_dims(v[0],3,(size_t[]){t,h,width})) goto shape;
@@ -131,6 +140,7 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
         return q38c_error(e,Q38_CAPACITY,"error word needs four Shared bytes");
     if ((unsigned)op>=Q38C_GPU_OPS) return q38c_error(e,Q38_UNSUPPORTED,"unknown C kernel");
     size_t expected_count=(op==Q38C_ACT || op==Q38C_HC_LOW || op==Q38C_HC_INJECT) ? 2 : 3;
+    if (op==Q38C_CONV) expected_count=4;
     if (count!=expected_count) return q38c_error(e,Q38_SHAPE,"wrong GPU view count");
     Q38CGpuArgs a={0}; size_t span[8]={0};
     for (size_t j=0;j<count;++j) {
@@ -160,5 +170,9 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     dispatch(enc,g->pipeline[op],work);
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    if (op==Q38C_CONV && a.v[3].count) {
+        dispatch(enc,g->history,a.v[0].dim[1]);
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
     return q38c_error(e,Q38_OK,NULL);
 }
