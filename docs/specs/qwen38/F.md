@@ -612,3 +612,74 @@ poi IQ2_XXS/Q2_K/Q8_0 per pesi compressi e binding/slice da A.
 [ds4-c]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/ds4.c#L68391-L68451
 [ds4-metal]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/metal/qwen4.metal#L1100-L1250
 [paper]: https://arxiv.org/html/2608.30320v1
+
+## ESEGUI v2 — composizione CPU sulla BASE_INTEGRATA
+
+Base `6a6b886e985185d7c9104eda888e6a406553aedf`; nuovo worktree
+`../picoforge-f-v2`, branch `impl/qwen38-f-v2`; nessun reimport delle consegne.
+Create/work/forward implementati in `src/qwen38_moe.c`: config e descrittori
+copiati, byte borrowed immutabili, validazione dei pesi tramite B con M=0.
+I due router richiedono F32. La metadata del modello rimane viva finché esiste
+un workspace; destroy invalida l'owner e work_reset lo rifiuta. Chiamate CPU
+sincrone, un workspace per esecuzione, nessuna concorrenza sullo stesso handle.
+Preflight strutturale preserva output; errore numerico durante forward rende
+workspace/output invalidi fino a reset. Non promette rollback della sessione.
+
+Scratch allocato solo da work_create, budget include metadata+arena; microbatch
+min(token_cap,32), gather per coppia, scratch gate/up/SiLU condiviso tra gruppi.
+B esegue tutte le proiezioni; C tutte le SiLU/sigmoid. Grouping stabile F,
+riduzione slot crescente e shared aggiunto alla fine, senza residuo. Il privato
+observer registra viste temporanee degli stadi per verificare gli intermedi;
+non sostituisce operatori e non può mutare/ri-entrare/liberare il workspace.
+
+Verificati 27 test (strict runner, zero skip), harness ASan/UBSan e warning
+come errori. Floating T=0/1/2/31/32/33/65/1024, K=1/2/E, chunk 1/7/32,
+rami azzerati separatamente, shared gate, stride, alias, budget, reset dopo
+NaN nei pesi borrowed. Packed H256/I640/Ip768/Is32, IQ2_XXS gate/up,
+Q2_K down e Q8_0 shared: T=1/2/33. Oracle decoder esterno di B, non F;
+pad down nonzero e variante F32 con poison 1e30 danno lo stesso risultato.
+Ogni prodotto confrontato al bound B su identico input; attivazioni ai gate F.
+
+Slice A+B: layer 0/3/47, router completo 512 esperti e top-10 naturale,
+un input sintetico RMS~0.1 per layer. 28,354,560 byte letti per layer, manifest
+con offset/hash/config/provenienza; include 0/511 come **probe caricati**, non
+come esperti aggiunti alla route. Non sono attivazioni estratte da prompt.
+Il harness riserva indirizzi anonimi per il layout dei tre tensori routed,
+abilitando solo le pagine degli esperti forniti: nessun mapping del checkpoint
+intero, nessuna espansione FP32 del layer. Riserva virtuale e payload residente
+sono distinti; il limite trasporto è 64 MiB, l'oracle elabora un esperto alla
+volta. Il blocco upstream con E=1 è usato per verificare ciascun esperto
+selezionato, dopo aver controllato il router originale completo; le slice
+sono dequantizzate esclusivamente dall'oracle indipendente B.
+
+| Layer | Y max abs vs FP64 | Y NRMSE | errore probabilità | margine minimo top-K/K+1 |
+|---|---:|---:|---:|---:|
+| 0 | 2.063e-9 | 1.209e-6 | 2.561e-9 | 1.308e-5 |
+| 3 | 2.105e-9 | 1.285e-6 | 1.164e-9 | 5.753e-6 |
+| 47 | 2.280e-9 | 1.379e-6 | 4.657e-10 | 7.309e-7 |
+
+Tutti gli ID coincidono. Il massimo rapporto errore/bound B dei prodotti
+routed è 0.004622. Controllati routed e shared, gate/up/down e attivazioni;
+Y rispetta entrambe le soglie slice, senza allargarle. Workspace reale a T=1:
+235592 byte. Le misure non stimano perdita rispetto al BF16 originale.
+
+Comando CPU aggiornato (il target condiviso v1 non linka ancora B+C+A):
+
+```sh
+clang -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -fno-omit-frame-pointer -Isrc \
+  tests/test_qwen38_moe.c src/qwen38_moe.c src/qwen38_packed.c src/qwen38_base.c \
+  src/qwen38_config.c src/qwen38_weights.c src/gguf.c src/gguf_reader.c src/util.c \
+  -lm -o build/qwen38-f/test_moe
+Q38_F_NATIVE="$PWD/build/qwen38-f/test_moe" OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  ../picoforge/tools/venv/bin/python tools/qwen38_gpu_lock.py --timeout 60 -- \
+  ../picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_moe.py -v
+```
+
+Preparazione esplicita in Python: `qwen38_packed.build_reference` dal checkout
+DwarfStar fissato verso `build/qwen38-f/packed-reference` con sanitize=True;
+`qwen38_moe.prepare_real_slice(native,checkpoint,output,layer)` sotto lock per
+0/3/47, output `build/qwen38-f/slice-<layer>`. Riusare i tre file upstream
+hash-verificati nella cache F. Test offline; nessuno skip equivale a PASS.
+Report numerico riprodotto in `build/qwen38-f/slice-results.json`.

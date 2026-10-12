@@ -452,11 +452,11 @@ def forward_weights(c, weights):
             weights["shared_expert_gate.weight"]]
 
 
-def native_forward(c, x, matrices, payloads=None, trace=True):
+def native_forward(c, x, matrices, payloads=None, trace=True, sparse=False):
     physical = matrices[3].shape[-1]
     payload = struct.pack("<9I",c.hidden_size,c.num_experts,c.num_experts_per_tok,
                           c.moe_intermediate_size,c.shared_expert_intermediate_size,physical,
-                          int(c.norm_topk_prob),len(x),int(trace))
+                          int(c.norm_topk_prob),len(x),int(trace)+2*int(sparse))
     for j, matrix in enumerate(matrices):
         experts = matrix.shape[0] if matrix.ndim == 3 else 1
         kind, data = (0,matrix.astype("<f4").tobytes()) if payloads is None else payloads[j]
@@ -544,6 +544,141 @@ class NativeForwardTests(unittest.TestCase):
         for name in ("gate.weight","shared_expert.down_proj.weight"):
             changed={n:v.copy() for n,v in weights.items()}; changed[name][:]=np.nan
             self.assertNotEqual(native_forward(c,x,forward_weights(c,changed))[0],0)
+
+    def test_packed_composition_and_640_768_padding(self):
+        import importlib.util
+        root=Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location("b_test",root/"tests/test_qwen38_packed.py")
+        b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+        reference = Path(os.environ.get("Q38_F_PACKED_REFERENCE",root/"build/qwen38-f/packed-reference/reference"))
+        if not reference.exists(): self.skipTest("requires prepared B independent reference")
+        c=moe.FixtureConfig(hidden_size=256,num_experts=4,num_experts_per_tok=2,
+                            moe_intermediate_size=640,shared_expert_intermediate_size=32)
+        rng=np.random.default_rng(3814)
+        matrices,payloads=[],[]
+        dims=((4,256),(4,640,256),(4,640,256),(4,256,768),
+              (32,256),(32,256),(256,32),(1,256))
+        for stage,(kind,shape) in enumerate(zip((0,16,16,10,8,8,8,0),dims)):
+            raw=b.packed_fixture(kind,shape[-1],int(np.prod(shape[:-1])),rng)
+            decoded=b.oracle.decode(reference,raw,kind,shape[-1],int(np.prod(shape[:-1]))).reshape(shape)
+            matrices.append(decoded); payloads.append((kind,raw))
+        self.assertTrue(np.any(matrices[3][...,640:]!=0))
+        weights={"gate.weight":matrices[0],"experts.gate_up_proj":np.concatenate(matrices[1:3],axis=1),
+                 "experts.down_proj":matrices[3][...,:640],"shared_expert.gate_proj.weight":matrices[4],
+                 "shared_expert.up_proj.weight":matrices[5],"shared_expert.down_proj.weight":matrices[6],
+                 "shared_expert_gate.weight":matrices[7]}
+        for t in (1,2,33):
+            x=(rng.normal(size=(t,256))*0.001).astype(np.float32)
+            with self.subTest(t=t): self.verify(c,x,weights,matrices,payloads)
+        # Physical trailing coefficients are arbitrary, but inputs remain 640.
+        # Replace the whole down tensor by F32 with huge finite trailing poison;
+        # runtime B must never read beyond the ACT view's logical columns.
+        x=(rng.normal(size=(2,256))*0.001).astype(np.float32)
+        poisoned=matrices[3].copy(); poisoned[...,640:]=1e30
+        mixed=list(payloads); mixed[3]=(0,poisoned.astype("<f4").tobytes())
+        alt=list(matrices); alt[3]=poisoned
+        actual,_=self.verify(c,x,weights,matrices,payloads)
+        other,_=self.verify(c,x,weights,alt,mixed)
+        for key in actual: np.testing.assert_array_equal(actual[key],other[key])
+
+    def test_real_bounded_layers(self):
+        from types import SimpleNamespace
+        import qwen38_packed as b
+        root=Path(__file__).resolve().parents[1]/"build/qwen38-f"
+        if not (root/"slice-0/manifest.json").exists(): self.skipTest("prepare bounded real slices explicitly")
+        if not os.environ.get("PICOFORGE_GPU_LOCK_FD"): self.skipTest("real slice replay requires common lock")
+        reference=root/"packed-reference/reference"
+        reports=[]
+        for layer in (0,3,47):
+            folder=root/f"slice-{layer}"; manifest=json.loads((folder/"manifest.json").read_text())
+            self.assertTrue(manifest["complete"])
+            def read(record):
+                data=(folder/record["file"]).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(),record["sha256"])
+                return data
+            h,e,k,i,s,physical,norm=manifest["config"]
+            c=moe.FixtureConfig(h,e,k,i,s,bool(norm))
+            x=np.frombuffer(read(manifest["input"]),"<f4").reshape(1,h)
+            payloads,shapes=[],[]
+            for stage,tensor in enumerate(manifest["tensors"]):
+                segments=tensor["segments"]
+                raw=struct.pack("<I",len(segments))
+                for segment in segments:
+                    data=read(segment)
+                    raw += struct.pack("<2Q",segment["offset_in_tensor"],len(data))+data
+                payloads.append((tensor["type"],raw))
+                shape=(tensor["experts"],tensor["rows"],tensor["physical"]) if 1<=stage<=3 else (tensor["rows"],tensor["physical"])
+                shapes.append(SimpleNamespace(shape=shape,ndim=len(shape)))
+            status,actual,records,budget=native_forward(c,x,shapes,payloads,sparse=True)
+            self.assertEqual(status,0); self.assertLessEqual(budget,32*1024*1024)
+            np.testing.assert_array_equal(actual["ids"],manifest["selected"])
+            def decoded(stage,expert=0):
+                t=manifest["tensors"][stage]
+                segment=next(r for r in t["segments"] if r["expert"]==expert)
+                return b.decode(reference,read(segment),t["type"],t["physical"],t["rows"])
+            shared={name:decoded(stage) for stage,name in enumerate(("gate.weight",None,None,None,
+                "shared_expert.gate_proj.weight","shared_expert.up_proj.weight",
+                "shared_expert.down_proj.weight","shared_expert_gate.weight")) if name is not None}
+            router=shared["gate.weight"]
+            logits=(torch.from_numpy(x.copy()) @ torch.from_numpy(router.copy()).T).numpy()
+            probs,ids,scores=moe.route_logits(logits,k,bool(norm))
+            np.testing.assert_array_equal(actual["ids"],ids)
+            np.testing.assert_allclose(actual["weights"],scores,atol=2e-6,rtol=2e-5)
+            native_logits=next(r[4] for r in records if r[0]==0)
+            native_probs=moe.route_logits(native_logits,k,bool(norm))[0]
+            p_error=float(np.abs(native_probs-probs).max())
+            self.assertGreater(manifest["probability_margin_k"],2*p_error)
+            sorted_probs=np.sort(probs[0])[::-1]
+            internal_margin=float(np.min(sorted_probs[:k]-sorted_probs[1:k+1]))
+            self.assertGreater(internal_margin,2*p_error)
+            xd=torch.from_numpy(x.copy()).double()
+            def linear64(a,matrix): return torch.nn.functional.linear(a,torch.from_numpy(matrix.copy()).double())
+            shared64=linear64(torch.nn.functional.silu(linear64(xd,shared["shared_expert.gate_proj.weight"])) *
+                              linear64(xd,shared["shared_expert.up_proj.weight"]),shared["shared_expert.down_proj.weight"])
+            shared64=(shared64*torch.sigmoid(linear64(xd,shared["shared_expert_gate.weight"]))).numpy()
+            routed=np.zeros((1,h),np.float64); max_bound_ratio=0
+            for expert in ids[0]:
+                gate,up,down=decoded(1,int(expert)),decoded(2,int(expert)),decoded(3,int(expert))
+                one=replace(c,num_experts=1,num_experts_per_tok=1)
+                single=dict(shared,**{"gate.weight":np.zeros((1,h),np.float32),
+                    "experts.gate_up_proj":np.concatenate((gate,up))[None],
+                    "experts.down_proj":down[None,:,:i]})
+                out=moe.upstream_forward(one,x,single)
+                expert64=linear64(torch.nn.functional.silu(linear64(xd,gate))*linear64(xd,up),down[:,:i]).numpy()
+                np.testing.assert_allclose(out["routed"],expert64,atol=2e-5,rtol=2e-4)
+                slot=int(np.where(ids[0]==expert)[0][0]); routed+=float(scores[0,slot])*expert64
+                for stage,ex,token,a,v in records:
+                    if not 1<=stage<=3 or ex!=expert: continue
+                    matrix=(gate,up,down)[stage-1][:,:a.shape[1]].astype(np.float64)
+                    ref=a.astype(np.float64) @ matrix.T
+                    mag=np.abs(a.astype(np.float64)) @ np.abs(matrix.T)
+                    nu=(2*a.shape[1]+8)*2**-24
+                    bound=nu/(1-nu)*mag+2*np.abs(np.spacing(ref.astype(np.float32)))
+                    self.assertTrue(np.all(np.abs(v-ref)<=bound))
+                    max_bound_ratio=max(max_bound_ratio,float(np.max(np.abs(v-ref)/np.maximum(bound,1e-30))))
+            np.testing.assert_allclose(out["shared"]*moe.sigmoid(out["shared_logit"]),shared64,atol=2e-5,rtol=2e-4)
+            expected=routed+shared64
+            for stage,ex,token,a,v in records:
+                if stage in (8,10):
+                    at=torch.from_numpy(a.copy()).double()
+                    ref=(torch.nn.functional.silu(at) if stage==8 else torch.sigmoid(at)).numpy()
+                    np.testing.assert_allclose(v,ref,atol=2e-6,rtol=2e-5)
+                if stage in (0,4,5,6,7):
+                    mat=decoded(stage).astype(np.float64)
+                    ref=a.astype(np.float64) @ mat.T; mag=np.abs(a.astype(np.float64)) @ np.abs(mat.T)
+                    nu=(2*a.shape[1]+8)*2**-24
+                    self.assertTrue(np.all(np.abs(v-ref)<=nu/(1-nu)*mag+2*np.abs(np.spacing(ref.astype(np.float32)))))
+                if stage in (11,12):
+                    ref=routed if stage==11 else expected
+                    metrics=moe.error_metrics(v,ref)
+                    self.assertLessEqual(metrics["nrmse"],2e-4)
+                    self.assertLessEqual(metrics["max_abs"],5e-4*max(1,float(np.sqrt(np.mean(ref**2)))))
+            reports.append(dict(layer=layer,bytes_read=manifest["bytes_read"],workspace_bytes=budget,
+                y=moe.error_metrics(actual["y"],expected),probability_error=p_error,
+                probability_margin=manifest["probability_margin_k"],internal_margin=internal_margin,
+                max_projection_bound_ratio=max_bound_ratio))
+        (root/"slice-results.json").write_text(json.dumps(reports,indent=2)+"\n")
+        print("bounded MoE slices:",json.dumps(reports))
 
 
 if __name__ == "__main__":

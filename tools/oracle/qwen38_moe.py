@@ -11,6 +11,8 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import os
+import subprocess
 import urllib.request
 
 import numpy as np
@@ -26,6 +28,64 @@ HASHES = {
     "LICENSE": "77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049",
 }
 CACHE = Path(__file__).resolve().parents[2] / "build/qwen38-f/upstream"
+
+
+def prepare_real_slice(native, checkpoint, output, layer):
+    """One layer, one synthetic token, selected experts plus edge probes.
+
+    A supplies config/roles; B's I/O helper supplies bounded complete reads.
+    No packed decoder, full checksum or full-file mapping is introduced here.
+    Run under the common GPU/heavy-work lock; saved files are replayable offline.
+    """
+    import qwen38_packed as packed
+    if not os.environ.get("PICOFORGE_GPU_LOCK_FD"):
+        raise RuntimeError("real slice preparation requires the common lock")
+    output = Path(output)
+    output.mkdir(parents=True,exist_ok=False)
+    descriptor = json.loads(subprocess.check_output([str(native),"--describe",str(checkpoint),str(layer)]))
+    h,e,k,i,s,physical,norm = descriptor["config"]
+    fd=os.open(checkpoint,os.O_RDONLY)
+    manifest=dict(schema=1,complete=False,layer=layer,config=descriptor["config"],
+                  checkpoint_revision="d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+                  checkpoint_sha256="b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+                  checksum_origin="previously authenticated artifact; not rehashed",tensors=[],
+                  input_origin="synthetic seeded FP32; not prompt activations",bytes_read=0)
+    def save(name,data):
+        (output/name).write_bytes(data)
+        return dict(file=name,sha256=hashlib.sha256(data).hexdigest(),bytes=len(data))
+    try:
+        before=os.fstat(fd)
+        x=(np.random.default_rng(3815+layer).normal(size=(1,h))*0.1).astype("<f4")
+        manifest["input"]=save("input.f32",x.tobytes())
+        router_record=descriptor["tensors"][0]
+        raw=packed.pread_exact(fd,router_record["offset"],router_record["bytes"])
+        router=np.frombuffer(raw,"<f4").reshape(e,h)
+        logits=(torch.from_numpy(x.copy()) @ torch.from_numpy(router.copy()).T).numpy()
+        p,ids,scores=route_logits(logits,k,bool(norm))
+        chosen=sorted(set(ids.ravel().tolist())|{0,e-1})
+        manifest.update(selected=ids.tolist(),loaded_experts=chosen,probe_only=[a for a in (0,e-1) if a not in ids],
+                        probabilities=save("probabilities.f32",p.tobytes()))
+        order=np.sort(p[0])[::-1]
+        manifest["probability_margin_k"]=float(order[k-1]-order[k]) if k<e else None
+        for stage,record in enumerate(descriptor["tensors"]):
+            entry=dict(record,segments=[])
+            for expert in (chosen if 1<=stage<=3 else [0]):
+                off=expert*record["expert_bytes"]
+                data=raw if stage==0 else packed.pread_exact(fd,record["offset"]+off,record["expert_bytes"])
+                manifest["bytes_read"]+=len(data)
+                if manifest["bytes_read"]>64*1024*1024: raise ValueError("slice transport exceeds 64 MiB")
+                entry["segments"].append(dict(save(f"w{stage}-e{expert}.bin",data),
+                                              expert=expert,offset_in_tensor=off,
+                                              file_offset=record["offset"]+off))
+            manifest["tensors"].append(entry)
+        after=os.fstat(fd)
+        if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):
+            raise ValueError("checkpoint changed during bounded reads")
+        manifest.update(file_size=before.st_size,complete=True,upstream_revision=REVISION,upstream_hashes=HASHES)
+    finally:
+        os.close(fd)
+        (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    return manifest
 CLASSES = tuple("Qwen4ExpText" + n for n in
                 ("MLP", "Experts", "TopKRouter", "SparseMoeBlock"))
 

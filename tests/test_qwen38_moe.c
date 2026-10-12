@@ -1,5 +1,8 @@
 /* Isolated F harness: clang + qwen38_moe.c, no B/C or GPU dependencies. */
 #include "qwen38_f_internal.h"
+#include "qwen38.h"
+#include <sys/mman.h>
+#include <unistd.h>
 #include <assert.h>
 #include <math.h>
 #include <stdint.h>
@@ -295,14 +298,35 @@ static void stream_forward(void) {
     Qwen38MoeConfig c={h[0],h[1],h[2],h[3],h[4],h[5],h[6]!=0};
     size_t t=h[7], width=h[0],k=h[2];
     assert(t<=1024 && width>0 && width<=2560 && h[1]<=512 && k>0 && k<=h[1]);
-    assert(h[3]<=640 && h[4]<=640 && h[5]<=768 && h[6]<=1 && h[8]<=1);
-    Q38PackedCpuView v[8]; void *storage[8]; size_t total=0;
+    assert(h[3]<=640 && h[4]<=640 && h[5]<=768 && h[6]<=1 && h[8]<=3);
+    Q38PackedCpuView v[8]; void *storage[8]; size_t total=0,sizes[8];
     for (size_t j=0;j<8;j++) {
         uint32_t d[4]; assert(fread(d,4,4,stdin)==4);
         const GgufFormat *f=gguf_format(d[0]); assert(f);
         size_t bytes=(size_t)d[1]/f->block*f->bytes*d[2]*d[3];
-        total+=bytes; assert(total<=64*1024*1024);
-        storage[j]=malloc(bytes); assert(storage[j]); assert(fread(storage[j],1,bytes,stdin)==bytes);
+        sizes[j]=bytes;
+        if (h[8]&2) {
+            /* Anonymous address reservation, NOT a mapping of checkpoint data.
+             * Only explicitly supplied expert pages become readable. */
+            assert(bytes<=1024u*1024u*1024u);
+            storage[j]=mmap(NULL,bytes,PROT_NONE,MAP_PRIVATE|MAP_ANON,-1,0);
+            assert(storage[j]!=MAP_FAILED);
+            uint32_t segments; assert(fread(&segments,4,1,stdin)==1 && segments<=512);
+            size_t page=(size_t)sysconf(_SC_PAGESIZE);
+            for (size_t seg=0;seg<segments;seg++) {
+                uint64_t part[2]; assert(fread(part,8,2,stdin)==2);
+                size_t off=(size_t)part[0],len=(size_t)part[1];
+                assert(off<=bytes && len<=bytes-off);
+                total+=len; assert(total<=64*1024*1024);
+                size_t first=off/page*page,extent=(off+len+page-1)/page*page-first;
+                assert(mprotect((char *)storage[j]+first,extent,PROT_READ|PROT_WRITE)==0);
+                assert(fread((char *)storage[j]+off,1,len,stdin)==len);
+                assert(mprotect((char *)storage[j]+first,extent,PROT_READ)==0);
+            }
+        } else {
+            total+=bytes; assert(total<=64*1024*1024);
+            storage[j]=malloc(bytes); assert(storage[j]); assert(fread(storage[j],1,bytes,stdin)==bytes);
+        }
         GgufTensor tensor={.type=d[0],.rank=3,.shape={d[1],d[2],d[3],1},.bytes=bytes};
         size_t logical=j==3?c.intermediate:d[1];
         v[j].span=(Qwen38CpuSpan){storage[j],bytes};
@@ -321,7 +345,7 @@ static void stream_forward(void) {
     if (!st) st=qwen38_moe_work_size(m,t,&budget,&error);
     assert(budget<=32*1024*1024);
     if (!st) st=qwen38_moe_work_create(m,t,budget,&w,&error);
-    if (!st && h[8]) q38_moe_observe(w,emit_trace,NULL);
+    if (!st && (h[8]&1)) q38_moe_observe(w,emit_trace,NULL);
     Qwen38MoeRoutes routes={{ids,t*(k+3)*4,t,k,(k+3)*4},view(scores,t*(k+2)*4,t,k,(k+2)*4)};
     if (!st) st=qwen38_moe_forward(m,readonly(view(x,t*pitch*4,t,width,pitch*4)),
                                    view(y,t*pitch*4,t,width,pitch*4),&routes,w,&error);
@@ -339,13 +363,39 @@ static void stream_forward(void) {
     }
     assert(y[t*pitch]==-99 && x[t*pitch]==-99 && scores[t*(k+2)]==-99 && ids[t*(k+3)]==UINT32_MAX);
     qwen38_moe_work_destroy(w); qwen38_moe_destroy(m);
-    free(ids); free(scores); free(y); free(x); for (size_t j=0;j<8;j++) free(storage[j]);
+    free(ids); free(scores); free(y); free(x);
+    for (size_t j=0;j<8;j++) {
+        if (h[8]&2) assert(munmap(storage[j],sizes[j])==0); else free(storage[j]);
+    }
+}
+
+static void describe_slice(const char *path,uint32_t layer) {
+    Gguf g; gguf_open(path,&g); Qwen38Config *c=NULL; Qwen38Weights *w=NULL;
+    assert(qwen38_config_load(&g,&c,NULL)==Q38_OK);
+    assert(qwen38_weights_describe(&g,c,&w,NULL)==Q38_OK);
+    Qwen38MoeConfig m=qwen38_config_view(c)->moe;
+    printf("{\"config\":[%u,%u,%u,%u,%u,%u,%u],\"tensors\":[",m.hidden_size,m.experts,
+           m.top_k,m.intermediate,m.shared_intermediate,m.down_physical,(unsigned)m.norm_topk_prob);
+    Qwen38Role roles[]={Q38_MOE_ROUTER,Q38_MOE_GATE,Q38_MOE_UP,Q38_MOE_DOWN,
+        Q38_SHARED_GATE,Q38_SHARED_UP,Q38_SHARED_DOWN,Q38_SHARED_ROUTER};
+    for (size_t j=0;j<8;j++) {
+        const Qwen38Tensor *t=NULL;
+        assert(qwen38_weights_get(w,layer,roles[j],&t,NULL)==Q38_OK);
+        const GgufTensor *s=&t->storage; Q38PackedLayout layout;
+        assert(q38_packed_layout_init(s,(size_t)t->logical_shape[0],&layout,NULL)==Q38_OK);
+        printf("%s{\"name\":\"%s\",\"type\":%u,\"offset\":%zu,\"bytes\":%zu,"
+               "\"physical\":%zu,\"logical\":%zu,\"rows\":%zu,\"experts\":%zu,\"expert_bytes\":%zu}",
+               j?",":"",s->name,s->type,s->file_offset,s->bytes,layout.k_storage,
+               layout.k_logical,layout.n_out,layout.n_experts,layout.expert_bytes);
+    }
+    puts("]}"); qwen38_weights_free(w); qwen38_config_free(c); gguf_close(&g);
 }
 
 int main(int argc, char **argv) {
     if (argc==2 && strcmp(argv[1],"--route")==0) stream_route();
     else if (argc==2 && strcmp(argv[1],"--group")==0) stream_group();
     else if (argc==2 && strcmp(argv[1],"--forward")==0) stream_forward();
+    else if (argc==4 && strcmp(argv[1],"--describe")==0) describe_slice(argv[2],(uint32_t)strtoul(argv[3],NULL,10));
     else { assert(argc==1); unit_tests(); group_tests(); lifecycle_tests(); }
     return 0;
 }
