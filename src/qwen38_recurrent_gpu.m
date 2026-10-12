@@ -22,7 +22,8 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
     if (!g) return q38c_error(e,Q38_OOM,"GPU context allocation failed");
     g->device=(__bridge_retained void *)dev;
     NSString *names[]={@"q38c_activate",@"q38c_rms",@"q38c_activate",@"q38c_activate",
-        @"q38c_hc_read",@"q38c_hc_add",@"q38c_conv",@"q38c_check",@"q38c_history"};
+        @"q38c_hc_read",@"q38c_hc_add",@"q38c_conv",@"q38c_gdn_prepare",@"q38c_rms",
+        @"q38c_check",@"q38c_history"};
     for (size_t i=0;i<Q38C_GPU_OPS+2;++i) {
         id<MTLFunction> fn=[lib newFunctionWithName:names[i]];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
@@ -99,13 +100,29 @@ static Qwen38Status stage(Q38CGpuOp op, const Q38CGpuSpec *s, Q38CGpuArgs *a,
             a->p[2]=op==Q38C_HC_LOW ? 1 : 2; *inplace=UINT64_C(1)<<8;
         }
         a->read_mask=1; *writes=2;
-    } else if (op==Q38C_RMS) {
+    } else if (op==Q38C_RMS || op==Q38C_GDN_NORM) {
         if (v[0].rank!=3 || !gpu_same(v[0],v[2])) goto shape;
         size_t groups=v[0].dim[1], width=v[0].dim[2];
         if (!(gpu_dims(v[1],1,(size_t[]){width}) || gpu_dims(v[1],2,(size_t[]){groups,width}))) goto shape;
-        if (!isfinite(s->eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite RMS epsilon");
-        if (s->eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive RMS epsilon");
-        a->eps=s->eps; a->read_mask=3; *writes=4; *inplace=UINT64_C(1)<<16; *work=t*groups;
+        float eps=s->eps; a->read_mask=3;
+        if (op==Q38C_GDN_NORM) {
+            Qwen38StateSize size; Q38C_TRY(qwen38_gdn_state_bytes(&s->gdn,&size,e));
+            if (!gpu_dims(v[0],3,(size_t[]){t,s->gdn.value_heads,s->gdn.value_dim}) ||
+                !gpu_same(v[0],v[3]) || v[1].rank!=1) goto shape;
+            eps=s->gdn.rms_eps; a->p[0]=1; a->read_mask=11;
+        }
+        if (!isfinite(eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite RMS epsilon");
+        if (eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive RMS epsilon");
+        a->eps=eps; *writes=4; *inplace=UINT64_C(1)<<16; *work=t*groups;
+    } else if (op==Q38C_GDN_PREP) {
+        Qwen38StateSize size; Q38C_TRY(qwen38_gdn_state_bytes(&s->gdn,&size,e));
+        size_t hk=s->gdn.key_heads, hv=s->gdn.value_heads, dk=s->gdn.key_dim, dv=s->gdn.value_dim;
+        if (!gpu_dims(v[0],2,(size_t[]){t,2*hk*dk+hv*dv}) || !gpu_dims(v[1],2,(size_t[]){t,hv}) ||
+            !gpu_same(v[1],v[2]) || !gpu_dims(v[3],1,(size_t[]){hv}) || !gpu_same(v[3],v[4]) ||
+            !gpu_same(v[0],v[5]) || !gpu_same(v[1],v[6]) || !gpu_same(v[2],v[7])) goto shape;
+        a->p[0]=(uint32_t)hk; a->p[1]=(uint32_t)hv; a->p[2]=(uint32_t)dk; a->p[3]=(uint32_t)dv;
+        a->p[4]=1; a->eps=s->gdn.l2_eps; a->read_mask=31; *writes=224; *work=t;
+        *inplace=(UINT64_C(1)<<40)|(UINT64_C(1)<<49)|(UINT64_C(1)<<58);
     } else if (op==Q38C_CONV) {
         Qwen38StateSize size; Q38C_TRY(qwen38_conv_state_bytes(&s->conv,&size,e));
         size_t c=s->conv.channels, k=s->conv.kernel, d=s->conv.dilation, l=(k-1)*d;
@@ -141,6 +158,8 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     if ((unsigned)op>=Q38C_GPU_OPS) return q38c_error(e,Q38_UNSUPPORTED,"unknown C kernel");
     size_t expected_count=(op==Q38C_ACT || op==Q38C_HC_LOW || op==Q38C_HC_INJECT) ? 2 : 3;
     if (op==Q38C_CONV) expected_count=4;
+    if (op==Q38C_GDN_PREP) expected_count=8;
+    if (op==Q38C_GDN_NORM) expected_count=4;
     if (count!=expected_count) return q38c_error(e,Q38_SHAPE,"wrong GPU view count");
     Q38CGpuArgs a={0}; size_t span[8]={0};
     for (size_t j=0;j<count;++j) {

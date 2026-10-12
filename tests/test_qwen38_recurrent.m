@@ -179,6 +179,39 @@ static void convolutions(void) {
         release_view(x); release_view(taps); release_view(history); release_view(split_history); release_view(y); release_view(split_y);
     }
 }
+static void gdn_preparation(void) {
+    Qwen38GdnShape shapes[]={{2,6,3,5,1e-6f,1e-6f},{2,2,4,7,1e-6f,1e-6f},{16,48,128,128,1e-6f,1e-6f}};
+    for (size_t si=0;si<3;++si) for (size_t inplace=0;inplace<2;++inplace) {
+        Q38CGpuSpec spec={.gdn=shapes[si]}; size_t hk=spec.gdn.key_heads, hv=spec.gdn.value_heads;
+        size_t dk=spec.gdn.key_dim, dv=spec.gdn.value_dim, c=2*hk*dk+hv*dv, t=si==2 ? 3 : 129;
+        View all[]={view(2,(size_t[]){t,c},3),view(2,(size_t[]){t,hv},3),view(2,(size_t[]){t,hv},5),
+            view(1,(size_t[]){hv},0),view(1,(size_t[]){hv},0),view(2,(size_t[]){t,c},7),
+            view(2,(size_t[]){t,hv},7),view(2,(size_t[]){t,hv},9)};
+        for (size_t j=0;j<5;++j) pattern(all[j],0.7f);
+        for (size_t h=0;h<hv;++h) all[3].cpu.data[h]=-fabsf(all[3].cpu.data[h]);
+        /* Include exactly zero and sub-epsilon Q/K, and A==0. */
+        for (size_t j=0;j<2*hk*dk;++j) all[0].cpu.data[j]=j<dk ? 0 : 1e-10f;
+        View dest[]={all[inplace ? 0 : 5],all[inplace ? 1 : 6],all[inplace ? 2 : 7]};
+        float *refs[]={expected(dest[0]),expected(dest[1]),expected(dest[2])};
+        Qwen38F32Mut out[3]; for (size_t j=0;j<3;++j) { out[j]=dest[j].cpu; out[j].data=refs[j]; }
+        assert(qwen38_gdn_prepare(&spec.gdn,q38c_ro(all[0].cpu),q38c_ro(all[1].cpu),q38c_ro(all[2].cpu),
+            q38c_ro(all[3].cpu),q38c_ro(all[4].cpu),out[0],out[1],out[2],NULL)==Q38_OK);
+        Qwen38GpuF32 v[8]; for (size_t j=0;j<8;++j) v[j]=all[j].gpu;
+        for (size_t j=0;j<3;++j) v[j+5]=dest[j].gpu;
+        assert(q38c_gpu_encode(gpu,begin(0),Q38C_GDN_PREP,&spec,v,8,NULL)==Q38_OK); finish(0);
+        for (size_t j=0;j<3;++j) { compare(dest[j],refs[j],1e-5); free(refs[j]); }
+        for (size_t j=0;j<8;++j) { guards(all[j]); release_view(all[j]); }
+        View o=view(3,(size_t[]){t,hv,dv},5), z=view(3,(size_t[]){t,hv,dv},3);
+        View gain=view(1,(size_t[]){dv},0), y=view(3,(size_t[]){t,hv,dv},7);
+        pattern(o,0.5f); pattern(z,2); pattern(gain,1.5f); gain.cpu.data[0]=1e-10f;
+        View target=inplace ? o : y; float *ref=expected(target); Qwen38F32Mut norm=target.cpu; norm.data=ref;
+        assert(qwen38_gdn_norm_gate(&spec.gdn,q38c_ro(o.cpu),q38c_ro(z.cpu),q38c_ro(gain.cpu),norm,NULL)==Q38_OK);
+        Qwen38GpuF32 nv[]={o.gpu,gain.gpu,target.gpu,z.gpu};
+        assert(q38c_gpu_encode(gpu,begin(0),Q38C_GDN_NORM,&spec,nv,4,NULL)==Q38_OK); finish(0);
+        compare(target,ref,1e-5); free(ref); guards(o); guards(z); guards(gain);
+        release_view(o); release_view(z); release_view(gain); release_view(y);
+    }
+}
 int main(int argc, char **argv) {
     assert(argc==2);
     @autoreleasepool {
@@ -188,7 +221,7 @@ int main(int argc, char **argv) {
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
         assert(q38c_gpu_create((__bridge void *)device,(__bridge void *)lib,&gpu,NULL)==Q38_OK);
         error_buffer=[device newBufferWithLength:4 options:MTLResourceStorageModeShared];
-        activations(); norms(); hc(); convolutions(); q38c_gpu_destroy(gpu);
+        activations(); norms(); hc(); convolutions(); gdn_preparation(); q38c_gpu_destroy(gpu);
         printf("PASS: Metal C stages; max scaled error %.9g\n",maximum_error);
         error_buffer=nil; queue=nil; device=nil;
     }

@@ -29,8 +29,10 @@ static bool valid(float x, device atomic_uint *error) {
 }
 kernel void q38c_check(Q38C_BUFFERS) {
     device float *v[]={v0,v1,v2,v3,v4,v5,v6,v7};
-    for (uint j=0;j<8;++j)
-        if ((a.read_mask&(1u<<j)) && i<a.v[j].count) valid(v[j][at(a.v[j],i)],error);
+    for (uint j=0;j<8;++j) if ((a.read_mask&(1u<<j)) && i<a.v[j].count) {
+        float x=v[j][at(a.v[j],i)]; valid(x,error);
+        if (a.p[4]==1 && j==3 && x>0) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
+    }
 }
 kernel void q38c_activate(Q38C_BUFFERS) {
     if (i>=a.v[0].count || atomic_load_explicit(error,memory_order_relaxed)) return;
@@ -54,6 +56,7 @@ kernel void q38c_rms(Q38C_BUFFERS) {
     for (uint j=0;j<width;++j) {
         float y=(v0[xi+j]*scale)*v1[wi+j];
         if (!valid(y,error)) return;
+        if (a.p[0]) y*=sigmoid(v3[at(a.v[3],i*width+j)]);
         v2[yi+j]=y;
     }
 }
@@ -92,5 +95,28 @@ kernel void q38c_history(Q38C_BUFFERS) {
         ulong row=ulong(t)+j;
         float x=row<l ? v3[at(a.v[3],uint(row)*c+i)] : v0[at(a.v[0],uint(row-l)*c+i)];
         v3[at(a.v[3],j*c+i)]=x;
+    }
+}
+kernel void q38c_gdn_prepare(Q38C_BUFFERS) {
+    if (i>=a.v[0].dim[0] || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3];
+    uint src=i*a.v[0].stride[0], dst=i*a.v[5].stride[0];
+    float qscale=1.0f/sqrt(float(dk));
+    for (uint h=0;h<2*hk;++h) {
+        uint begin=h*dk; float sum=0;
+        for (uint j=0;j<dk;++j) sum+=v0[src+begin+j]*v0[src+begin+j];
+        float squared=sum+a.eps;
+        if (!valid(squared,error)) return;
+        float inv=1.0f/sqrt(squared), scale=h<hk ? qscale : 1.0f;
+        for (uint j=0;j<dk;++j) v5[dst+begin+j]=(v0[src+begin+j]*inv)*scale;
+    }
+    for (uint j=0;j<hv*dv;++j) v5[dst+2*hk*dk+j]=v0[src+2*hk*dk+j];
+    for (uint h=0;h<hv;++h) {
+        float value=v1[at(a.v[1],i*hv+h)]+v4[h];
+        if (!valid(value,error)) return;
+        float g=v3[h]*softplus(value);
+        if (!valid(g,error)) return;
+        v6[at(a.v[6],i*hv+h)]=g;
+        v7[at(a.v[7],i*hv+h)]=sigmoid(v2[at(a.v[2],i*hv+h)]);
     }
 }
