@@ -19,6 +19,9 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import struct
+import subprocess
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import urllib.request
@@ -388,6 +391,33 @@ def online_attention(cfg, prepared, tile_size=3, splits=2, precision="float32"):
             "logsumexp": maximum + np.log(denominator)}
 
 
+def native_public(native, cfg, x, ends):
+    config = struct.pack("=9I2f", cfg.heads, cfg.kv_heads, cfg.head_dim,
+                         cfg.index_heads, 1, cfg.index_dim, cfg.ratio, cfg.budget,
+                         cfg.rotary_dim, cfg.eps, cfg.theta)
+    n = len(x.qg)
+    payload = config + struct.pack("=2I", n, len(ends)) + np.array(ends, np.uint32).tobytes()
+    payload += b"".join(a.tobytes() for a in x.arrays().values())
+    run = subprocess.run([str(native), "public"], input=payload, capture_output=True, check=True)
+    if run.stderr: raise RuntimeError(run.stderr.decode())
+    code, = struct.unpack("=i", run.stdout[:4])
+    values = np.frombuffer(run.stdout[4:], np.float32)
+    offset = 0
+    result = {}
+    for key, shape in (("out", (n, cfg.heads, cfg.head_dim)),
+                       ("k", (n, cfg.kv_heads, cfg.head_dim)), ("ik", (n, cfg.index_dim)),
+                       ("blocks", (n // cfg.ratio, cfg.index_dim)),
+                       ("trace", (n, 2 * cfg.heads * cfg.head_dim + cfg.index_heads * cfg.index_dim)),
+                       ("scores", (n // cfg.ratio,))):
+        size = int(np.prod(shape))
+        result[key] = values[offset:offset+size].reshape(shape)
+        offset += size
+    selected = min(n // cfg.ratio,cfg.budget // cfg.ratio)*cfg.ratio+n%cfg.ratio
+    result["ids"] = values[offset:offset+selected].view(np.uint32)
+    offset += selected
+    if offset != len(values): raise ValueError("Native fixture output length mismatch")
+    return code, result
+
 def fixture_case(name: str):
     if name == "tiny":
         return Config(), 17, 0
@@ -448,6 +478,101 @@ def write_fixture(hf, source: Path, output: Path, case: str, seed: int = 3811):
     return record
 
 
+def verify_real_slice(hf, native, reference, checkpoint, output):
+    """A catalog -> B projections -> public D, bounded to one QSA layer.
+
+    Synthetic activations on actual Q2 weights; NOT a BF16-quality test.
+    Invoke under the repository GPU/workload lock, with fresh output.
+    """
+    import qwen38_packed as packed
+    root=Path(__file__).resolve().parents[2]
+    proof=json.loads((root/"bench/qwen38_q2_20261011_phase0/checkpoint.verification.json").read_text())
+    before=checkpoint.stat()
+    if not proof["matched"] or (before.st_size,before.st_ino,before.st_mtime_ns)!=(
+            proof["size_bytes"],proof["file_inode"],proof["file_mtime_ns"]):
+        raise ValueError("Checkpoint identity differs from recorded full verification")
+    output.mkdir(parents=True,exist_ok=False)
+    catalog=json.loads(subprocess.check_output([str(native),"catalog",str(checkpoint),"3"]))
+    cfg=Config(**catalog["config"]); tokens=5
+    x=np.random.default_rng(3811).uniform(-.05,.05,(tokens,cfg.width)).astype(np.float32)
+    arrays={"x":x}; records=[]; read_bytes=0
+    fd=os.open(checkpoint,os.O_RDONLY)
+    identity=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+    def read_tensor(t,index,row,rows):
+        nonlocal read_bytes
+        row_bytes=t["bytes"]//t["rows"]; count=rows*row_bytes
+        offset=t["offset"]+row*row_bytes
+        if offset<0 or offset+count>before.st_size or read_bytes+count>64*1024**2:
+            raise ValueError("Real slice exceeds extent/read budget")
+        raw=packed.pread_exact(fd,offset,count); read_bytes+=count
+        name=f"slice-{index}-row-{row}.bin"; (output/name).write_bytes(raw)
+        records.append(dict(file=name,tensor=t["name"],offset=offset,bytes=count,
+                            sha256=hashlib.sha256(raw).hexdigest()))
+        return raw
+    metrics=[]
+    def project(t,index,activation):
+        parts=[]; refs=[]; max_ratio=0.; max_error=0.
+        for row in range(0,t["rows"],128):
+            rows=min(128,t["rows"]-row); raw=read_tensor(t,index,row,rows)
+            weights=packed.decode(reference,raw,t["type"],t["k"],rows)
+            ref,absolute=packed.matmul_reference(weights,activation,t["k"])
+            payload=struct.pack("=4I",len(activation),rows,t["k"],t["type"])+raw+activation.tobytes()
+            run=subprocess.run([str(native),"linear"],input=payload,capture_output=True,check=True)
+            if run.stderr or struct.unpack("=i",run.stdout[:4])[0]: raise ValueError("B projection failed")
+            y=np.frombuffer(run.stdout[4:],np.float32).reshape(len(activation),rows)
+            u=2**-24; g=(2*t["k"]+8)*u/(1-(2*t["k"]+8)*u)
+            bound=g*absolute+2*np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64)
+            error=np.abs(y-ref)
+            if not np.all(error<=bound): raise AssertionError("B projection bound exceeded")
+            max_ratio=max(max_ratio,float(np.max(error/np.maximum(bound,np.finfo(float).tiny))))
+            max_error=max(max_error,float(error.max())); parts.append(y.copy()); refs.append(ref)
+        metrics.append(dict(tensor=t["name"],max_abs_error=max_error,max_error_over_bound=max_ratio))
+        return np.concatenate(parts,axis=1),np.concatenate(refs,axis=1)
+    try:
+        projections=[]
+        for i,t in enumerate(catalog["tensors"][:5]):
+            y,r=project(t,i,x); projections.append(y); arrays[f"projection_{i}"]=y; arrays[f"projection_ref64_{i}"]=r
+        gains=[]
+        for i,t in enumerate(catalog["tensors"][6:],6):
+            raw=read_tensor(t,i,0,1)
+            gains.append(packed.decode(reference,raw,t["type"],t["k"],1).ravel().copy())
+        inputs=Inputs(projections[0].reshape(tokens,cfg.heads,2,cfg.head_dim),
+            projections[1].reshape(tokens,cfg.kv_heads,cfg.head_dim),
+            projections[2].reshape(tokens,cfg.kv_heads,cfg.head_dim),
+            projections[3].reshape(tokens,cfg.index_heads,cfg.index_dim),projections[4],*gains)
+        ref=evaluate(hf,cfg,inputs); runs=[]
+        for ends in ([5],[1,2,3,4,5],[1,3,5]):
+            code,got=native_public(native,cfg,inputs,ends)
+            if code: raise AssertionError(f"Public attention failed: {code}")
+            np.testing.assert_allclose(got["out"],ref["gated_fp64"],atol=3e-5,rtol=2e-4)
+            np.testing.assert_allclose(got["k"],ref["k"],atol=2e-5,rtol=2e-5)
+            np.testing.assert_allclose(got["blocks"],ref["block_keys_last"],atol=2e-5,rtol=2e-5)
+            runs.append(got["out"])
+        np.testing.assert_array_equal(runs[0],runs[1]); np.testing.assert_array_equal(runs[0],runs[2])
+        arrays["attention_native"]=runs[0]; arrays["attention_ref64"]=ref["gated_fp64"]
+        arrays["out_projection"],arrays["out_projection_ref64"]=project(catalog["tensors"][5],5,runs[0].reshape(tokens,-1))
+        # Small independent decoder/offset probes at two later trunk layers.
+        for layer in (27,47):
+            other=json.loads(subprocess.check_output([str(native),"catalog",str(checkpoint),str(layer)]))
+            for i,t in enumerate(other["tensors"]):
+                raw=read_tensor(t,f"l{layer}-{i}",0,min(2,t["rows"]))
+                packed.decode(reference,raw,t["type"],t["k"],min(2,t["rows"]))
+        if identity(os.fstat(fd))!=identity(before) or identity(checkpoint.stat())!=identity(before):
+            raise ValueError("Checkpoint changed while reading")
+    finally:
+        os.close(fd)
+    arrays.update({f"input_{k}":v for k,v in inputs.arrays().items()})
+    np.savez(output/"fixture.npz",**arrays)
+    manifest=dict(schema_version=1,checkpoint_sha256=proof["sha256"],checkpoint_revision=proof["revision"],
+        source_sha256=SOURCE_HASH,base="6a6b886e985185d7c9104eda888e6a406553aedf",catalog=catalog,
+        reads=records,read_bytes=read_bytes,read_cap_bytes=64*1024**2,temporary_cap_bytes=256*1024**2,
+        projection_metrics=metrics,max_abs_attention_error=float(np.max(np.abs(runs[0]-ref["gated_fp64"]))),
+        fixture_sha256=hashlib.sha256((output/"fixture.npz").read_bytes()).hexdigest(),
+        scope="Synthetic X, actual Q2 layer 3 weights; A catalog, B products, C prep, D attention; no BF16 loss or real activation capture")
+    (output/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     root = Path(__file__).resolve().parents[2]
@@ -457,6 +582,9 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--case", choices=["tiny", "boundary", "real-shape"], default="tiny")
     parser.add_argument("--seed", type=int, default=3811)
+    parser.add_argument("--slice-checkpoint",type=Path)
+    parser.add_argument("--native",type=Path)
+    parser.add_argument("--packed-reference",type=Path)
     args = parser.parse_args()
     if not args.fetch_source and args.output is None:
         parser.error("Specify --fetch-source or --output (tests never fetch implicitly)")
@@ -468,6 +596,11 @@ def main():
         print(f"Verified source: {args.source}")
     if args.output is not None:
         hf = load_reference(args.source)
+        if args.slice_checkpoint:
+            if not args.native or not args.packed_reference: parser.error("Slice needs --native and --packed-reference")
+            record=verify_real_slice(hf,args.native.resolve(),args.packed_reference.resolve(),args.slice_checkpoint,args.output)
+            print(json.dumps({"read_bytes":record["read_bytes"],"max_abs_attention_error":record["max_abs_attention_error"]}))
+            return
         record = write_fixture(hf, args.source, args.output, args.case, args.seed)
         print(json.dumps({"output": str(args.output), "case": args.case,
                           "max_abs_error": record["max_abs_attention_eager_vs_fp64"]}))

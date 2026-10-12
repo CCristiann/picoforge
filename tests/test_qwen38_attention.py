@@ -1,8 +1,9 @@
-"""Independent CPU oracle tests; no native/GPU parity is claimed here."""
+"""Independent oracle with explicit optional native CPU and private Metal gates."""
 import argparse
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +19,9 @@ sys.path.insert(0, str(ROOT / "tools/oracle"))
 import qwen38_attention as oracle
 
 SOURCE = ROOT / "build/qwen38-attention/modeling_qwen4_exp.py"
+METAL = None
+METAL_LIBRARY = ROOT / "build/qwen38-d/attention.metallib"
+SLICE_FIXTURE = None
 NATIVE = None  # Explicit --native runs the sanitized C harness, never a stub.
 
 
@@ -680,11 +684,222 @@ class NativeAttentionTests(unittest.TestCase):
         np.testing.assert_array_equal(*outputs)
 
 
+    def public(self, cfg, x, ends):
+        return oracle.native_public(NATIVE,cfg,x,ends)
+
+    def test_public_prep_gain_gate_pooling_and_chunk_equivalence(self):
+        for case in ("tiny", "real-shape"):
+            cfg, n, _ = oracle.fixture_case(case)
+            x = oracle.synthetic(cfg, n)
+            # Stable, nondegenerate index ranking; other projections/gains
+            # and gates remain random and non-unit as in the original fixture.
+            x.iq.fill(0); x.iq[..., -1] = 1
+            coords = np.linspace(.1,.9,(n+3)//4,dtype=np.float32).repeat(4)[:n]
+            x.ik.fill(0); x.ik[:, -1] = coords; x.ik[:, -2] = np.sqrt(1-coords**2)
+            ref = oracle.evaluate(self.hf, cfg, x)
+            outputs = []
+            for ends in ([n], list(range(1,n+1)), [0,1,3,4,4,7,n]):
+                code, got = self.public(cfg, x, ends)
+                self.assertEqual(code, 0)
+                np.testing.assert_allclose(got["out"], ref["gated_fp64"], atol=3e-5, rtol=2e-4)
+                np.testing.assert_allclose(got["k"], ref["k"], atol=2e-5, rtol=2e-5)
+                np.testing.assert_allclose(got["blocks"], ref["block_keys_last"], atol=2e-5, rtol=2e-5)
+                np.testing.assert_array_equal(got["ik"], x.ik)
+                hd = cfg.heads * cfg.head_dim
+                for p in sorted(set(end-1 for end in ends if end)):
+                    np.testing.assert_allclose(got["trace"][p,:hd], ref["q"][p].ravel(), atol=2e-5, rtol=2e-5)
+                    gate = torch.sigmoid(torch.from_numpy(ref["gate"][p])).numpy().ravel()
+                    np.testing.assert_allclose(got["trace"][p,hd:2*hd], gate, atol=1e-5, rtol=1e-5)
+                    np.testing.assert_allclose(got["trace"][p,2*hd:], ref["iq"][p].ravel(), atol=2e-5, rtol=2e-5)
+                outputs.append(got["out"])
+            np.testing.assert_array_equal(outputs[0],outputs[1])
+            np.testing.assert_array_equal(outputs[0],outputs[2])
+
+    def test_public_nonfinite_invalidates_state(self):
+        cfg = oracle.Config()
+        for name in oracle.synthetic(cfg, 13).arrays():
+            x = oracle.synthetic(cfg, 13)
+            x.arrays()[name].flat[-1] = np.nan
+            code, _ = self.public(cfg, x, [3,7,13])
+            self.assertEqual(code,16,name)
+
+    def test_public_ties_preserve_contract_and_record_uncertain_margin(self):
+        cfg=oracle.Config()
+        records=[]
+        for near in (False,True):
+            x=oracle.synthetic(cfg,13); x.qg.fill(0); x.iq.fill(0); x.ik.fill(0)
+            if near:
+                x.iq[..., -1]=1; x.ik[..., -2]=.8
+                step=np.spacing(np.float32(.6))
+                x.ik[:, -1]=np.repeat(np.array([.6+step,.6,.6-step,.6],np.float32),4)[:13]
+            x.gamma_iq.fill(1); x.gamma_ik.fill(1)
+            ref=oracle.evaluate(self.hf,cfg,x)
+            code,got=self.public(cfg,x,[3,7,11,12,13]); self.assertEqual(code,0)
+            order=np.lexsort((np.arange(3),-got["scores"]))
+            ids=np.r_[np.concatenate([np.arange(b*4,b*4+4) for b in sorted(order[:2])]),12]
+            np.testing.assert_array_equal(got["ids"],ids)
+            expected=np.repeat(x.v[ids].astype(np.float64).mean(0),2,axis=0)*.5
+            np.testing.assert_allclose(got["out"][-1],expected,atol=3e-5,rtol=2e-4)
+            scores64=ref["indexer_scores_fp64_unscaled"][-1]
+            rank=np.sort(scores64)[::-1]; gap=float(rank[1]-rank[2])
+            error=float(np.max(np.abs(got["scores"]-scores64)))
+            records.append(dict(near=near,gap=gap,max_score_error=error,
+                scores_fp32=got["scores"].tolist(),scores_fp64=scores64.tolist(),
+                selected_native=got["ids"].tolist(),selected_hf=np.flatnonzero(ref["mask"][-1]).tolist(),
+                end_to_end_parity_certified=False,
+                decision="Exact FP32 contract tested; boundary ties/near-ties require integration review"))
+            self.assertLess(gap,4e-4)
+        folder=Path(tempfile.mkdtemp(prefix="selection-",dir=ROOT/"build/qwen38-d"))
+        (folder/"manifest.json").write_text(json.dumps(records,indent=2)+"\n")
+
+    def test_public_first_sparse_boundary(self):
+        cfg=oracle.Config(budget=2048); x=oracle.synthetic(cfg,2053)
+        x.iq.fill(0); x.iq[..., -1]=1; x.ik.fill(0)
+        coords=np.linspace(.1,.9,514,dtype=np.float32).repeat(4)[:2053]
+        x.ik[:, -1]=coords; x.ik[:, -2]=np.sqrt(1-coords**2)
+        results=[]
+        for ends in ([2053],[0,1,1023,1024,1025,2047,2048,2051,2052,2053]):
+            code,got=self.public(cfg,x,ends); self.assertEqual(code,0); results.append(got)
+        np.testing.assert_array_equal(results[0]["out"],results[1]["out"])
+        ref=oracle.evaluate(self.hf,cfg,x,2046)
+        np.testing.assert_allclose(results[0]["out"][2046:],ref["gated_fp64"],atol=3e-5,rtol=2e-4)
+        np.testing.assert_array_equal(results[0]["ids"],np.flatnonzero(ref["mask"][-1]))
+
+
+class MetalAttentionTests(unittest.TestCase):
+    """D stages on GPU, existing CPU selection; no GPU state/append ABI claim."""
+    @classmethod
+    def setUpClass(cls):
+        if METAL is None or NATIVE is None:
+            raise unittest.SkipTest("Pass --metal and --native under the shared GPU lock")
+        torch.set_num_threads(1)
+        cls.hf=oracle.load_reference(SOURCE)
+        cls.metrics={"calls":0,"peak_metal_allocated_bytes":0,"max_error_vs_cpu":{},"slice_error":None}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.metrics.update(source_sha256=oracle.SOURCE_HASH,
+            metal_sha256=hashlib.sha256(METAL_LIBRARY.read_bytes()).hexdigest(),
+            test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            scope="Private Metal stages and hybrid CPU selection; no GPU session/lifecycle or BF16 loss")
+        folder=Path(tempfile.mkdtemp(prefix="metal-",dir=ROOT/"build/qwen38-d"))
+        (folder/"manifest.json").write_text(json.dumps(cls.metrics,indent=2)+"\n")
+
+    def call(self,mode,dims,*arrays,dtype=np.float32):
+        if mode=="select":  # Explicit hybrid path, not a second selector.
+            return NativeAttentionTests.call(self,mode,dims,*arrays,dtype=dtype)
+        payload=struct.pack("=4I",*dims)+b"".join(x.tobytes() for x in arrays)
+        run=subprocess.run([str(METAL),str(METAL_LIBRARY),mode],input=payload,capture_output=True,check=True)
+        log=re.sub(rb"(?m)^\d{4}-\d\d-\d\d [0-9:.]+ test_attention_gpu\[\d+:\d+\] Metal API Validation Enabled\n",b"",run.stderr)
+        sizes=re.findall(rb"(?m)^Q38_D_METAL_BYTES=(\d+)\n",log); self.assertEqual(len(sizes),1)
+        self.metrics["peak_metal_allocated_bytes"]=max(self.metrics["peak_metal_allocated_bytes"],int(sizes[0]))
+        log=re.sub(rb"(?m)^Q38_D_METAL_BYTES=\d+\n",b"",log)
+        self.assertEqual(log,b"")
+        code=struct.unpack("=i",run.stdout[:4])[0]; got=np.frombuffer(run.stdout[4:],dtype=dtype)
+        self.metrics["calls"]+=1
+        if mode!="prep":
+            cpu_code,cpu=NativeAttentionTests.call(self,mode,dims,*arrays,dtype=dtype)
+            self.assertEqual(code,cpu_code)
+            if code==0 and len(got):
+                error=float(np.max(np.abs(got.astype(np.float64)-cpu)))
+                previous=self.metrics["max_error_vs_cpu"].get(mode,0.)
+                self.metrics["max_error_vs_cpu"][mode]=max(previous,error)
+        return code,got
+
+    attend=NativeAttentionTests.attend
+    test_rope=NativeAttentionTests.test_native_rope_matches_official_positions
+    test_real_rope=NativeAttentionTests.test_native_real_rotary_at_long_absolute_positions
+    test_scores_and_cpu_selection=NativeAttentionTests.test_native_scores_and_selection_match_independent_reference
+    test_attention_sdpa=NativeAttentionTests.test_native_tiled_softmax_and_gate_match_sdpa
+    test_online_rescale_and_poison=NativeAttentionTests.test_native_tiles_rescale_and_skip_poisoned_unselected_keys
+    test_pool=NativeAttentionTests.test_native_pool_is_mean_of_raw_keys_before_normalization
+    test_real_index_margin=NativeAttentionTests.test_native_real_index_dimensions_and_selection_margin
+
+    def test_c_norm_and_sigmoid_then_d_rope_one_command(self):
+        for cfg in (oracle.Config(),oracle.fixture_case("real-shape")[0]):
+            x=oracle.synthetic(cfg,9)
+            rng=np.random.default_rng(19)
+            x.qg[:,:,1]=rng.uniform(-3,3,x.qg[:,:,1].shape)
+            x.gamma_q[:]=np.linspace(.5,1.5,cfg.head_dim,dtype=np.float32)
+            # HF offset convention must round-trip exactly to the direct gain.
+            x.gamma_q[:]=(x.gamma_q-1)+1
+            ref=oracle.evaluate(self.hf,cfg,x)
+            for pos in (0,3,4,8):
+                code,got=self.call("prep",(cfg.heads,cfg.head_dim,cfg.rotary_dim,pos),
+                    np.array([cfg.theta,cfg.eps],np.float32),x.qg[pos,:,0].copy(),x.gamma_q,x.qg[pos,:,1].copy())
+                self.assertEqual(code,0)
+                q,gate=got.reshape(2,cfg.heads,cfg.head_dim)
+                np.testing.assert_allclose(q,ref["q"][pos],atol=2e-5,rtol=2e-5)
+                expected=torch.sigmoid(torch.from_numpy(x.qg[pos,:,1])).numpy()
+                np.testing.assert_allclose(gate,expected,atol=1e-5,rtol=1e-5)
+
+    def test_q2_slice_hybrid_composition(self):
+        if SLICE_FIXTURE is None:
+            self.skipTest("Pass --slice-fixture generated by the bounded A+B CPU gate")
+        manifest=json.loads((SLICE_FIXTURE/"manifest.json").read_text())
+        artifact=SLICE_FIXTURE/"fixture.npz"
+        self.assertEqual(hashlib.sha256(artifact.read_bytes()).hexdigest(),manifest["fixture_sha256"])
+        self.assertEqual(manifest["source_sha256"],oracle.SOURCE_HASH)
+        cfg=oracle.Config(**manifest["catalog"]["config"])
+        with np.load(artifact,allow_pickle=False) as saved:
+            x=oracle.Inputs(**{name:saved["input_"+name].copy() for name in oracle.Inputs.__dataclass_fields__})
+        ref=oracle.evaluate(self.hf,cfg,x); n=len(x.qg)
+        def prep(raw,gain,pos,gate=None):
+            if gate is None: gate=np.zeros_like(raw)
+            h,d=raw.shape
+            code,got=self.call("prep",(h,d,cfg.rotary_dim,pos),np.array([cfg.theta,cfg.eps],np.float32),
+                raw.copy(),gain,gate.copy()); self.assertEqual(code,0)
+            return got.reshape(2,h,d)
+        q=[]; gates=[]; keys=[]; iq=[]; blocks=[]
+        for pos in range(n):
+            pair=prep(x.qg[pos,:,0],x.gamma_q,pos,x.qg[pos,:,1]); q.append(pair[0]); gates.append(pair[1])
+            keys.append(prep(x.k[pos],x.gamma_k,pos)[0]); iq.append(prep(x.iq[pos],x.gamma_iq,pos)[0])
+        for b in range(n//cfg.ratio):
+            code,pooled=self.call("pool",(cfg.ratio,cfg.index_dim,0,0),x.ik[b*cfg.ratio:(b+1)*cfg.ratio])
+            self.assertEqual(code,0)
+            np.testing.assert_allclose(pooled,ref["pooled_last"][b],atol=2e-5,rtol=2e-5)
+            blocks.append(prep(pooled[None],x.gamma_ik,b*cfg.ratio)[0][0])
+        for values,name in ((q,"q"),(keys,"k"),(iq,"iq"),(blocks,"block_keys_last")):
+            np.testing.assert_allclose(values,ref[name],atol=2e-5,rtol=2e-5)
+        keys=np.array(keys); blocks=np.array(blocks); output=[]
+        for pos in range(n):
+            complete=(pos+1)//cfg.ratio
+            code,scores=self.call("scores",(cfg.index_heads,cfg.index_dim,complete,0),iq[pos],blocks[:complete])
+            self.assertEqual(code,0)
+            np.testing.assert_allclose(scores,ref["indexer_scores_fp64_unscaled"][pos,:complete],atol=2e-4,rtol=2e-5)
+            code,ids=self.call("select",(complete,cfg.budget//cfg.ratio,0,0),scores,dtype=np.uint32)
+            self.assertEqual(code,0)
+            tokens=np.array([int(b)*cfg.ratio+i for b in ids for i in range(cfg.ratio)]+
+                            list(range(complete*cfg.ratio,pos+1)),np.uint32)
+            np.testing.assert_array_equal(tokens,np.flatnonzero(ref["mask"][pos]))
+            code,y=self.call("attend",(cfg.heads,cfg.kv_heads,cfg.head_dim,pos+1),q[pos],gates[pos],
+                keys[:pos+1],x.v[:pos+1],np.array([len(tokens)],np.uint32),tokens)
+            self.assertEqual(code,0); output.append(y.reshape(cfg.heads,cfg.head_dim))
+        np.testing.assert_allclose(output,ref["gated_fp64"],atol=3e-5,rtol=2e-4)
+        self.metrics["slice_error"]=float(np.max(np.abs(output-ref["gated_fp64"])))
+        self.metrics["slice_fixture_sha256"]=manifest["fixture_sha256"]
+
+    def test_kernel_bounds_and_nonfinite_error_bits(self):
+        cfg=oracle.Config(); ref=oracle.evaluate(self.hf,cfg,oracle.synthetic(cfg,3))
+        for ids in ([1,1],[2,1],[3]):
+            code,_=self.attend(cfg,ref,2,np.array(ids,np.uint32)); self.assertEqual(code,4)
+        for mode,dims,arrays in (
+            ("rope",(1,8,4,1),[np.array([10000],np.float32),np.full(8,np.nan,np.float32)]),
+            ("scores",(1,8,1,0),[np.full(8,np.nan,np.float32),np.ones(8,np.float32)])):
+            code,_=self.call(mode,dims,*arrays); self.assertEqual(code,16)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--native", type=Path)
+    parser.add_argument("--metal", type=Path)
+    parser.add_argument("--slice-fixture", type=Path)
+    parser.add_argument("--metal-library", type=Path, default=METAL_LIBRARY)
     args, remaining = parser.parse_known_args()
+    SLICE_FIXTURE = args.slice_fixture
+    METAL = args.metal.resolve() if args.metal else None
+    METAL_LIBRARY = args.metal_library.resolve()
     SOURCE = args.source
     NATIVE = args.native.resolve() if args.native else None
     unittest.main(argv=[sys.argv[0], *remaining])
