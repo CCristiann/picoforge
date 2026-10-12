@@ -612,3 +612,171 @@ poi IQ2_XXS/Q2_K/Q8_0 per pesi compressi e binding/slice da A.
 [ds4-c]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/ds4.c#L68391-L68451
 [ds4-metal]: https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/metal/qwen4.metal#L1100-L1250
 [paper]: https://arxiv.org/html/2608.30320v1
+
+## ESEGUI v2 — composizione CPU sulla BASE_INTEGRATA
+
+Base `6a6b886e985185d7c9104eda888e6a406553aedf`; nuovo worktree
+`../picoforge-f-v2`, branch `impl/qwen38-f-v2`; nessun reimport delle consegne.
+Create/work/forward implementati in `src/qwen38_moe.c`: config e descrittori
+copiati, byte borrowed immutabili, validazione dei pesi tramite B con M=0.
+I due router richiedono F32. La metadata del modello rimane viva finché esiste
+un workspace; destroy invalida l'owner e work_reset lo rifiuta. Chiamate CPU
+sincrone, un workspace per esecuzione, nessuna concorrenza sullo stesso handle.
+Preflight strutturale preserva output; errore numerico durante forward rende
+workspace/output invalidi fino a reset. Non promette rollback della sessione.
+
+Scratch allocato solo da work_create, budget include metadata+arena; microbatch
+min(token_cap,32), gather per coppia, scratch gate/up/SiLU condiviso tra gruppi.
+B esegue tutte le proiezioni; C tutte le SiLU/sigmoid. Grouping stabile F,
+riduzione slot crescente e shared aggiunto alla fine, senza residuo. Il privato
+observer registra viste temporanee degli stadi per verificare gli intermedi;
+non sostituisce operatori e non può mutare/ri-entrare/liberare il workspace.
+
+Verificati 27 test (strict runner, zero skip), harness ASan/UBSan e warning
+come errori. Floating T=0/1/2/31/32/33/65/1024, K=1/2/E, chunk 1/7/32,
+rami azzerati separatamente, shared gate, stride, alias, budget, reset dopo
+NaN nei pesi borrowed. Packed H256/I640/Ip768/Is32, IQ2_XXS gate/up,
+Q2_K down e Q8_0 shared: T=1/2/33. Oracle decoder esterno di B, non F;
+pad down nonzero e variante F32 con poison 1e30 danno lo stesso risultato.
+Ogni prodotto confrontato al bound B su identico input; attivazioni ai gate F.
+
+Slice A+B: layer 0/3/47, router completo 512 esperti e top-10 naturale,
+un input sintetico RMS~0.1 per layer. 28,354,560 byte letti per layer, manifest
+con offset/hash/config/provenienza; include 0/511 come **probe caricati**, non
+come esperti aggiunti alla route. Non sono attivazioni estratte da prompt.
+Il harness riserva indirizzi anonimi per il layout dei tre tensori routed,
+abilitando solo le pagine degli esperti forniti: nessun mapping del checkpoint
+intero, nessuna espansione FP32 del layer. Riserva virtuale e payload residente
+sono distinti; il limite trasporto è 64 MiB, l'oracle elabora un esperto alla
+volta. Il blocco upstream con E=1 è usato per verificare ciascun esperto
+selezionato, dopo aver controllato il router originale completo; le slice
+sono dequantizzate esclusivamente dall'oracle indipendente B.
+
+| Layer | Y max abs vs FP64 | Y NRMSE | errore probabilità | margine minimo top-K/K+1 |
+|---|---:|---:|---:|---:|
+| 0 | 2.063e-9 | 1.209e-6 | 2.561e-9 | 1.308e-5 |
+| 3 | 2.105e-9 | 1.285e-6 | 1.164e-9 | 5.753e-6 |
+| 47 | 2.280e-9 | 1.379e-6 | 4.657e-10 | 7.309e-7 |
+
+Tutti gli ID coincidono. Il massimo rapporto errore/bound B dei prodotti
+routed è 0.004622. Controllati routed e shared, gate/up/down e attivazioni;
+Y rispetta entrambe le soglie slice, senza allargarle. Workspace reale a T=1:
+235592 byte. Le misure non stimano perdita rispetto al BF16 originale.
+
+Comando CPU aggiornato (il target condiviso v1 non linka ancora B+C+A):
+
+```sh
+clang -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -fno-omit-frame-pointer -Isrc \
+  tests/test_qwen38_moe.c src/qwen38_moe.c src/qwen38_packed.c src/qwen38_base.c \
+  src/qwen38_config.c src/qwen38_weights.c src/gguf.c src/gguf_reader.c src/util.c \
+  -lm -o build/qwen38-f/test_moe
+Q38_F_NATIVE="$PWD/build/qwen38-f/test_moe" OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  ../picoforge/tools/venv/bin/python tools/qwen38_gpu_lock.py --timeout 60 -- \
+  ../picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_moe.py -v
+```
+
+Preparazione esplicita in Python: `qwen38_packed.build_reference` dal checkout
+DwarfStar fissato verso `build/qwen38-f/packed-reference` con sanitize=True;
+`qwen38_moe.prepare_real_slice(native,checkpoint,output,layer)` sotto lock per
+0/3/47, output `build/qwen38-f/slice-<layer>`. Riusare i tre file upstream
+hash-verificati nella cache F. Test offline; nessuno skip equivale a PASS.
+Report numerico riprodotto in `build/qwen38-f/slice-results.json`.
+
+### Metal privato post-routing e consegna v2
+
+`src/qwen38_moe.m` compone **route CPU congelate → gather GPU → prodotti B →
+SiLU/sigmoid C → prodotto gate/up F → riduzione routed/shared F**.
+`src/qwen38_moe.metal` contiene solo gather/prodotto/riduzione e copia per
+tracce di test, senza decoder, linear o attivazioni duplicati. Contesto e
+scratch privati con cap 1..32, budget esplicito <=32 MiB; store/binding borrowed,
+pipeline/buffer retained fino a destroy dopo completion. La funzione encode
+non fa commit/wait, non azzera la parola errore e non alloca scratch per token.
+Il caller serializza il riuso; nessun lifecycle GPU pubblico nuovo.
+
+Limite esplicito: B encode riceve `expert` host-side; questo esperimento non
+esegue routing/grouping dipendente da risultati GPU. Il harness esegue il
+forward CPU per route/riferimento, poi un solo command buffer per microbatch
+per tutti gli esperti selezionati e shared. Non è un engine ibrido pubblicato
+né una misura di velocità. Proiezioni e attivazioni GPU sono catturate prima
+del riuso scratch tramite copie nello stesso encoder, poi confrontate con
+FP64 e upstream; le copie e le allocazioni diagnostiche appartengono al test.
+Le route e le tracce router di questo percorso restano **CPU**.
+
+Verifica finale GPU: **4 test, zero skip**, 42 casi differenziali registrati,
+4280 stadi (include router CPU), ulteriori casi analitici di tie e fault
+injection; 154 microbatch GPU completati con Metal API Validation e harness
+ASan/UBSan. Floating T fino a1024, chunk 1/7/32, K=1/2/E; shared gate a
+-100/0/+100 e norm_topk false sintetico. Packed IQ2_XXS/Q2_K/Q8_0, pad640/768
+nonzero e variante poison. Preflight rifiuta alias X/Y/error word, view corta,
+owner diverso, duplicati ID, pesi negativi e budget insufficiente; T=0 valida
+senza dispatch. NaN introdotta **solo nel buffer GPU dopo il riferimento CPU**
+produce `Q38_GPU_NONFINITE`, controllato dopo command completion.
+
+Y sintetico GPU vs upstream: max abs **1.192093e-6**, max NRMSE
+**4.836173e-7**, entro entrambi i gate. Snapshot di ogni prodotto B controllato
+sullo stesso input al bound congelato; attivazioni ai gate F e prodotto
+SiLU*up esatto rispetto agli snapshot. Allocazione Metal massima osservata
+nel harness **4,866,048 byte**, trace massimo1,634,688 byte, scratch F massimo
+445,312 byte sulle shape sintetiche provate; non è footprint del modello.
+Report nel build: `gpu-final.json`, `gpu-final-allocations.jsonl`.
+Slice reali verificate **CPU**, non Metal; il harness GPU rifiuta oltre64MiB
+packed e non materializza lo storage dell'intero layer reale.
+
+Comandi Metal effettivi, oltre alla preparazione CPU descritta sopra:
+
+```sh
+make build/qwen38-b/packed.air build/qwen38-c/recurrent.air
+xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc \
+  -c src/qwen38_moe.metal -o build/qwen38-f/moe.air
+xcrun -sdk macosx metallib build/qwen38-b/packed.air \
+  build/qwen38-c/recurrent.air build/qwen38-f/moe.air -o build/qwen38-f/moe.metallib
+clang -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
+  -ffp-contract=off -fno-fast-math -fsanitize=address,undefined \
+  -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc -Isrc \
+  tests/test_qwen38_moe.m src/qwen38_moe.c src/qwen38_moe.m \
+  src/qwen38_packed.c src/qwen38_packed_gpu.m src/qwen38_base.c src/qwen38_conv.c \
+  src/qwen38_gdn.c src/qwen38_recurrent_gpu.m src/qwen38_config.c \
+  src/qwen38_weights.c src/gpu_weights.m src/gguf_plan.c src/gguf.c \
+  src/gguf_reader.c src/util.c -framework Foundation -framework Metal -lm \
+  -o build/qwen38-f/test_moe_gpu
+Q38_F_NATIVE="$PWD/build/qwen38-f/test_moe_gpu" \
+  Q38_F_LIBRARY="$PWD/build/qwen38-f/moe.metallib" Q38_F_METAL=1 MTL_DEBUG_LAYER=1 \
+  OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  ../picoforge/tools/venv/bin/python tools/qwen38_gpu_lock.py --timeout 60 -- \
+  ../picoforge/tools/venv/bin/python tests/test_qwen38_moe.py \
+  NativeForwardTests.test_float_composed_stages_chunks_and_shared \
+  NativeForwardTests.test_float_nonfinite_and_zero_input \
+  NativeForwardTests.test_packed_composition_and_640_768_padding \
+  NativeForwardTests.test_native_tied_block_and_near_tie_margins
+```
+
+`Q38_F_REPORT` opzionale salva JSON in un percorso **nuovo**; il test rifiuta
+sovrascrittura e restituisce nonzero per errori o skip. `Q38_F_ALLOCATIONS`
+aggiunge record di allocazione nel build; scegliere un nome nuovo per ogni run.
+CPU finale: suite estesa a28 test; `make test-qwen38-links
+PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python` passa
+A→B→F, C→E e A→D/E. Nessuna esecuzione del modello completo o benchmark.
+
+**Proposte concrete al coordinatore, file condivisi non modificati:**
+
+1. Il target CPU F deve aggiungere i `.c` B/C/A/reader del comando sopra.
+   Collegare AIR F alla libreria e aggiungere il target GPU privato sotto lock.
+   Il Makefile corrente mappa **sia `qwen38_moe.c` sia `qwen38_moe.m` a
+   `src/qwen38_moe.o`**: usare oggetti distinti (es. `.c.o` e `.m.o`) oppure
+   assegnare a F il nome `src/qwen38_moe_gpu.m` e aggiornare ownership/build.
+   `make`/`test-all` globali restano al coordinatore dopo questo wiring;
+   i comandi isolati e test-links sopra sono verificati.
+2. Per routing interamente GPU senza readback/commit per esperto, B deve
+   possedere un encode indexed: stesso layout packed e input `[P,Klogical]`,
+   output `[P,N]`, più `expert_ids[P]` uint32 contiguo in GPU span bounded.
+   Ogni riga sceglie la propria matrice esperto, verifica ID<`n_experts` e
+   conserva il bound numerico/logical padding B. F può così produrre route e
+   pair sulla GPU e ridurre per slot, senza accedere al decoder B. Nome/API
+   pubblica e lifecycle sono da fissare dal coordinatore, non introdotti qui.
+
+Limiti residui: Metal completo con router GPU e slice reali, errori di
+allocazione forzati, lifecycle globale/integrazione nel grafo, regressioni
+Qwen3 complete e generazione Qwen3.8. Le prove C11 complete del blocco MoE e
+Metal post-routing non certificano questi incrementi né la qualità Q2/BF16.
