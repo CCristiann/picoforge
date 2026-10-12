@@ -30,7 +30,9 @@ class NativeTests(unittest.TestCase):
         subprocess.run(["clang", "-std=c11", "-O1", "-g", "-Wall", "-Wextra", "-Wpedantic",
                         "-Wshadow", "-Wconversion", "-Werror", "-fsanitize=address,undefined",
                         "-ffp-contract=off", "-fno-omit-frame-pointer", "-Isrc", "src/qwen38_ngram.c",
-                        "src/qwen38_ple.c", "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
+                        "src/qwen38_ple.c", "src/qwen38_conv.c", "src/qwen38_base.c",
+                        "src/qwen38_packed.c", "src/gguf.c", "src/gguf_reader.c", "src/util.c",
+                        "tests/test_qwen38_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
 
     def test_native_errors(self):
         result = subprocess.run([str(BINARY)], cwd=ROOT, capture_output=True, text=True, check=True)

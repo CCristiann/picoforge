@@ -438,6 +438,58 @@ static int gate_cli(void) {
     return 0;
 }
 
+static void lifecycle_tests(void) {
+    char path[]="build/qwen38-e/lifecycle-XXXXXX";
+    int fd=table_file(path,64,8,0);
+    GgufTensor table={.name="per_layer_token_embd.weight",.type=30,.rank=2,.shape={8,64},.bytes=1024};
+    Gguf gg={.fd=fd,.tensors=&table,.tensor_count=1};
+    Qwen38NgramConfig c=small_config(); c.head_dim=8; c.hidden_size=8; c.streams=2;
+    c.conv_kernel=4; c.rms_eps=1e-6f;
+    Qwen38NgramStore *store=NULL; Qwen38NgramState *state=NULL,*other=NULL;
+    Qwen38Error e; Qwen38NgramJob *job=NULL,*blocked=NULL; Qwen38F32 rows;
+    assert(qwen38_ngram_open(&gg,&c,32,1<<20,&store,&e)==Q38_OK);
+    assert(close(fd)==0); /* store owns its fd; no Gguf borrow */
+    assert(qwen38_ngram_state_create(store,(Qwen38StateKey){&gg,0,1},&state,&e)==Q38_OK);
+    assert(qwen38_ngram_state_create(store,(Qwen38StateKey){&gg,0,1},&other,&e)==Q38_OK);
+    assert(qwen38_ngram_close(store,&e)==Q38_BUSY);
+    assert(qwen38_ngram_prepare(store,state,NULL,0,1,&job,&e)==Q38_BAD_STATE && !job);
+    assert(qwen38_ngram_prepare(store,state,NULL,0,0,&job,&e)==Q38_OK);
+    assert(qwen38_ngram_state_reset(state,2,&e)==Q38_BUSY);
+    assert(qwen38_ngram_state_destroy(state,&e)==Q38_BUSY);
+    assert(qwen38_ngram_prepare(store,other,NULL,0,0,&blocked,&e)==Q38_BUSY && !blocked);
+    assert(qwen38_ngram_read(job,&e)==Q38_OK);
+    assert(qwen38_ngram_rows(job,&rows,&e)==Q38_OK && rows.dim[0]==0 && !rows.data);
+    assert(q38e_reader_stats(store->reader).calls==0);
+    assert(qwen38_ngram_commit(other,job,&e)==Q38_OWNER);
+    assert(qwen38_ngram_commit(state,job,&e)==Q38_OK);
+    assert(qwen38_ngram_commit(state,job,&e)==Q38_BAD_STATE);
+    assert(qwen38_ngram_abort(job,&e)==Q38_BAD_STATE);
+    assert(qwen38_ngram_job_release(job,&e)==Q38_OK);
+    assert(!qwen38_ngram_state_info(state).next_pos);
+    int32_t tokens[]={1,2,99,4};
+    for (int kind=0;kind<4;kind++) {
+        assert(qwen38_ngram_prepare(store,state,tokens,4,0,&job,&e)==Q38_OK);
+        assert(qwen38_ngram_rows(job,&rows,&e)==Q38_BAD_STATE && !rows.data);
+        Fault f={.cap=3,.fail_at=kind==3 ? SIZE_MAX : 3,.interrupt_at=0,.error=kind==1 ? EIO : kind==2 ? EBADF : 0};
+        store->read_fn=fault_read; store->read_context=&f;
+        assert(qwen38_ngram_read(job,&e)==(kind==3 ? Q38_OK : kind ? Q38_IO : Q38_EOF));
+        assert(f.interrupted);
+        if (kind==3) assert(qwen38_ngram_rows(job,&rows,&e)==Q38_OK && rows.dim[0]==4 && rows.dim[1]==32);
+        else assert(qwen38_ngram_rows(job,&rows,&e)==Q38_BAD_STATE && !rows.data);
+        assert(qwen38_ngram_commit(state,job,&e)==Q38_BAD_STATE); /* READY is not COMPUTED */
+        assert(qwen38_ngram_abort(job,&e)==Q38_OK);
+        assert(qwen38_ngram_rows(job,&rows,&e)==Q38_BAD_STATE && !rows.data);
+        assert(qwen38_ngram_job_release(job,&e)==Q38_OK);
+        assert(!state->info.next_pos && state->previous[0]==99);
+    }
+    store->read_fn=NULL; store->read_context=NULL;
+    assert(qwen38_ngram_state_reset(state,2,&e)==Q38_OK);
+    assert(qwen38_ngram_state_reset(state,2,&e)==Q38_STALE);
+    assert(qwen38_ngram_state_destroy(state,&e)==Q38_OK);
+    assert(qwen38_ngram_state_destroy(other,&e)==Q38_OK);
+    assert(qwen38_ngram_close(store,&e)==Q38_OK); assert(unlink(path)==0);
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--gate")) return gate_cli();
     if (argc == 2 && !strcmp(argv[1], "--hash")) return hash_cli();
@@ -448,6 +500,7 @@ int main(int argc, char **argv) {
     reader_limits();
     reader_stale();
     gate_errors();
+    lifecycle_tests();
     puts("PASS: native hash, bounded BF16 I/O faults, normalized PLE gate contracts");
     return 0;
 }
