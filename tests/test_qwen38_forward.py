@@ -6,6 +6,7 @@ max(1, maxabs(reference)) over each traced boundary of the whole prefix.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,10 +34,11 @@ NATIVE = GGUF = None
 REFS = None
 
 
-def run_native(layers, chunk, tokens=TOKENS):
+def run_native(layers, chunk, tokens=TOKENS, replay=False):
     out = Path(tempfile.mkdtemp(prefix="g1-", dir=ROOT / "build/qwen38-g1"))
+    env = {**os.environ, **({"Q38_G1_REPLAY": "1"} if replay else {})}
     done = subprocess.run([str(NATIVE), str(GGUF), str(out), str(layers), str(chunk), *map(str, tokens)],
-                          cwd=ROOT, capture_output=True, text=True, timeout=600)
+                          cwd=ROOT, capture_output=True, text=True, timeout=600, env=env)
     if done.returncode:
         raise AssertionError(f"native graph failed: {done.stderr.strip()}")
     info = json.loads(done.stdout.strip().splitlines()[-1])
@@ -74,6 +76,45 @@ class GraphTests(unittest.TestCase):
             _, native = run_native(layers, len(TOKENS))
             ref = oracle.flatten(oracle.forward(GGUF, TOKENS, REFS, layers=layers))
             self.compare(native, ref, layers, GATE_E2E, f"L={layers}")
+
+    def test_full_stack_chunks_decode_and_replay(self):
+        """Prefill chunks and token-by-token decode against one shot; reset+replay."""
+        info, one = run_native(4, len(TOKENS), replay=True)
+        self.assertEqual((info["next_pos"], info["valid"], info["replay"]), (len(TOKENS), True, "identical"))
+        for chunk in (1, 5):
+            info, native = run_native(4, chunk, replay=True)
+            self.assertEqual((info["next_pos"], info["replay"]), (len(TOKENS), "identical"))
+            same = all(np.array_equal(native[k], one[k]) for k in one)
+            print(f"  chunk={chunk}: bitwise equal to one shot: {same}")
+            for key in one:
+                self.check(native[key], one[key], GATE_LOCAL, f"chunk={chunk} {key}")
+
+    def test_greedy_agreement_with_margin(self):
+        """Argmax per position, wherever the oracle margin exceeds 2*error."""
+        _, native = run_native(4, 5)
+        ref = oracle.flatten(oracle.forward(GGUF, TOKENS, REFS))
+        error = np.abs(native["logits"] - ref["logits"]).max()
+        top = np.sort(ref["logits"], 1)
+        margin = top[:, -1] - top[:, -2]
+        decided = margin > 2 * error
+        print(f"  logits err_inf {error:.3e}; min margin {margin.min():.3e}; decided {decided.sum()}/{len(margin)}")
+        self.assertTrue(decided.all(), "an undecided near-tie needs an explicit margin decision")
+        np.testing.assert_array_equal(native["logits"].argmax(1), ref["logits"].argmax(1))
+
+    def test_local_layer_replay(self):
+        """Each layer replayed by the oracle on the NATIVE layer input."""
+        _, native = run_native(4, 5)
+        w = oracle.Weights(GGUF)
+        previous = np.repeat(native["global.embedding"][:, None, :], w.hf["hc_count"], 1)
+        for i in range(w.hf["num_hidden_layers"]):
+            ref = oracle.layer(REFS, w, i, TOKENS, torch.from_numpy(previous.reshape(len(TOKENS), w.hf["hc_count"], -1)))
+            for stage in STAGES:
+                if stage == "ple_delta" and stage in ref:
+                    a, r = native[f"layer{i}.{stage}"], ref[stage].numpy().reshape(len(TOKENS), -1)
+                    np.testing.assert_allclose(a, r, rtol=GATE_PLE, atol=GATE_PLE)
+                elif stage in ref:
+                    self.check(native[f"layer{i}.{stage}"], ref[stage], GATE_LOCAL, f"local layer{i}.{stage}")
+            previous = native[f"layer{i}.output"]
 
     def test_embedding_mixer_and_head_slice(self):
         """layers=0: embedding repeat, output-HC mixer and untied head only."""

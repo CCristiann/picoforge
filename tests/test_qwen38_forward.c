@@ -7,7 +7,7 @@
 #include "picoforge.h"
 #include "qwen38_forward.h"
 #include <assert.h>
-#include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,27 +57,38 @@ int main(int argc, char **argv) {
     check(qwen38_weights_attach(weights, &g, gpu_weights_plan(store), &e), &e);
     check(qwen38_forward_create(&g, config, weights, store, chunk, (uint32_t)count, &graph, &e), &e);
     uint32_t vocab = qwen38_config_view(config)->vocab_size;
-    float *logits = malloc(count * vocab * 4);
-    assert(logits);
-    for (size_t start = 0; start < count; start += chunk) {
-        size_t n = count - start < chunk ? count - start : chunk;
-        Qwen38F32Mut y = {.data=logits + start*vocab, .capacity_bytes=n*vocab*4, .rank=2,
-            .dim={n, vocab}, .stride_bytes={vocab*4, 4}};
-        check(qwen38_forward_cpu(graph, tokens + start, n, layers, y, dump, NULL, &e), &e);
-        if (layers < qwen38_config_view(config)->trunk_blocks) {   /* prefix slice: one shot */
-            assert(n == count);
-            break;
+    bool full = layers == qwen38_config_view(config)->trunk_blocks;
+    float *logits = malloc(count * vocab * 4), *again = malloc(count * vocab * 4);
+    assert(logits && again);
+    /* Preflight rejections happen before any mutation: the session stays valid. */
+    int32_t bad = (int32_t)vocab;
+    Qwen38F32Mut none = {.data=logits, .capacity_bytes=vocab*4, .rank=2, .dim={0, vocab}, .stride_bytes={vocab*4, 4}};
+    assert(qwen38_forward_cpu(graph, &bad, 1, layers, none, NULL, NULL, &e) == Q38_RANGE);
+    assert(qwen38_forward_cpu(graph, tokens, (size_t)chunk + 1, layers, none, NULL, NULL, &e) == Q38_CAPACITY);
+    assert(qwen38_forward_info(graph).valid && !qwen38_forward_info(graph).next_pos);
+    const char *replay = "none";
+    for (int pass = 0; pass < (full && getenv("Q38_G1_REPLAY") ? 2 : 1); ++pass) {
+        float *out = pass ? again : logits;
+        if (pass) check(qwen38_forward_reset(graph, &e), &e);      /* reset + replay */
+        for (size_t start = 0; start < count; start += chunk) {
+            size_t n = count - start < chunk ? count - start : chunk;
+            Qwen38F32Mut y = {.data=out + start*vocab, .capacity_bytes=n*vocab*4, .rank=2,
+                .dim={n, vocab}, .stride_bytes={vocab*4, 4}};
+            check(qwen38_forward_cpu(graph, tokens + start, n, layers, y, pass ? NULL : dump, NULL, &e), &e);
+            if (!full) { assert(n == count); break; }               /* prefix slice: one shot */
         }
+        if (pass) replay = memcmp(logits, again, count * vocab * 4) ? "different" : "identical";
     }
     char path[1024];
     snprintf(path, sizeof path, "%s/logits.f32", outdir);
     FILE *f = fopen(path, "wb");
     assert(f && fwrite(logits, 4, count*vocab, f) == count*vocab && !fclose(f));
     Qwen38StateInfo info = qwen38_forward_info(graph);
-    printf("{\"tokens\":%zu,\"layers\":%u,\"chunk\":%u,\"next_pos\":%llu,\"valid\":%s}\n",
-           count, layers, chunk, (unsigned long long)info.next_pos, info.valid ? "true" : "false");
+    printf("{\"tokens\":%zu,\"layers\":%u,\"chunk\":%u,\"next_pos\":%llu,\"valid\":%s,\"replay\":\"%s\"}\n",
+           count, layers, chunk, (unsigned long long)info.next_pos, info.valid ? "true" : "false",
+           replay);
     qwen38_forward_destroy(graph); qwen38_weights_free(weights);
     gpu_weights_close(store); metal_shutdown(metal); qwen38_config_free(config); gguf_close(&g);
-    free(logits); free(tokens);
+    free(logits); free(again); free(tokens);
     return 0;
 }
