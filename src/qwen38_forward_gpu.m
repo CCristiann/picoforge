@@ -6,7 +6,13 @@
 #include "qwen38_e_internal.h"
 #include "qwen38_d_internal.h"
 #include "qwen38_f_internal.h"
+#include "qwen38_ngram_internal.h"
 #include <stdlib.h>
+#include <time.h>
+static double clock_s(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
+    return (double)t.tv_sec+(double)t.tv_nsec*1e-9;
+}
 
 typedef struct { const GgufBinding *binding; Q38PackedLayout layout; } G2Weight;
 typedef struct { G2Weight down,up,inject; Qwen38GpuF32 gain; } G2Hc;
@@ -32,6 +38,7 @@ struct Qwen38GpuForward {
     Qwen38GpuF32 r,normed,low,act,gate,il,inject,mixed,block,logits,tokens,c_arena;
     Q38DGpuLayer dw; Q38EGpuWork ew; Q38FRoutedWork fw;
     G2Trace *traces; size_t trace_count,trace_offset; Qwen38GpuSpan trace_span;
+    Qwen38GpuForwardStats stats;
 };
 static Qwen38Status fail(Qwen38Error *e,Qwen38Status code,const char *detail) {
     if (e) { memset(e,0,sizeof *e); e->code=code;
@@ -238,6 +245,9 @@ Qwen38StateInfo qwen38_gpu_forward_info(const Qwen38GpuForward *f) {
     Qwen38StateInfo info=qwen38_gpu_session_info(f->session); info.valid &= f->valid; info.busy |= f->busy;
     info.next_pos=f->next_pos; return info;
 }
+Qwen38GpuForwardStats qwen38_gpu_forward_stats(const Qwen38GpuForward *f) {
+    return f ? f->stats : (Qwen38GpuForwardStats){0};
+}
 void qwen38_gpu_forward_destroy(Qwen38GpuForward *f) {
     if (!f || f->busy) return;
     for (uint32_t i=0;f->layer && i<f->c.trunk_blocks;i++) {
@@ -379,6 +389,9 @@ static Qwen38Status prepare(Qwen38GpuForward *f,const int32_t *tokens,size_t t,u
         G2Layer *l=&f->layer[i]; if (!l->es) continue;
         TRY(qwen38_ngram_prepare(l->es,l->estate,tokens,t,pos,&l->job,e));
         TRY(qwen38_ngram_read(l->job,e)); Qwen38F32 rows; TRY(qwen38_ngram_rows(l->job,&rows,e));
+        Q38eReadStats stats=q38e_reader_stats(l->es->reader);
+        f->stats.ngram_calls+=stats.calls; f->stats.ngram_bytes+=stats.bytes_read;
+        f->stats.ngram_rows+=stats.unique_rows;
         memcpy(contents(l->ew.rows),rows.data,rows.capacity_bytes);
     }
     return Q38_OK;
@@ -429,14 +442,19 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
         f->trace_span=(Qwen38GpuSpan){(__bridge void *)trace_buffer,0,bytes};
     }
     f->trace_count=0; f->trace_offset=0; f->busy=true;
+    f->stats=(Qwen38GpuForwardStats){0}; double prepare_start=clock_s();
     Qwen38Status rc=prepare(f,tokens,count,layers,before.next_pos,e);
+    double encode_start=clock_s(); f->stats.prepare_s=encode_start-prepare_start;
     Qwen38GpuTicket ticket; Qwen38GpuCommand cmd; bool begun=false,submitted=false;
     if (!rc) { rc=qwen38_gpu_session_begin(f->session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc; }
     if (!rc) rc=claim(f,&ticket,e);
     if (!rc) rc=run(f,cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }
+    double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
     if (submitted) rc=qwen38_gpu_session_finish(f->session,&ticket,e);
     else if (begun) qwen38_gpu_session_abort(f->session,&ticket,false,NULL);
+    f->stats.wait_s=clock_s()-wait_start;
+    if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->session);
     rc=jobs(f,!rc && layers==f->c.trunk_blocks,rc,e);
     if (rc || layers<f->c.trunk_blocks) f->valid=false;
     else f->next_pos+=count;

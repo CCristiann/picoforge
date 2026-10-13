@@ -1,0 +1,18 @@
+```c
+#include <limits.h>
+#include <stddef.h>
+
+size_t lower_bound_int(const int *a, size_t n, int x) {
+    size_t lo = 0;
+    size_t hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (a[mid] < x) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+```

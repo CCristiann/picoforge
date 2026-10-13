@@ -1,0 +1,8 @@
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tests/test_qwen38_server.py -v
+test_busy_stop_and_disconnect (__main__.LocalChat.test_busy_stop_and_disconnect) ... ok
+test_history_reset_capacity_and_origin (__main__.LocalChat.test_history_reset_capacity_and_origin) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.493s
+
+OK

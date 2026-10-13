@@ -5,7 +5,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-struct Q38DGpu { void *device, *pipeline[Q38D_ALL_OPS]; };
+struct Q38DGpu { void *device, *pipeline[Q38D_ALL_OPS]; bool scalar_attention; };
 static Qwen38Status result(Qwen38Error *e,Qwen38Status code) {
     if (e) { memset(e,0,sizeof(*e)); e->code=code; } return code;
 }
@@ -26,10 +26,16 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
     g->device=(__bridge_retained void *)dev;
     NSString *names[]={@"q38d_rope_gpu",@"q38d_pool_gpu",@"q38d_scores_gpu",@"q38d_attend_gpu",
         @"q38d_rank_gpu",@"q38d_compact_gpu",@"q38d_tail_gpu",@"q38d_copy_gpu"};
+    g->scalar_attention=getenv("Q38_QSA_SCALAR")!=NULL;
+    if (g->scalar_attention) names[Q38D_ATTEND]=@"q38d_attend_scalar_gpu";
     for (size_t i=0;i<Q38D_ALL_OPS;++i) {
         id<MTLFunction> f=[lib newFunctionWithName:names[i]];
         id<MTLComputePipelineState> p=f ? [dev newComputePipelineStateWithFunction:f error:NULL] : nil;
         if (!p) { q38d_gpu_destroy(g); return result(e,Q38_GPU_ERROR); }
+        if (i==Q38D_ATTEND && !g->scalar_attention &&
+            (p.maxTotalThreadsPerThreadgroup<256 || p.staticThreadgroupMemoryLength>dev.maxThreadgroupMemoryLength)) {
+            q38d_gpu_destroy(g); return result(e,Q38_UNSUPPORTED);
+        }
         g->pipeline[i]=(__bridge_retained void *)p;
     }
     *out=g; return result(e,Q38_OK);
@@ -100,7 +106,9 @@ Qwen38Status q38d_gpu_encode(Q38DGpu *g,Qwen38GpuCommand cmd,uint32_t op,
         [enc setBytes:frequencies length:a->r/2*sizeof(float) atIndex:8];
     }
     [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:7];
-    [enc dispatchThreads:MTLSizeMake(work,1,1)
+    if (op==Q38D_ATTEND && !g->scalar_attention)
+        [enc dispatchThreadgroups:MTLSizeMake(a->h,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    else [enc dispatchThreads:MTLSizeMake(work,1,1)
         threadsPerThreadgroup:MTLSizeMake(MIN(work,p.maxTotalThreadsPerThreadgroup),1,1)];
     return result(e,Q38_OK);
 }

@@ -1,0 +1,24 @@
+{
+  "complete": true,
+  "order": [
+    "scalar",
+    "cooperative"
+  ],
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "hardware": [
+    "Apple M5 Pro",
+    "68719476736"
+  ],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "repetitions": 3,
+  "warmups": 1,
+  "chunk": 128,
+  "cases": [
+    "ragionamento"
+  ],
+  "cache_state": "Uncontrolled OS file and shader caches; no cold-cache claim.",
+  "paired_greedy_identical": {
+    "ragionamento": true
+  },
+  "thermal_after": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+}

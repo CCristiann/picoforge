@@ -72,9 +72,97 @@ Cache OS e shader non controllate; nessuna dichiarazione di cache cold.
 
 ## Stato della consegna
 
-La suite CLI estesa (4 test) e la validazione record passano. Le prove reali
-sono in esecuzione sotto `bench/qwen38_native_20261013/extended`; il manifest
-`complete` e i risultati registrati sono l'autorità, non questo testo.
-Benchmark con ripetizioni, chat live, ottimizzazioni e MTP restano aperti.
+La prima prova estesa ha completato C, ragionamento e italiano (373 token,
+stop incluso). Il prefill scalar a 892 token è stato interrotto dopo 618,55 s:
+`extended/manifest.json` rimane **incompleto**, con output e memoria conservati.
+Le sole prove precedenti a questa interruzione sono valide. Il vecchio valore
+`reset_replay_identical: true` nei casi a singola esecuzione era vacuo: il
+summarizer lo corregge a `null`; il runner corrente richiede almeno due passaggi.
+
+Per rendere praticabile la progressione è stato anticipato un intervento QSA
+circoscritto, verificato e misurato. Il kernel scalar assegnava un'intera testa
+e 256 accumulatori a un thread. Il kernel cooperativo assegna una testa a un
+threadgroup: prodotti e 16 dot product paralleli, ma ogni somma, softmax e
+accumulatore conserva l'ordine FP32 precedente. Nessuna riduzione tree, FMA o
+precisione ridotta. `Q38_QSA_SCALAR=1` mantiene il riferimento originale.
+
+`qsa-paired-v3/report.json`: sei forme con 64–8192 posizioni, fino a 2048 ID
+selezionati, warm-up di almeno 0,5 s GPU e 25 misure; output **bit-identici**,
+speedup del solo ATTEND 27,55–55,93×. `qsa-paired/` conserva la prima variante,
+più lenta (6,2–6,45×), senza sostituire le evidenze.
+
+`native-paired/`: confronto completo sul prompt di ragionamento, 61 token,
+14 generati incluso stop, contesto 8192 e chunk 128; un warm-up e tre misure
+residenti per variante. Mediane scalar → cooperativo: prefill 9,889 → 8,647 s;
+decode 1,058 → 1,116 token/s; richiesta 22,181 → 20,303 s. Tutte le otto
+sequenze coincidono. È un **pilot di un solo prompt**, con cache non controllate.
+Il risultato aritmetico è errato in entrambe le varianti (1002 anziché 1633).
+
+Metal 42,387 GiB, grafo 0,665 GiB, footprint lifetime 0,801 GiB nel processo
+cooperativo; pressione normale e nessuna crescita swap. Footprint/memoria sono
+osservati sull'intero processo, warm-up compreso. Nella mediana cooperativa,
+prefill `prepare_s` 0,000607 s contro `gpu_s` 8,640 s: su questo caso caldo
+l'I/O n-gram non è il collo di bottiglia. Nessuna conclusione su SSD cold.
+
+La suite estesa cooperativa prosegue in `extended-cooperative/`, chunk 128.
+Le prove reali bounded CPU FP32 aggiuntive e la progressione 8K non sono ancora
+completate. Un primo tentativo bounded è rimasto incompleto durante un riavvio
+del Mac; la causa del riavvio non è stata determinata. Non è un PASS.
+
+Passano QSA Metal (13 test), grafo G2 (5), stato/fault (1), CLI (4), sessione
+residente (2), HTTP con fixture reale (2), observer (6) e contratti (4).
+Il test di template inizialmente fallito aveva omesso il blocco `<think>` vuoto
+nelle risposte precedenti, conservato dal template ufficiale. La correzione
+è nel test, non nel renderer A.
+
+La chat è implementata e i test del servizio passano. Il browser ha verificato
+caricamento/attesa del lock e layout desktop/mobile; lo scambio sul modello
+reale resta da verificare dopo la suite seriale. **MTP non implementato.**
 Il FAIL DwarfStar Metal FP16 rimane quello documentato in [G2.md](G2.md), distinto
 dal PASS indipendente CPU FP32. Nessun allargamento dei gate.
+
+## Benchmark e profilo
+
+```sh
+make picoforge build/process_memory build/qwen38-attention-bench
+tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
+  tools/venv/bin/python tools/eval/qwen38_native_bench.py \
+  bench/qwen38_native_20261013/suite/suite.json bench/MIO-BENCH \
+  --repeat 3 --warmup 1 --chunk 128 --compare-scalar
+tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
+  tools/venv/bin/python tools/eval/bench_qwen38_attention.py bench/MIA-QSA
+```
+
+`prefill_profile`/`decode_profile`: `prepare_s` include pread bounded,
+deduplicazione, decodifica BF16 e staging; `encode_s` include claim, encoding e
+submit; `wait_s` attende il completamento; `gpu_s` usa i timestamp Metal e si
+sovrappone a wait, quindi **non va sommato**. `ngram_calls`, `ngram_bytes` e
+`ngram_rows` contano chiamate pread, byte logici letti e righe uniche; non sono
+il traffico fisico SSD. Metadati, argv/env espliciti, SHA dei piccoli artefatti,
+revisione/diff e campioni grezzi identificano ogni esecuzione. Il GGUF non viene
+rihashato. Percentili p10/p90: campione ordinato più vicino, non intervalli di
+confidenza. I warm-up sono conservati e esclusi dalle statistiche di velocità.
+
+## Sessione locale
+
+```sh
+make ui-qwen38
+# http://127.0.0.1:8001 — il worker acquisisce già il lock comune.
+make test-qwen38-session test-qwen38-server
+```
+
+Il servizio Python standard library espone una sola conversazione locale,
+condivisa dalle schede aperte. Un solo processo `--session` mantiene pesi e
+grafo residenti e detiene il lock; gli accessi sono serializzati. Ogni richiesta
+renderizza una volta l'intera storia tramite il template A, resetta gli stati
+e ne esegue il replay. Non c'è riuso incrementale del prefisso. Il budget è
+prompt renderizzato + massimo generabile: se supera il contesto la richiesta
+fallisce senza troncamento e la storia precedente resta disponibile.
+
+Stop tramite SIGUSR1, osservato tra append: il comando GPU in corso termina.
+Il testo parziale effettivamente emesso rimane nella storia; stop prima del
+primo testo non aggiunge un turno. Nuova conversazione azzera storia, decoder
+e cache. Disconnessione HTTP richiede stop e drena il worker prima di rilasciare
+l'accesso. Il servizio ascolta solo su loopback e verifica Host/Origin.
+`ttft_request_s` del worker esclude parsing, template e tokenizzazione della
+richiesta; non equivale alla latenza percepita dal click nel browser.

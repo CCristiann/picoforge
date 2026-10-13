@@ -94,6 +94,9 @@ Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *, const Qwen38GpuTicket
 Qwen38Status qwen38_gpu_session_reset(Qwen38GpuSession *, const void *model,
     Qwen38Error *);
 Qwen38StateInfo qwen38_gpu_session_info(const Qwen38GpuSession *);
+/* Last successful command's GPU timestamps; zero until available. This is
+ * device execution time, not submit/wait wall time. */
+double qwen38_gpu_session_seconds(const Qwen38GpuSession *);
 /* BUSY leaves the session and every resource alive. */
 Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *, Qwen38Error *);
 #endif

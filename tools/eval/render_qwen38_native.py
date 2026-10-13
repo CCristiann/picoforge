@@ -1,10 +1,12 @@
 """Self-contained view of the recorded G2/G3 gate; no inference or dependencies."""
 import argparse
 import json
+import os
+import re
 from pathlib import Path
 
 
-def render(evidence, output):
+def render(evidence, output, native=None):
     def read(name):
         return json.loads((evidence/name).read_text(encoding='utf-8'))
     gate, memory, ids = read('g3.json'), read('memory.json'), read('chat-ids.json')
@@ -17,8 +19,13 @@ def render(evidence, output):
                               footprint=s['phys_footprint_bytes']) for s in samples])
     if len(data['layers']) != gate['layers'] or len(data['fp32']['per_token_scaled']) != len(gate['tokens']):
         raise ValueError('inconsistent layer/token evidence')
+    if native is not None:
+        data['native'] = json.loads(native.read_text())
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c')
     template = Path(__file__).with_name('qwen38_native_report.html').read_text(encoding='utf-8')
+    relative = os.path.relpath(evidence, output.parent)
+    if relative != '.':
+        template = re.sub(r'href="(?!https?:|#)([^"]+)"', lambda m: 'href="'+relative+'/'+m[1]+'"', template)
     output.write_text(template.replace('@@DATA@@', payload), encoding='utf-8')
 
 
@@ -26,5 +33,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('evidence', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--native', type=Path)
     args = parser.parse_args()
-    render(args.evidence, args.output)
+    render(args.evidence, args.output, args.native)

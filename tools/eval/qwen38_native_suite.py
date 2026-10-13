@@ -113,7 +113,7 @@ def validate_record(r):
     return r
 
 
-def run_suite(suite_path, out, select, repeats, warmup, replay_chunk, timeout):
+def run_suite(suite_path, out, select, repeats, warmup, replay_chunk, timeout, chunk=0, scalar=False):
     require_lock()
     suite = json.loads(suite_path.read_text())
     cases = [c for c in suite['cases'] if not select or c['id'] in select]
@@ -128,7 +128,8 @@ def run_suite(suite_path, out, select, repeats, warmup, replay_chunk, timeout):
                 source_sha256={str(p.relative_to(ROOT)):sha(p) for p in sources if p.is_file() and p.suffix in ('.c','.m','.h','.metal','.inc','.py')},
                 executable_sha256=sha(ENGINE), metallib_sha256=sha(ROOT/'picoforge.metallib'),
                 cache_state='Uncontrolled OS file/shader caches; tokenizer preparation read metadata. No cold-cache claim.',
-                warmup=warmup, measured_repetitions=repeats, replay_chunk=replay_chunk, results=[])
+                warmup=warmup, measured_repetitions=repeats, replay_chunk=replay_chunk, chunk_override=chunk,
+                environment_overrides={'Q38_QSA_SCALAR':'1'} if scalar else {}, results=[])
     dump(out/'manifest.json',meta)
     for case in cases:
         prompt = suite_path.parent/case['prompt_file']
@@ -137,16 +138,20 @@ def run_suite(suite_path, out, select, repeats, warmup, replay_chunk, timeout):
         record = out/(case['id']+'.runs.jsonl')
         ids_path = out/(case['id']+'.ids.json')
         command = [str(ENGINE),'--qwen38',suite['checkpoint'],'--chat-file',str(prompt.resolve()),
-                   '--context',str(case['context']),'--chunk',str(min(case['chunk'],case['context'])),
+                   '--context',str(case['context']),'--chunk',str(min(chunk or case['chunk'],case['context'])),
                    '--max-new',str(case['max_new']),'--repeat',str(repeats),'--warmup',str(warmup),
                    '--runs-jsonl',str(record),'--token-ids',str(ids_path)]
         if replay_chunk:
             command += ['--replay-chunk',str(replay_chunk)]
         print('Running '+case['id'],flush=True)
-        code = observe(out/case['id'],ROOT,command,timeout=timeout,interval=.5)
+        if not scalar and 'Q38_QSA_SCALAR' in os.environ:
+            raise ValueError('unset Q38_QSA_SCALAR; select the recorded --scalar option instead')
+        code = observe(out/case['id'],ROOT,command,timeout=timeout,interval=.5,
+                       env_overrides=meta['environment_overrides'])
         rows = [validate_record(json.loads(x)) for x in record.read_text().splitlines()] if record.exists() else []
         result = dict(case=case['id'],returncode=code,records=len(rows),
-                      complete=code==0 and len(rows)==repeats+warmup)
+                      complete=code==0 and len(rows)==repeats+warmup and
+                               all(r['stop_reason'] in ('stop','length') for r in rows))
         if result['complete']:
             result['reset_replay_identical']=(all(r['generated_ids']==rows[0]['generated_ids'] for r in rows) if len(rows)>1 else None)
             if result['reset_replay_identical'] is False:
@@ -175,13 +180,15 @@ def main():
     run.add_argument('--cases',nargs='+'); run.add_argument('--repeat',type=int,default=1)
     run.add_argument('--warmup',type=int,default=0); run.add_argument('--replay-chunk',type=int,default=0)
     run.add_argument('--timeout',type=float,default=3600)
+    run.add_argument('--chunk',type=int,default=0,help='Override frozen execution chunk, not prompt/budget')
+    run.add_argument('--scalar',action='store_true',help='Recorded original QSA baseline')
     a=p.parse_args()
     if a.action=='prepare':
         prepare(a.output.resolve(),a.checkpoint)
     else:
-        if a.repeat<1 or a.warmup<0 or a.timeout<=0:
+        if a.repeat<1 or a.warmup<0 or a.timeout<=0 or a.chunk<0:
             p.error('invalid repetition or timeout')
-        run_suite(a.suite.resolve(),a.output.resolve(),a.cases,a.repeat,a.warmup,a.replay_chunk,a.timeout)
+        run_suite(a.suite.resolve(),a.output.resolve(),a.cases,a.repeat,a.warmup,a.replay_chunk,a.timeout,a.chunk,a.scalar)
 
 
 if __name__=='__main__':

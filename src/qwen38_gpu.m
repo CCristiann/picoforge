@@ -110,6 +110,7 @@ struct Qwen38GpuSession {
     void *command, *encoder;           /* alive only from begin to finish/abort */
     Claim *claims;
     size_t claim_count, claim_capacity;
+    double gpu_seconds;
 };
 static void drop(void **p) {
     if (*p) { (void)(__bridge_transfer id)*p; *p = NULL; }
@@ -178,6 +179,7 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *g, const void *model,
     if (!g || !cmd) return report(e, Q38_INVALID_ARGUMENT);
     Qwen38Status s = qwen38_gpu_ledger_begin(&g->ledger, model, start_pos, count, t, e);
     if (s) return s;
+    g->gpu_seconds=0;
     id<MTLCommandBuffer> cb = [(__bridge id<MTLCommandQueue>)g->queue commandBuffer];
     id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
     if (!enc) {                         /* nothing was touched: the session stays valid */
@@ -229,6 +231,8 @@ Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *g, const Qwen38GpuTicke
         id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)g->command;
         [cb waitUntilCompleted];
         ok = cb.status == MTLCommandBufferStatusCompleted && !cb.error;
+        if (ok && cb.GPUStartTime>0 && cb.GPUEndTime>=cb.GPUStartTime)
+            g->gpu_seconds=cb.GPUEndTime-cb.GPUStartTime;
         why = cb.error.localizedDescription;
         bits = *(const volatile uint32_t *)word_of(g).contents;
     }
@@ -249,6 +253,7 @@ Qwen38Status qwen38_gpu_session_reset(Qwen38GpuSession *g, const void *model,
 Qwen38StateInfo qwen38_gpu_session_info(const Qwen38GpuSession *g) {
     return g ? qwen38_gpu_ledger_info(&g->ledger) : (Qwen38StateInfo){0};
 }
+double qwen38_gpu_session_seconds(const Qwen38GpuSession *g) { return g ? g->gpu_seconds : 0; }
 Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
     if (!g) return report(e, Q38_INVALID_ARGUMENT);
     if (qwen38_gpu_ledger_info(&g->ledger).busy) return report(e, Q38_BUSY);

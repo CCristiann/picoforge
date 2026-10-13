@@ -13,6 +13,7 @@ import sys
 
 import numpy as np
 from qwen38_native_suite import ROOT, ENGINE, dump, sha, require_lock
+from run_observed import run as observe
 sys.path.insert(0,str(ROOT/'tools'))
 from qwen38_g3 import logits_report, REVISION, GATE
 
@@ -22,7 +23,7 @@ def run(suite_path, out, ds):
     if subprocess.check_output(['git','-C',str(ds),'rev-parse','HEAD'],text=True).strip()!=REVISION:
         raise ValueError('reference revision differs')
     suite=json.loads(suite_path.read_text()); out.mkdir(parents=True,exist_ok=False)
-    report=dict(complete=False,gate=GATE,dwarfstar_revision=REVISION,source_sha256=sha(Path(__file__)),cases=[])
+    report=dict(complete=False,executable_sha256=sha(ENGINE),metallib_sha256=sha(ROOT/'picoforge.metallib'),gate=GATE,dwarfstar_revision=REVISION,source_sha256=sha(Path(__file__)),cases=[])
     dump(out/'report.json',report)
     for name in ('lower-bound','ragionamento','italiano'):
         case=next(c for c in suite['cases'] if c['id']==name)
@@ -38,8 +39,9 @@ def run(suite_path, out, ds):
         env={k:v for k,v in os.environ.items() if not k.startswith('DS4_')}
         env.update(DS4_QWEN4_FT_TOKENS=','.join(map(str,sequence)),DS4_QWEN4_FT_OUT=str(directory/'reference.f32'))
         oracle=[str(ds/'ds4'),'--cpu','--first-token-test','-m',suite['checkpoint'],'-p','x']
-        with (directory/'oracle.log').open('w') as log:
-            subprocess.run(oracle,cwd=ds,env=env,check=True,pass_fds=(fd,),stdout=log,stderr=log)
+        overrides={k:v for k,v in env.items() if k.startswith('DS4_')}
+        if observe(directory/'oracle',ds,oracle,timeout=900,interval=.5,env_overrides=overrides):
+            raise RuntimeError('CPU oracle interrupted/failed; observed evidence retained')
         actual=np.fromfile(directory/'native.f32','<f4').reshape(len(ids),-1)
         reference=np.fromfile(directory/'reference.f32','<f4').reshape(len(sequence),-1)[len(tokens)-1:]
         metric=logits_report(actual,reference)

@@ -45,7 +45,7 @@ kernel void q38d_scores_gpu(device const float *q [[buffer(0)]], device const fl
     }
     if (!isfinite(score)) { fail(error,1); return; } out[b]=score;
 }
-kernel void q38d_attend_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+kernel void q38d_attend_scalar_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
     device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
     device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
@@ -87,6 +87,69 @@ kernel void q38d_attend_gpu(device const float *q [[buffer(0)]], device const fl
     for (uint d=0;d<a.d;++d) {
         float y=acc[d]/denominator*gate[h*a.d+d];
         if (!isfinite(y)) { fail(error,1); return; } out[h*a.d+d]=y;
+    }
+}
+/* One threadgroup per head, one accumulator per feature. Products and the 16 dots are
+ * parallel; each dot is summed in the original increasing-d order. Online
+ * softmax tiles, denominator and per-feature accumulation retain that exact
+ * FP32 order. No narrowing, tree reduction or private 256-float accumulator. */
+kernel void q38d_attend_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint h [[threadgroup_position_in_grid]], uint d [[thread_index_in_threadgroup]]) {
+    threadgroup float products[16*256], weights[16], rescale, denominator;
+    threadgroup atomic_uint invalid;
+    if (!d) {
+        atomic_store_explicit(&invalid,0,memory_order_relaxed); denominator=0;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i=d;i<a.m;i+=256)
+        if (ids[i]>=a.n || (i && ids[i]<=ids[i-1])) atomic_store_explicit(&invalid,1,memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (atomic_load_explicit(&invalid,memory_order_relaxed)) { if (!d) fail(error,2); return; }
+    float query=d<a.d ? q[h*a.d+d] : 0, g=d<a.d ? gate[h*a.d+d] : 0,acc=0;
+    if (!isfinite(query) || !isfinite(g)) fail(error,1);
+    if (g<0 || g>1) fail(error,2);
+    float maximum=-INFINITY,scale=1.0f/sqrt(float(a.d));
+    for (uint base=0;base<a.m;base+=16) {
+        uint tile=min(16u,a.m-base);
+        for (uint i=0;i<tile;i++) if (d<a.d) {
+            uint at=(ids[base+i]*a.j+h/(a.h/a.j))*a.d+d;
+            float key=k[at]; if (!isfinite(key)) fail(error,1);
+            products[d*16+i]=query*key;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (d<tile) {
+            float dot=0;
+            for (uint feature=0;feature<a.d;feature++) dot+=products[feature*16+d];
+            weights[d]=dot*scale;
+            if (!isfinite(weights[d])) fail(error,1);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (!d) {
+            float next=maximum;
+            for (uint i=0;i<tile;i++) next=max(next,weights[i]);
+            rescale=denominator==0 ? 0 : exp(maximum-next); denominator*=rescale;
+            for (uint i=0;i<tile;i++) { weights[i]=exp(weights[i]-next); denominator+=weights[i]; }
+            maximum=next;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (d<a.d) {
+            acc*=rescale;
+            for (uint i=0;i<tile;i++) {
+                uint at=(ids[base+i]*a.j+h/(a.h/a.j))*a.d+d;
+                float value=v[at]; if (!isfinite(value)) fail(error,1);
+                acc+=weights[i]*value;
+            }
+        }
+        // Every reader must finish before lane 0 overwrites weights next tile.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (!isfinite(denominator) || denominator<=0) { if (!d) fail(error,1); return; }
+    if (d<a.d) {
+        float y=acc/denominator*g; if (!isfinite(y)) fail(error,1);
+        out[h*a.d+d]=y;
     }
 }
 /* Device block selection, equivalent to q38d_select: block b is kept when

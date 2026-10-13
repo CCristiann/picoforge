@@ -4,6 +4,23 @@ Kernel timings and complete generation requests use different protocols.
 Keep their timing boundaries separate. Historical files are retained; corrections
 and newer runs are identified in `bench/README.md`.
 
+## Native Qwen3.8 FP32
+
+The new resident CLI benchmark is independent of the earlier DwarfStar and
+Qwen3 measurements. See [protocol and current status](specs/qwen38/native-next.md)
+and [retained evidence](../bench/qwen38_native_20261013/README.md).
+`tools/eval/qwen38_native_bench.py` records model load, request TTFT, prefill,
+decode `(generated-1)/seconds`, Metal GPU timestamps, bounded n-gram preparation
+and logical reads, footprint, system pressure and swap deltas. One model load
+per mode, explicit warmups followed by reset/replay repetitions; no cold-cache
+claim. Raw warmups, IDs, commands, revision/diff, hashes and memory samples remain
+in exclusive output directories. Three repetitions are labelled a pilot.
+
+The original scalar and cooperative QSA paths remain selectable for paired
+comparisons. Kernel speedup and complete-engine speedup are reported separately.
+The negative DwarfStar stock Metal/FP16 numerical gate remains a FAIL; it is
+not used as the FP32 reference and its tolerance has not changed.
+
 ## Generation requests
 
 `tools/eval/bench_speculate.py` compares no draft, fixed `k=2`, and adaptive

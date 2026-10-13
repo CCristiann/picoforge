@@ -26,7 +26,7 @@ def sample(probe, pid=None):
     return json.loads(result.stdout) if result.returncode == 0 else None
 
 
-def run(output, cwd, command, timeout=1200, interval=1.0):
+def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
     probe = ROOT / "build/process_memory"
     before = sample(probe)
     if before is None:
@@ -35,12 +35,13 @@ def run(output, cwd, command, timeout=1200, interval=1.0):
     executable = Path(command[0]).resolve(strict=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("DS4_")}
     env["DS4_METAL_MEMORY_REPORT"] = "1"
+    env.update(env_overrides or {})
     thermal = subprocess.run(["pmset", "-g", "therm"], capture_output=True, text=True, check=True).stdout
     with executable.open("rb") as binary:
         binary_hash = hashlib.file_digest(binary, "sha256").hexdigest()
     metadata = dict(command=command, cwd=str(cwd), pilot=True, complete=False,
                     executable_sha256=binary_hash,
-                    environment={"DS4_METAL_MEMORY_REPORT": "1"},
+                    environment={"DS4_METAL_MEMORY_REPORT": "1", **(env_overrides or {})},
                     removed_environment_names=sorted(k for k in os.environ if k.startswith("DS4_")),
                     thermal_before=thermal, sample_interval_s=interval, system_before=before,
                     guard="stop after 3 samples: critical pressure or swap growth > 2 GiB")

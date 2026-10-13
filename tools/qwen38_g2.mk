@@ -42,3 +42,20 @@ G3_OUTPUT ?= build/qwen38-g3
 qwen38-g3: picoforge build/qwen38-g2/forward_real build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf build/process_memory
 	$(Q38_LOCK) $(Q38_ENV) $(PYTHON) -B tools/qwen38_g3.py --checkpoint "$(Q38_CHECKPOINT)" --dwarfstar "$(Q38_DWARFSTAR)" --output "$(G3_OUTPUT)"
 .PHONY: qwen38-g3
+
+# Persistent engine tests take the existing cross-worktree lock once.
+test-qwen38-session: picoforge build/qwen38-g2/cli.gguf
+	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_session.py -v
+
+ui-qwen38: picoforge
+	$(PYTHON) tools/ui/qwen38/server.py --checkpoint "$(Q38_CHECKPOINT)"
+
+# The server's resident worker acquires the lock; do not wrap this target again.
+test-qwen38-server: picoforge build/qwen38-g2/cli.gguf
+	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_server.py -v
+
+build/qwen38-attention-bench: tools/probe/qwen38_attention_bench.m src/qwen38_d_internal.h
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) -fobjc-arc $< $(FRAMEWORKS) -lm -o $@
+
+.PHONY: test-qwen38-session test-qwen38-server ui-qwen38

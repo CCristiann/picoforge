@@ -1,0 +1,355 @@
+{
+  "schema": 1,
+  "pilot": true,
+  "groups": [
+    {
+      "group": "cooperative",
+      "case": "ragionamento",
+      "warmups": 1,
+      "repetitions": 3,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 82.22488999999996,
+      "first_stdout_s": 9.591906000000108,
+      "load_s": 0.156729,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 860196872,
+        "sampled_peak_footprint_bytes": 839356424,
+        "samples": 154,
+        "peak_system_wired_bytes": 49877925888,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "cooperative/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 8.647221,
+        "p10": 8.638855,
+        "p90": 8.684329,
+        "n": 3
+      },
+      "decode_s": {
+        "median": 11.653333,
+        "p10": 11.650646,
+        "p90": 11.657944,
+        "n": 3
+      },
+      "ttft_request_s": {
+        "median": 8.649895,
+        "p10": 8.641743,
+        "p90": 8.687034,
+        "n": 3
+      },
+      "request_s": {
+        "median": 20.303228,
+        "p10": 20.299687,
+        "p90": 20.33768,
+        "n": 3
+      },
+      "reset_s": {
+        "median": 0.002583,
+        "p10": 0.002548,
+        "p90": 0.002751,
+        "n": 3
+      },
+      "decode_tps": {
+        "median": 1.1155606726418956,
+        "p10": 1.1151194413011418,
+        "p90": 1.1158179555022099,
+        "n": 3
+      },
+      "prefill_tps": {
+        "median": 7.054289464788745,
+        "p10": 7.024146597854595,
+        "p90": 7.061120947162558,
+        "n": 3
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.000607,
+          "p10": 0.00057,
+          "p90": 0.000693,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.006048,
+          "p10": 0.005853,
+          "p90": 0.006212,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 8.640672,
+          "p10": 8.631828,
+          "p90": 8.677509,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 8.63984425,
+          "p10": 8.630909958,
+          "p90": 8.676764417,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 296960,
+          "p10": 296960,
+          "p90": 296960,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000254,
+          "p10": 0.000252,
+          "p90": 0.000268,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.034021,
+          "p10": 0.033359,
+          "p90": 0.034444,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 11.615159,
+          "p10": 11.613895,
+          "p90": 11.620468,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 11.605602208,
+          "p10": 11.603646458,
+          "p90": 11.608121,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 66560,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        }
+      }
+    },
+    {
+      "group": "scalar",
+      "case": "ragionamento",
+      "warmups": 1,
+      "repetitions": 3,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 93.98826999999983,
+      "first_stdout_s": 15.075378999999884,
+      "load_s": 0.148954,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 938168352,
+        "sampled_peak_footprint_bytes": 891162656,
+        "samples": 182,
+        "peak_system_wired_bytes": 49973346304,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "scalar/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 9.889159,
+        "p10": 9.886936,
+        "p90": 9.890221,
+        "n": 3
+      },
+      "decode_s": {
+        "median": 12.28828,
+        "p10": 12.269368,
+        "p90": 12.30098,
+        "n": 3
+      },
+      "ttft_request_s": {
+        "median": 9.891976,
+        "p10": 9.889809,
+        "p90": 9.893086,
+        "n": 3
+      },
+      "request_s": {
+        "median": 22.181366,
+        "p10": 22.159177,
+        "p90": 22.192956,
+        "n": 3
+      },
+      "reset_s": {
+        "median": 0.002733,
+        "p10": 0.002682,
+        "p90": 0.00274,
+        "n": 3
+      },
+      "decode_tps": {
+        "median": 1.057918602115186,
+        "p10": 1.056826366679728,
+        "p90": 1.0595492775177988,
+        "n": 3
+      },
+      "prefill_tps": {
+        "median": 6.168370839218988,
+        "p10": 6.167708486999431,
+        "p90": 6.169757749013446,
+        "n": 3
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.000652,
+          "p10": 0.000643,
+          "p90": 0.0007,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.006322,
+          "p10": 0.006134,
+          "p90": 0.006377,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 9.882016,
+          "p10": 9.879791,
+          "p90": 9.883324,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 9.881182792,
+          "p10": 9.878875875,
+          "p90": 9.882829708,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 296960,
+          "p10": 296960,
+          "p90": 296960,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000259,
+          "p10": 0.000254,
+          "p90": 0.000263,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.034528,
+          "p10": 0.034031,
+          "p90": 0.035271,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 12.250305,
+          "p10": 12.230564,
+          "p90": 12.263411,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 12.238496958,
+          "p10": 12.218804083,
+          "p90": 12.251436625,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 66560,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        }
+      }
+    }
+  ],
+  "notes": [
+    "Native FP32 only; DwarfStar 30 token/s belongs to another runtime.",
+    "Warmups retained but excluded. One measured request is not a repeatability benchmark.",
+    "OS file/shader caches are uncontrolled; no cold-cache claim.",
+    "GPU time overlaps wait time. prepare_s includes n-gram I/O, dedup, decode and staging.",
+    "N-gram bytes are logical pread bytes, not physical SSD traffic.",
+    "Footprint, Metal allocations and system wired memory overlap and must not be summed.",
+    "Exact reset/replay within this runtime does not establish independent numerical parity."
+  ]
+}

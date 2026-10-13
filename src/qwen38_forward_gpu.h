@@ -4,6 +4,13 @@
 #define PICOFORGE_QWEN38_FORWARD_GPU_H
 #include "qwen38_forward.h"
 typedef struct Qwen38GpuForward Qwen38GpuForward;
+/* Last admitted nonempty append. Read preparation includes bounded pread,
+ * dedup/decode and staging. GPU timestamps overlap wait_s; never add them. */
+typedef struct {
+    double prepare_s, encode_s, wait_s, gpu_s;
+    size_t ngram_calls, ngram_bytes, ngram_rows;
+} Qwen38GpuForwardStats;
+Qwen38GpuForwardStats qwen38_gpu_forward_stats(const Qwen38GpuForward *);
 /* max_tokens <=1024, capacity <=32768; max_logits_rows<=max_tokens bounds
  * readback/workspace independently from prefill. Optional traces have a
  * fixed 256 MiB per-append ceiling, checked before mutation. */
