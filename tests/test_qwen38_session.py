@@ -50,6 +50,9 @@ class Session(unittest.TestCase):
             self.assertEqual(done['event'],'done')
             self.assertEqual(done['generated_ids'],reference['generated_ids'])
             self.assertEqual(done['prompt_tokens'],len(reference['prompt_ids']))
+            progress=[e['completed'] for e in events if e['event']=='prefill']
+            self.assertEqual(progress[-1],done['prompt_tokens'])
+            self.assertEqual(progress,sorted(set(progress)))
             self.assertGreater(done['prefill_profile']['gpu_s'],0)
             self.assertGreater(done['prefill_profile']['ngram_bytes'],0)
         self.p.stdin.write('R\n');self.p.stdin.flush();self.assertEqual(self.event()['event'],'reset')

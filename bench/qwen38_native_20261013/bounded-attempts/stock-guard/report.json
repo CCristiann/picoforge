@@ -1,0 +1,9 @@
+{
+  "complete": false,
+  "executable_sha256": "917e86ca9d49d79cd90f8d6fd1fa429052c31e0a8f9356f50c26fed111c0d556",
+  "metallib_sha256": "3ee6cd05f2d4082cada2045e1497a143a5e7f5b7f44e34b1c5cb003e53272bb2",
+  "gate": 0.001,
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "source_sha256": "fca6c301319a46b29021d35a7525f35fcb51d731269d0d01d984db784156ba44",
+  "cases": []
+}

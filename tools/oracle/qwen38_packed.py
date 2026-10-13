@@ -31,7 +31,8 @@ def command_output(args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
 
 
-def build_reference(upstream, output, *, sanitize=False):
+def build_reference(upstream, output, *, sanitize=False, adapter=None, decoder='ds4.c:qwen4_ref_row'):
+    adapter=Path(adapter).resolve() if adapter is not None else ADAPTER
     upstream, output = Path(upstream).resolve(), Path(output).resolve()
     if not output.is_relative_to(ROOT / "build") or output == ROOT / "build":
         raise ValueError("oracle output must be a new directory under this worktree's build/")
@@ -45,7 +46,7 @@ def build_reference(upstream, output, *, sanitize=False):
     if sanitize:
         flags += ["-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                   "-fno-omit-frame-pointer"]
-    dependency_text = command_output([*flags, "-MM", "-MT", "reference", str(ADAPTER)])
+    dependency_text = command_output([*flags, "-MM", "-MT", "reference", str(adapter)])
     dependencies = [Path(p).resolve() for p in
                     shlex.split(dependency_text.replace("\\\n", "").partition(":")[2])]
     inputs = {}
@@ -56,22 +57,22 @@ def build_reference(upstream, output, *, sanitize=False):
             pinned = subprocess.check_output(["git", "show", f"{REVISION}:{name}"], cwd=upstream)
             if data != pinned:
                 raise ValueError(f"modified upstream dependency: {name}")
-        elif path != ADAPTER:
+        elif path != adapter:
             raise ValueError(f"unexpected oracle dependency: {path}")
         inputs[str(path)] = digest(data)
     output.mkdir(parents=True, exist_ok=False)
     binary = output / "reference"
-    command = [*flags, str(ADAPTER), "-Wl,-dead_strip", "-lm", "-pthread", "-o", str(binary)]
+    command = [*flags, str(adapter), "-Wl,-dead_strip", "-lm", "-pthread", "-o", str(binary)]
     subprocess.run(command, check=True)
     for path, expected in inputs.items():
         if digest(Path(path).read_bytes()) != expected:
             raise ValueError(f"oracle source changed during compilation: {path}")
     (output / "DwarfStar-LICENSE").write_bytes((upstream / "LICENSE").read_bytes())
     manifest = dict(schema_version=1, upstream_revision=revision,
-                    decoder="ds4.c:qwen4_ref_row", adapter_sha256=inputs[str(ADAPTER)],
+                    decoder=decoder, adapter_sha256=inputs[str(adapter)],
                     source_sha256=inputs, compiler=command_output(["clang", "--version"]),
                     command=command, binary_sha256=digest(binary.read_bytes()),
-                    sanitizer=sanitize, byte_limit=BYTE_LIMIT, gpu=False)
+                    sanitizer=sanitize, byte_limit=BYTE_LIMIT if adapter==ADAPTER else None, gpu=False)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return binary
 

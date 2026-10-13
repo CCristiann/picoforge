@@ -251,6 +251,10 @@ int qwen38_cli(int argc,char **argv) {
             size_t n=MIN((size_t)current_chunk,count-start); y.dim[0]=start+n==count ? 1 : 0;
             check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);
             accumulate(&prefill_stats,graph);
+            if (session) {
+                fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
+                fflush(stdout);
+            }
         }
         double prefill_end=now(),first_token=0,decode_start=0;
         y.dim[0]=1; FILE *logfile=logits_path ? fopen(logits_path,"wb") : NULL;

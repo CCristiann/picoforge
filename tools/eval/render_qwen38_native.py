@@ -7,6 +7,8 @@ from pathlib import Path
 
 
 def render(evidence, output, native=None):
+    if output.exists():
+        raise FileExistsError('Report output must be a new path; historical evidence is immutable')
     def read(name):
         return json.loads((evidence/name).read_text(encoding='utf-8'))
     gate, memory, ids = read('g3.json'), read('memory.json'), read('chat-ids.json')
@@ -21,6 +23,8 @@ def render(evidence, output, native=None):
         raise ValueError('inconsistent layer/token evidence')
     if native is not None:
         data['native'] = json.loads(native.read_text())
+        root=native.parent/data['native'].get('evidence_root','.')
+        data['native_root'] = os.path.relpath(root, output.parent)
     payload = json.dumps(data, ensure_ascii=False, allow_nan=False).replace('<', '\\u003c')
     template = Path(__file__).with_name('qwen38_native_report.html').read_text(encoding='utf-8')
     relative = os.path.relpath(evidence, output.parent)

@@ -18,10 +18,23 @@ Nessun download, nuovo checksum integrale o variazione del limite wired.
   aritmetico da 61 token e 14 generati. Prefill mediano 9,889 → 8,647 s,
   decode 1,058 → 1,116 token/s, richiesta 22,181 → 20,303 s. Otto sequenze
   identiche, reset a ogni richiesta. Un pilot, non un benchmark di qualità.
-- `extended-cooperative/`: esecuzione progressiva in corso; consultare il
-  manifest prima di considerare un caso completato.
+- `extended-cooperative/`: sei casi completati, inclusi 8042 token reali di prompt
+  con 28 generati e JSON corretto. Prefill 8K 2046,586 s, decode 25,296 s;
+  pressione 1, nessuna crescita swap. Oracle coding PASS; fence vietate
+  nel caso merge-ranges, conformità di formato distinta.
 - `summary-initial.json` / [report iniziale](report-initial.html): fotografia
   dei soli casi completati e delle misure sopra, con lo storico G2/G3 distinto.
+- `bounded-lazy/`: tre prefissi da 24 token contro CPU indipendente originale,
+  ultima scelta stop in tutti i casi. Errore massimo 5,14e-5 < 1e-3;
+  non è un confronto di continuazioni multitoken. Dati f32 restano in
+  `build/qwen38-native-bounded-settled`, identificati dagli SHA nel report.
+- `bounded-attempts/`: tentativi stock/lazy arrestati dal guard memoria,
+  incluso il primo caso lazy numericamente superato; suite incomplete.
+- `chunk-replay/`: 14 token identici dopo reset, chunk 128 e 7.
+- [Report verificato](report-verified.html) / `summary-verified.json`: nuovo
+  snapshot dei risultati, con qualità, fallimenti, scope dei gate e link grezzi.
+- `browser/`: conversazione reale desktop/mobile, streaming, stop, reset,
+  errore di capacità e recupero. Un solo worker nativo residente.
 - `validation/`: log dei test, inclusi tentativi falliti e correzioni.
 
 Il riavvio intervenuto durante il primo oracle bounded CPU ha lasciato

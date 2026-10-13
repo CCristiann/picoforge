@@ -1,0 +1,301 @@
+{
+  "complete": true,
+  "executable_sha256": "917e86ca9d49d79cd90f8d6fd1fa429052c31e0a8f9356f50c26fed111c0d556",
+  "metallib_sha256": "3ee6cd05f2d4082cada2045e1497a143a5e7f5b7f44e34b1c5cb003e53272bb2",
+  "gate": 0.001,
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "source_sha256": "30e870beb57086749a270b175694c9e9a9562e465d762d9944011dfd036f5b94",
+  "cases": [
+    {
+      "case": "lower-bound",
+      "prompt_ids": [
+        248045,
+        846,
+        198,
+        63299,
+        31732,
+        184402,
+        184026,
+        351,
+        16,
+        16,
+        2920,
+        33959,
+        212087,
+        1331,
+        516,
+        4570,
+        18857,
+        3906,
+        2654,
+        514,
+        348,
+        64,
+        11,
+        1331
+      ],
+      "generated_ids": [
+        248046
+      ],
+      "metrics": {
+        "scaled": 2.0331038236799155e-06,
+        "absolute": 4.1604042053222656e-05,
+        "argmax_matches": 1,
+        "margin_decided": 1,
+        "per_token_scaled": [
+          2.0331038236799155e-06
+        ],
+        "per_token_margin": [
+          0.7344989776611328
+        ],
+        "native_top5": [
+          [
+            248046,
+            516,
+            1054,
+            307,
+            62
+          ]
+        ],
+        "reference_top5": [
+          [
+            248046,
+            516,
+            1054,
+            307,
+            62
+          ]
+        ],
+        "top5_order_matches": 1
+      },
+      "passed": true,
+      "commands": [
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "--qwen38",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "--tokens",
+          "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
+          "--context",
+          "64",
+          "--chunk",
+          "7",
+          "--max-new",
+          "4",
+          "--logits",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/native.f32",
+          "--token-ids",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/ids.json"
+        ],
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+        ]
+      ],
+      "oracle_environment": {
+        "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
+        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/reference.f32"
+      },
+      "artifacts": {
+        "ids.json": "dd7ea69f79cf9878e45bbf5c9c0bb611299a0a4777ff5d6565b1d3d021b540eb",
+        "native.f32": "360aca7e01331a80349663aee0db51920416fc6ed17c0e05fe19ad9dff7ae058",
+        "release-wait.json": "681d41f27209cce7622573afdd20bd6e1783e53bc13d6f5a9fae9ab0d4a21beb",
+        "reference.f32": "8d2279bbd257f02dbdf3a573ba2056dc6ed3c26c52f69e2015e799ba59356df5"
+      }
+    },
+    {
+      "case": "ragionamento",
+      "prompt_ids": [
+        248045,
+        846,
+        198,
+        89263,
+        6378,
+        3687,
+        22056,
+        176816,
+        218415,
+        307,
+        176832,
+        1789,
+        220,
+        16,
+        15,
+        15,
+        15,
+        2920,
+        198056,
+        60603,
+        220,
+        17,
+        57844,
+        220
+      ],
+      "generated_ids": [
+        248046
+      ],
+      "metrics": {
+        "scaled": 5.144676702056359e-05,
+        "absolute": 0.0011165142059326172,
+        "argmax_matches": 1,
+        "margin_decided": 1,
+        "per_token_scaled": [
+          5.144676702056359e-05
+        ],
+        "per_token_margin": [
+          2.6932315826416016
+        ],
+        "native_top5": [
+          [
+            248046,
+            18,
+            22,
+            20,
+            16
+          ]
+        ],
+        "reference_top5": [
+          [
+            248046,
+            18,
+            22,
+            20,
+            16
+          ]
+        ],
+        "top5_order_matches": 1
+      },
+      "passed": true,
+      "commands": [
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "--qwen38",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "--tokens",
+          "248045,846,198,89263,6378,3687,22056,176816,218415,307,176832,1789,220,16,15,15,15,2920,198056,60603,220,17,57844,220",
+          "--context",
+          "64",
+          "--chunk",
+          "7",
+          "--max-new",
+          "4",
+          "--logits",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/native.f32",
+          "--token-ids",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/ids.json"
+        ],
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+        ]
+      ],
+      "oracle_environment": {
+        "DS4_QWEN4_FT_TOKENS": "248045,846,198,89263,6378,3687,22056,176816,218415,307,176832,1789,220,16,15,15,15,2920,198056,60603,220,17,57844,220",
+        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/reference.f32"
+      },
+      "artifacts": {
+        "ids.json": "e0c182523995fc773e263d6f94876f7b7d8356e78f34427c675f053e287df8b4",
+        "native.f32": "7f4903cbf66b41c4b7ebed647cf91312b08b84bc7246a5788838ac0ad5531bda",
+        "release-wait.json": "43484aa4ad800136c9417d1eaa92e361c508d3614c813bc557e44c6374f4de00",
+        "reference.f32": "987ad2348220ef30080d7353f2f6138c8fa8924e362d4054b8c8fe337f85e45f"
+      }
+    },
+    {
+      "case": "italiano",
+      "prompt_ids": [
+        248045,
+        846,
+        198,
+        63299,
+        31732,
+        303,
+        57786,
+        4931,
+        175079,
+        180436,
+        1789,
+        51711,
+        220,
+        17,
+        20,
+        15,
+        46652,
+        791,
+        200001,
+        632,
+        15264,
+        13,
+        414,
+        10760
+      ],
+      "generated_ids": [
+        248046
+      ],
+      "metrics": {
+        "scaled": 1.9391586049575472e-06,
+        "absolute": 3.147125244140625e-05,
+        "argmax_matches": 1,
+        "margin_decided": 1,
+        "per_token_scaled": [
+          1.9391586049575472e-06
+        ],
+        "per_token_margin": [
+          0.8581228256225586
+        ],
+        "native_top5": [
+          [
+            248046,
+            1896,
+            356,
+            4144,
+            8536
+          ]
+        ],
+        "reference_top5": [
+          [
+            248046,
+            1896,
+            356,
+            4144,
+            8536
+          ]
+        ],
+        "top5_order_matches": 1
+      },
+      "passed": true,
+      "commands": [
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "--qwen38",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "--tokens",
+          "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
+          "--context",
+          "64",
+          "--chunk",
+          "7",
+          "--max-new",
+          "4",
+          "--logits",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/native.f32",
+          "--token-ids",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/ids.json"
+        ],
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+        ]
+      ],
+      "oracle_environment": {
+        "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
+        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/reference.f32"
+      },
+      "artifacts": {
+        "ids.json": "87c82d5a777467445b5a0908845822dbf92220d57fd7cd6db8b2f1641da41bdc",
+        "native.f32": "7ebdc9d1cea988510a7271cc0d21d5c7fb62874f195ebd23ecf91bbe2463857e",
+        "release-wait.json": "8a107803268dd1142c0a8d02f6e4d711d8fbc974a872884c78123637976c3a32",
+        "reference.f32": "94946620b27219948b98e7181b16e0e9912c157bbfdfd5389bdec3e67ee7f561"
+      }
+    }
+  ]
+}

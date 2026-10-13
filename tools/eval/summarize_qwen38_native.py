@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import statistics
 
@@ -17,7 +18,14 @@ def distribution(values):
 
 
 def summarize(root):
-    groups=[]
+    groups=[]; incomplete=[]
+    for path in sorted(root.rglob('process.json')):
+        info=json.loads(path.read_text())
+        if not info['complete']:
+            incomplete.append(dict(group=str(path.parent.parent.relative_to(root)),case=path.parent.name,
+                                   process_s=info.get('process_s'),returncode=info.get('returncode'),
+                                   reason=info.get('stop_reason') or ('Processo fallito: consultare i dati grezzi.' if info.get('returncode') is not None else 'Esito non disponibile; prova incompleta o ancora in corso.'),
+                                   raw_path=str(path.relative_to(root))))
     for path in sorted(root.rglob('*.runs.jsonl')):
         records=[validate_record(json.loads(line)) for line in path.read_text().splitlines()]
         if not records:
@@ -62,8 +70,17 @@ def summarize(root):
                 item[phase]={k:distribution([r[phase][k] for r in rows]) for k in rows[0][phase]}
         if len(records)==1:
             item['answer']=(path.parent/name/'stdout.log').read_text()
+        quality=path.parent/(name+'-quality.json')
+        if quality.exists():item['quality']=json.loads(quality.read_text())
+        elif (path.parent/'manifest.json').exists():
+            manifest=json.loads((path.parent/'manifest.json').read_text())
+            result=next((r for r in manifest.get('results',[]) if r['case']==name),{})
+            if 'quality_exact_json' in result:
+                item['quality']=dict(grading='JSON esatto',tests_passed=result['quality_exact_json'])
         groups.append(item)
-    return dict(schema=1,pilot=True,groups=groups,
+    bounded=root/'bounded-lazy'/'report.json'
+    return dict(schema=1,pilot=True,groups=groups,incomplete=incomplete,
+                bounded=json.loads(bounded.read_text()) if bounded.exists() else None,
                 notes=['Native FP32 only; DwarfStar 30 token/s belongs to another runtime.',
                        'Warmups retained but excluded. One measured request is not a repeatability benchmark.',
                        'OS file/shader caches are uncontrolled; no cold-cache claim.',
@@ -78,4 +95,6 @@ if __name__=='__main__':
     p.add_argument('evidence',type=Path);p.add_argument('output',type=Path)
     a=p.parse_args()
     if a.output.exists(): p.error('output already exists')
-    dump(a.output,summarize(a.evidence))
+    result=summarize(a.evidence)
+    result['evidence_root']=os.path.relpath(a.evidence.resolve(),a.output.resolve().parent)
+    dump(a.output,result)

@@ -81,7 +81,10 @@ class Engine:
         body=''.join(('U' if m['role']=='user' else 'A')+' '+m['content'].encode().hex()+'\n' for m in messages)
         with self.control:
             self.active=True; self.started=False; self.cancel=False
-        decoder=codecs.getincrementaldecoder('utf-8')('strict'); answer=''
+        # A token limit or cooperative stop can split a UTF-8 character.
+        # Publish a replacement for an incomplete final character, just as
+        # TextDecoder does, and replay exactly this visible text next turn.
+        decoder=codecs.getincrementaldecoder('utf-8')('replace'); answer=''
         try:
             self.process.stdin.write((header+body).encode()); self.process.stdin.flush()
             while True:
@@ -106,6 +109,13 @@ class Engine:
                 elif kind=='error':
                     yield event; return
                 yield event
+        except Exception as error:
+            self.stop()
+            # A broken worker protocol must not admit a second request while
+            # the first may still own the device or leave unconsumed events.
+            with self.control:
+                self.state='error'; self.error='Errore del motore. Riavvia il servizio. '+str(error)
+            raise
         finally:
             with self.control:
                 self.active=False; self.started=False
@@ -154,7 +164,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Content-Type')!='application/json':
             self.respond(415,{'error':'È richiesto JSON.'}); return
         engine=self.server.engine
-        acquired=False; streaming=False
+        acquired=False; streaming=False; stream=None; finished=False
         try:
             size=int(self.headers.get('Content-Length','0'))
             if not 0<size<=262144: raise ValueError('Richiesta troppo grande o vuota.')
@@ -179,13 +189,23 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write((json.dumps(event,ensure_ascii=False)+'\n').encode()); self.wfile.flush()
                 except (BrokenPipeError,ConnectionResetError):
                     disconnected=True; engine.stop()
+            finished=True
             self.close_connection=True
         except (ValueError,TypeError,AttributeError,StopIteration) as error:
             self.failure(error,400,streaming)
         except Exception as error:
             self.failure(error,500,streaming)
         finally:
-            if acquired: engine.mutex.release()
+            if acquired:
+                # Covers a disconnect while sending HTTP headers as well as
+                # one in the token loop. Never leave native events for the
+                # next conversation request to accidentally consume.
+                if stream is not None and not finished:
+                    engine.stop()
+                    try:
+                        for _ in stream: pass
+                    except Exception: pass  # Engine has already entered error state.
+                engine.mutex.release()
 
     def failure(self,error,code,streaming):
         try:

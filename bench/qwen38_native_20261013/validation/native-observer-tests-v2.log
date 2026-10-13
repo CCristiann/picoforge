@@ -1,0 +1,11 @@
+test_critical_pressure_stops_only_the_child (__main__.ObservedTests.test_critical_pressure_stops_only_the_child) ... ok
+test_failed_child_is_not_complete (__main__.ObservedTests.test_failed_child_is_not_complete) ... ok
+test_preserves_caller_lock_descriptor (__main__.ObservedTests.test_preserves_caller_lock_descriptor) ... ok
+test_refuses_existing_directory (__main__.ObservedTests.test_refuses_existing_directory) ... ok
+test_streams_and_times (__main__.ObservedTests.test_streams_and_times) ... ok
+test_timeout_keeps_evidence (__main__.ObservedTests.test_timeout_keeps_evidence) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.702s
+
+OK

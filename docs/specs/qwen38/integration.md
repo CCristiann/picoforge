@@ -764,3 +764,17 @@ DwarfStar Metal FP16: [G2.md](G2.md). Il gate a pari precisione usa il riferimen
 CPU FP32 non modificato di DwarfStar fissato; il caso stock Metal divergente
 rimane registrato come FAIL separato. Nessuna modifica alle tolleranze §6,
 nessun merge/push su main, nessuna nuova dipendenza o conversione dei pesi.
+
+
+## 15. Incrementi nativi — 2026-10-13
+
+Branch separato `coord/qwen38-native-next`, da `31d3460`; main e worktree
+precedenti preservati. Suite reale con risposte estese, contesti fino a 8042
+token di prompt, benchmark residente appaiato, telemetria e QSA cooperativa
+FP32: stato, comandi, evidenze e controlli ancora aperti in
+[native-next.md](native-next.md). La chat locale usa un unico worker residente,
+streaming, stop cooperativo e reset/replay della storia tramite A.
+
+I risultati nativi non sono i precedenti circa 30 token/s di DwarfStar. Il gate
+Metal stock FP16 resta FAIL. MTP ha un [contratto](MTP.md), ma non è ancora
+eseguibile; parsing e specifica non ne costituiscono il completamento.

@@ -1,0 +1,570 @@
+{
+  "cases": [
+    {
+      "case": "first-turn",
+      "status": {
+        "active": false,
+        "context": 8192,
+        "error": null,
+        "messages": [
+          {
+            "content": "Ricorda questo nome: Ada. Rispondi soltanto con il nome.",
+            "role": "user"
+          },
+          {
+            "content": "Ada",
+            "role": "assistant"
+          }
+        ],
+        "metrics": {
+          "chunk": 128,
+          "context": 8192,
+          "decode_profile": {
+            "encode_s": 0.002688,
+            "gpu_s": 0.891530875,
+            "ngram_bytes": 5120,
+            "ngram_calls": 16,
+            "ngram_rows": 16,
+            "prepare_s": 0.005071,
+            "wait_s": 0.892716
+          },
+          "decode_s": 0.90074,
+          "decode_tokens": 1,
+          "event": "done",
+          "first_token_from_entry_s": 78.934058,
+          "generated_ids": [
+            92055,
+            248046
+          ],
+          "generated_tokens": 2,
+          "graph_buffer_bytes": 713683968,
+          "load_s": 0.199539,
+          "metal_allocated_bytes": 45511098368,
+          "metal_recommended_bytes": 55662788608,
+          "position": 28,
+          "prefill_profile": {
+            "encode_s": 0.004771,
+            "gpu_s": 4.081834833,
+            "ngram_bytes": 138240,
+            "ngram_calls": 432,
+            "ngram_rows": 432,
+            "prepare_s": 0.014801,
+            "wait_s": 4.360085
+          },
+          "prefill_s": 4.379898,
+          "prompt_tokens": 27,
+          "repetition": 0,
+          "request_s": 5.283431,
+          "reset_s": 0.002663,
+          "stop_reason": "stop",
+          "ttft_request_s": 4.382691,
+          "warmup": false
+        },
+        "session_mode": "resident_model_reset_replay",
+        "state": "ready"
+      },
+      "trace": [
+        {
+          "answer": [],
+          "status": "Caricamento del modello / attesa GPU…",
+          "time": 24895.39999999944
+        },
+        {
+          "answer": [],
+          "status": "Modello pronto",
+          "time": 237888.2999999998
+        },
+        {
+          "answer": [
+            ""
+          ],
+          "status": "Preparazione della richiesta…",
+          "time": 264996.5999999996
+        },
+        {
+          "answer": [
+            ""
+          ],
+          "status": "Lettura della conversazione…",
+          "time": 265000.7999999998
+        },
+        {
+          "answer": [
+            "Ada"
+          ],
+          "status": "Generazione in corso…",
+          "time": 269381.5999999996
+        },
+        {
+          "answer": [
+            "Ada"
+          ],
+          "status": "Modello pronto",
+          "time": 270286.39999999944
+        }
+      ]
+    },
+    {
+      "case": "second-turn",
+      "status": {
+        "active": false,
+        "context": 8192,
+        "error": null,
+        "messages": [
+          {
+            "content": "Ricorda questo nome: Ada. Rispondi soltanto con il nome.",
+            "role": "user"
+          },
+          {
+            "content": "Ada",
+            "role": "assistant"
+          },
+          {
+            "content": "Quale nome ti ho chiesto di ricordare? Rispondi soltanto con il nome.",
+            "role": "user"
+          },
+          {
+            "content": "Ada",
+            "role": "assistant"
+          }
+        ],
+        "metrics": {
+          "chunk": 128,
+          "context": 8192,
+          "decode_profile": {
+            "encode_s": 0.002718,
+            "gpu_s": 0.891936875,
+            "ngram_bytes": 5120,
+            "ngram_calls": 16,
+            "ngram_rows": 16,
+            "prepare_s": 0.000022,
+            "wait_s": 0.893671
+          },
+          "decode_s": 0.89666,
+          "decode_tokens": 1,
+          "event": "done",
+          "first_token_from_entry_s": null,
+          "generated_ids": [
+            92055,
+            248046
+          ],
+          "generated_tokens": 2,
+          "graph_buffer_bytes": 713683968,
+          "load_s": 0.199539,
+          "metal_allocated_bytes": 45511098368,
+          "metal_recommended_bytes": 55662788608,
+          "position": 60,
+          "prefill_profile": {
+            "encode_s": 0.006807,
+            "gpu_s": 8.425116375,
+            "ngram_bytes": 207360,
+            "ngram_calls": 648,
+            "ngram_rows": 648,
+            "prepare_s": 0.017197,
+            "wait_s": 8.693179
+          },
+          "prefill_s": 8.71736,
+          "prompt_tokens": 59,
+          "repetition": 1,
+          "request_s": 9.617176,
+          "reset_s": 0.003025,
+          "stop_reason": "stop",
+          "ttft_request_s": 8.720516,
+          "warmup": false
+        },
+        "session_mode": "resident_model_reset_replay",
+        "state": "ready"
+      },
+      "trace": [
+        {
+          "answer": [],
+          "status": "Caricamento del modello / attesa GPU…",
+          "time": 24895.39999999944
+        },
+        {
+          "answer": [],
+          "status": "Modello pronto",
+          "time": 237888.2999999998
+        },
+        {
+          "answer": [
+            ""
+          ],
+          "status": "Preparazione della richiesta…",
+          "time": 264996.5999999996
+        },
+        {
+          "answer": [
+            ""
+          ],
+          "status": "Lettura della conversazione…",
+          "time": 265000.7999999998
+        },
+        {
+          "answer": [
+            "Ada"
+          ],
+          "status": "Generazione in corso…",
+          "time": 269381.5999999996
+        },
+        {
+          "answer": [
+            "Ada"
+          ],
+          "status": "Modello pronto",
+          "time": 270286.39999999944
+        },
+        {
+          "answer": [
+            "Ada",
+            ""
+          ],
+          "status": "Preparazione della richiesta…",
+          "time": 296571.0999999996
+        },
+        {
+          "answer": [
+            "Ada",
+            ""
+          ],
+          "status": "Lettura della conversazione…",
+          "time": 296575.2999999998
+        },
+        {
+          "answer": [
+            "Ada",
+            ""
+          ],
+          "status": "Lettura: 59/59 token",
+          "time": 305292.39999999944
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada"
+          ],
+          "status": "Generazione in corso…",
+          "time": 305293.2999999998
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada"
+          ],
+          "status": "Modello pronto",
+          "time": 306189.89999999944
+        }
+      ]
+    },
+    {
+      "beforeStop": "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1.",
+      "case": "decode-stop-mobile",
+      "status": {
+        "active": false,
+        "context": 8192,
+        "error": null,
+        "messages": [
+          {
+            "content": "Ricorda questo nome: Ada. Rispondi soltanto con il nome.",
+            "role": "user"
+          },
+          {
+            "content": "Ada",
+            "role": "assistant"
+          },
+          {
+            "content": "Quale nome ti ho chiesto di ricordare? Rispondi soltanto con il nome.",
+            "role": "user"
+          },
+          {
+            "content": "Ada",
+            "role": "assistant"
+          },
+          {
+            "content": "Scrivi un elenco di dieci suggerimenti pratici per organizzare una biblioteca.",
+            "role": "user"
+          },
+          {
+            "content": "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1.",
+            "role": "assistant"
+          }
+        ],
+        "metrics": {
+          "chunk": 128,
+          "context": 8192,
+          "decode_profile": {
+            "encode_s": 0.039111,
+            "gpu_s": 13.365764583,
+            "ngram_bytes": 76800,
+            "ngram_calls": 240,
+            "ngram_rows": 240,
+            "prepare_s": 0.03647,
+            "wait_s": 13.373952
+          },
+          "decode_s": 13.453175,
+          "decode_tokens": 14,
+          "event": "done",
+          "first_token_from_entry_s": null,
+          "generated_ids": [
+            36,
+            55727,
+            190070,
+            186165,
+            80424,
+            93694,
+            72,
+            791,
+            220446,
+            4931,
+            193133,
+            25,
+            271,
+            16,
+            13
+          ],
+          "generated_tokens": 15,
+          "graph_buffer_bytes": 713683968,
+          "load_s": 0.199539,
+          "metal_allocated_bytes": 45511098368,
+          "metal_recommended_bytes": 55662788608,
+          "position": 104,
+          "prefill_profile": {
+            "encode_s": 0.007881,
+            "gpu_s": 12.423465542,
+            "ngram_bytes": 286720,
+            "ngram_calls": 896,
+            "ngram_rows": 896,
+            "prepare_s": 0.022091,
+            "wait_s": 12.679242
+          },
+          "prefill_s": 12.70935,
+          "prompt_tokens": 89,
+          "repetition": 2,
+          "request_s": 26.165786,
+          "reset_s": 0.00313,
+          "stop_reason": "cancelled",
+          "ttft_request_s": 12.712611,
+          "warmup": false
+        },
+        "session_mode": "resident_model_reset_replay",
+        "state": "ready"
+      },
+      "stopAt": 390195.2000000002,
+      "trace": [
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una"
+          ],
+          "status": "Generazione in corso…",
+          "time": 385370.5
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca"
+          ],
+          "status": "Generazione in corso…",
+          "time": 386264.2000000002
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:"
+          ],
+          "status": "Generazione in corso…",
+          "time": 387158.2999999998
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n"
+          ],
+          "status": "Generazione in corso…",
+          "time": 388058
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1"
+          ],
+          "status": "Generazione in corso…",
+          "time": 388955.0999999996
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1."
+          ],
+          "status": "Generazione in corso…",
+          "time": 389854.39999999944
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1."
+          ],
+          "status": "Arresto dopo il lavoro GPU in corso…",
+          "time": 390196.5
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1."
+          ],
+          "status": "Generazione interrotta",
+          "time": 390755
+        },
+        {
+          "answer": [
+            "Ada",
+            "Ada",
+            "Ecco dieci suggerimenti pratici per organizzare una biblioteca:\n\n1."
+          ],
+          "status": "Modello pronto",
+          "time": 392910.5
+        }
+      ]
+    },
+    {
+      "case": "reset-mobile",
+      "status": {
+        "active": false,
+        "context": 8192,
+        "error": null,
+        "messages": [],
+        "metrics": null,
+        "session_mode": "resident_model_reset_replay",
+        "state": "ready"
+      }
+    },
+    {
+      "case": "prefill-stop-mobile",
+      "headerPosition": "sticky",
+      "overflow": false,
+      "promptRestored": 2598,
+      "status": {
+        "active": false,
+        "context": 8192,
+        "error": null,
+        "messages": [],
+        "metrics": {
+          "chunk": 128,
+          "context": 8192,
+          "decode_profile": {
+            "encode_s": 0,
+            "gpu_s": 0,
+            "ngram_bytes": 0,
+            "ngram_calls": 0,
+            "ngram_rows": 0,
+            "prepare_s": 0,
+            "wait_s": 0
+          },
+          "decode_s": 0,
+          "decode_tokens": 0,
+          "event": "done",
+          "first_token_from_entry_s": null,
+          "generated_ids": [],
+          "generated_tokens": 0,
+          "graph_buffer_bytes": 713683968,
+          "load_s": 0.199539,
+          "metal_allocated_bytes": 45511098368,
+          "metal_recommended_bytes": 55662788608,
+          "position": 128,
+          "prefill_profile": {
+            "encode_s": 0.010678,
+            "gpu_s": 17.669957292,
+            "ngram_bytes": 125440,
+            "ngram_calls": 392,
+            "ngram_rows": 392,
+            "prepare_s": 0.03035,
+            "wait_s": 17.940127
+          },
+          "prefill_s": 17.981168,
+          "prompt_tokens": 473,
+          "repetition": 4,
+          "request_s": 17.984062,
+          "reset_s": 0.002887,
+          "stop_reason": "cancelled",
+          "ttft_request_s": null,
+          "warmup": false
+        },
+        "session_mode": "resident_model_reset_replay",
+        "state": "ready"
+      }
+    },
+    {
+      "case": "context-overflow-mobile",
+      "error": "Conversazione troppo lunga o messaggi non validi. Riduci il limite di risposta o avvia una nuova conversazione.",
+      "overflow": false,
+      "promptCharacters": 62999,
+      "sendEnabled": true,
+      "status": {
+        "active": false,
+        "context": 8192,
+        "error": null,
+        "messages": [],
+        "metrics": {
+          "chunk": 128,
+          "context": 8192,
+          "decode_profile": {
+            "encode_s": 0,
+            "gpu_s": 0,
+            "ngram_bytes": 0,
+            "ngram_calls": 0,
+            "ngram_rows": 0,
+            "prepare_s": 0,
+            "wait_s": 0
+          },
+          "decode_s": 0,
+          "decode_tokens": 0,
+          "event": "done",
+          "first_token_from_entry_s": null,
+          "generated_ids": [],
+          "generated_tokens": 0,
+          "graph_buffer_bytes": 713683968,
+          "load_s": 0.199539,
+          "metal_allocated_bytes": 45511098368,
+          "metal_recommended_bytes": 55662788608,
+          "position": 128,
+          "prefill_profile": {
+            "encode_s": 0.010678,
+            "gpu_s": 17.669957292,
+            "ngram_bytes": 125440,
+            "ngram_calls": 392,
+            "ngram_rows": 392,
+            "prepare_s": 0.03035,
+            "wait_s": 17.940127
+          },
+          "prefill_s": 17.981168,
+          "prompt_tokens": 473,
+          "repetition": 4,
+          "request_s": 17.984062,
+          "reset_s": 0.002887,
+          "stop_reason": "cancelled",
+          "ttft_request_s": null,
+          "warmup": false
+        },
+        "session_mode": "resident_model_reset_replay",
+        "state": "ready"
+      }
+    }
+  ],
+  "recordedAt": "2026-10-13T19:53:43.124Z",
+  "viewport": {
+    "height": 844,
+    "width": 390
+  },
+  "workerPid": 96310,
+  "serverPid": 96299,
+  "execution": "One resident native worker, common repository GPU lock",
+  "interaction": "T3 browser DOM events for early turns; focused click/type tools for prefill stop, reset and recovery. Initial report click failed because target was outside viewport."
+}

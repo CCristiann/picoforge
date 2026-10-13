@@ -104,20 +104,62 @@ osservati sull'intero processo, warm-up compreso. Nella mediana cooperativa,
 prefill `prepare_s` 0,000607 s contro `gpu_s` 8,640 s: su questo caso caldo
 l'I/O n-gram non è il collo di bottiglia. Nessuna conclusione su SSD cold.
 
-La suite estesa cooperativa prosegue in `extended-cooperative/`, chunk 128.
-Le prove reali bounded CPU FP32 aggiuntive e la progressione 8K non sono ancora
-completate. Un primo tentativo bounded è rimasto incompleto durante un riavvio
-del Mac; la causa del riavvio non è stata determinata. Non è un PASS.
+La suite estesa cooperativa è completa in `extended-cooperative/`, chunk 128.
+Coding Python a uno/due file: 254/ 173 token generati, oracle funzionali superati;
+il primo usa fence vietate dal prompt. I quattro contesti restituiscono il JSON
+atteso e raggiungono stop:
+
+| Contesto | Prompt | Generati | Prefill s | Decode s |
+|---|---:|---:|---:|---:|
+| 1K | 892 | 28 | 128,402 | 24,639 |
+| 2K | 1917 | 28 | 288,622 | 25,027 |
+| 4K | 3967 | 28 | 636,990 | 26,378 |
+| 8K | 8042 | 28 | 2046,586 | 25,296 |
+
+A 8K: Metal 42,387 GiB, grafo 0,665 GiB, footprint lifetime 0,837 GiB,
+wired di sistema 49,262 GiB, 2761 campioni, pressione 1 e variazione swap 0.
+Il prefill registra 1373,368 s di timestamp GPU contro 2045,062 s di wait host:
+la differenza rimane nelle evidenze, non è attribuita a un collo di bottiglia
+senza ulteriori misure. Sono prove singole, senza warm-up separato.
+
+Il nuovo gate `bounded-lazy/report.json` è completo: i tre prefissi da 24 token
+passano (errore scalato 2,03e-6 / 5,14e-5 / 1,94e-6, gate 1e-3). Tutti scelgono
+subito stop: si confronta una riga finale per prefisso, non una continuazione
+multitoken né la qualità della risposta completa. Il runtime CPU usa stati
+FP32 e riduzioni double upstream, come il riferimento storico G3.
+Tre esecuzioni di circa 130 s, pressione 1, nessuna nuova crescita swap.
+Il replay reale a chunk 128/7 dà 14 token identici incluso stop. Un primo tentativo è
+rimasto incompleto durante un riavvio del Mac, causa non determinata. Un secondo
+è stato fermato dal guard dopo 11,19 s durante il caricamento stock CPU: pressione 4
+e swap +3,48 GB. Nessuno dei due è un PASS. Anche un tentativo lazy successivo ha superato il primo caso ma è stato
+fermato al caricamento del secondo, subito dopo Metal; sono conservati entrambi
+in `bounded-attempts/`. Il sorgente pinned invoca
+POSIX_MADV_WILLNEED sull'intera mappatura residente. L'adattatore
+`tools/oracle/qwen38_dwarfstar_cpu.c` ora chiama `model_open(...,false,false)`
+poi le funzioni originali di binding e first-token test: mapping privato lazy,
+nessun prefetch globale, nessuna modifica del calcolo. Prima dell’oracle il
+runner attende tre campioni con pressione normale e wired di sistema ≤1/4
+della RAM (timeout 60 s), conservandoli in `release-wait.json`; non forza il
+rilascio e non controlla le cache OS. Il builder verifica
+revisioni e hash di tutte le dipendenze upstream; n-gram resta disk-only.
 
 Passano QSA Metal (13 test), grafo G2 (5), stato/fault (1), CLI (4), sessione
-residente (2), HTTP con fixture reale (2), observer (6) e contratti (4).
+residente (2), HTTP con fixture reale (3), streaming UTF-8 (1), observer (6) e contratti (4).
 Il test di template inizialmente fallito aveva omesso il blocco `<think>` vuoto
 nelle risposte precedenti, conservato dal template ufficiale. La correzione
 è nel test, non nel renderer A.
 
-La chat è implementata e i test del servizio passano. Il browser ha verificato
-caricamento/attesa del lock e layout desktop/mobile; lo scambio sul modello
-reale resta da verificare dopo la suite seriale. **MTP non implementato.**
+La chat è verificata nel browser T3 sul checkpoint reale a 1280×850 e 390×844:
+prima risposta, secondo turno che ricorda «Ada», streaming osservato fra token,
+stop durante decode e prefill, reset, errore per contesto ecceduto e recupero
+con risposta «pronto». Un solo worker PID 96310 per tutte le richieste, poi
+arrestato per liberare il lock. Prefill annullato dopo 128/473 token, nessun testo
+emesso e storia vuota; prompt recuperato. Evidenze e screenshot in
+`bench/qwen38_native_20261013/browser/`. Il browser ha mostrato un problema di
+accessibilità pratica del reset durante lo scroll: header reso sticky e
+ricontrollato. I click iniziali sul report erano fuori viewport; dopo scroll
+istantaneo il tool click verifica anche il FAIL stock FP16.
+**MTP non implementato.**
 Il FAIL DwarfStar Metal FP16 rimane quello documentato in [G2.md](G2.md), distinto
 dal PASS indipendente CPU FP32. Nessun allargamento dei gate.
 
@@ -147,7 +189,7 @@ confidenza. I warm-up sono conservati e esclusi dalle statistiche di velocità.
 
 ```sh
 make ui-qwen38
-# http://127.0.0.1:8001 — il worker acquisisce già il lock comune.
+# http:// 127.0.0.1:8001 — il worker acquisisce già il lock comune.
 make test-qwen38-session test-qwen38-server
 ```
 

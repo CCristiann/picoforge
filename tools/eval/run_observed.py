@@ -4,6 +4,7 @@ Output directories are exclusive. Counter samples are system-wide where named
 system_*; process disk bytes are not attributed to n-grams. No shell is used.
 """
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -40,6 +41,7 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
     with executable.open("rb") as binary:
         binary_hash = hashlib.file_digest(binary, "sha256").hexdigest()
     metadata = dict(command=command, cwd=str(cwd), pilot=True, complete=False,
+                    recorded_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     executable_sha256=binary_hash,
                     environment={"DS4_METAL_MEMORY_REPORT": "1", **(env_overrides or {})},
                     removed_environment_names=sorted(k for k in os.environ if k.startswith("DS4_")),

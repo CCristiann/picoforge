@@ -55,9 +55,13 @@ This path defaults to context 8192, prefill chunk 1024, greedy decoding and
 thinking disabled. `--complete TEXT` supplies raw text; `--thinking` enables
 the chat reasoning prefix. `--logits FILE.f32` saves one FP32 vocabulary row
 per sampling step; `--token-ids FILE.json` saves prompt/output IDs. This is a
-correctness baseline with no native performance claim or MTP execution.
+FP32 baseline; reproducible native measurements and the resident local chat are
+documented in [native increments](docs/specs/qwen38/native-next.md). MTP execution
+is not yet available.
 
-The [interactive native report](bench/qwen38_g2_g3_20261013/report.html) shows
+The [updated native report](bench/qwen38_native_20261013/report-verified.html)
+includes the 8K trial, native measurements and bounded CPU checks.
+The [original G2/G3 report](bench/qwen38_g2_g3_20261013/report.html) shows
 the recorded output, all 48 layer errors, the FP32/Metal comparison and memory.
 Open the HTML directly, or serve it locally:
 
@@ -68,7 +72,13 @@ python3 -m http.server 8766 --bind 127.0.0.1 --directory bench
 
 This page explores saved evidence; it does not start inference. Regenerate it
 without additional dependencies using
-`python3 tools/eval/render_qwen38_native.py bench/qwen38_g2_g3_20261013 bench/qwen38_g2_g3_20261013/report.html`.
+`python3 tools/eval/render_qwen38_native.py bench/qwen38_g2_g3_20261013 bench/qwen38-report-new.html`.
+The output path must be new; recorded evidence is never overwritten.
+
+Start the live Qwen3.8 chat with `make ui-qwen38`, then open
+`http://127.0.0.1:8001`. One resident worker owns the common GPU lock and replays
+the complete conversation through the native template on every turn. Stop the
+service before running benchmarks. No additional dependencies are required.
 
 For the Qwen3 path, context includes prompt and output and defaults to 1,024
 tokens. Its attention is tested through 4,096 tokens; larger requests are
@@ -167,8 +177,9 @@ Qwen3.8 now has independent operator references, a CPU graph and the ordinary
 Metal generation path. The full-checkpoint gate compares all 48 layer outputs
 and logits against pinned DwarfStar FP32; its stock Metal FP16 cache comparison
 is recorded separately, including a near-tie routing divergence. See the
-[G2/G3 report](docs/specs/qwen38/G2.md). Performance tuning and MTP remain outside
-this correctness baseline.
+[G2/G3 report](docs/specs/qwen38/G2.md). The subsequent
+[native trials](bench/qwen38_native_20261013/README.md) measure FP32 QSA tuning,
+latency and memory separately from response quality. MTP remains open.
 The 30B [expert-cost experiment](docs/phase4-expert-experiment.md) remains
 available; its pilot does not justify replacing the default scheduler.
 The [project review](docs/project-review-2026-10-11.md) records the scope and

@@ -59,3 +59,9 @@ build/qwen38-attention-bench: tools/probe/qwen38_attention_bench.m src/qwen38_d_
 	$(CC) $(Q38_FLAGS) -fobjc-arc $< $(FRAMEWORKS) -lm -o $@
 
 .PHONY: test-qwen38-session test-qwen38-server ui-qwen38
+
+test-qwen38-native-tools: build/process_memory
+	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_native_suite.py -v
+	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_native_bounded.py -v
+	$(Q38_ENV) $(PYTHON) -B tests/test_run_observed.py -v
+.PHONY: test-qwen38-native-tools

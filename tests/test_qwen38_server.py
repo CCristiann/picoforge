@@ -1,14 +1,34 @@
 """Local HTTP contract over the actual small native fixture (worker owns lock)."""
 import http.client
+import io
 import json
 from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
+import queue
+import threading
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'tools/ui/qwen38'))
+from server import Engine
+
+class StreamText(unittest.TestCase):
+    def test_split_character_and_truncated_final_token(self):
+        for parts,expected in ((['e2','82ac'],'€'),(['e2','82'],'�')):
+            engine=Engine.__new__(Engine)
+            engine.context=512; engine.control=threading.Lock(); engine.history=[]
+            engine.process=type('Worker',(),{'stdin':io.BytesIO()})()
+            engine.events=queue.Queue()
+            engine.events.put({'event':'started'})
+            for part in parts: engine.events.put({'event':'token','hex':part})
+            engine.events.put({'event':'done','stop_reason':'length'})
+            events=list(engine.generate('ciao',2))
+            self.assertEqual(''.join(e['text'] for e in events if e['event']=='token'),expected)
+            self.assertEqual(engine.history[-1]['content'],expected)
+            self.assertFalse(engine.active)
 
 class LocalChat(unittest.TestCase):
     @classmethod
@@ -59,7 +79,7 @@ class LocalChat(unittest.TestCase):
         self.assertEqual(self.request('POST','/api/generate',{'prompt':'','max_new':5})[0],400)
         self.assertFalse(self.request('GET','/api/status')[1]['active'])
 
-    def test_busy_stop_and_disconnect(self):
+    def test_busy_and_stop(self):
         self.request('POST','/api/reset',{})
         c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
         c.request('POST','/api/generate',json.dumps({'prompt':'x'*100,'max_new':300}),{'Content-Type':'application/json'})
@@ -71,6 +91,21 @@ class LocalChat(unittest.TestCase):
         self.assertEqual(events[-1]['stop_reason'],'cancelled')
         self.assertFalse(self.request('GET','/api/status')[1]['active'])
         self.assertEqual(self.request('POST','/api/reset',{})[0],200)
+
+    def test_disconnect_before_and_after_headers(self):
+        self.request('POST','/api/reset',{})
+        c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
+        c.request('POST','/api/generate',json.dumps({'prompt':'x'*100,'max_new':300}),{'Content-Type':'application/json'})
+        c.close()
+        # The peer closes before reading headers. A following request must
+        # see either busy or a clean worker, never the abandoned token stream.
+        time.sleep(.1)
+        deadline=time.monotonic()+15
+        while self.request('GET','/api/status')[1]['active'] and time.monotonic()<deadline:time.sleep(.05)
+        self.assertEqual(self.request('POST','/api/reset',{})[0],200)
+        status,events=self.request('POST','/api/generate',{'prompt':'ok','max_new':2})
+        self.assertEqual(status,200);self.assertEqual(events[0]['event'],'started')
+        self.assertEqual(events[-1]['generated_tokens'],2)
         c=http.client.HTTPConnection('127.0.0.1',self.port,timeout=15)
         c.request('POST','/api/generate',json.dumps({'prompt':'x'*100,'max_new':300}),{'Content-Type':'application/json'})
         response=c.getresponse();response.readline();response.close();c.close()

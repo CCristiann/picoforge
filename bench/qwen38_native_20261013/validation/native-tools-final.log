@@ -1,0 +1,27 @@
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tests/test_qwen38_native_suite.py -v
+test_validation (__main__.Records.test_validation) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tests/test_qwen38_native_bounded.py -v
+test_release_and_pressure_must_remain_normal (__main__.ReleaseWait.test_release_and_pressure_must_remain_normal) ... ok
+test_timeout_and_missing_probe_prevent_admission (__main__.ReleaseWait.test_timeout_and_missing_probe_prevent_admission) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.002s
+
+OK
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tests/test_run_observed.py -v
+test_critical_pressure_stops_only_the_child (__main__.ObservedTests.test_critical_pressure_stops_only_the_child) ... ok
+test_failed_child_is_not_complete (__main__.ObservedTests.test_failed_child_is_not_complete) ... ok
+test_preserves_caller_lock_descriptor (__main__.ObservedTests.test_preserves_caller_lock_descriptor) ... ok
+test_refuses_existing_directory (__main__.ObservedTests.test_refuses_existing_directory) ... ok
+test_streams_and_times (__main__.ObservedTests.test_streams_and_times) ... ok
+test_timeout_keeps_evidence (__main__.ObservedTests.test_timeout_keeps_evidence) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.720s
+
+OK
