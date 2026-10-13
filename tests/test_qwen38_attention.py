@@ -767,27 +767,31 @@ class NativeAttentionTests(unittest.TestCase):
 
 
 class MetalAttentionTests(unittest.TestCase):
-    """D stages on GPU, existing CPU selection; no GPU state/append ABI claim."""
+    """D stages and exact block selection on GPU; layer composition tested in G2."""
     @classmethod
     def setUpClass(cls):
         if METAL is None or NATIVE is None:
             raise unittest.SkipTest("Pass --metal and --native under the shared GPU lock")
         torch.set_num_threads(1)
         cls.hf=oracle.load_reference(SOURCE)
-        cls.metrics={"calls":0,"peak_metal_allocated_bytes":0,"max_error_vs_cpu":{},"slice_error":None}
+        cls.metrics={"calls":0,"peak_metal_allocated_bytes":0,"max_error_vs_cpu":{},"slice_error":None,"selection":[]}
 
     @classmethod
     def tearDownClass(cls):
         cls.metrics.update(source_sha256=oracle.SOURCE_HASH,
             metal_sha256=hashlib.sha256(METAL_LIBRARY.read_bytes()).hexdigest(),
             test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            scope="Private Metal stages and hybrid CPU selection; no GPU session/lifecycle or BF16 loss")
+            scope="Private Metal stages and device selection; no full graph or BF16 loss")
         folder=Path(tempfile.mkdtemp(prefix="metal-",dir=ROOT/"build/qwen38-d"))
         (folder/"manifest.json").write_text(json.dumps(cls.metrics,indent=2)+"\n")
 
     def call(self,mode,dims,*arrays,dtype=np.float32):
-        if mode=="select":  # Explicit hybrid path, not a second selector.
-            return NativeAttentionTests.call(self,mode,dims,*arrays,dtype=dtype)
+        if mode=="select":
+            code,got=self.call("select_tokens",(dims[0],1,dims[1],0),*arrays,dtype=dtype)
+            cpu_code,cpu=NativeAttentionTests.call(self,mode,dims,*arrays,dtype=dtype)
+            self.assertEqual(code,cpu_code)
+            if code==0: np.testing.assert_array_equal(got,cpu)
+            return code,got
         payload=struct.pack("=4I",*dims)+b"".join(x.tobytes() for x in arrays)
         run=subprocess.run([str(METAL),str(METAL_LIBRARY),mode],input=payload,capture_output=True,check=True)
         log=re.sub(rb"(?m)^\d{4}-\d\d-\d\d [0-9:.]+ test_attention_gpu\[\d+:\d+\] Metal API Validation Enabled\n",b"",run.stderr)
@@ -797,7 +801,7 @@ class MetalAttentionTests(unittest.TestCase):
         self.assertEqual(log,b"")
         code=struct.unpack("=i",run.stdout[:4])[0]; got=np.frombuffer(run.stdout[4:],dtype=dtype)
         self.metrics["calls"]+=1
-        if mode!="prep":
+        if mode not in ("prep","select_tokens","sparse_attend"):
             cpu_code,cpu=NativeAttentionTests.call(self,mode,dims,*arrays,dtype=dtype)
             self.assertEqual(code,cpu_code)
             if code==0 and len(got):
@@ -809,11 +813,62 @@ class MetalAttentionTests(unittest.TestCase):
     attend=NativeAttentionTests.attend
     test_rope=NativeAttentionTests.test_native_rope_matches_official_positions
     test_real_rope=NativeAttentionTests.test_native_real_rotary_at_long_absolute_positions
-    test_scores_and_cpu_selection=NativeAttentionTests.test_native_scores_and_selection_match_independent_reference
+    test_scores_and_device_selection=NativeAttentionTests.test_native_scores_and_selection_match_independent_reference
+    test_selection_ties_and_nonfinite=NativeAttentionTests.test_native_exact_ties_and_nonfinite_scores
     test_attention_sdpa=NativeAttentionTests.test_native_tiled_softmax_and_gate_match_sdpa
     test_online_rescale_and_poison=NativeAttentionTests.test_native_tiles_rescale_and_skip_poisoned_unselected_keys
     test_pool=NativeAttentionTests.test_native_pool_is_mean_of_raw_keys_before_normalization
     test_real_index_margin=NativeAttentionTests.test_native_real_index_dimensions_and_selection_margin
+
+    def test_device_selection_tail_sparse_boundary_and_32k(self):
+        rng=np.random.default_rng(3813)
+        for visible in (0,1,3,4,7,2047,2048,2049,2050,2051,2052,2053,32768):
+            n=visible//4
+            for pattern in ("random","ties","near"):
+                scores=rng.uniform(-2,2,n).astype(np.float32)
+                if pattern=="ties": scores.fill(0)
+                if pattern=="near":
+                    scores=1+np.arange(n,dtype=np.float32)*np.spacing(np.float32(1))
+                    rng.shuffle(scores)
+                code,ids=self.call("select_tokens",(visible,4,2048,0),scores,dtype=np.uint32)
+                self.assertEqual(code,0)
+                blocks=np.sort(np.lexsort((np.arange(n),-scores))[:512])
+                expected=np.r_[(blocks[:,None]*4+np.arange(4)).ravel(),np.arange(n*4,visible)]
+                np.testing.assert_array_equal(ids,expected)
+                self.assertTrue(np.all(np.diff(ids.astype(np.int64))>0))
+                self.assertTrue(np.all(ids<visible))
+                gap=None if n<=512 else float(np.sort(scores)[-512]-np.sort(scores)[-513])
+                self.metrics["selection"].append(dict(visible=visible,pattern=pattern,gap=gap,
+                    identical_fp32_scores=True,ids_bit_exact=True))
+        # Poison at a nontrivial selection boundary must not overrun IDs.
+        for value in (np.nan,np.inf,-np.inf):
+            scores=np.arange(513,dtype=np.float32); scores[257]=value
+            code,_=self.call("select_tokens",(2053,4,2048,0),scores,dtype=np.uint32)
+            self.assertEqual(code,16)
+
+    def test_selection_to_attention_one_command_at_32k(self):
+        rng=np.random.default_rng(3820)
+        for n in (2051,2052,2053,32768):
+            h,j,d,r,budget=4,2,8,4,2048
+            q=rng.uniform(-1,1,(h,d)).astype(np.float32)
+            gate=rng.uniform(0,1,(h,d)).astype(np.float32)
+            k=rng.uniform(-1,1,(n,j,d)).astype(np.float32)
+            v=rng.uniform(-1,1,(n,j,d)).astype(np.float32)
+            scores=rng.uniform(-1,1,n//r).astype(np.float32)
+            blocks=np.sort(np.lexsort((np.arange(n//r),-scores))[:budget//r])
+            ids=np.r_[(blocks[:,None]*r+np.arange(r)).ravel(),np.arange(n//r*r,n)].astype(np.uint32)
+            logits=np.einsum("hd,mhd->hm",q.astype(np.float64),k[ids].astype(np.float64).repeat(h//j,axis=1))/np.sqrt(d)
+            probs=np.exp(logits-logits.max(axis=1,keepdims=True)); probs/=probs.sum(axis=1,keepdims=True)
+            ref=np.einsum("hm,mhd->hd",probs,v[ids].astype(np.float64).repeat(h//j,axis=1))*gate
+            unused=np.ones(n,bool); unused[ids]=False
+            k[unused]=np.nan; v[unused]=np.nan
+            code,y=self.call("sparse_attend",(h,j,d,n),q,gate,k,v,np.array([r,budget],np.uint32),scores)
+            self.assertEqual(code,0)
+            np.testing.assert_allclose(y.reshape(h,d),ref,atol=3e-5,rtol=2e-4)
+            cpu_code,cpu=NativeAttentionTests.call(self,"attend",(h,j,d,n),q,gate,k,v,
+                np.array([len(ids)],np.uint32),ids)
+            self.assertEqual(cpu_code,0)
+            np.testing.assert_allclose(y,cpu,atol=3e-5,rtol=2e-4)
 
     def test_c_norm_and_sigmoid_then_d_rope_one_command(self):
         for cfg in (oracle.Config(),oracle.fixture_case("real-shape")[0]):
@@ -833,7 +888,7 @@ class MetalAttentionTests(unittest.TestCase):
                 expected=torch.sigmoid(torch.from_numpy(x.qg[pos,:,1])).numpy()
                 np.testing.assert_allclose(gate,expected,atol=1e-5,rtol=1e-5)
 
-    def test_q2_slice_hybrid_composition(self):
+    def test_q2_slice_device_stages(self):
         if SLICE_FIXTURE is None:
             self.skipTest("Pass --slice-fixture generated by the bounded A+B CPU gate")
         manifest=json.loads((SLICE_FIXTURE/"manifest.json").read_text())

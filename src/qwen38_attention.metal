@@ -89,3 +89,43 @@ kernel void q38d_attend_gpu(device const float *q [[buffer(0)]], device const fl
         if (!isfinite(y)) { fail(error,1); return; } out[h*a.d+d]=y;
     }
 }
+/* Device block selection, equivalent to q38d_select: block b is kept when
+ * fewer than a.m blocks beat it (higher score, or equal score and smaller ID).
+ * Kept blocks are then expanded in time order, followed by the causal tail. */
+kernel void q38d_rank_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint b [[thread_position_in_grid]]) {
+    if (b>=a.n) return;
+    keep[b]=0;
+    float s=scores[b]; uint rank=0;
+    for (uint c=0;c<a.n;++c) {
+        float o=scores[c];
+        /* Every lane checks the same scores. NaN must not inflate the kept
+         * set beyond the admitted ID capacity or reuse an old keep flag. */
+        if (!isfinite(o)) { fail(error,1); return; }
+        rank+=(o>s || (o==s && c<b)) ? 1u : 0u;
+    }
+    keep[b]=rank<a.m ? 1u : 0u;
+}
+kernel void q38d_compact_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint b [[thread_position_in_grid]]) {
+    if (b>=a.n || !keep[b]) return;
+    uint slot=0;
+    for (uint c=0;c<b;++c) slot+=keep[c];
+    if (slot>=a.m) { fail(error,2); return; }
+    for (uint r=0;r<a.r;++r) ids[slot*a.r+r]=b*a.r+r;
+}
+/* a.m = first tail slot, a.n = first tail token, a.pos = last visible token. */
+kernel void q38d_tail_gpu(device uint *ids [[buffer(0)]], constant Q38DGpuArgs &a [[buffer(6)]],
+    uint i [[thread_position_in_grid]]) {
+    if (a.n+i<=a.pos) ids[a.m+i]=a.n+i;
+}
+kernel void q38d_copy_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint i [[thread_position_in_grid]]) {
+    if (i>=a.n) return;
+    float v=x[i];
+    if (!isfinite(v)) fail(error,1);
+    y[i]=v;
+}

@@ -70,7 +70,19 @@ int main(int argc,char **argv) { @autoreleasepool {
     for (size_t i=0;i<4;++i) assert(dims[i]<=32768);
     Q38DGpuArgs a={0}; Qwen38GpuSpan v[6]={0},output={0}; size_t count=0; uint32_t op=0;
     Q38CGpu *c_gpu=NULL;
-    if (!strcmp(argv[2],"rope") || prep) {
+    bool selection=!strcmp(argv[2],"select_tokens");
+    if (selection) {
+        uint32_t visible=dims[0],r=dims[1],budget=dims[2]; assert(r && budget && budget%r==0);
+        uint32_t n=visible/r,m=MIN(n,budget/r)*r+visible%r;
+        v[0]=buffer(n*4,true); v[1]=buffer(n*4,false); v[2]=buffer(m*4,false); count=3;
+        Qwen38GpuSpan bad=v[2]; bad.bytes=0;
+        if (m) assert(q38d_select_encode(gpu,cmd,visible,r,budget,v[0],v[1],bad,NULL)==Q38_CAPACITY);
+        bad=v[0]; bad.offset_bytes++;
+        assert(q38d_select_encode(gpu,cmd,visible,r,budget,bad,v[1],v[2],NULL)==Q38_STRIDE);
+        if (n) assert(q38d_select_encode(gpu,cmd,visible,r,budget,v[0],v[0],v[2],NULL)==Q38_INVALID_ARGUMENT);
+        assert(q38d_select_encode(gpu,cmd,32769,r,budget,v[0],v[1],v[2],NULL)==Q38_RANGE);
+        assert(q38d_select_encode(gpu,cmd,visible,0,budget,v[0],v[1],v[2],NULL)==Q38_RANGE);
+    } else if (!strcmp(argv[2],"rope") || prep) {
         op=Q38D_ROPE; a.h=dims[0]; a.d=dims[1]; a.r=dims[2]; a.pos=dims[3];
         read_value(&a.theta,4); float eps=0; if (prep) read_value(&eps,4);
         v[0]=buffer((size_t)a.h*a.d*4,true); v[1]=buffer(v[0].bytes,false); count=2;
@@ -93,16 +105,30 @@ int main(int argc,char **argv) { @autoreleasepool {
         op=Q38D_SCORES; a.h=dims[0]; a.d=dims[1]; a.n=dims[2]; count=3;
         v[0]=buffer((size_t)a.h*a.d*4,true); v[1]=buffer((size_t)a.n*a.d*4,true); v[2]=buffer(a.n*4,false);
     } else {
-        assert(!strcmp(argv[2],"attend")); op=Q38D_ATTEND;
+        bool sparse=!strcmp(argv[2],"sparse_attend");
+        assert(sparse || !strcmp(argv[2],"attend")); op=Q38D_ATTEND;
         a.h=dims[0]; a.j=dims[1]; a.d=dims[2]; a.n=dims[3]; count=6;
         v[0]=buffer((size_t)a.h*a.d*4,true); v[1]=buffer(v[0].bytes,true);
         v[2]=buffer((size_t)a.n*a.j*a.d*4,true); v[3]=buffer(v[2].bytes,true);
-        read_value(&a.m,4); assert(a.m<=a.n);
-        v[4]=buffer(a.m*4,true); v[5]=buffer(v[0].bytes,false);
+        if (sparse) {
+            uint32_t r,budget; read_value(&r,4); read_value(&budget,4);
+            assert(r && budget && budget%r==0);
+            uint32_t blocks=a.n/r;
+            a.m=MIN(blocks,budget/r)*r+a.n%r;
+            Qwen38GpuSpan scores=buffer(blocks*4,true),keep=buffer(blocks*4,false);
+            v[4]=buffer(a.m*4,false);
+            assert(q38d_select_encode(gpu,cmd,a.n,r,budget,scores,keep,v[4],NULL)==Q38_OK);
+        } else {
+            read_value(&a.m,4); assert(a.m<=a.n);
+            v[4]=buffer(a.m*4,true);
+        }
+        v[5]=buffer(v[0].bytes,false);
     }
     if (!prep) output=v[count-1];
-    admission(gpu,cmd,op,a,v,count);
-    Qwen38Status status=q38d_gpu_encode(gpu,cmd,op,&a,v,count,NULL); assert(status==Q38_OK);
+    if (!selection) admission(gpu,cmd,op,a,v,count);
+    Qwen38Status status=selection ? q38d_select_encode(gpu,cmd,dims[0],dims[1],dims[2],v[0],v[1],v[2],NULL)
+        : q38d_gpu_encode(gpu,cmd,op,&a,v,count,NULL);
+    assert(status==Q38_OK);
     [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
     if (command.error) fprintf(stderr,"%s\n",command.error.localizedDescription.UTF8String);
     assert(command.status==MTLCommandBufferStatusCompleted);

@@ -853,3 +853,38 @@ QSA interamente in un comando senza passaggi host, lifecycle/commit globale
 GPU, proiezioni B GPU nel percorso D e catture di attivazioni reali/logits.
 Il contratto CPU pubblico e il suo lifecycle sono implementati; i kernel
 privati verificati non costituiscono una sessione Qwen3.8 GPU completa.
+
+### G2, Passo 3 — selezione e composizione D su device (2026-10-13)
+
+Ripresa sul ramo coordinatore `coord/qwen38-g1-cpu`, dopo `38e3785` e le
+modifiche D lasciate dalla sessione precedente. `q38d_select_encode` ordina
+per score FP32 decrescente e ID crescente, compatta i blocchi in ordine
+temporale e aggiunge il tail causale. Score, flag e ID restano sul device;
+nessun readback decide la selezione. NaN/Inf impostano la error word senza
+espandere un insieme oltre la capacità degli ID. Scratch O(N/ratio + budget),
+nessuna matrice T×T. Il ranking conservativo è O((N/ratio)²) per query:
+questa consegna riguarda correttezza, non prestazioni.
+
+`q38d_layer_encode` compone RMS/sigmoid C → RoPE D → cache K/V/IKraw →
+pool dei soli blocchi completati → RMS/RoPE del pool → score → selezione →
+attention gated nello stesso encoder. Il blocco usa la posizione del suo
+primo token; ogni query vede soltanto il proprio prefisso. Proiezioni e Wout
+restano compito B del caller. Frequenze RoPE e precisione FP32 invariate.
+Tutte le view dense, capacità, stride, identità Metal e sovrapposizioni sono
+controllate prima di codificare il layer; gli ingressi in sola lettura
+possono condividere memoria. Il caller conserva e dichiara i buffer a G0,
+gestisce submit/completion e invalida l'intera sessione su errore.
+
+Il test G2 confronta output e intermedi con `qwen38_attention_cpu`, gli ID
+esattamente, prefill contro chunk/decode e reset/replay. Copre anche T=0,
+un prefisso senza blocchi completati, tie, budget 2048 al confine 2051,
+rifiuti prima delle scritture e NaN su V dopo mutazione: G0 non pubblica
+`next_pos`, poi reset/replay recupera gli stessi output. Gli stadi D sono
+confrontati con l'oracle indipendente, inclusa la slice Q2 già estratta;
+selezione → attention a N=32768 gira in un comando, su forme ridotte.
+
+Evidenza, comandi, hash e metriche sono in
+[`bench/qwen38_g2_d_20261013/`](../../../bench/qwen38_g2_d_20261013/README.md).
+L'integrazione nel grafo GPU completo, le proiezioni B intorno a D e la
+generazione Qwen3.8 GPU rimangono passi successivi. Il test a 32768 non è un
+prefill completo del modello reale né una misura del suo budget di memoria.

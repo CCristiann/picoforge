@@ -1,0 +1,42 @@
+{
+  "base_commit": "38e37851aeba5f59b7857a4f0387f54b5e6be43e",
+  "branch": "coord/qwen38-g1-cpu",
+  "cpu": "Apple M5 Pro",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0.1\nBuildVersion:\t\t26A434",
+  "kind": "Correctness gates only; not a performance benchmark or full GPU graph",
+  "sanitizers": [
+    "address",
+    "undefined"
+  ],
+  "metal_api_validation": true,
+  "gpu_lock": true,
+  "parts_checks": 52,
+  "metal_tests": 13,
+  "cpu_attention_tests": 44,
+  "g1_tests": 5,
+  "contract_tests": 4,
+  "lifecycle": "6 ledger + 5 session groups",
+  "max_qsa_scaled_error": {
+    "qsa_blocks": 1.358e-07,
+    "qsa_chunk_reset": 0.0,
+    "qsa_gate": 5.96e-08,
+    "qsa_ids": 0.0,
+    "qsa_iq": 1.183e-07,
+    "qsa_keys": 1.777e-07,
+    "qsa_out": 1.192e-07,
+    "qsa_q": 1.273e-07,
+    "qsa_raw_index": 0.0,
+    "qsa_scores": 1.732e-07
+  },
+  "sha256": {
+    "src/qwen38_attention.metal": "aea3b27a9d54ab6ca905a1b60ba712ab057563a4977ded444be01a5b2dc50141",
+    "src/qwen38_attention_gpu.m": "c938c23aaefd404f670039bdb24bfcabd349de7da59ff13694b359ae236319e8",
+    "src/qwen38_d_internal.h": "b83c4046f1371da53628cd01874947044372d5bd9e8d38e27a2e2d563e51ae17",
+    "tests/test_qwen38_attention.m": "34aefb2ae7216d0cd83b89aefce1fbf956892b7b93b09600e569bf43f3c9ad91",
+    "tests/test_qwen38_attention.py": "f465621e998cac231ec9e72b30166630aaf73ce3ea9451bcdfa2a86f709fedfb",
+    "tests/test_qwen38_g2_parts.m": "15c4da1b88bc6d9d6c9ad985fa171348dffcabc3a884530e3f22df79b6239999",
+    "picoforge.metallib": "974648f7390831bcb4d84c23242df53653dde8b9c002496898368bdfa70891ea",
+    "build/qwen38-g1/graph.gguf": "8bb50e6fd925bbf06b2ddb5e40a622ea5bcfb744feeded95ffeaca6c7831e234",
+    "build/qwen38-d/slice-01/fixture.npz": "946fd83498acbce9097460743f0d9a8e56184e82847dbe9ca2120b9cf3d8108a"
+  }
+}

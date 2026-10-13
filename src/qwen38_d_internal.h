@@ -47,13 +47,14 @@ void q38d_last_query(const Qwen38AttentionWorkspace *, const float **q,
  * ROPE x,out; POOL raw[N,D],out[D]; SCORES iq[H,D],blocks[N,D],out[N];
  * ATTEND q[H,D],gate[H,D],k/v[N,J,D],ids[M] uint32,out[H,D].
  * Attention sees only the explicit visible prefix N and sorted selected IDs.
- * Selection/lifecycle remain CPU; no GPU-state publication API is implied. */
+ * Lifecycle belongs to the caller; no GPU-state publication API is implied. */
 typedef struct Q38DGpu Q38DGpu;
 typedef uint32_t Q38DUint;
 #else
 typedef uint Q38DUint;
 #endif
 enum { Q38D_ROPE, Q38D_POOL, Q38D_SCORES, Q38D_ATTEND, Q38D_GPU_OPS };
+enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_ALL_OPS };
 typedef struct { Q38DUint h,j,d,n,m,r,pos; float theta; } Q38DGpuArgs;
 #ifndef __METAL_VERSION__
 _Static_assert(sizeof(Q38DGpuArgs)==32, "D Metal wire ABI");
@@ -61,5 +62,32 @@ Qwen38Status q38d_gpu_create(void *device, void *library, Q38DGpu **, Qwen38Erro
 void q38d_gpu_destroy(Q38DGpu *);
 Qwen38Status q38d_gpu_encode(Q38DGpu *, Qwen38GpuCommand, uint32_t op,
     const Q38DGpuArgs *, const Qwen38GpuSpan *, size_t count, Qwen38Error *);
+/* Select complete blocks and append the causal tail, entirely on device.
+ * scores/keep need visible/ratio words; ids needs min(blocks,budget/ratio)*ratio
+ * + visible%ratio words. Exact FP32 ties prefer smaller block IDs. All spans
+ * disjoint, error word preserved; no host readback or resource allocation. */
+Qwen38Status q38d_select_encode(Q38DGpu *, Qwen38GpuCommand,
+    uint32_t visible, uint32_t ratio, uint32_t budget, Qwen38GpuSpan scores,
+    Qwen38GpuSpan keep, Qwen38GpuSpan ids, Qwen38Error *);
+/* G2 layer composition on device, no ID readback: C norms/sigmoid in batch,
+ * then per token D RoPE -> cache, block pool+norm+RoPE, scores, device
+ * selection and attention. Projections and Wout stay with the caller (B).
+ * Cache rows [0, pos0) must hold earlier appends; rows pos0..pos0+T-1 and
+ * completed blocks are written here and become history only if the whole
+ * command succeeds (the caller's session decides). Views are dense, with
+ * disjoint writable spans. On encode failure discard the command; after a
+ * completion error invalidate all caches and reset/replay through G0. */
+typedef struct {
+    Qwen38GpuF32 qg, k, v, iq, ik;                /* [T,H,2,D] [T,J,D] [T,J,D] [T,Hi,Di] [T,Di] */
+    Qwen38GpuF32 gamma_q, gamma_k, gamma_iq, gamma_ik;  /* [D] [D] [Di] [Di] */
+    Qwen38GpuF32 key_cache, value_cache, index_cache, block_cache; /* [cap,J,D] x2, [cap,Di], [cap/r,Di] */
+    Qwen38GpuF32 qn, qr, gate, kn, iqn, iqr, pooled, pooled_n, scores; /* scratch */
+    Qwen38GpuSpan keep, ids;                      /* uint32 [cap/r], [budget+r-1] */
+    Qwen38GpuF32 out;                             /* [T,H,D] gated attention */
+} Q38DGpuLayer;
+typedef struct Q38CGpu Q38CGpu;
+Qwen38Status q38d_layer_encode(Q38DGpu *, Q38CGpu *, Qwen38GpuCommand,
+    const Qwen38AttentionConfig *, uint32_t pos0, uint32_t tokens,
+    const Q38DGpuLayer *, Qwen38Error *);
 #endif
 #endif
