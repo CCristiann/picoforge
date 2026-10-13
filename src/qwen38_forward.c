@@ -5,6 +5,7 @@
 #include "qwen38_c_internal.h"
 #include "qwen38_moe.h"
 #include "qwen38_ngram.h"
+#include "qwen38_attention.h"
 #include <stdlib.h>
 
 typedef struct { Q38PackedCpuView down, up, inject; float *gain; } G1Hc;
@@ -20,6 +21,11 @@ typedef struct {
     Qwen38PleWorkspace *ple_work;
     Qwen38NgramJob *ple_job;      /* pending until the whole append succeeds */
     Qwen38PleWeights ple;
+    Q38PackedCpuView qsa[6];      /* D: Q/gate, K, V, index Q, index K, Wout */
+    float *qsa_gamma[4];          /* q, k, index q, index k norm gains */
+    Qwen38AttentionState *att;
+    Qwen38AttentionWorkspace *att_work;
+    Qwen38AttentionTicket *ticket; /* pending until the whole append succeeds */
     float *ple_constant[4];       /* gains key/query/conv [H,E], taps [H*E,K] */
 } G1Layer;
 struct Qwen38Forward {
@@ -37,6 +43,7 @@ struct Qwen38Forward {
     Qwen38Memory c_work;          /* one C workspace, re-viewed per GDN layer */
     /* One arena: residual R[T,H,E], HC scratch, then per-block outputs. */
     float *arena, *r, *normed, *low, *act, *gate, *il, *inject, *mixed, *block;
+    float *qg, *k, *v, *iq, *ik, *attn;
 };
 
 static Qwen38Status fail(Qwen38Error *e, Qwen38Status code, const char *detail) {
@@ -115,8 +122,12 @@ static const Qwen38Role final_roles[4] = {Q38_OUTPUT_HC_NORM, Q38_OUTPUT_HC_DOWN
 
 static Qwen38Status arena(Qwen38Forward *f, Qwen38Error *e) {
     size_t t = f->max_tokens, h = f->c.hc.streams, w = f->c.hidden_size, r = f->c.hc.low_rank;
-    float **slot[] = {&f->r, &f->normed, &f->low, &f->act, &f->gate, &f->il, &f->inject, &f->mixed, &f->block};
-    size_t width[] = {h*w, h*w, r, r, h*w, h, h, w, w}, total = 0;
+    const Qwen38AttentionConfig *a = &f->c.attention;
+    size_t q = (size_t)a->heads*a->head_dim, kv = (size_t)a->kv_heads*a->head_dim;
+    float **slot[] = {&f->r, &f->normed, &f->low, &f->act, &f->gate, &f->il, &f->inject, &f->mixed, &f->block,
+        &f->qg, &f->k, &f->v, &f->iq, &f->ik, &f->attn};
+    size_t width[] = {h*w, h*w, r, r, h*w, h, h, w, w, 2*q, kv, kv,
+        (size_t)a->index_heads*a->index_dim, a->index_dim, q}, total = 0;
     for (size_t i = 0; i < sizeof width / sizeof *width; ++i) total += (t*width[i] + 15) & ~(size_t)15;
     if (!(f->arena = aligned_alloc(64, total*4))) return fail(e, Q38_OOM, "graph scratch");
     for (size_t i = 0, offset = 0; i < sizeof width / sizeof *width; ++i) {
@@ -192,6 +203,20 @@ static Qwen38Status create_ple(Qwen38Forward *f, uint32_t i, Qwen38Error *e) {
     TRY(qwen38_ngram_state_create(l->ple_store, (Qwen38StateKey){f->config, i, f->epoch}, &l->ple_state, e));
     return qwen38_ple_workspace_create(l->ple_store, 224u << 20, &l->ple_work, e);
 }
+/* D owns the FP32 K/V/indexer cache; the graph owns projections and Wout. */
+static Qwen38Status create_qsa(Qwen38Forward *f, uint32_t i, uint32_t ratio, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    const Qwen38Role roles[] = {Q38_ATTN_QG, Q38_ATTN_K, Q38_ATTN_V, Q38_INDEX_Q, Q38_INDEX_K, Q38_ATTN_OUT};
+    const Qwen38Role gains[] = {Q38_ATTN_Q_NORM, Q38_ATTN_K_NORM, Q38_INDEX_Q_NORM, Q38_INDEX_K_NORM};
+    for (size_t j = 0; j < 6; ++j) TRY(bind(f, i, roles[j], &l->qsa[j], e));
+    for (size_t j = 0; j < 4; ++j) TRY(constant(f, i, gains[j], &l->qsa_gamma[j], e));
+    Qwen38AttentionConfig c = f->c.attention;
+    c.ratio = ratio;                       /* the layer record overrides the profile */
+    Qwen38AttentionPlan plan;
+    TRY(qwen38_attention_plan(&c, f->capacity, f->max_tokens, &plan, e));
+    return qwen38_attention_create(&c, &plan, (Qwen38StateKey){f->config, i, f->epoch},
+        plan.cache_bytes + plan.workspace_bytes, &l->att, &l->att_work, e);
+}
 
 static Qwen38Status create(Qwen38Forward *f, Qwen38Error *e) {
     TRY(bind(f, QWEN38_GLOBAL_LAYER, Q38_TOKEN_EMBD, &f->embed, e));
@@ -206,8 +231,10 @@ static Qwen38Status create(Qwen38Forward *f, Qwen38Error *e) {
         TRY(qwen38_config_layer(f->config, i, &kind, e));
         if (kind->domain != Q38_TRUNK) return fail(e, Q38_UNSUPPORTED, "trunk layer outside the trunk domain");
         /* GDN layers: C's composition binds its own HC-attn (see layer steps). */
-        if (kind->kind == Q38_LAYER_QSA) TRY(bind_hc(f, i, attn_roles, &f->layer[i].attn, e));
-        else TRY(create_gdn(f, i, &f->c_work.bytes, e));
+        if (kind->kind == Q38_LAYER_QSA) {
+            TRY(bind_hc(f, i, attn_roles, &f->layer[i].attn, e));
+            TRY(create_qsa(f, i, kind->compress_ratio, e));
+        } else TRY(create_gdn(f, i, &f->c_work.bytes, e));
         TRY(bind_hc(f, i, ffn_roles, &f->layer[i].ffn, e));
         TRY(create_moe(f, i, e));
         if (kind->has_ple) TRY(create_ple(f, i, e));
@@ -246,7 +273,9 @@ void qwen38_forward_destroy(Qwen38Forward *f) {
         if (l->ple_work) qwen38_ple_workspace_destroy(l->ple_work, NULL);
         if (l->ple_state) qwen38_ngram_state_destroy(l->ple_state, NULL);
         if (l->ple_store) qwen38_ngram_close(l->ple_store, NULL);
-        for (size_t j = 0; j < 4; ++j) free(l->ple_constant[j]);
+        for (size_t j = 0; j < 4; ++j) { free(l->ple_constant[j]); free(l->qsa_gamma[j]); }
+        if (l->ticket) qwen38_attention_finish(l->ticket, false, NULL);
+        if (l->att) qwen38_attention_destroy(l->att, l->att_work, NULL);
     }
     free(f->c_work.data); free(f->final.gain); free(f->layer); free(f->arena); free(f);
 }
@@ -290,14 +319,44 @@ static Qwen38Status ple_cpu(Qwen38Forward *f, uint32_t i, const int32_t *tokens,
     return Q38_OK;
 }
 
+/* QSA: HC-attn, B projections, D's indexer+sparse attention (cache append
+ * stays a ticket until finish), flatten, B's Wout, inject combine. */
+static Qwen38Status qsa_cpu(Qwen38Forward *f, uint32_t i, size_t t, Qwen38GraphTrace trace,
+        void *user, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    const Qwen38AttentionConfig *a = &f->c.attention;
+    size_t h = f->c.hc.streams, w = f->c.hidden_size, hq = a->heads, hk = a->kv_heads, d = a->head_dim;
+    TRY(hc_read(f, &l->attn, t, e));
+    float *out[] = {f->qg, f->k, f->v, f->iq, f->ik};
+    for (size_t j = 0; j < 5; ++j)
+        TRY(q38_packed_matmul(&l->qsa[j], 0, q38c_ro(mat(f->mixed, t, w)), mat(out[j], t, l->qsa[j].layout.n_out), e));
+    Qwen38F32Mut qg = {.data=f->qg, .capacity_bytes=t*hq*2*d*4, .rank=4, .dim={t, hq, 2, d},
+        .stride_bytes={hq*2*d*4, 2*d*4, d*4, 4}};
+    Qwen38F32 g[4];
+    for (size_t j = 0; j < 4; ++j) {
+        size_t n = j < 2 ? d : a->index_dim;
+        g[j] = (Qwen38F32){.data=l->qsa_gamma[j], .capacity_bytes=n*4, .rank=1, .dim={n}, .stride_bytes={4}};
+    }
+    Qwen38AttentionInput in = {q38c_ro(qg), q38c_ro(cube(f->k, t, hk, d)), q38c_ro(cube(f->v, t, hk, d)),
+        q38c_ro(cube(f->iq, t, a->index_heads, a->index_dim)), q38c_ro(mat(f->ik, t, a->index_dim)),
+        g[0], g[1], g[2], g[3]};
+    TRY(qwen38_attention_begin(l->att, f->next_pos, (uint32_t)t, f->epoch, &l->ticket, e));
+    TRY(qwen38_attention_cpu(l->ticket, &in, cube(f->attn, t, hq, d), l->att_work, e));
+    TRY(q38_packed_matmul(&l->qsa[5], 0, q38c_ro(mat(f->attn, t, hq*d)), mat(f->block, t, w), e));
+    emit(trace, user, i, Q38G_ATTN_MIXED, mat(f->mixed, t, w));
+    emit(trace, user, i, Q38G_ATTN_INJECT, mat(f->inject, t, h));
+    emit(trace, user, i, Q38G_ATTN_CONTRIBUTION, mat(f->block, t, w));
+    return qwen38_hc_add(&f->c.hc, cube(f->r, t, h, w), q38c_ro(mat(f->block, t, w)), q38c_ro(mat(f->inject, t, h)), e);
+}
+
 static Qwen38Status layer_cpu(Qwen38Forward *f, uint32_t i, const int32_t *tokens, size_t t,
         Qwen38GraphTrace trace, void *user, Qwen38Error *e) {
     const Qwen38Layer *kind;
     size_t h = f->c.hc.streams, w = f->c.hidden_size;
     TRY(qwen38_config_layer(f->config, i, &kind, e));
-    if (kind->kind != Q38_LAYER_GDN) return fail(e, Q38_UNSUPPORTED, "QSA layers are not wired yet");
     if (kind->has_ple) TRY(ple_cpu(f, i, tokens, t, trace, user, e));
-    TRY(gdn_cpu(f, i, t, trace, user, e));
+    if (kind->kind == Q38_LAYER_QSA) TRY(qsa_cpu(f, i, t, trace, user, e));
+    else TRY(gdn_cpu(f, i, t, trace, user, e));
     emit(trace, user, i, Q38G_ATTN_RESIDUAL, cube(f->r, t, h, w));
     G1Layer *l = &f->layer[i];               /* HC-ffn -> MoE -> inject */
     TRY(hc_read(f, &l->ffn, t, e));
@@ -333,6 +392,11 @@ static Qwen38Status finish(Qwen38Forward *f, bool commit, Qwen38Status rc, Qwen3
     Qwen38Error local;
     for (uint32_t i = 0; i < f->c.trunk_blocks; ++i) {
         G1Layer *l = &f->layer[i];
+        if (l->ticket) {
+            Qwen38Status s = qwen38_attention_finish(l->ticket, commit, &local);
+            l->ticket = NULL;
+            if (rc == Q38_OK && s != Q38_OK) { rc = s; if (e) *e = local; }
+        }
         if (!l->ple_job) continue;
         Qwen38Status s = commit ? qwen38_ngram_commit(l->ple_state, l->ple_job, &local)
                                 : qwen38_ngram_abort(l->ple_job, &local);
@@ -372,6 +436,8 @@ Qwen38Status qwen38_forward_reset(Qwen38Forward *f, Qwen38Error *e) {
         if (f->layer[i].gdn.bound) TRY(q38c_block_reset(&f->layer[i].gdn_state, epoch, e));
     for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)
         if (f->layer[i].ple_state) TRY(qwen38_ngram_state_reset(f->layer[i].ple_state, epoch, e));
+    for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)
+        if (f->layer[i].att) TRY(qwen38_attention_reset(f->layer[i].att, epoch, e));
     f->epoch = epoch; f->next_pos = 0; f->valid = true;
     return fail(e, Q38_OK, NULL);
 }
