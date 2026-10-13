@@ -62,7 +62,7 @@ class Weights:
         return np.ascontiguousarray(w[..., :k_logical] if k_logical else w)
 
     def vector(self, name):
-        return self.physical(name).reshape(-1)
+        return self.physical(name).reshape(-1).copy()
 
 
 def linear(w, x):
@@ -181,14 +181,15 @@ def load_refs(source=SOURCE):
     return {"c": rec.load_upstream(source), "d": att.load_reference(Path(source))}
 
 
-def forward(gguf, tokens, refs=None):
-    """Whole-prefix graph; returns per-layer traces, final mixed and logits."""
+def forward(gguf, tokens, refs=None, layers=None):
+    """Whole-prefix graph over the first `layers` blocks (all by default)."""
     refs, w = refs or load_refs(), Weights(gguf)
     c = w.hf
+    layers = c["num_hidden_layers"] if layers is None else layers
     embed = w.matrix("token_embd.weight")[np.asarray(tokens)]
     residual = torch.from_numpy(embed).unsqueeze(1).repeat(1, c["hc_count"], 1)
     trace = {"embedding": torch.from_numpy(embed), "layers": []}
-    for index in range(c["num_hidden_layers"]):
+    for index in range(layers):
         trace["layers"].append(layer(refs, w, index, tokens, residual))
         residual = trace["layers"][-1]["output"]
     trace["final"] = hc(refs["c"], w, "output_hc", residual, inject=False)["mixed"]
@@ -207,8 +208,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gguf", type=Path)
     parser.add_argument("--tokens", type=int, nargs="+", required=True)
+    parser.add_argument("--layers", type=int)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     with torch.no_grad():
-        np.savez(args.output, tokens=np.asarray(args.tokens, np.int32), **flatten(forward(args.gguf, args.tokens)))
+        np.savez(args.output, tokens=np.asarray(args.tokens, np.int32), **flatten(forward(args.gguf, args.tokens, layers=args.layers)))
     print(args.output)
