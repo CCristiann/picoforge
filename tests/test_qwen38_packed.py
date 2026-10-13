@@ -58,6 +58,11 @@ def packed_fixture(kind, columns, count, rng):
     if kind == 10:
         raw[:, 80:82] = np.array([0.125], dtype="<f2").view(np.uint8)
         raw[:, 82:84] = np.array([0.0625], dtype="<f2").view(np.uint8)
+    elif kind == 12:
+        raw[:, :2] = np.array([0.125], dtype="<f2").view(np.uint8)
+        raw[:, 2:4] = np.array([0.0625], dtype="<f2").view(np.uint8)
+    elif kind == 39:
+        raw[:, 0] = 124
     else:
         raw[:, :2] = np.array([0.125], dtype="<f2").view(np.uint8)
     return raw.tobytes()
@@ -153,7 +158,7 @@ class PackedReferenceTests(unittest.TestCase):
         if NATIVE is None:
             self.skipTest("native harness not requested")
         rng = np.random.default_rng(3812)
-        for kind in (0, 1, 30, 8, 10, 16):
+        for kind in (0, 1, 30, 8, 10, 16, 12, 39):
             block = oracle.FORMATS[kind][0]
             for m, n, logical in [(1,1,1), (2,7,255), (7,33,257),
                                    (32,7,640), (33,7,640), (128,1,2560)]:
@@ -200,6 +205,31 @@ class PackedReferenceTests(unittest.TestCase):
     def assert_bits(self, actual, expected):
         expected = np.asarray(expected, dtype="<f4").reshape(actual.shape)
         np.testing.assert_array_equal(actual.view("<u4"), expected.view("<u4"))
+
+    def test_q4_k_scale_high_bits_and_nibble_order(self):
+        scales=[0,1,15,63,16,31,48,62]; minima=[63,48,31,16,15,1,62,0]
+        packed_sc=bytearray(12)
+        for g in range(4):
+            packed_sc[g]=scales[g]|((scales[g+4]>>4)<<6)
+            packed_sc[g+4]=minima[g]|((minima[g+4]>>4)<<6)
+            packed_sc[g+8]=(scales[g+4]&15)|((minima[g+4]&15)<<4)
+        qs=bytes((i%16)|((15-i%16)<<4) for i in range(128))
+        raw=struct.pack('<ee',.125,.0625)+packed_sc+qs
+        expected=[]
+        for g in range(8):
+            expected.extend(.125*scales[g]*(i%16 if g%2==0 else 15-i%16)-.0625*minima[g] for i in range(32))
+        self.assert_bits(self.decode(raw,12,256),expected)
+        self.assert_bits(oracle.mathematical_rows(raw,12,256),expected)
+
+    def test_mxfp4_all_finite_exponents_codes_and_signed_zero(self):
+        codes=bytes(i|((15-i)<<4) for i in range(16))
+        raw=b''.join(bytes([e])+codes for e in range(253))
+        expected=oracle.mathematical_rows(raw,39,32)
+        self.assert_bits(self.decode(raw,39,32,253),expected)
+        self.assertEqual(expected[0,0].view(np.uint32),0)
+        self.assertEqual(expected[0,23].view(np.uint32),0x80000000)
+        for exponent in (253,254,255):
+            self.assertFalse(np.isfinite(self.decode(bytes([exponent])+codes,39,32)).all())
 
     def test_q2_known_values(self):
         raw = bytes([0x23]) * 16 + bytes([0xe4]) * 64 + struct.pack("<ee", 1, 0.5)

@@ -39,7 +39,9 @@ int main(int argc, char **argv) {
         case 8: block = 32; block_bytes = 34; break;
         case 10: block = 256; block_bytes = 84; break;
         case 16: block = 256; block_bytes = 66; break;
-        default: return reference_error("unsupported ordinary-generation format");
+        case 12: block = 256; block_bytes = 144; break;
+        case 39: block = 32; block_bytes = 17; break;
+        default: return reference_error("unsupported packed format");
     }
     /* Bound products before allocating; even hostile dimensions cannot wrap. */
     const uint64_t limit = 32u * 1024u * 1024u;

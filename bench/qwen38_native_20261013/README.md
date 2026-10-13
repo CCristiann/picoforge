@@ -48,5 +48,6 @@ sommano. Memoria osservata anche durante il warm-up. N-gram disk-only:
 `ngram_bytes` misura byte logici pread, non letture fisiche dal dispositivo.
 
 Comandi e confini in [native-next.md](../../docs/specs/qwen38/native-next.md).
-MTP non implementato. Il vecchio gate DwarfStar Metal stock FP16 resta FAIL,
+Questa raccolta precede MTP: [incremento e misure](../qwen38_mtp_20261013/README.md),
+[report completo successivo](report-mtp-final.html). Il vecchio gate DwarfStar Metal stock FP16 resta FAIL,
 distinto dal PASS CPU FP32 indipendente già registrato in G2/G3.

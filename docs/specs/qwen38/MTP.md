@@ -1,8 +1,10 @@
-# Contratto MTP — proposta di implementazione, non consegna
+# MTP FP32 — predictor e verifica greedy
 
-Stato: **non eseguibile**. Il percorso ordinario rimane il riferimento.
-Questo documento fissa il contratto prima di aggiungere il grafo MTP.
-L'implementazione e i gate elencati sotto sono ancora da eseguire.
+Il contratto è stato fissato prima del codice. Il predictor ora esegue il
+blocco reale del checkpoint, con cache propria e verifica greedy di una proposta.
+`--mtp` è esplicito; il percorso ordinario resta disponibile e predefinito.
+Gate indipendente, test di stato e confronto prestazionale completati.
+Non sono implementati draft multipli, sampling o riuso incrementale fra turni.
 
 ## Riferimenti verificati nel checkout locale
 
@@ -17,7 +19,7 @@ Non usare il backend Metal stock a cache FP16 come gate FP32.
 L'inventario A descrive un blocco MTP QSA dopo i 48 blocchi ordinari. I ruoli
 aggiuntivi sono `nextn.eh_proj`, `nextn.enorm`, `nextn.hnorm` e il mixer
 `nextn.hc_head`. Gate/up degli esperti sono Q4_K, down MXFP4; i decoder B
-ordinari non li eseguono ancora. Il predictor non ha PLE. I pesi MTP sono già
+ora li eseguono con decoder dedicati CPU/Metal. Il predictor non ha PLE. I pesi MTP sono già
 nelle viste storage del GGUF: non serve un secondo caricamento del modello.
 
 Per il predictor all'indice i:
@@ -49,8 +51,8 @@ Il ripristino è ammesso solo a GPU idle, sulla stessa istanza, dopo append
 riusciti e entro la finestra prevista; un errore GPU richiede reset completo.
 
 Il predictor avanza solo su coppie confermate. Dopo l'accettazione di b,
-recupera `(R_a,b)` senza necessità di LM head; poi `(R_b,c)` propone il token
-successivo. Dopo un rifiuto non ha ancora elaborato b, quindi non deve
+elabora insieme `(R_a,b)` e `(R_b,c)`, leggendo soltanto la seconda riga
+della LM head per la proposta successiva. Dopo un rifiuto non ha ancora elaborato b, quindi non deve
 conservare alcuna sua history. Il prefill inizializza tutte le coppie del
 prompt, anche al confine dei chunk. Nessun warm-start con cache MTP vuota a
 una posizione arbitraria presentato come prefill completo.
@@ -65,19 +67,116 @@ Se b è accettato ed è stop, non emettere c né mantenere una conversazione
 oltre lo stop. Cancellazione cooperativa tra append, mai pubblicazione di
 proposte non verificate. Reset azzera entrambi i grafi e invalida snapshot.
 
-## Gate necessari prima di dichiarare la fase completata
+## Contratto delle risorse e degli errori
 
-- Decoder Q4_K/MXFP4 CPU e Metal: blocchi analitici, slice bounded del GGUF e
-  confronto con il decoder indipendente; nonfinite, bounds e padding.
-- Predictor: confronto numerico teacher-forced con CPU DwarfStar su casi
-  congelati, gate 1e-3 invariato, controlli per token e margini.
-- Snapshot: stato e logits identici dopo restore/replay, inclusa history
-  n-gram e blocchi QSA parziali; rifiuto di snapshot stale/foreign/busy.
-- Speculazione: sequenza identica al greedy ordinario, accettazione e rifiuto
-  forzati nei test, stop in ogni posizione, cancellazione e contesto residuo.
-- Misure: proposta, verifica, rollback, accettazioni/proposte, token per
-  append, footprint/Metal/swap e tempi contro l'ordinario nelle stesse
-  condizioni. Conservare una regressione prestazionale se osservata.
+`qwen38_gpu_mtp_enable` ammette esattamente un blocco MTP su grafo fresco.
+`qwen38_gpu_mtp` legge solo un intervallo contiguo di residui dell'ultimo append
+trunk completo; la posizione deve coincidere con quella del predictor. Gli
+operatori e gli scratch sono condivisi, i ledger G0 e le cache QSA distinti.
+Una sola chiamata sincrona alla volta; nessuna seconda mappatura dei pesi.
 
-Parsing dei pesi, questa specifica e un loop senza predictor reale non sono
-un'implementazione MTP completata.
+Lo snapshot host viene allocato una volta e riutilizzato. Copia le history
+canoniche complete del trunk (anche le porzioni di cache inutilizzate), il
+residuo dell'ultimo append e gli ultimi token usati dall'hash PLE. Esclude pesi,
+workspace PLE e tabella n-gram. Posizione del trunk e contatori vengono
+ripristinati; l'epoch avanza e gli stati E adottano la nuova epoch. La memoria
+host è esposta separatamente da `qwen38_gpu_forward_bytes`/allocazioni Metal.
+
+Il ticket dello snapshot contiene owner, epoch, seriale e posizioni: non può
+essere modificato, riutilizzato o applicato dopo un altro save/reset/restore.
+Restore rifiuta una finestra oltre due token o un predictor avanzato. Gli
+errori GPU invalidano entrambi i grafi e non pubblicano logits; serve reset.
+Un fallimento durante l'allocazione MTP richiede invece destroy.
+
+La CLI verifica una proposta di stop facendo append soltanto del token a;
+non inserisce lo stop nelle history. Il fallback terminale ordinario può
+lasciare la cache MTP indietro: ogni richiesta successiva resetta e rigioca
+entrambi i grafi. Durante cancellazione non vengono pubblicati draft non
+verificati; se la coppia è già stata eseguita ma non emessa, il trunk torna
+allo snapshot. I turni chat conservano il testo effettivamente emesso e
+applicano una sola volta il template alla storia completa.
+
+## Verifiche
+
+- Decoder: Q4_K con scale/minimi a 6 bit e piani nibble, MXFP4 E8M0/E2M1,
+  signed zero, subnormal e nonfinite; confronto bit per bit con DwarfStar.
+  Metal richiede ricostruzione intera dei bit MXFP4 per evitare FTZ in decode.
+  I test non allargano la tolleranza degli operatori FP32.
+- Slice reali: 18 righe Q4_K (25.920 byte) e 9 MXFP4 (3.060 byte), tre esperti
+  e tre righe per proiezione; decoder e prodotti CPU/Metal. Solo pread bounded,
+  identità/header confrontati con la verifica esistente, nessun hash integrale.
+- `test-qwen38-mtp`: teacher-forced chunk/reset/replay bit-identico, snapshot
+  di tutte le history, PLE replay, ticket foreign/stale/alterati/busy, finestra
+  superata, predictor avanzato e guasto tardivo MTP con output trattenuto.
+- `test-qwen38-speculative`: fixture non degenere e transizioni controllate
+  tramite i pesi reali del piccolo grafo, senza override nel codice runtime.
+  Accettazione perfetta, rifiuto, falso stop, stop verificato, budget 0–5,
+  chunk 1, cancellazione SIGUSR1 e reset della sessione residente.
+- Gate reale CPU FP32: coding, 14 righe trunk + 13 MTP; italiano, 10 + 9.
+  I prompt sono completamenti tokenizzati dal runtime con sei scelte greedy;
+  l'oracle include cinque passi di decode. Tutti i 24/22 argmax e margini
+  superano il gate 1e-3. Errori scalati trunk 2,40e-6 / 1,92e-6, MTP
+  1,26e-5 / 9,88e-6. Massimo MTP per riga 1,43e-5. Logits ordinari
+  bit-identici fra append di chunk e decode. CPU 83,55/58,83 s, pressione 1,
+  variazioni swap -8 MiB / 0. Nessuna valutazione di qualità da questi casi.
+
+## Pilot prestazionale misurato
+
+M5 Pro 64 GiB, contesto allocato 8192, chunk 128. Un warm-up residente escluso
+e tre ripetizioni misurate per modalità; ordine ordinario→MTP nel coding,
+MTP→ordinario nell'italiano. Tutte le 16 sequenze (warm-up inclusi) sono identiche.
+
+| Caso | Prompt / generati | Decode ordinario | Decode MTP | Rapporto | Accettazione |
+| --- | --- | --- | --- | --- | --- |
+| Coding | 9 / 32 | 1,068 token/s | 1,675 token/s | 1,568× | 45/48, 93,75% |
+| Italiano chat | 31 / 64 | 1,065 token/s | 1,262 token/s | 1,185× | 78/108, 72,22% |
+
+Mediane della richiesta: coding 30,939→20,473 s; italiano 63,984→54,846 s.
+Il decode include proposta, verifica, snapshot e rollback/replay, senza
+sottrarne i costi. Il prefill MTP è 1,963 / 4,925 s. Nel caso italiano il
+replay mediano costa 9,46 s: il vantaggio dipende dall'accettazione.
+
+Allocazioni Metal: ordinario 42,387 GiB, MTP 42,454 GiB. Snapshot host separato
+561,57 MiB; footprint massimo MTP 1,410 GiB. Pressione sempre 1, nessuna
+crescita dello swap in tutti e quattro i processi. Footprint, Metal e wired
+non si sommano. Cache OS/SSD non controllate; nessuna misura dichiarata cold.
+Il load è una sola osservazione per processo, non tre caricamenti indipendenti.
+
+Raw, manifest, correzioni dei soli metadati e limiti:
+[evidenze MTP](../../../bench/qwen38_mtp_20261013/README.md).
+La chat reale MTP è verificata anche nel browser desktop/mobile; la continuità
+deriva dalla storia renderizzata una volta e rigiocata, non da cache fra turni.
+
+## Riproduzione
+
+Usare il venv e gli asset già presenti. I target Make di test GPU acquisiscono
+il lock; non aggiungere wrapper esterni a quei target.
+
+```sh
+make picoforge picoforge.metallib build/process_memory build/qwen38-mtp/mtp_real
+make test-qwen38-mtp test-qwen38-speculative
+# Cartelle di output nuove obbligatorie:
+tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
+  tools/venv/bin/python tools/eval/qwen38_mtp_gate.py build/MIO-GATE-MTP
+tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
+  tools/venv/bin/python tools/eval/qwen38_mtp_bench.py bench/MIO-BENCH-MTP
+# Generazione speculativa locale:
+tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
+  ./picoforge --qwen38 models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
+  --chat 'Scrivi cinque consigli per verificare un backup.' --max-new 128 \
+  --context 8192 --chunk 128 --mtp --runs-jsonl build/MIE-MISURE.jsonl
+# Il servizio acquisisce il lock da sé:
+tools/venv/bin/python tools/ui/qwen38/server.py --mtp
+```
+
+`mtp.prefill_s` è dentro il prefill complessivo; `draft_s`, `verify_s`,
+`snapshot_s`, `replay_s` sono dentro il decode. Replay comprende restore e
+append corretto. `verified_tokens` conta anche proposte poi rifiutate;
+`target_decode_appends` include replay e fallback. `accepted/proposed`
+include gli stop proposti e confermati. `mtp_profile.gpu_s` comprende prefill
+e draft e si sovrappone a wait, non va sommato a esso.
+
+La prova ordinaria a 8K resta distinta: MTP non è ancora misurato con un
+prompt reale a 8K. I casi bounded e i pilot non garantiscono parità o vantaggi
+su ogni input possibile. Il FAIL storico DwarfStar Metal stock FP16 resta
+visibile e non è stato usato come riferimento né corretto allargando i gate.

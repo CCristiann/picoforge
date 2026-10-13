@@ -34,6 +34,30 @@ inline float packed_value(device const uchar *row, uint column, uint type) {
         int code=int(b[2+column%32]);
         return half_value(b)*float(code>=128 ? code-256 : code);
     }
+    if (type==12) {
+        device const uchar *b=row+ulong(column/256)*144,*sc=b+4;
+        uint lane=column%256,g=lane/32;
+        uint scale=g<4 ? sc[g]&63u : (sc[g+4]&15u)|((sc[g-4]&192u)>>2);
+        uint minimum=g<4 ? sc[g+4]&63u : (sc[g+4]>>4)|((sc[g]&192u)>>2);
+        uint code=(b[16+(g/2)*32+lane%32]>>((g%2)*4))&15u;
+        return (half_value(b)*float(scale))*float(code)-half_value(b+2)*float(minimum);
+    }
+    if (type==39) {
+        device const uchar *b=row+ulong(column/32)*17;
+        uint lane=column%32,code=(b[1+lane%16]>>((lane/16)*4))&15u;
+        /* Construct exact FP32 bits: Metal arithmetic flushes subnormal
+         * operands/results even without fast-math. No rounding is needed
+         * for E2M1 times this power of two. */
+        uint sign=(code&8u)<<28, magnitude=code&7u;
+        if (b[0]==255) return as_type<float>(sign|0x7f800000u|(magnitude ? 0u : 0x400000u));
+        if (!magnitude) return as_type<float>(sign);
+        const uint base[]={0,0x3f000000u,0x3f800000u,0x3fc00000u,0x40000000u,0x40400000u,0x40800000u,0x40c00000u};
+        uint fraction=base[magnitude]&0x7fffffu;
+        int exponent=int(base[magnitude]>>23)+int(b[0])-127;
+        uint bits=exponent<=0 ? (0x800000u|fraction)>>uint(1-exponent) :
+            exponent>=255 ? 0x7f800000u : (uint(exponent)<<23)|fraction;
+        return as_type<float>(sign|bits);
+    }
     if (type==10) {
         device const uchar *b=row+ulong(column/256)*84;
         uint lane=column%256, scale=b[lane/16];

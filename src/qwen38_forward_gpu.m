@@ -31,7 +31,7 @@ struct Qwen38GpuForward {
     const Gguf *gguf; const Qwen38Config *config; const Qwen38Weights *weights; const GpuWeightStore *store;
     Qwen38ConfigView c; uint32_t max_tokens,capacity,max_logits_rows;
     uint64_t next_pos; /* published only after G0 AND all E commits succeed */
-    void *device,*buffers,*histories,*copy; size_t bytes;
+    void *device,*library,*buffers,*histories,*copy; size_t bytes,main_histories;
     bool valid,busy; Qwen38GpuSession *session;
     Q38PackedGpu *b; Q38CGpu *ops; Q38DGpu *d; Q38EGpu *e; Q38FRouted *moe;
     G2Weight embed,head; G2Hc final; G2Layer *layer;
@@ -39,6 +39,13 @@ struct Qwen38GpuForward {
     Q38DGpuLayer dw; Q38EGpuWork ew; Q38FRoutedWork fw;
     G2Trace *traces; size_t trace_count,trace_offset; Qwen38GpuSpan trace_span;
     Qwen38GpuForwardStats stats;
+    bool mtp_enabled,mtp_failed; Qwen38GpuSession *mtp_session;
+    G2Weight mtp_eh; G2Hc mtp_head;
+    Qwen38GpuF32 mtp_egain,mtp_hgain,mtp_en,mtp_hn,mtp_cat,mtp_proj,mtp_r;
+    void *mtp_concat,*mtp_sum;
+    uint64_t last_start,snapshot_serial,saved_start; size_t last_count,saved_count;
+    void *snapshot; size_t snapshot_bytes;
+    Qwen38GpuCheckpoint saved;
 };
 static Qwen38Status fail(Qwen38Error *e,Qwen38Status code,const char *detail) {
     if (e) { memset(e,0,sizeof *e); e->code=code;
@@ -174,7 +181,14 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     ALLOC(f->dw.iqn,false,t,a->index_heads,a->index_dim); ALLOC(f->dw.iqr,false,t,a->index_heads,a->index_dim);
     ALLOC(f->dw.pooled,false,1,1,a->index_dim); ALLOC(f->dw.pooled_n,false,1,1,a->index_dim);
     ALLOC(f->dw.scores,false,f->capacity); ALLOC(f->dw.out,false,t,a->heads,a->head_dim);
-    Qwen38GpuF32 ids,keep; ALLOC(ids,false,(size_t)a->token_budget+f->capacity); ALLOC(keep,false,f->capacity);
+    /* D admits budget + ratio - 1 IDs even when the context is smaller than
+     * one pooling block. Capacity alone underallocates that tail at 1/2. */
+    size_t tail=f->capacity;
+    for (uint32_t i=0;i<f->c.blocks;i++) {
+        const Qwen38Layer *kind; TRY(qwen38_config_layer(f->config,i,&kind,e));
+        if (kind->kind==Q38_LAYER_QSA) tail=MAX(tail,(size_t)kind->compress_ratio-1);
+    }
+    Qwen38GpuF32 ids,keep; ALLOC(ids,false,(size_t)a->token_budget+tail); ALLOC(keep,false,f->capacity);
     f->dw.ids=ids.span; f->dw.keep=keep.span;
     const Qwen38MoeConfig *m=&f->c.moe; size_t mt=MIN(t,32),p=mt*m->top_k;
     ALLOC(f->fw.logits,false,mt,m->experts); ALLOC(f->fw.probs,false,mt,m->experts); ALLOC(f->fw.weights,false,mt,m->top_k);
@@ -199,7 +213,7 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
         f->head.layout.k_logical!=f->c.hidden_size || f->head.layout.n_out!=f->c.vocab_size)
         return fail(e,Q38_SHAPE,"embedding/head config");
     TRY(hc_bind(f,QWEN38_GLOBAL_LAYER,final_roles,&f->final,e));
-    f->layer=calloc(f->c.trunk_blocks,sizeof *f->layer); f->traces=calloc(2+9*f->c.trunk_blocks,sizeof *f->traces);
+    f->layer=calloc(f->c.blocks,sizeof *f->layer); f->traces=calloc(2+9*f->c.trunk_blocks,sizeof *f->traces);
     if (!f->layer || !f->traces) return fail(e,Q38_OOM,"graph metadata");
     TRY(scratch(f,e));
     for (uint32_t i=0;i<f->c.trunk_blocks;i++) {
@@ -211,6 +225,7 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
         for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); l->fb[j]=w.binding; l->fl[j]=w.layout; }
         if (kind->has_ple) TRY(create_ple(f,i,e));
     }
+    f->main_histories=[(__bridge NSArray *)f->histories count];
     return Q38_OK;
 }
 Qwen38Status qwen38_gpu_forward_create(const Gguf *g,const Qwen38Config *config,const Qwen38Weights *weights,
@@ -225,13 +240,14 @@ Qwen38Status qwen38_gpu_forward_create(const Gguf *g,const Qwen38Config *config,
     f->gguf=g; f->config=config; f->weights=weights; f->store=store; f->c=*c; f->max_tokens=max_tokens;
     f->capacity=capacity; f->max_logits_rows=max_logits_rows; f->valid=true;
     f->device=(__bridge_retained void *)(__bridge id<MTLDevice>)device;
+    f->library=(__bridge_retained void *)(__bridge id<MTLLibrary>)library;
     f->buffers=(__bridge_retained void *)[NSMutableArray new]; f->histories=(__bridge_retained void *)[NSMutableArray new];
     Qwen38Status rc=create(f,library,e); if (rc) { qwen38_gpu_forward_destroy(f); return rc; }
     *out=f; return fail(e,Q38_OK,NULL);
 }
 size_t qwen38_gpu_forward_bytes(const Qwen38GpuForward *f) { return f ? f->bytes : 0; }
 Qwen38GpuF32 q38g_gpu_state(Qwen38GpuForward *f,uint32_t layer,uint32_t slot) {
-    if (!f || f->busy || layer>=f->c.trunk_blocks || slot>=Q38GS_COUNT) return (Qwen38GpuF32){0};
+    if (!f || f->busy || layer>=f->c.trunk_blocks+(f->mtp_enabled ? 1u : 0u) || slot>=Q38GS_COUNT) return (Qwen38GpuF32){0};
     G2Layer *l=&f->layer[layer];
     Qwen38GpuF32 v[]={l->cw.history,l->cw.state,l->dw.key_cache,l->dw.value_cache,l->dw.index_cache,l->dw.block_cache,l->ew.history};
     return v[slot];
@@ -259,11 +275,15 @@ void qwen38_gpu_forward_destroy(Qwen38GpuForward *f) {
     }
     q38_packed_gpu_free(f->b); q38c_gpu_destroy(f->ops); q38d_gpu_destroy(f->d); q38e_gpu_destroy(f->e); q38f_routed_destroy(f->moe);
     if (f->session) qwen38_gpu_session_destroy(f->session,NULL);
+    if (f->mtp_session) qwen38_gpu_session_destroy(f->mtp_session,NULL);
+    if (f->mtp_concat) CFRelease(f->mtp_concat);
+    if (f->mtp_sum) CFRelease(f->mtp_sum);
+    if (f->library) CFRelease(f->library);
     if (f->copy) CFRelease(f->copy);
     if (f->buffers) CFRelease(f->buffers);
     if (f->histories) CFRelease(f->histories);
     if (f->device) CFRelease(f->device);
-    free(f->layer); free(f->traces); free(f);
+    free(f->snapshot); free(f->layer); free(f->traces); free(f);
 }
 
 static void barrier(Qwen38GpuCommand cmd) { [(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder memoryBarrierWithScope:MTLBarrierScopeBuffers]; }
@@ -343,13 +363,15 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
 }
 static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size_t t,Qwen38Error *e) {
     G2Layer *l=&f->layer[i];
+    Qwen38MoeConfig mc=f->c.moe;
+    if (i>=f->c.trunk_blocks) mc.down_physical=mc.intermediate;
     for (size_t start=0;start<t;start+=32) {
         size_t n=MIN(t-start,32),p=n*f->c.moe.top_k; Q38FRoutedWork w=f->fw;
 #define W(x,rows) w.x=time_view(w.x,rows)
         W(logits,n); W(probs,n); W(weights,n); W(gate,p); W(up,p); W(act,p); W(down,p);
         W(sgate,n); W(sup,n); W(sact,n); W(shared,n); W(slogit,n); W(ssig,n); W(routed,n);
 #undef W
-        TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&f->c.moe,f->store,l->fb,l->fl,
+        TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&mc,f->store,l->fb,l->fl,
             slice(f->mixed,start,n),slice(f->block,start,n),&w,e)); barrier(cmd);
     }
     return Q38_OK;
@@ -396,14 +418,14 @@ static Qwen38Status prepare(Qwen38GpuForward *f,const int32_t *tokens,size_t t,u
     }
     return Q38_OK;
 }
-static Qwen38Status claim(Qwen38GpuForward *f,const Qwen38GpuTicket *ticket,Qwen38Error *e) {
+static Qwen38Status claim(Qwen38GpuForward *f,Qwen38GpuSession *session,const Qwen38GpuTicket *ticket,Qwen38Error *e) {
     for (id<MTLBuffer> b in (__bridge NSArray *)f->buffers)
-        TRY(qwen38_gpu_session_claim(f->session,ticket,(Qwen38GpuSpan){(__bridge void *)b,0,b.length},Q38_GPU_USE_WRITE,e));
-    if (f->trace_span.buffer) TRY(qwen38_gpu_session_claim(f->session,ticket,f->trace_span,Q38_GPU_USE_WRITE,e));
+        TRY(qwen38_gpu_session_claim(session,ticket,(Qwen38GpuSpan){(__bridge void *)b,0,b.length},Q38_GPU_USE_WRITE,e));
+    if (f->trace_span.buffer) TRY(qwen38_gpu_session_claim(session,ticket,f->trace_span,Q38_GPU_USE_WRITE,e));
     const GgufPlan *plan=gpu_weights_plan(f->store);
     for (size_t i=0;i<plan->weight_count;i++) {
         const GgufBinding *w=&plan->weights[i];
-        TRY(qwen38_gpu_session_claim(f->session,ticket,(Qwen38GpuSpan){gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes},Q38_GPU_USE_READ,e));
+        TRY(qwen38_gpu_session_claim(session,ticket,(Qwen38GpuSpan){gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes},Q38_GPU_USE_READ,e));
     }
     return Q38_OK;
 }
@@ -447,7 +469,7 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     double encode_start=clock_s(); f->stats.prepare_s=encode_start-prepare_start;
     Qwen38GpuTicket ticket; Qwen38GpuCommand cmd; bool begun=false,submitted=false;
     if (!rc) { rc=qwen38_gpu_session_begin(f->session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc; }
-    if (!rc) rc=claim(f,&ticket,e);
+    if (!rc) rc=claim(f,f->session,&ticket,e);
     if (!rc) rc=run(f,cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }
     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
@@ -457,7 +479,7 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->session);
     rc=jobs(f,!rc && layers==f->c.trunk_blocks,rc,e);
     if (rc || layers<f->c.trunk_blocks) f->valid=false;
-    else f->next_pos+=count;
+    else { f->last_start=f->next_pos; f->last_count=count; f->next_pos+=count; }
     if (!rc) {
         if (logits.dim[0]) memcpy(logits.data,contents(f->logits),logits.dim[0]*f->c.vocab_size*4);
         if (trace) for (size_t j=0;j<f->trace_count;j++) {
@@ -472,9 +494,165 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
 Qwen38Status qwen38_gpu_forward_reset(Qwen38GpuForward *f,Qwen38Error *e) {
     if (!f) return fail(e,Q38_INVALID_ARGUMENT,"null graph");
     if (f->busy) return fail(e,Q38_BUSY,"graph busy");
+    if (f->mtp_failed) return fail(e,Q38_BAD_STATE,"MTP allocation failed; destroy graph");
     f->valid=false; TRY(qwen38_gpu_session_reset(f->session,f->config,e));
+    if (f->mtp_session) TRY(qwen38_gpu_session_reset(f->mtp_session,f->config,e));
     uint64_t epoch=qwen38_gpu_session_info(f->session).key.epoch;
     for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) TRY(qwen38_ngram_state_reset(f->layer[i].estate,epoch,e));
     for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) memset(b.contents,0,b.length);
-    f->next_pos=0; f->valid=true; return fail(e,Q38_OK,NULL);
+    f->next_pos=0; f->last_count=0; f->snapshot_serial++; f->valid=true; return fail(e,Q38_OK,NULL);
+}
+
+static Qwen38Status mtp_create(Qwen38GpuForward *f,Qwen38Error *e) {
+    uint32_t i=f->c.trunk_blocks; size_t t=f->max_tokens,h=f->c.hc.streams,d=f->c.hidden_size;
+    const Qwen38Layer *kind; TRY(qwen38_config_layer(f->config,i,&kind,e));
+    f->layer[i].kind=*kind;
+    if (kind->kind!=Q38_LAYER_QSA || kind->has_ple) return fail(e,Q38_UNSUPPORTED,"MTP requires QSA without PLE");
+    TRY(qwen38_gpu_session_create(f->device,f->config,f->capacity,&f->mtp_session,e));
+    TRY(create_qsa(f,i,e)); TRY(hc_bind(f,i,ffn_roles,&f->layer[i].ffn,e));
+    const Qwen38Role roles[]={Q38_MOE_ROUTER,Q38_MOE_GATE,Q38_MOE_UP,Q38_MOE_DOWN,Q38_SHARED_GATE,Q38_SHARED_UP,Q38_SHARED_DOWN,Q38_SHARED_ROUTER};
+    for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); f->layer[i].fb[j]=w.binding; f->layer[i].fl[j]=w.layout; }
+    const Qwen38Role head_roles[]={Q38_MTP_HEAD_NORM,Q38_MTP_HEAD_DOWN,Q38_MTP_HEAD_UP,Q38_ROLE_COUNT};
+    TRY(hc_bind(f,i,head_roles,&f->mtp_head,e)); TRY(bind_weight(f,i,Q38_MTP_EH,&f->mtp_eh,e));
+    TRY(constant(f,i,Q38_MTP_E_NORM,&f->mtp_egain,1,(size_t[]){d},e));
+    TRY(constant(f,i,Q38_MTP_H_NORM,&f->mtp_hgain,1,(size_t[]){h*d},e));
+    ALLOC(f->mtp_en,false,t,1,d); ALLOC(f->mtp_hn,false,t,1,h*d);
+    ALLOC(f->mtp_cat,false,t*(h+1),2*d); ALLOC(f->mtp_proj,false,t*(h+1),d);
+    ALLOC(f->mtp_r,false,t,h,d);
+    NSString *names[]={@"q38g_mtp_cat",@"q38g_mtp_sum"}; void **dst[]={&f->mtp_concat,&f->mtp_sum};
+    for (size_t j=0;j<2;j++) {
+        id<MTLFunction> fn=[(__bridge id<MTLLibrary>)f->library newFunctionWithName:names[j]];
+        id<MTLComputePipelineState> p=fn ? [(__bridge id<MTLDevice>)f->device newComputePipelineStateWithFunction:fn error:NULL] : nil;
+        if (!p) return fail(e,Q38_GPU_ERROR,"MTP wiring pipeline"); *dst[j]=(__bridge_retained void *)p;
+    }
+    return Q38_OK;
+}
+Qwen38Status qwen38_gpu_mtp_enable(Qwen38GpuForward *f,Qwen38Error *e) {
+    if (!f) return fail(e,Q38_INVALID_ARGUMENT,"null graph");
+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);
+    if (info.busy) return fail(e,Q38_BUSY,"graph busy");
+    if (!info.valid || info.next_pos || f->mtp_enabled || f->mtp_failed) return fail(e,Q38_BAD_STATE,"MTP requires fresh graph");
+    if (f->c.mtp_blocks!=1) return fail(e,Q38_UNSUPPORTED,"exactly one MTP block required");
+    Qwen38Status rc=mtp_create(f,e);
+    if (rc) { f->mtp_failed=true; f->valid=false; } else f->mtp_enabled=true;
+    return rc ? rc : fail(e,Q38_OK,NULL);
+}
+Qwen38StateInfo qwen38_gpu_mtp_info(const Qwen38GpuForward *f) {
+    if (!f || !f->mtp_enabled) return (Qwen38StateInfo){0};
+    Qwen38StateInfo info=qwen38_gpu_session_info(f->mtp_session); info.valid &= f->valid; info.busy |= f->busy; return info;
+}
+static void mtp_wire(Qwen38GpuForward *f,Qwen38GpuCommand cmd,size_t t,bool sum) {
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)(sum ? f->mtp_sum : f->mtp_concat);
+    uint32_t h=(uint32_t)f->c.hc.streams,d=f->c.hidden_size;
+    uint32_t a[4]={(uint32_t)t*(sum ? h*d : (h+1)*2*d),d,h,0};
+    [enc setComputePipelineState:p];
+    Qwen38GpuSpan spans[4]={sum ? f->mtp_proj.span : f->mtp_en.span,sum ? f->mtp_r.span : f->mtp_hn.span,f->mtp_cat.span,cmd.error_word};
+    for (size_t j=0;j<(sum ? 2u : 3u);j++) [enc setBuffer:(__bridge id<MTLBuffer>)spans[j].buffer offset:spans[j].offset_bytes atIndex:j];
+    if (sum) [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:3];
+    [enc setBytes:a length:sizeof a atIndex:sum ? 2 : 3];
+    [enc dispatchThreads:MTLSizeMake(a[0],1,1) threadsPerThreadgroup:MTLSizeMake(MIN(a[0],p.maxTotalThreadsPerThreadgroup),1,1)]; barrier(cmd);
+}
+static Qwen38Status mtp_run(Qwen38GpuForward *f,Qwen38GpuCommand cmd,size_t offset,size_t t,size_t rows,uint32_t pos,Qwen38Error *e) {
+    size_t d=f->c.hidden_size,h=f->c.hc.streams; Q38CGpuSpec spec={.eps=f->c.hc.rms_eps};
+    TRY(q38_packed_lookup(f->b,&cmd,f->store,f->embed.binding,&f->embed.layout,f->tokens.span,time_view(f->mixed,t),e)); barrier(cmd);
+    Qwen38GpuF32 ev[]={shape(f->mixed.span,3,(size_t[]){t,1,d}),f->mtp_egain,time_view(f->mtp_en,t)};
+    TRY(q38c_gpu_encode(f->ops,cmd,Q38C_RMS,&spec,ev,3,e));
+    Qwen38GpuF32 hv[]={shape(slice(f->r,offset,t).span,3,(size_t[]){t,1,h*d}),f->mtp_hgain,time_view(f->mtp_hn,t)};
+    TRY(q38c_gpu_encode(f->ops,cmd,Q38C_RMS,&spec,hv,3,e));
+    mtp_wire(f,cmd,t,false);
+    TRY(linear(f,cmd,f->mtp_eh,time_view(f->mtp_cat,t*(h+1)),time_view(f->mtp_proj,t*(h+1)),e));
+    mtp_wire(f,cmd,t,true);
+    /* The shared operators use r. Restore this borrowed view on EVERY exit. */
+    Qwen38GpuF32 trunk=f->r; f->r=f->mtp_r; uint32_t i=f->c.trunk_blocks;
+    Qwen38Status rc=qsa(f,cmd,i,t,pos,e);
+    if (!rc) rc=hc_read(f,cmd,&f->layer[i].ffn,t,e);
+    if (!rc) rc=moe(f,cmd,i,t,e);
+    if (!rc) rc=hc_add(f,cmd,t,e);
+    if (!rc && rows) rc=hc_read(f,cmd,&f->mtp_head,t,e);
+    if (!rc && rows) rc=linear(f,cmd,f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e);
+    f->r=trunk; return rc;
+}
+Qwen38Status qwen38_gpu_mtp(Qwen38GpuForward *f,size_t offset,const int32_t *tokens,size_t count,Qwen38F32Mut logits,Qwen38Error *e) {
+    if (!f || (count && !tokens)) return fail(e,Q38_INVALID_ARGUMENT,"MTP arguments");
+    if (f->busy) return fail(e,Q38_BUSY,"graph busy");
+    Qwen38StateInfo before=qwen38_gpu_mtp_info(f);
+    if (!before.valid) return fail(e,Q38_BAD_STATE,"MTP disabled or requires reset");
+    if (offset>f->last_count || count>f->last_count-offset || before.next_pos!=f->last_start+offset)
+        return fail(e,Q38_BAD_STATE,"MTP requires consecutive last-trunk residual pairs");
+    if (count>f->capacity-before.next_pos) return fail(e,Q38_CAPACITY,"MTP capacity");
+    TRY(q38c_view(q38c_ro(logits),e));
+    if (logits.rank!=2 || logits.dim[0]>count || logits.dim[0]>f->max_logits_rows || logits.dim[1]!=f->c.vocab_size ||
+        logits.stride_bytes[0]!=(size_t)f->c.vocab_size*4) return fail(e,Q38_SHAPE,"dense bounded MTP logits required");
+    for (size_t j=0;j<count;j++) if (tokens[j]<0 || (uint32_t)tokens[j]>=f->c.vocab_size) return fail(e,Q38_RANGE,"MTP token outside vocabulary");
+    size_t bytes=q38c_span(q38c_ro(logits));
+    if (bytes) {
+        for (id<MTLBuffer> b in (__bridge NSArray *)f->buffers)
+            if (q38c_overlap(logits.data,bytes,b.contents,b.length)) return fail(e,Q38_INVALID_ARGUMENT,"MTP logits alias storage");
+        const GgufPlan *plan=gpu_weights_plan(f->store);
+        for (size_t j=0;j<plan->weight_count;j++) {
+            Qwen38CpuSpan w; TRY(qwen38_weights_cpu_span(f->store,&plan->weights[j],&w,e));
+            if (q38c_overlap(logits.data,bytes,w.data,w.bytes)) return fail(e,Q38_INVALID_ARGUMENT,"MTP logits alias weights");
+        }
+    }
+    if (!count) return fail(e,Q38_OK,NULL);
+    f->busy=true; f->stats=(Qwen38GpuForwardStats){0}; double start=clock_s(); memcpy(contents(f->tokens),tokens,count*4);
+    Qwen38GpuTicket ticket; Qwen38GpuCommand cmd; bool begun=false,submitted=false;
+    Qwen38Status rc=qwen38_gpu_session_begin(f->mtp_session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc;
+    if (!rc) rc=claim(f,f->mtp_session,&ticket,e);
+    if (!rc) rc=mtp_run(f,cmd,offset,count,logits.dim[0],(uint32_t)before.next_pos,e);
+    if (!rc) { rc=qwen38_gpu_session_submit(f->mtp_session,&ticket,e); submitted=!rc; }
+    double wait=clock_s(); f->stats.encode_s=wait-start;
+    if (submitted) rc=qwen38_gpu_session_finish(f->mtp_session,&ticket,e);
+    else if (begun) qwen38_gpu_session_abort(f->mtp_session,&ticket,false,NULL);
+    f->stats.wait_s=clock_s()-wait;
+    if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->mtp_session);
+    if (rc) f->valid=false;
+    else if (bytes) memcpy(logits.data,contents(f->logits),bytes);
+    f->busy=false; return rc ? rc : fail(e,Q38_OK,NULL);
+}
+size_t qwen38_gpu_checkpoint_bytes(const Qwen38GpuForward *f) { return f ? f->snapshot_bytes : 0; }
+static size_t checkpoint_transfer(Qwen38GpuForward *f,void *buffer,bool restore) {
+    size_t n=0; NSArray *histories=(__bridge NSArray *)f->histories;
+#define TRANSFER(ptr,len) do { size_t z_=(len); if (buffer) { if (restore) memcpy((ptr),(char *)buffer+n,z_); else memcpy((char *)buffer+n,(ptr),z_); } n+=z_; } while(0)
+    for (size_t j=0;j<f->main_histories;j++) { id<MTLBuffer> b=histories[j]; TRANSFER(b.contents,b.length); }
+    TRANSFER(contents(f->r),f->r.span.bytes);
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {
+        Qwen38NgramState *s=f->layer[i].estate; TRANSFER(s->previous,(s->store->config.order-1)*sizeof *s->previous);
+    }
+#undef TRANSFER
+    return n;
+}
+Qwen38Status qwen38_gpu_checkpoint_save(Qwen38GpuForward *f,Qwen38GpuCheckpoint *out,Qwen38Error *e) {
+    if (out) *out=(Qwen38GpuCheckpoint){0};
+    if (!f || !out) return fail(e,Q38_INVALID_ARGUMENT,"checkpoint arguments");
+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);
+    if (info.busy) return fail(e,Q38_BUSY,"graph busy");
+    if (!info.valid) return fail(e,Q38_BAD_STATE,"checkpoint requires valid graph");
+    if (f->snapshot_serial==UINT64_MAX) return fail(e,Q38_OVERFLOW,"checkpoint serial");
+    if (!f->snapshot) {
+        size_t n=checkpoint_transfer(f,NULL,false); f->snapshot=malloc(n ? n : 1);
+        if (!f->snapshot) return fail(e,Q38_OOM,"host checkpoint"); f->snapshot_bytes=n;
+    }
+    checkpoint_transfer(f,f->snapshot,false); f->saved_start=f->last_start; f->saved_count=f->last_count;
+    *out=f->saved=(Qwen38GpuCheckpoint){f,info.key.epoch,++f->snapshot_serial,info.next_pos,qwen38_gpu_mtp_info(f).next_pos};
+    return fail(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *f,Qwen38GpuCheckpoint s,Qwen38Error *e) {
+    if (!f) return fail(e,Q38_INVALID_ARGUMENT,"null graph");
+    if (s.owner!=f) return fail(e,Q38_OWNER,"foreign checkpoint");
+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);
+    if (info.busy) return fail(e,Q38_BUSY,"graph busy");
+    if (!f->snapshot || s.epoch!=info.key.epoch || s.serial!=f->snapshot_serial ||
+        s.position!=f->saved.position || s.mtp_position!=f->saved.mtp_position) return fail(e,Q38_STALE,"stale checkpoint");
+    if (!info.valid || s.position>info.next_pos || info.next_pos-s.position>2 || s.mtp_position!=qwen38_gpu_mtp_info(f).next_pos)
+        return fail(e,Q38_BAD_STATE,"checkpoint window or predictor changed");
+    TRY(q38g_session_rewind(f->session,f->config,s.epoch,s.position,e));
+    f->valid=false; uint64_t epoch=qwen38_gpu_session_info(f->session).key.epoch;
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {
+        TRY(qwen38_ngram_state_reset(f->layer[i].estate,epoch,e)); f->layer[i].estate->info.next_pos=s.position;
+    }
+    checkpoint_transfer(f,f->snapshot,true); f->next_pos=s.position;
+    f->last_start=f->saved_start; f->last_count=f->saved_count; f->snapshot_serial++;
+    f->valid=true; return fail(e,Q38_OK,NULL);
 }

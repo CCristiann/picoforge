@@ -762,3 +762,20 @@ alias dei vecchi formati Qwen3; uso accidentale di Q4_K/MXFP4 del MTP nel
 grafo ordinario; errori GPU scambiati per un output numerico valido;
 espansione di tutti gli esperti per semplificare il prefill. Ogni errore
 richiede una riproduzione minima, non un allargamento delle tolleranze.
+
+
+## Incremento MTP — 2026-10-13
+
+Il runtime successivo alla consegna B iniziale abilita anche Q4_K (12) e
+MXFP4 (39), senza cambiare i formati ordinari né il contratto FP32. Entrambi
+usano il decoder indipendente DwarfStar pinned, interpretazione analitica,
+prodotti con stride/esperti/padding e slice bounded del checkpoint. Q4_K:
+18 righe/25.920 byte; MXFP4: 9 righe/3.060 byte. I nibble MXFP4 sono low per
+le prime 16 colonne e high per le successive; E8M0=0 usa 2^-127.
+Metal ricostruisce i bit FP32 per preservare anche i subnormal e signed zero
+nel decode, senza moltiplicazioni soggette a FTZ. Il gate nonfinite rimane.
+
+L’ammissione dei due formati non li sostituisce ai pesi ordinari: A continua
+ad esigere IQ2_XXS/Q2_K nei ruoli del trunk e Q4_K/MXFP4 soltanto negli esperti
+MTP. La down MTP usa K=Kphysical=640. Implementazione e gate del predictor in
+[MTP.md](MTP.md); nessun riuso del padding fisico 768 del trunk.

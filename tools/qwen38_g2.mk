@@ -51,7 +51,7 @@ ui-qwen38: picoforge
 	$(PYTHON) tools/ui/qwen38/server.py --checkpoint "$(Q38_CHECKPOINT)"
 
 # The server's resident worker acquires the lock; do not wrap this target again.
-test-qwen38-server: picoforge build/qwen38-g2/cli.gguf
+test-qwen38-server: picoforge build/qwen38-g2/cli.gguf build/qwen38-mtp/cli.gguf
 	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_server.py -v
 
 build/qwen38-attention-bench: tools/probe/qwen38_attention_bench.m src/qwen38_d_internal.h
@@ -65,3 +65,24 @@ test-qwen38-native-tools: build/process_memory
 	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_native_bounded.py -v
 	$(Q38_ENV) $(PYTHON) -B tests/test_run_observed.py -v
 .PHONY: test-qwen38-native-tools
+
+build/qwen38-mtp/test_mtp: tests/test_qwen38_mtp.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
+
+build/qwen38-mtp/mtp_real: tests/test_qwen38_mtp.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
+
+build/qwen38-mtp/cli.gguf: tools/synth/make_qwen38_cli.py tools/synth/make_qwen38_graph.py
+	$(Q38_ENV) $(PYTHON) -B $< --reference-root "$(Q38_REFERENCE_ROOT)" --mtp --output $@
+
+test-qwen38-mtp: build/qwen38-mtp/test_mtp build/qwen38-mtp/cli.gguf $(METALLIB)
+	@mkdir -p build/qwen38-mtp/tiny build/qwen38-mtp/tiny33
+	$(Q38_LOCK) $(Q38_ENV) MTL_DEBUG_LAYER=1 ./$< build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny 3 1 12 45 19 71 83 120 64 20 49
+	$(Q38_LOCK) $(Q38_ENV) MTL_DEBUG_LAYER=1 ./$< build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny33 33 1 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32
+.PHONY: test-qwen38-mtp
+
+test-qwen38-speculative: picoforge build/qwen38-mtp/cli.gguf $(METALLIB)
+	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_speculative.py -v
+.PHONY: test-qwen38-speculative

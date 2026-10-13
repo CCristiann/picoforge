@@ -55,7 +55,7 @@ static void q2_checks(void) {
     tensor.shape[0] = 768; tensor.shape[1] = SIZE_MAX;
     expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_OVERFLOW, &err);
     tensor.type = 12;
-    expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_UNSUPPORTED, &err);
+    expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_OVERFLOW, &err);
     tensor.type = UINT32_MAX;
     expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_FORMAT, &err);
     puts("PASS: Q2_K layout, decode, bounds, padding and error preflight");
@@ -124,7 +124,7 @@ static int matrix_transport(int argc, char **argv) {
     size_t type=argument(argv[2]), kp=argument(argv[3]), k=argument(argv[4]);
     size_t n=argument(argv[5]), experts=argument(argv[6]), expert=argument(argv[7]), m=argument(argv[8]);
     const size_t limit=32u*1024u*1024u;
-    assert(type==0 || type==1 || type==8 || type==10 || type==16 || type==30);
+    assert(type==0 || type==1 || type==8 || type==10 || type==12 || type==16 || type==30 || type==39);
     assert(kp && k && k<=kp && n && experts && expert<experts && m<=128);
     assert(kp<=limit/4 && n<=limit/4/kp && experts<=limit/4/kp/n && m<=limit/4/k);
     const GgufFormat *format=gguf_format((uint32_t)type);
@@ -161,8 +161,8 @@ static int transport(int argc, char **argv) {
     size_t type = argument(argv[1]), columns = argument(argv[2]), rows = argument(argv[3]);
     const size_t limit = 32u * 1024u * 1024u;
     assert(type <= UINT32_MAX && columns && rows && columns <= limit / 4 && rows <= limit / 4 / columns);
-    /* Registry only called for these known ordinary formats. */
-    assert(type == 0 || type == 1 || type == 8 || type == 10 || type == 16 || type == 30);
+    /* Registry only called for these known executable formats. */
+    assert(type == 0 || type == 1 || type == 8 || type == 10 || type == 12 || type == 16 || type == 30 || type == 39);
     const GgufFormat *format = gguf_format((uint32_t)type);
     assert(columns % format->block == 0);
     size_t bytes = columns / format->block * format->bytes * rows;

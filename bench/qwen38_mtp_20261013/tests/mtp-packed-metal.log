@@ -1,0 +1,33 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_all_finite_f16_and_bf16_bit_patterns (__main__.PackedReferenceTests.test_all_finite_f16_and_bf16_bit_patterns) ... ok
+test_iq2_all_grid_sign_scale_combinations (__main__.PackedReferenceTests.test_iq2_all_grid_sign_scale_combinations) ... ok
+test_iq2_every_group_and_grid_position (__main__.PackedReferenceTests.test_iq2_every_group_and_grid_position) ... ok
+test_iq2_half_scale_extremes (__main__.PackedReferenceTests.test_iq2_half_scale_extremes) ... ok
+test_iq2_known_grid_byte_order_and_sign_parity (__main__.PackedReferenceTests.test_iq2_known_grid_byte_order_and_sign_parity) ... ok
+test_logical_padding_never_contributes_to_reference_product (__main__.PackedReferenceTests.test_logical_padding_never_contributes_to_reference_product) ... ok
+test_mathematical_interpretation_matches_external_reference (__main__.PackedReferenceTests.test_mathematical_interpretation_matches_external_reference) ... ok
+test_mxfp4_all_finite_exponents_codes_and_signed_zero (__main__.PackedReferenceTests.test_mxfp4_all_finite_exponents_codes_and_signed_zero) ... ok
+test_native_exceptional_arithmetic_and_empty_batch (__main__.PackedReferenceTests.test_native_exceptional_arithmetic_and_empty_batch) ... ok
+test_native_grid_matches_canonical_hash (__main__.PackedReferenceTests.test_native_grid_matches_canonical_hash) ... ok
+test_native_matmul_formats_shapes_strides_and_experts (__main__.PackedReferenceTests.test_native_matmul_formats_shapes_strides_and_experts) ... ok
+test_native_real_slices (__main__.PackedReferenceTests.test_native_real_slices) ... skipped 'native harness and explicit slice directories required'
+test_oracle_refuses_missing_or_changed_provenance (__main__.PackedReferenceTests.test_oracle_refuses_missing_or_changed_provenance) ... ok
+test_python_transport_rejects_invalid_shapes (__main__.PackedReferenceTests.test_python_transport_rejects_invalid_shapes) ... ok
+test_q2_all_scale_min_code_combinations (__main__.PackedReferenceTests.test_q2_all_scale_min_code_combinations) ... ok
+test_q2_each_column_independently (__main__.PackedReferenceTests.test_q2_each_column_independently) ... ok
+test_q2_finite_half_scale_extremes (__main__.PackedReferenceTests.test_q2_finite_half_scale_extremes) ... ok
+test_q2_known_values (__main__.PackedReferenceTests.test_q2_known_values) ... ok
+test_q2_multiple_rows_and_physical_padding (__main__.PackedReferenceTests.test_q2_multiple_rows_and_physical_padding) ... ok
+test_q2_scale_group_boundaries (__main__.PackedReferenceTests.test_q2_scale_group_boundaries) ... ok
+test_q4_k_scale_high_bits_and_nibble_order (__main__.PackedReferenceTests.test_q4_k_scale_high_bits_and_nibble_order) ... ok
+test_q8_all_signed_codes_and_half_scale (__main__.PackedReferenceTests.test_q8_all_signed_codes_and_half_scale) ... ok
+test_reference_transport_rejects_malformed_requests (__main__.PackedReferenceTests.test_reference_transport_rejects_malformed_requests) ... ok
+test_saved_fixture_replay_and_corruption_detection (__main__.PackedReferenceTests.test_saved_fixture_replay_and_corruption_detection) ... ok
+test_scalar_nonfinite_classes_are_reference_data (__main__.PackedReferenceTests.test_scalar_nonfinite_classes_are_reference_data) ... ok
+test_slice_io_rejects_eof_and_errors_without_stale_data (__main__.PackedReferenceTests.test_slice_io_rejects_eof_and_errors_without_stale_data) ... ok
+test_slice_io_retries_interrupts_and_short_reads (__main__.PackedReferenceTests.test_slice_io_retries_interrupts_and_short_reads) ... ok
+
+----------------------------------------------------------------------
+Ran 27 tests in 27.773s
+
+OK (skipped=1)

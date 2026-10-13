@@ -776,5 +776,24 @@ FP32: stato, comandi, evidenze e controlli ancora aperti in
 streaming, stop cooperativo e reset/replay della storia tramite A.
 
 I risultati nativi non sono i precedenti circa 30 token/s di DwarfStar. Il gate
-Metal stock FP16 resta FAIL. MTP ha un [contratto](MTP.md), ma non è ancora
-eseguibile; parsing e specifica non ne costituiscono il completamento.
+Metal stock FP16 resta FAIL. Questa fotografia precede l’incremento MTP §16.
+
+
+## 16. MTP FP32 e verifica greedy — 2026-10-13
+
+Lo stesso branch `coord/qwen38-native-next` esegue ora il blocco MTP del
+checkpoint: ruoli A espliciti, decoder B Q4_K/MXFP4, norm globale H×E,
+EH projection, HC/QSA con cache propria, MoE e LM head condivisa. Il grafo
+ordinario resta quello di 48 layer; `--mtp` abilita il predictor separatamente.
+§2 e il precedente inventario descrivono la consegna storica, non questo delta.
+
+Contratto API, proposta/verifica, rollback completo, stop, cancellazione,
+fixture controllate e gate indipendente: [MTP.md](MTP.md). DwarfStar CPU FP32
+invariato verifica 24 righe trunk e 22 MTP, incluse continuazioni di cinque
+passi; tutti gli argmax e margini passano a 1e-3 invariato. Nessuna conversione
+completa, download o checksum integrale; PLE rimane disk-only e bounded.
+
+Il servizio locale accetta `--mtp` all’avvio del singolo worker residente;
+reset/replay della storia e lock comune rimangono gli stessi. Le misure MTP
+sono separate da quelle ordinarie, comprese accettazione, snapshot host e
+costo del replay dopo rifiuto. La verifica reale MTP a 8K resta aperta.

@@ -159,7 +159,8 @@ emesso e storia vuota; prompt recuperato. Evidenze e screenshot in
 accessibilità pratica del reset durante lo scroll: header reso sticky e
 ricontrollato. I click iniziali sul report erano fuori viewport; dopo scroll
 istantaneo il tool click verifica anche il FAIL stock FP16.
-**MTP non implementato.**
+Il successivo incremento [MTP](MTP.md) aggiunge il predictor FP32 reale e la
+verifica speculativa, disponibili con `--mtp`; la prova 8K sopra resta ordinaria.
 Il FAIL DwarfStar Metal FP16 rimane quello documentato in [G2.md](G2.md), distinto
 dal PASS indipendente CPU FP32. Nessun allargamento dei gate.
 

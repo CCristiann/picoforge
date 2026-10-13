@@ -14,8 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 ROOT=Path(__file__).resolve().parents[3]
 
 class Engine:
-    def __init__(self, checkpoint, context=8192, chunk=128):
-        self.checkpoint=checkpoint; self.context=context; self.chunk=chunk
+    def __init__(self, checkpoint, context=8192, chunk=128, mtp=False):
+        self.checkpoint=checkpoint; self.context=context; self.chunk=chunk; self.mtp=mtp
         self.mutex=threading.Lock(); self.control=threading.Lock()
         self.state='loading'; self.error=None; self.process=None; self.history=[]
         self.active=False; self.started=False; self.cancel=False; self.metrics=None; self.logs=[]; self.closing=False
@@ -26,6 +26,7 @@ class Engine:
         command=[sys.executable,str(ROOT/'tools/qwen38_gpu_lock.py'),'--timeout','3600','--',
                  str(ROOT/'picoforge'),'--qwen38',str(self.checkpoint),'--session',
                  '--context',str(self.context),'--chunk',str(self.chunk)]
+        if self.mtp: command.append('--mtp')
         try:
             with self.control:
                 if self.closing: return
@@ -58,7 +59,7 @@ class Engine:
         with self.control:
             return dict(state=self.state,error=self.error,active=self.active,context=self.context,
                         messages=list(self.history),metrics=self.metrics,
-                        session_mode='resident_model_reset_replay')
+                        session_mode='resident_model_reset_replay',mtp=self.mtp)
 
     def stop(self):
         with self.control:
@@ -226,9 +227,10 @@ def main():
     p.add_argument('--checkpoint',type=Path,default=ROOT/'models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf')
     p.add_argument('--port',type=int,default=8001);p.add_argument('--context',type=int,default=8192)
     p.add_argument('--chunk',type=int,default=128)
+    p.add_argument('--mtp',action='store_true',help='Enable verified greedy MTP proposals in the resident worker')
     a=p.parse_args()
     server=ThreadingHTTPServer(('127.0.0.1',a.port),Handler)
-    server.engine=Engine(a.checkpoint.resolve(),a.context,a.chunk)
+    server.engine=Engine(a.checkpoint.resolve(),a.context,a.chunk,a.mtp)
     print(f'Chat locale: http://127.0.0.1:{server.server_port}',flush=True)
     def shutdown(signum,frame): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM,shutdown)

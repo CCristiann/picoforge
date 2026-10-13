@@ -31,16 +31,20 @@ class StreamText(unittest.TestCase):
             self.assertFalse(engine.active)
 
 class LocalChat(unittest.TestCase):
+    mtp=False
     @classmethod
     def setUpClass(cls):
         cls.process=subprocess.Popen([sys.executable,'-B','tools/ui/qwen38/server.py',
-            '--checkpoint','build/qwen38-g2/cli.gguf','--context','512','--chunk','7','--port','0'],
+            '--checkpoint',('build/qwen38-mtp/cli.gguf' if cls.mtp else 'build/qwen38-g2/cli.gguf'),
+            '--context','512','--chunk','7','--port','0',*(['--mtp'] if cls.mtp else [])],
             cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
         cls.port=int(cls.process.stdout.readline().strip().rsplit(':',1)[1])
         end=time.monotonic()+30
         while time.monotonic()<end:
             status=cls.request('GET','/api/status')[1]
-            if status['state']=='ready':return
+            if status['state']=='ready':
+                assert status['mtp']==cls.mtp
+                return
             if status['state']=='error':raise RuntimeError(status['error'])
             time.sleep(.05)
         raise RuntimeError('fixture model did not load')
@@ -113,5 +117,8 @@ class LocalChat(unittest.TestCase):
         while self.request('GET','/api/status')[1]['active'] and time.monotonic()<deadline:time.sleep(.05)
         self.assertFalse(self.request('GET','/api/status')[1]['active'])
         self.assertEqual(self.request('POST','/api/reset',{})[0],200)
+
+class LocalMtpChat(LocalChat):
+    mtp=True
 
 if __name__=='__main__':unittest.main()

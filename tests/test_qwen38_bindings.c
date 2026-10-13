@@ -50,7 +50,13 @@ int main(int argc, char **argv) {
             assert(t->logical_shape[0] <= t->storage.shape[0]);
         }
     }
-    assert(count[0]+count[1]+count[2]+6*v->mtp_blocks == g.tensor_count);
+    assert(count[0]+count[1]+count[2] == g.tensor_count);
+    /* Predictor-specific roles are now addressable, still in the MTP domain. */
+    for (uint32_t i=v->trunk_blocks;i<v->blocks;i++)
+        for (Qwen38Role role=Q38_MTP_EH;role<Q38_ROLE_COUNT;role++) {
+            assert(qwen38_weights_get(w,i,role,&t,&e)==Q38_OK && t->domain==Q38_MTP);
+            assert(qwen38_weights_get(w,0,role,&t,&e)==Q38_MISSING);
+        }
     assert(qwen38_weights_get(w, 0, Q38_MOE_DOWN, &down, &e) == Q38_OK);
     assert(down->logical_shape[0] == v->moe.intermediate && down->storage.shape[0] == v->moe.down_physical);
     assert(down->row_bytes == v->moe.down_physical/256*84 && down->block_elems == 256);
@@ -87,8 +93,8 @@ int main(int argc, char **argv) {
     assert(qwen38_weights_attach(w, &g, &plan, &e) == Q38_OK);
     assert(down->gpu && down->gpu->owner == &plan && !t->gpu);
     assert(qwen38_weights_attach(w, &g, &plan, &e) == Q38_BUSY);
-    printf("bindings OK: ordinary=%zu MTP=%zu(+%u internal) disk=%zu views=%zu\n",
-        count[0], count[1], 6*v->mtp_blocks, count[2], plan.view_count);
+    printf("bindings OK: ordinary=%zu MTP=%zu disk=%zu views=%zu\n",
+        count[0], count[1], count[2], plan.view_count);
 #ifdef Q38_A_GPU
     storage_bridge(&g,c);
 #endif

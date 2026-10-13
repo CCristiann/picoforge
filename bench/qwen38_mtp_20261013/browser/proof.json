@@ -1,0 +1,310 @@
+{
+  "date": "2026-10-13",
+  "server": {
+    "pid": 35002,
+    "worker_pid": 35013,
+    "one_resident_worker": true,
+    "mode": "MTP",
+    "url": "http://127.0.0.1:8001"
+  },
+  "desktop": {
+    "width": 1280,
+    "height": 850
+  },
+  "mobile": {
+    "width": 390,
+    "height": 844
+  },
+  "two_turns": {
+    "status": {
+      "active": false,
+      "context": 8192,
+      "error": null,
+      "messages": [
+        {
+          "content": "Mi chiamo Ada. Rispondi soltanto con il mio nome.",
+          "role": "user"
+        },
+        {
+          "content": "Ada",
+          "role": "assistant"
+        },
+        {
+          "content": "Come mi chiamo? Rispondi soltanto con il nome.",
+          "role": "user"
+        },
+        {
+          "content": "Ada",
+          "role": "assistant"
+        }
+      ],
+      "metrics": {
+        "chunk": 128,
+        "context": 8192,
+        "decode_profile": {
+          "encode_s": 0.002803,
+          "gpu_s": 0.938999875,
+          "ngram_bytes": 5120,
+          "ngram_calls": 16,
+          "ngram_rows": 16,
+          "prepare_s": 0.000036,
+          "wait_s": 0.939786
+        },
+        "decode_s": 0.993631,
+        "decode_tokens": 1,
+        "event": "done",
+        "first_token_from_entry_s": null,
+        "generated_ids": [
+          92055,
+          248046
+        ],
+        "generated_tokens": 2,
+        "graph_buffer_bytes": 785108992,
+        "load_s": 0.193795,
+        "metal_allocated_bytes": 45582548992,
+        "metal_recommended_bytes": 55662788608,
+        "mtp": {
+          "accepted": 1,
+          "checkpoint_host_bytes": 588849160,
+          "draft_s": 0.039782,
+          "enabled": true,
+          "prefill_s": 0.255143,
+          "proposed": 1,
+          "replay_s": 0,
+          "rollback_count": 0,
+          "snapshot_s": 0.010146,
+          "target_decode_appends": 1,
+          "verified_tokens": 1,
+          "verify_s": 0.942767
+        },
+        "mtp_profile": {
+          "encode_s": 0.00173,
+          "gpu_s": 0.290172083,
+          "ngram_bytes": 0,
+          "ngram_calls": 0,
+          "ngram_rows": 0,
+          "prepare_s": 0,
+          "wait_s": 0.293076
+        },
+        "position": 55,
+        "prefill_profile": {
+          "encode_s": 0.006422,
+          "gpu_s": 8.139727583,
+          "ngram_bytes": 186880,
+          "ngram_calls": 584,
+          "ngram_rows": 584,
+          "prepare_s": 0.00805,
+          "wait_s": 8.425858
+        },
+        "prefill_s": 8.695666,
+        "prompt_tokens": 54,
+        "repetition": 1,
+        "request_s": 9.694723,
+        "reset_s": 0.005285,
+        "stop_reason": "stop",
+        "ttft_request_s": 8.701092,
+        "warmup": false
+      },
+      "mtp": true,
+      "session_mode": "resident_model_reset_replay",
+      "state": "ready"
+    },
+    "text": "picoforge\nChat locale\nModello pronto · MTP\nNuova conversazione\nTu\nMi chiamo Ada. Rispondi soltanto con il mio nome.\npicoforge\nAda\nTu\nCome mi chiamo? Rispondi soltanto con il nome.\npicoforge\nAda\nMessaggio\nLimite risposta\n64 token\n128 token\n256 token\n512 token\nInvia\nPrimo token 8,7 s · 1,01 token/s · 2 token · 56/8192 token totali · 42,45 GiB Metal · MTP 1/1 accettati\nSolo su questo computer\nInvio per inviare · Maiusc+Invio per andare a capo"
+  },
+  "stream_samples": [
+    {
+      "documentWidth": 390,
+      "stopVisible": true,
+      "text": "Tu\nScrivi dieci consigli dettagliati in italiano per verificare un backup.\npicoforge\nEcco dieci consigli dettagliati e pratici per verificare l'integrità e l'affidabilità dei tuoi backup. Una copia di sicurezza è inutile se non è possibile ripristinarla correttamente quando serve.\n\n### 1. Esegui",
+      "time": 1791924362355,
+      "viewport": 390
+    },
+    {
+      "stopVisible": true,
+      "text": "Tu\nScrivi dieci consigli dettagliati in italiano per verificare un backup.\npicoforge\nEcco dieci consigli dettagliati e pratici per verificare l'integrità e l'affidabilità dei tuoi backup. Una copia di sicurezza è inutile se non è possibile ripristinarla correttamente quando serve.\n\n### 1. Esegui un \"Ripristino",
+      "time": 1791924369419
+    }
+  ],
+  "cancelled": {
+    "documentWidth": 390,
+    "status": {
+      "active": false,
+      "context": 8192,
+      "error": null,
+      "messages": [
+        {
+          "content": "Scrivi dieci consigli dettagliati in italiano per verificare un backup.",
+          "role": "user"
+        },
+        {
+          "content": "Ecco dieci consigli dettagliati e pratici per verificare l'integrità e l'affidabilità dei tuoi backup. Una copia di sicurezza è inutile se non è possibile ripristinarla correttamente quando serve.\n\n### 1. Esegui un \"Ripristino",
+          "role": "assistant"
+        }
+      ],
+      "metrics": {
+        "chunk": 128,
+        "context": 8192,
+        "decode_profile": {
+          "encode_s": 0.156948,
+          "gpu_s": 58.299641333,
+          "ngram_bytes": 491520,
+          "ngram_calls": 1536,
+          "ngram_rows": 1536,
+          "prepare_s": 0.175077,
+          "wait_s": 58.334967
+        },
+        "decode_s": 60.901791,
+        "decode_tokens": 55,
+        "event": "done",
+        "first_token_from_entry_s": null,
+        "generated_ids": [
+          36,
+          55727,
+          190070,
+          154294,
+          176242,
+          9031,
+          378,
+          93694,
+          72,
+          791,
+          200001,
+          324,
+          52694,
+          766,
+          971,
+          6161,
+          378,
+          324,
+          78502,
+          306,
+          154453,
+          21133,
+          176678,
+          15264,
+          13,
+          41552,
+          190411,
+          1789,
+          172371,
+          11094,
+          216330,
+          500,
+          2397,
+          11094,
+          77191,
+          219799,
+          13367,
+          4120,
+          225233,
+          28735,
+          8418,
+          13,
+          271,
+          13962,
+          220,
+          16,
+          13,
+          458,
+          14186,
+          1896,
+          632,
+          328,
+          49,
+          558,
+          2729,
+          3204
+        ],
+        "generated_tokens": 56,
+        "graph_buffer_bytes": 785108992,
+        "load_s": 0.193795,
+        "metal_allocated_bytes": 45582548992,
+        "metal_recommended_bytes": 55662788608,
+        "mtp": {
+          "accepted": 18,
+          "checkpoint_host_bytes": 588849160,
+          "draft_s": 1.605323,
+          "enabled": true,
+          "prefill_s": 0.12153,
+          "proposed": 38,
+          "replay_s": 18.963441,
+          "rollback_count": 20,
+          "snapshot_s": 0.376863,
+          "target_decode_appends": 58,
+          "verified_tokens": 76,
+          "verify_s": 39.917578
+        },
+        "mtp_profile": {
+          "encode_s": 0.029015,
+          "gpu_s": 1.657411792,
+          "ngram_bytes": 0,
+          "ngram_calls": 0,
+          "ngram_rows": 0,
+          "prepare_s": 0,
+          "wait_s": 1.6933
+        },
+        "position": 81,
+        "prefill_profile": {
+          "encode_s": 0.003947,
+          "gpu_s": 4.002632417,
+          "ngram_bytes": 128000,
+          "ngram_calls": 400,
+          "ngram_rows": 400,
+          "prepare_s": 0.016583,
+          "wait_s": 4.278633
+        },
+        "prefill_s": 4.420849,
+        "prompt_tokens": 25,
+        "repetition": 3,
+        "request_s": 65.326584,
+        "reset_s": 0.003805,
+        "stop_reason": "cancelled",
+        "ttft_request_s": 4.424793,
+        "warmup": false
+      },
+      "mtp": true,
+      "session_mode": "resident_model_reset_replay",
+      "state": "ready"
+    },
+    "text": "picoforge\nChat locale\nModello pronto · MTP\nNuova conversazione\nTu\nScrivi dieci consigli dettagliati in italiano per verificare un backup.\npicoforge\nEcco dieci consigli dettagliati e pratici per verificare l'integrità e l'affidabilità dei tuoi backup. Una copia di sicurezza è inutile se non è possibile ripristinarla correttamente quando serve.\n\n### 1. Esegui un \"Ripristino\nMessaggio\nLimite risposta\n64 token\n128 token\n256 token\n512 token\nInvia\nInterrotta · Primo token 4,42 s · 0,9 token/s · 56 token · 81/8192 token totali · 42,45 GiB Metal · MTP 18/38 accettati\nSolo su questo computer\nInvio per inviare · Maiusc+Invio per andare a capo",
+    "width": 390
+  },
+  "reset": {
+    "documentWidth": 390,
+    "status": {
+      "active": false,
+      "context": 8192,
+      "error": null,
+      "messages": [],
+      "metrics": null,
+      "mtp": true,
+      "session_mode": "resident_model_reset_replay",
+      "state": "ready"
+    },
+    "text": "picoforge\nChat locale\nModello pronto · MTP\nNuova conversazione\nCosa vuoi costruire?\n\nScrivi codice, esplora un problema o ragiona in italiano. Qwen3.8-Flash-Next Q2 risponde su questo Mac.\n\nUna funzione Python\nUna spiegazione chiara\nMessaggio\nLimite risposta\n64 token\n128 token\n256 token\n512 token\nInvia\nNuova conversazione.\nSolo su questo computer\nInvio per inviare · Maiusc+Invio per andare a capo",
+    "width": 390
+  },
+  "report": {
+    "path": "../../qwen38_native_20261013/report-mtp-final.html",
+    "desktop": "1280x850",
+    "mobile": "390x844",
+    "outer_overflow": false,
+    "mobile_mtp_table_width": 317,
+    "mobile_mtp_container_width": 317,
+    "italian_selection": "DOM value + change event; native keyboard selection did not change value",
+    "italian_display": {
+      "decode_ratio": "1.19",
+      "accepted": "78/108",
+      "rollback": 30
+    },
+    "raw_links_status": [
+      200,
+      200
+    ],
+    "stock_fp16": {
+      "result": "Gate non superato",
+      "max_scaled": "4.13e-2"
+    },
+    "notes": "Report candidate had an inner table scroll; final mobile table wraps. Screenshots for both versions preserved."
+  }
+}

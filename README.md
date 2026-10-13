@@ -56,11 +56,13 @@ thinking disabled. `--complete TEXT` supplies raw text; `--thinking` enables
 the chat reasoning prefix. `--logits FILE.f32` saves one FP32 vocabulary row
 per sampling step; `--token-ids FILE.json` saves prompt/output IDs. This is a
 FP32 baseline; reproducible native measurements and the resident local chat are
-documented in [native increments](docs/specs/qwen38/native-next.md). MTP execution
-is not yet available.
+documented in [native increments](docs/specs/qwen38/native-next.md). Add `--mtp`
+for the real checkpoint predictor with exact greedy verification and full
+state rollback; see the [MTP contract and gates](docs/specs/qwen38/MTP.md).
 
-The [updated native report](bench/qwen38_native_20261013/report-verified.html)
-includes the 8K trial, native measurements and bounded CPU checks.
+The [updated native report](bench/qwen38_native_20261013/report-mtp-final.html)
+includes the ordinary 8K trial, native measurements, bounded CPU checks and
+the paired MTP pilot. Earlier report snapshots remain available.
 The [original G2/G3 report](bench/qwen38_g2_g3_20261013/report.html) shows
 the recorded output, all 48 layer errors, the FP32/Metal comparison and memory.
 Open the HTML directly, or serve it locally:
@@ -179,7 +181,8 @@ and logits against pinned DwarfStar FP32; its stock Metal FP16 cache comparison
 is recorded separately, including a near-tie routing divergence. See the
 [G2/G3 report](docs/specs/qwen38/G2.md). The subsequent
 [native trials](bench/qwen38_native_20261013/README.md) measure FP32 QSA tuning,
-latency and memory separately from response quality. MTP remains open.
+latency and memory separately from response quality. MTP is opt-in and
+retains the ordinary greedy path as its reference.
 The 30B [expert-cost experiment](docs/phase4-expert-experiment.md) remains
 available; its pilot does not justify replacing the default scheduler.
 The [project review](docs/project-review-2026-10-11.md) records the scope and

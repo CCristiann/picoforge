@@ -21,6 +21,23 @@ comparisons. Kernel speedup and complete-engine speedup are reported separately.
 The negative DwarfStar stock Metal/FP16 numerical gate remains a FAIL; it is
 not used as the FP32 reference and its tolerance has not changed.
 
+## Native Qwen3.8 MTP pilot
+
+`tools/eval/qwen38_mtp_bench.py` compares ordinary greedy with the real MTP
+predictor: one resident warm-up plus three measured requests per mode, two
+prompts, alternating which mode runs first by prompt. Model load is one
+observation per process; repetitions share it. Every generated sequence must
+match, including warm-ups. See [MTP](specs/qwen38/MTP.md) and
+[raw evidence](../bench/qwen38_mtp_20261013/README.md).
+
+Prefill includes teacher-forcing all prompt pairs through MTP. Decode includes
+proposals, two-token trunk verification, host snapshot copies, restore and
+replay after rejection. GPU times overlap host wait and are not additive.
+Acceptance includes confirmed stop proposals. Snapshot host allocation is
+reported separately from Metal, footprint, system wired, pressure and swap.
+No cache purge, cold-cache claim or precision change. This is a pilot, not a
+general speed or response-quality guarantee; real MTP at 8K is still untested.
+
 ## Generation requests
 
 `tools/eval/bench_speculate.py` compares no draft, fixed `k=2`, and adaptive

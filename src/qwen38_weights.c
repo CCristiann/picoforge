@@ -123,9 +123,9 @@ static Qwen38Status catalog(const Gguf *g, const Qwen38Config *c, Qwen38Weights 
             ADD(Q38_PLE_CONV,"ple_conv1d.weight",0,2,c->ngram.conv_kernel,x,1,c->ngram.conv_kernel,Q38_CONV);
         }
         if (mtp) {
-            MAT(Q38_ROLE_COUNT,"nextn.eh_proj.weight",8,2*d,d);
-            VEC(Q38_ROLE_COUNT,"nextn.enorm.weight",d); VEC(Q38_ROLE_COUNT,"nextn.hnorm.weight",x);
-            HC("nextn.hc_head",Q38_ROLE_COUNT,Q38_ROLE_COUNT,Q38_ROLE_COUNT);
+            MAT(Q38_MTP_EH,"nextn.eh_proj.weight",8,2*d,d);
+            VEC(Q38_MTP_E_NORM,"nextn.enorm.weight",d); VEC(Q38_MTP_H_NORM,"nextn.hnorm.weight",x);
+            HC("nextn.hc_head",Q38_MTP_HEAD_NORM,Q38_MTP_HEAD_DOWN,Q38_MTP_HEAD_UP);
         }
     }
 #undef HC

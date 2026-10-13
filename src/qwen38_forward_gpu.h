@@ -1,5 +1,5 @@
 /* G2: ordinary GPU graph, one G0 command and one completion per append.
- * Inputs/weights remain borrowed until destroy. No MTP execution. */
+ * Inputs/weights remain borrowed until destroy. MTP is explicitly enabled. */
 #ifndef PICOFORGE_QWEN38_FORWARD_GPU_H
 #define PICOFORGE_QWEN38_FORWARD_GPU_H
 #include "qwen38_forward.h"
@@ -28,4 +28,23 @@ void qwen38_gpu_forward_destroy(Qwen38GpuForward *);
 /* Allocated Metal workspace/state/constants (excludes borrowed weights and
  * optional transient trace storage). SSD staging is owned separately by E. */
 size_t qwen38_gpu_forward_bytes(const Qwen38GpuForward *);
+/* One predictor block, own QSA cache. Enable only on a fresh graph. No PLE
+ * and no additional weight load. A failure requires destroying the graph. */
+Qwen38Status qwen38_gpu_mtp_enable(Qwen38GpuForward *,Qwen38Error *);
+/* Pair residual rows from the LAST successful full trunk append with next
+ * tokens. Predictor position must equal that append's start + offset. Rows
+ * of logits (0..count) are the final rows. Does not overwrite trunk residuals.
+ * Errors after admission poison both graphs; reset recovers. */
+Qwen38Status qwen38_gpu_mtp(Qwen38GpuForward *,size_t offset,const int32_t *next_tokens,
+    size_t count,Qwen38F32Mut logits,Qwen38Error *);
+Qwen38StateInfo qwen38_gpu_mtp_info(const Qwen38GpuForward *);
+/* One reusable host snapshot, excluding weights and disk tables. Save only
+ * idle/valid state. Restore only within two successful trunk tokens, with
+ * predictor unchanged. Saving/reset/restore invalidates previous handles.
+ * Restore advances the trunk epoch and restores PLE hash history as well as
+ * all device histories and the last trunk residual. */
+typedef struct { const void *owner; uint64_t epoch,serial,position,mtp_position; } Qwen38GpuCheckpoint;
+Qwen38Status qwen38_gpu_checkpoint_save(Qwen38GpuForward *,Qwen38GpuCheckpoint *,Qwen38Error *);
+Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *,Qwen38GpuCheckpoint,Qwen38Error *);
+size_t qwen38_gpu_checkpoint_bytes(const Qwen38GpuForward *);
 #endif

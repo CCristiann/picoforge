@@ -56,10 +56,9 @@ Q38_B_INLINE bool q38_b_same_layout(const Q38PackedLayout *a, const Q38PackedLay
 }
 /* Nonfatal admission before the existing registry's fatal unknown-ID path. */
 Q38_B_INLINE Qwen38Status q38_b_format(uint32_t type, const GgufFormat **format) {
-    if (type == 0 || type == 1 || type == 8 || type == 10 || type == 16 || type == 30) {
+    if (type == 0 || type == 1 || type == 8 || type == 10 || type == 12 || type == 16 || type == 30 || type == 39) {
         *format = gguf_format(type); return Q38_OK;
     }
-    if (type == 12 || type == 39) return Q38_UNSUPPORTED;
     return Q38_FORMAT;
 }
 /* Common rank-2 activation contract, usable by both CPU and GPU admission.

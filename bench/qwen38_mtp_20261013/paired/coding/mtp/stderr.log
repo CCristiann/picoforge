@@ -1,0 +1,9 @@
+Qwen3.8: 48 layers, 9 prompt tokens, context 8192, chunk 128; graph buffers 748.7 MiB
+Qwen3.8: generated 32 tokens
+Qwen3.8 memory: {"metal_allocated_bytes":45582548992,"metal_recommended_bytes":55662788608,"graph_buffer_bytes":785108992}
+Qwen3.8: generated 32 tokens
+Qwen3.8 memory: {"metal_allocated_bytes":45582548992,"metal_recommended_bytes":55662788608,"graph_buffer_bytes":785108992}
+Qwen3.8: generated 32 tokens
+Qwen3.8 memory: {"metal_allocated_bytes":45582548992,"metal_recommended_bytes":55662788608,"graph_buffer_bytes":785108992}
+Qwen3.8: generated 32 tokens
+Qwen3.8 memory: {"metal_allocated_bytes":45582548992,"metal_recommended_bytes":55662788608,"graph_buffer_bytes":785108992}

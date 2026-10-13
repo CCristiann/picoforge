@@ -1,0 +1,7 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_native_real_slices (__main__.PackedReferenceTests.test_native_real_slices) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 5.775s
+
+OK

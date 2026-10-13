@@ -83,6 +83,22 @@ static float packed_value(const unsigned char *row, size_t column, uint32_t type
         if (code >= 128) code -= 256; /* No implementation-defined signed cast. */
         return half_value(q8) * (float)code;
     }
+    if (type == 12) {
+        const unsigned char *b=row+column/256*144,*sc=b+4;
+        size_t lane=column%256,g=lane/32;
+        unsigned scale=g<4 ? sc[g]&63u : (sc[g+4]&15u)|((sc[g-4]&192u)>>2);
+        unsigned minimum=g<4 ? sc[g+4]&63u : (sc[g+4]>>4)|((sc[g]&192u)>>2);
+        unsigned code=(b[16+(g/2)*32+lane%32]>>((g%2)*4))&15u;
+        return (half_value(b)*(float)scale)*(float)code-half_value(b+2)*(float)minimum;
+    }
+    if (type == 39) {
+        const unsigned char *b=row+column/32*17;
+        unsigned lane=(unsigned)(column%32),code=(b[1+lane%16]>>((lane/16)*4))&15u;
+        static const float values[]={0,.5f,1,1.5f,2,3,4,6,-0.0f,-.5f,-1,-1.5f,-2,-3,-4,-6};
+        uint32_t bits=b[0] ? (uint32_t)b[0]<<23 : 0x00400000u;
+        float scale; memcpy(&scale,&bits,4);
+        return values[code]*scale;
+    }
     if (type == 16) {
         const unsigned char *iq = row + column / 256 * 66;
         size_t lane = column % 256, slot = lane % 32 / 8;

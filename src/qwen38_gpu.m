@@ -254,6 +254,19 @@ Qwen38StateInfo qwen38_gpu_session_info(const Qwen38GpuSession *g) {
     return g ? qwen38_gpu_ledger_info(&g->ledger) : (Qwen38StateInfo){0};
 }
 double qwen38_gpu_session_seconds(const Qwen38GpuSession *g) { return g ? g->gpu_seconds : 0; }
+Qwen38Status q38g_session_rewind(Qwen38GpuSession *g,const void *model,uint64_t epoch,
+    uint64_t position,Qwen38Error *e) {
+    if (!g) return report(e,Q38_INVALID_ARGUMENT);
+    Qwen38GpuLedger *l=&g->ledger;
+    if (l->model!=model) return report(e,Q38_OWNER);
+    if (busy(l)) return report(e,Q38_BUSY);
+    if (l->epoch!=epoch) return report(e,Q38_STALE);
+    if (l->state==Q38_SESSION_INVALID || position>l->next_pos || l->next_pos-position>2)
+        return report(e,Q38_BAD_STATE);
+    Qwen38Status rc=qwen38_gpu_ledger_reset(l,model,e);
+    if (!rc) { l->next_pos=position; l->state=position ? Q38_SESSION_VALID : Q38_SESSION_IDLE; }
+    return rc;
+}
 Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
     if (!g) return report(e, Q38_INVALID_ARGUMENT);
     if (qwen38_gpu_ledger_info(&g->ledger).busy) return report(e, Q38_BUSY);

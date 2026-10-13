@@ -18,7 +18,7 @@ REVISION = "fc80bd695da76ee14bcb86820bf900a5cdfda806"
 DS4_SHA256 = "d137a9a5936d35152d1aa7abd9631462697abd69b429f52e51663292c1d063bd"
 ADAPTER = ROOT / "tools/oracle/qwen38_packed_reference.c"
 FORMATS = {0: (1, 4), 1: (1, 2), 8: (32, 34), 10: (256, 84),
-           16: (256, 66), 30: (1, 2)}
+           12: (256, 144), 16: (256, 66), 30: (1, 2), 39: (32, 17)}
 BYTE_LIMIT = 32 * 1024 * 1024
 IQ2_GRID_SHA256 = "05826b5d3e472a3a78f196be62ac78acf81df0f909626e12ab9fa2a5d490dd54"
 
@@ -177,6 +177,28 @@ def mathematical_rows(packed, kind, columns, *, grid=None):
     """
     import numpy as np
 
+    if kind in (12,39):
+        block,size=FORMATS[kind]
+        if columns<=0 or columns%block or not len(packed) or len(packed)%(columns//block*size) or len(packed)//size*block*4>BYTE_LIMIT:
+            raise ValueError('invalid MTP packed extent')
+        raw=np.frombuffer(packed,dtype=np.uint8).reshape(-1,size)
+        if kind==39:
+            exponents=raw[:,0].astype(np.int32)
+            scale=np.exp2(exponents.astype(np.float64)-127)
+            scale[exponents==255]=np.inf
+            levels=np.array([0,.5,1,1.5,2,3,4,6,-0.,-.5,-1,-1.5,-2,-3,-4,-6])
+            codes=np.concatenate((raw[:,1:]&15,raw[:,1:]>>4),axis=1)
+            with np.errstate(over='ignore',invalid='ignore'):
+                return (scale[:,None]*levels[codes]).astype('<f4').reshape(-1,columns)
+        d=raw[:,:2].copy().view('<f2').astype(np.float64)
+        minimum=raw[:,2:4].copy().view('<f2').astype(np.float64)
+        sc=raw[:,4:16]; groups=[]
+        for g in range(8):
+            scale=sc[:,g]&63 if g<4 else (sc[:,g+4]&15)|((sc[:,g-4]>>6)<<4)
+            mn=sc[:,g+4]&63 if g<4 else (sc[:,g+4]>>4)|((sc[:,g]>>6)<<4)
+            codes=(raw[:,16+(g//2)*32:48+(g//2)*32]>>((g%2)*4))&15
+            groups.append(d*scale[:,None]*codes-minimum*mn[:,None])
+        return np.concatenate(groups,axis=1).astype('<f4').reshape(-1,columns)
     if kind in (0, 1, 8, 30):
         block, size = FORMATS[kind]
         if (columns <= 0 or columns % block or not len(packed) or
@@ -233,7 +255,7 @@ def extract_slices(reference, checkpoint, output, kind):
 
     checkpoint, output = Path(checkpoint).resolve(), Path(output).resolve()
     if kind not in FORMATS or not output.is_relative_to(ROOT / "build"):
-        raise ValueError("choose an ordinary format and an isolated build output directory")
+        raise ValueError("choose an executable format and an isolated build output directory")
     verification = json.loads((ROOT / "bench/qwen38_q2_20261011_phase0/checkpoint.verification.json").read_text())
     if (verification["matched"] is not True or verification["sha256"] !=
             "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9"):
@@ -257,15 +279,16 @@ def extract_slices(reference, checkpoint, output, kind):
         experts = meta["qwen4exp.expert_count"]
         hidden = meta["qwen4exp.embedding_length"]
         width = meta["qwen4exp.expert_feed_forward_length"]
-        logical = width if kind == 10 else hidden
-        physical, nrows = ((width + 255) // 256 * 256, hidden) if kind == 10 else (hidden, width)
+        logical = width if kind in (10,39) else hidden
+        physical, nrows = (((width + 255) // 256 * 256 if kind==10 else width), hidden) if kind in (10,39) else (hidden, width)
         selections = []
-        for layer in (sorted({0, (trunk - 1) // 2, trunk - 1}) if kind in (10,16) else []):
-            for projection in (("down",) if kind == 10 else ("gate", "up")):
+        layers=sorted({0,(trunk-1)//2,trunk-1}) if kind in (10,16) else [trunk] if kind in (12,39) else []
+        for layer in layers:
+            for projection in (("down",) if kind in (10,39) else ("gate", "up")):
                 tensor = tensors[f"blk.{layer}.ffn_{projection}_exps.weight"]
                 if tensor["type_id"] != kind or tensor["shape"] != [physical, nrows, experts]:
                     raise ValueError("routed-expert layout differs from metadata")
-                row_bytes = physical // 256 * FORMATS[kind][1]
+                row_bytes = physical // FORMATS[kind][0] * FORMATS[kind][1]
                 for expert in sorted({0, (experts - 1) // 2, experts - 1}):
                     for row in sorted({0, nrows // 2, nrows - 1}):
                         offset = tensor["file_offset"] + (expert * nrows + row) * row_bytes
@@ -303,7 +326,7 @@ def extract_slices(reference, checkpoint, output, kind):
         records = []
         for tensor, expert, row, offset, size in selections:
             physical = tensor["shape"][0]
-            logical = width if kind == 10 else physical
+            logical = width if kind in (10,39) else physical
             raw = pread_exact(fd, offset, size)
             values = decode(reference, raw, kind, physical, 1)
             mathematical = mathematical_rows(raw, kind, physical, grid=grid)

@@ -16,6 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--reference-root', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=ROOT/'build/qwen38-g2/cli.gguf')
+    parser.add_argument('--mtp', action='store_true')
     args = parser.parse_args()
     item = json.loads((ROOT/'tests/fixtures/qwen38/a/manifest.json').read_text())['tokenizer_config']
     raw = (args.reference_root/item['relative_to_reference_root']).read_bytes()
@@ -36,7 +37,7 @@ def main():
             'tokenizer.ggml.padding_token_id': 256, 'tokenizer.ggml.bos_token_id': 256,
             'tokenizer.ggml.add_bos_token': False}
     hf = graph_config(); hf['text_config']['eos_token_id'] = 256
-    write_graph(args.output, hf, 3811, meta)
+    write_graph(args.output, hf, 3811, meta, enable_mtp=args.mtp)
     print(f'{args.output}: graph with byte tokenizer, {args.output.stat().st_size} bytes')
 
 

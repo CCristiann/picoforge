@@ -39,6 +39,7 @@ static void usage(void) {
         "       [--repeat N] [--warmup N] [--replay-chunk N] [--runs-jsonl FILE]\n"
         "       [--session] (resident local worker protocol)\n"
         "       [--stop-after N] (SIGUSR1 also stops cooperatively)\n"
+        "       [--mtp] (one-token predictor, exact greedy verification)\n"
         "Greedy FP32 generation; defaults: context 8192, chunk 1024, max-new 32.\n");
 }
 static Qwen38Bytes bytes(const char *s) { return (Qwen38Bytes){(const uint8_t *)s,strlen(s)}; }
@@ -142,10 +143,11 @@ int qwen38_cli(int argc,char **argv) {
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
     const char *runs_path=NULL; char *owned_input=NULL;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX;
-    bool thinking=false,encode_only=false,session=false;
+    bool thinking=false,encode_only=false,session=false,mtp=false;
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
+        if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
         if (!strcmp(opt,"--thinking")) { thinking=true; continue; }
         if (!strcmp(opt,"--encode-only")) { encode_only=true; continue; }
         if (i+1==argc) die("missing value for %s",opt);
@@ -174,6 +176,7 @@ int qwen38_cli(int argc,char **argv) {
     }
     if (thinking && strcmp(mode,"--chat")) die("--thinking requires --chat");
     chunk=MIN(chunk,capacity);
+    if (mtp && capacity<2) die("MTP requires context >=2");
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
     FILE *runs=runs_path ? fopen(runs_path,"wx") : NULL;
     if (runs_path && !runs) die("runs output must be a new file");
@@ -219,11 +222,13 @@ int qwen38_cli(int argc,char **argv) {
         GpuWeightStore *store=gpu_weights_open((__bridge void *)device,&g,0);
         check(qwen38_weights_attach(weights,&g,gpu_weights_plan(store),&e),&e);
         Qwen38GpuForward *graph;
-        check(qwen38_gpu_forward_create(&g,config,weights,store,(__bridge void *)device,(__bridge void *)lib,chunk,capacity,1,&graph,&e),&e);
+        check(qwen38_gpu_forward_create(&g,config,weights,store,(__bridge void *)device,(__bridge void *)lib,mtp ? MAX(chunk,2u) : chunk,capacity,mtp ? 2 : 1,&graph,&e),&e);
+        if (mtp) check(qwen38_gpu_mtp_enable(graph,&e),&e);
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
             c->trunk_blocks,count,capacity,chunk,(double)qwen38_gpu_forward_bytes(graph)/1048576.0);
-        float *logits=malloc((size_t)c->vocab_size*4); if (!logits) die("logits allocation");
-        Qwen38F32Mut y={.data=logits,.capacity_bytes=(size_t)c->vocab_size*4,.rank=2,.dim={1,c->vocab_size},.stride_bytes={(size_t)c->vocab_size*4,4}};
+        size_t logits_bytes=(size_t)c->vocab_size*4*(mtp ? 2u : 1u);
+        float *logits=malloc(logits_bytes); if (!logits) die("logits allocation");
+        Qwen38F32Mut y={.data=logits,.capacity_bytes=logits_bytes,.rank=2,.dim={1,c->vocab_size},.stride_bytes={(size_t)c->vocab_size*4,4}};
         double load_s=now()-entered;
         Qwen38Decoder *decoder; check(qwen38_decoder_create(tok,true,&decoder,&e),&e);
         if (session) { runs=stdout; fprintf(stdout,"{\"event\":\"ready\",\"load_s\":%.9f,\"context\":%u}\n",load_s,capacity); fflush(stdout); }
@@ -245,12 +250,23 @@ int qwen38_cli(int argc,char **argv) {
         stopped=0;
         if (session) { fprintf(stdout,"{\"event\":\"started\",\"prompt_tokens\":%zu}\n",count); fflush(stdout); }
         uint32_t current_chunk=repetition && replay_chunk ? replay_chunk : chunk;
-        Qwen38GpuForwardStats prefill_stats={0},decode_stats={0};
+        Qwen38GpuForwardStats prefill_stats={0},decode_stats={0},mtp_stats={0};
+        size_t proposed=0,accepted=0,target_appends=0,rollback_count=0,verified_tokens=0;
+        double mtp_prefill_s=0,draft_s=0,verify_s=0,snapshot_s=0,replay_s=0;
+        size_t residual_offset=0; bool queued=false,catchup=false; int32_t catchup_id=0;
         double prefill_start=now();
         for (size_t start=0;start<count && !stopped;start+=current_chunk) {
             size_t n=MIN((size_t)current_chunk,count-start); y.dim[0]=start+n==count ? 1 : 0;
             check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);
             accumulate(&prefill_stats,graph);
+            residual_offset=n-1;
+            if (mtp && !stopped) {
+                size_t pairs=MIN(n,count-start-1); Qwen38F32Mut empty=y; empty.dim[0]=0;
+                double mtp_start=now();
+                if (pairs) check(qwen38_gpu_mtp(graph,0,tokens+start+1,pairs,empty,&e),&e);
+                mtp_prefill_s+=now()-mtp_start;
+                if (pairs) accumulate(&mtp_stats,graph);
+            }
             if (session) {
                 fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
                 fflush(stdout);
@@ -276,8 +292,45 @@ int qwen38_cli(int argc,char **argv) {
             if (!strcmp(reason,"stop")) break;
             if (got==stop_after) { reason="cancelled"; break; }
             if (step+1<max_new) {
-                check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
-                accumulate(&decode_stats,graph);
+                if (queued) {
+                    /* Both rows were already verified causally. The first has
+                     * just emitted b; the next iteration emits c from row 1. */
+                    memcpy(logits,logits+c->vocab_size,(size_t)c->vocab_size*4);
+                    queued=false; catchup=true; catchup_id=id;
+                } else if (mtp && max_new-got>=2 && stop_after-got>=2 &&
+                           capacity-qwen38_gpu_forward_info(graph).next_pos>=2) {
+                    int32_t confirmed[2]={catchup ? catchup_id : id,id};
+                    double part=now();
+                    check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,y,&e),&e);
+                    draft_s+=now()-part; accumulate(&mtp_stats,graph); catchup=false;
+                    if (stopped) break;
+                    int32_t draft=0;
+                    for (uint32_t j=0;j<c->vocab_size;j++) {
+                        if (!isfinite(logits[j])) die("nonfinite MTP logit");
+                        if (logits[j]>logits[draft]) draft=(int32_t)j;
+                    }
+                    proposed++;
+                    /* A proposed stop is checked using only a. It must never
+                     * enter the trunk cache, even when it is accepted. */
+                    bool draft_stop=qwen38_token_is_stop(tok,draft);
+                    Qwen38GpuCheckpoint snapshot; part=now();
+                    check(qwen38_gpu_checkpoint_save(graph,&snapshot,&e),&e); snapshot_s+=now()-part;
+                    int32_t pair[2]={id,draft}; y.dim[0]=draft_stop ? 1 : 2; part=now();
+                    check(qwen38_gpu_forward(graph,pair,y.dim[0],c->trunk_blocks,y,NULL,NULL,&e),&e);
+                    verify_s+=now()-part; verified_tokens+=y.dim[0]; target_appends++; accumulate(&decode_stats,graph); y.dim[0]=1;
+                    if (stopped) { check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e); break; }
+                    int32_t target=0;
+                    for (uint32_t j=1;j<c->vocab_size;j++) if (logits[j]>logits[target]) target=(int32_t)j;
+                    if (target==draft) { accepted++; queued=!draft_stop; residual_offset=draft_stop ? 0 : 1; }
+                    else if (!draft_stop) {
+                        part=now(); check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e);
+                        check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
+                        replay_s+=now()-part; rollback_count++; target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
+                    } else residual_offset=0;
+                } else {
+                    check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
+                    target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
+                }
             }
         }
         double generation_end=now(); if (stopped) reason="cancelled";
@@ -307,6 +360,12 @@ int qwen38_cli(int argc,char **argv) {
                 (unsigned long long)qwen38_gpu_forward_info(graph).next_pos,
                 (size_t)device.currentAllocatedSize,(size_t)device.recommendedMaxWorkingSetSize,qwen38_gpu_forward_bytes(graph));
             ids_json(runs,generated,got);
+            fprintf(runs,",\"mtp\":{\"enabled\":%s,\"proposed\":%zu,\"accepted\":%zu,\"rollback_count\":%zu,"
+                "\"target_decode_appends\":%zu,\"verified_tokens\":%zu,\"prefill_s\":%.9f,\"draft_s\":%.9f,"
+                "\"verify_s\":%.9f,\"snapshot_s\":%.9f,\"replay_s\":%.9f,\"checkpoint_host_bytes\":%zu}",
+                mtp ? "true":"false",proposed,accepted,rollback_count,target_appends,verified_tokens,
+                mtp_prefill_s,draft_s,verify_s,snapshot_s,replay_s,qwen38_gpu_checkpoint_bytes(graph));
+            stats_json(runs,"mtp_profile",mtp_stats);
             stats_json(runs,"prefill_profile",prefill_stats); stats_json(runs,"decode_profile",decode_stats);
             fputs("}\n",runs); fflush(runs);
         }

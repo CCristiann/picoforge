@@ -50,12 +50,14 @@ def scale_for(name, shape):
     return 1.0 / math.sqrt(shape[0])      # GGUF dim 0 is the input width
 
 
-def payload(rng, name, shape, fmt, domain):
+def payload(rng, name, shape, fmt, domain, enable_mtp=False):
     count = math.prod(shape)
     type_id, block, size = ref.FORMATS[fmt]
-    if domain == "mtp" or fmt in ("Q4_K", "MXFP4"):
+    if domain == "mtp" and not enable_mtp:
         return bytes(count // block * size)  # described, never executed
     s = scale_for(name, shape)
+    if name.endswith(("nextn.enorm.weight", "nextn.hnorm.weight")):
+        s = None
     if name.endswith("ssm_a"):
         values = -np.exp(rng.uniform(-1.0, 0.5, count))  # already -exp(A_log)
     elif s is None:
@@ -69,6 +71,16 @@ def payload(rng, name, shape, fmt, domain):
     if fmt == "BF16":
         return (values.astype("<f4").view("<u4") >> 16).astype("<u2").tobytes()
     blocks = count // block
+    if fmt == "Q4_K":
+        d = np.full((blocks, 1), s / 7, "<f2")
+        dmin = np.full((blocks, 1), s * 7.5 / 7, "<f2")
+        scales = np.tile(np.array([1]*8+[17]*4, dtype=np.uint8), (blocks, 1))
+        codes = rng.integers(0, 256, (blocks, 128), dtype=np.uint8)
+        return np.concatenate([d.view(np.uint8), dmin.view(np.uint8), scales, codes], 1).tobytes()
+    if fmt == "MXFP4":
+        exponent = np.full((blocks, 1), round(math.log2(s / 2.5)) + 127, dtype=np.uint8)
+        codes = rng.integers(0, 256, (blocks, 16), dtype=np.uint8)
+        return np.concatenate([exponent, codes], 1).tobytes()
     if fmt == "Q8_0":
         d = np.full((blocks, 1), s / 73.0, "<f2")  # std of uniform int8 is ~73
         q = rng.integers(-127, 128, (blocks, 32), dtype=np.int8)
@@ -85,7 +97,7 @@ def payload(rng, name, shape, fmt, domain):
     raise ValueError(f"no generator for {fmt}")
 
 
-def write_graph(path, hf, seed, text_meta=None):
+def write_graph(path, hf, seed, text_meta=None, enable_mtp=False):
     meta = ref.reference_metadata(hf)
     meta.update({"general.architecture": "qwen4exp", "general.alignment": ALIGN,
                  ref.PREFIX + "ple.row_count": 128,
@@ -112,7 +124,7 @@ def write_graph(path, hf, seed, text_meta=None):
     rng, offset, records, blobs = np.random.default_rng(seed), 0, [], []
     for name, (shape, fmt, domain) in tensors.items():
         offset = (offset + ALIGN - 1) // ALIGN * ALIGN
-        blob = payload(rng, name, shape, fmt, domain)
+        blob = payload(rng, name, shape, fmt, domain, enable_mtp)
         header += string(name) + struct.pack("<I", len(shape)) + struct.pack("<" + "Q" * len(shape), *shape)
         header += struct.pack("<IQ", ref.FORMATS[fmt][0], offset)
         records.append(dict(name=name, shape=shape, format=fmt, type_id=ref.FORMATS[fmt][0],
@@ -127,7 +139,7 @@ def write_graph(path, hf, seed, text_meta=None):
             record["file_offset"] = start + record.pop("offset")
             f.seek(record["file_offset"])
             f.write(blob)
-    manifest = dict(seed=seed, hf_text_config=hf["text_config"], metadata=meta, tensors=records)
+    manifest = dict(seed=seed, mtp_executable=enable_mtp, hf_text_config=hf["text_config"], metadata=meta, tensors=records)
     path.with_suffix(".json").write_text(json.dumps(manifest, indent=1) + "\n")
     return records
 
