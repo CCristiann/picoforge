@@ -432,6 +432,7 @@ Qwen38Status qwen38_forward_reset(Qwen38Forward *f, Qwen38Error *e) {
     if (!f) return fail(e, Q38_INVALID_ARGUMENT, "missing graph");
     if (f->epoch == UINT64_MAX) return fail(e, Q38_OVERFLOW, "epoch exhausted");
     uint64_t epoch = f->epoch + 1;
+    f->valid = false;              /* a partial reset leaves mixed epochs: stay invalid */
     for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)
         if (f->layer[i].gdn.bound) TRY(q38c_block_reset(&f->layer[i].gdn_state, epoch, e));
     for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)

@@ -743,3 +743,10 @@ Non rieseguito: `make test-all` legacy sul Qwen3, che G0 non tocca (il motore
 
 **Ordine successivo:** adattatori C/E sul ticket comune, selezione D, prodotto
 indicizzato B e routing F come in [resume-v3.md](resume-v3.md); poi G2.
+
+## 13. G1 — grafo ordinario CPU — 2026-10-13
+
+Branch `coord/qwen38-g1-cpu` da G0 `245ef41`. Grafo 48-layer CPU dal catalogo A
+(`src/qwen38_forward.{h,c}`), oracle di composizione e fixture non degenere;
+gate congelati, evidenza e limiti in [G1.md](G1.md). §2–7 invariati. Nessun
+merge/push su main. Prossimo passo: G2 sopra il lifecycle G0, con G1 come oracle.
