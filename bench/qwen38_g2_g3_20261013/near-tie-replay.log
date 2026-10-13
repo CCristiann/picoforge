@@ -1,0 +1,4 @@
+2026-10-13 14:30:47.994 test_parts[68407:534942] Metal API Validation Enabled
+{"check":"real_near_tie_identical_scores_ids","layer":7,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"real_near_tie_weights","layer":7,"err":1.490e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"native_boundary_expert":107,"dwarfstar_boundary_expert":227}

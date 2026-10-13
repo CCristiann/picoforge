@@ -1,0 +1,602 @@
+[
+  {
+    "check": "embedding_lookup",
+    "layer": 4294967295,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "ple_gate_near_zero",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 1e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_u_near_zero",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 1e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 0,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 0,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 0,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_key",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_query",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_value",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_gate",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_u",
+    "layer": 1,
+    "err": 7.828e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_z",
+    "layer": 1,
+    "err": 1.676e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_conv",
+    "layer": 1,
+    "err": 1.795e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_delta",
+    "layer": 1,
+    "err": 1.71e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_history",
+    "layer": 1,
+    "err": 2.107e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_chunk_reset",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "ple_key",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_query",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_value",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_gate",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_u",
+    "layer": 1,
+    "err": 1.534e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_z",
+    "layer": 1,
+    "err": 2.264e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_conv",
+    "layer": 1,
+    "err": 2.03e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_delta",
+    "layer": 1,
+    "err": 1.737e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_history",
+    "layer": 1,
+    "err": 1.676e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "ple_chunk_reset",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 2,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 2,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 2,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 1.192e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.054e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 1.183e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.072e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 8.653e-08,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 1.483e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 8.941e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.273e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.129e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 8.914e-08,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.273e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 6.045e-08,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.129e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 8.941e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.045e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 1.126e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.777e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 1.358e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 1.732e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  }
+]

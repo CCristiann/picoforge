@@ -4,7 +4,7 @@
 #include "qwen38_b_internal.h"
 #include <stdlib.h>
 
-struct Q38PackedGpu { void *device, *linear, *indexed; };
+struct Q38PackedGpu { void *device, *linear, *indexed, *lookup; };
 
 Qwen38Status q38_packed_gpu_create(void *device, void *library,
                                   Q38PackedGpu **out, Qwen38Error *err) {
@@ -15,22 +15,25 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     if (lib.device != dev) return q38_b_result(err,Q38_OWNER,"library device differs");
     id<MTLFunction> function=[lib newFunctionWithName:@"q38_packed_linear"];
     id<MTLFunction> gather=[lib newFunctionWithName:@"q38_packed_linear_indexed"];
-    if (!function || !gather) return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
+    id<MTLFunction> lookup=[lib newFunctionWithName:@"q38_packed_lookup"];
+    if (!function || !gather || !lookup) return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
     NSError *failure=nil;
     id<MTLComputePipelineState> pipeline=[dev newComputePipelineStateWithFunction:function error:&failure];
     id<MTLComputePipelineState> indexed=[dev newComputePipelineStateWithFunction:gather error:&failure];
-    if (!pipeline || !indexed) return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
+    id<MTLComputePipelineState> embedding=[dev newComputePipelineStateWithFunction:lookup error:&failure];
+    if (!pipeline || !indexed || !embedding) return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
     Q38PackedGpu *ctx=calloc(1,sizeof *ctx);
     if (!ctx) return q38_b_result(err,Q38_OOM,"cannot allocate packed context");
     ctx->device=(__bridge_retained void *)dev;
     ctx->linear=(__bridge_retained void *)pipeline;
     ctx->indexed=(__bridge_retained void *)indexed;
+    ctx->lookup=(__bridge_retained void *)embedding;
     *out=ctx;
     return q38_b_result(err,Q38_OK,"");
 }
 void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (!ctx) return;
-    CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->device); free(ctx);
+    CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->lookup); CFRelease(ctx->device); free(ctx);
 }
 
 static Qwen38Status gpu_span(id<MTLDevice> dev, Qwen38GpuSpan span, size_t needed,
@@ -163,4 +166,45 @@ Qwen38Status q38_packed_encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand
     NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
     [encoder dispatchThreads:MTLSizeMake(layout->n_out,y.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
     return q38_b_result(err,Q38_OK,"");
+}
+
+Qwen38Status q38_packed_lookup(Q38PackedGpu *ctx,const Qwen38GpuCommand *cmd,
+    const GpuWeightStore *store,const GgufBinding *binding,const Q38PackedLayout *l,
+    Qwen38GpuSpan ids,Qwen38GpuF32 y,Qwen38Error *e) {
+    if (!ctx || !cmd || !cmd->compute_encoder || !store || !binding || !l)
+        return q38_b_result(e,Q38_INVALID_ARGUMENT,"missing lookup argument");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd->compute_encoder;
+    if (cmd->device!=ctx->device || enc.device!=dev) return q38_b_result(e,Q38_OWNER,"lookup device");
+    Qwen38CpuSpan resident; Q38PackedLayout expected; size_t bytes;
+    Qwen38Status code=qwen38_weights_cpu_span(store,binding,&resident,e); if (code) return code;
+    code=q38_packed_layout_init(&binding->tensor,l->k_logical,&expected,e); if (code) return code;
+    if (!q38_b_same_layout(l,&expected)) return q38_b_result(e,Q38_FORMAT,"lookup layout");
+    if (l->n_experts!=1 || y.rank!=2 || y.dim[1]!=l->k_logical) return q38_b_result(e,Q38_SHAPE,"lookup shape");
+    if (l->n_out>UINT32_MAX || l->k_storage>UINT32_MAX || y.dim[0]>UINT32_MAX)
+        return q38_b_result(e,Q38_RANGE,"lookup dimensions");
+    code=q38_b_matrix(y.rank,y.dim,y.stride_bytes,y.span.bytes,&bytes); if (code) return q38_b_result(e,code,"lookup output");
+    id<MTLBuffer> buffers[4];
+    Qwen38GpuSpan spans[]={ids,y.span,cmd->error_word,{gpu_weights_buffer(store,binding),binding->offset,l->tensor_bytes}};
+    size_t needs[]={y.dim[0]*4,bytes,4,l->tensor_bytes};
+    for (size_t i=0;i<4;i++) {
+        code=gpu_span(dev,spans[i],needs[i],&buffers[i]); if (code) return q38_b_result(e,code,"lookup span");
+        if (buffers[i].hazardTrackingMode==MTLHazardTrackingModeUntracked) return q38_b_result(e,Q38_UNSUPPORTED,"lookup hazards");
+        for (size_t j=0;j<i;j++) if (gpu_alias(buffers[i],spans[i].offset_bytes,needs[i],buffers[j],spans[j].offset_bytes,needs[j]))
+            return q38_b_result(e,Q38_INVALID_ARGUMENT,"lookup alias");
+    }
+    if (buffers[2].storageMode!=MTLStorageModeShared) return q38_b_result(e,Q38_TYPE,"lookup error storage");
+    if (!y.dim[0]) return q38_b_result(e,Q38_OK,"");
+    Q38PackedArgs args={.type=l->gguf_type,.k_storage=(uint32_t)l->k_storage,.k_logical=(uint32_t)l->k_logical,
+        .n_out=(uint32_t)l->n_out,.rows=(uint32_t)y.dim[0],.row_bytes=l->row_bytes,.weight_offset=binding->offset,
+        .weight_end=binding->offset+l->tensor_bytes,.y_stride=y.stride_bytes[0],.y_bytes=bytes};
+    id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)ctx->lookup;
+    [enc setComputePipelineState:p];
+    [enc setBuffer:buffers[3] offset:0 atIndex:0];
+    [enc setBuffer:buffers[0] offset:ids.offset_bytes atIndex:1];
+    [enc setBuffer:buffers[1] offset:y.span.offset_bytes atIndex:2];
+    [enc setBuffer:buffers[2] offset:cmd->error_word.offset_bytes atIndex:3];
+    [enc setBytes:&args length:sizeof args atIndex:4];
+    [enc dispatchThreads:MTLSizeMake(l->k_logical,y.dim[0],1) threadsPerThreadgroup:MTLSizeMake(MIN(l->k_logical,p.maxTotalThreadsPerThreadgroup),1,1)];
+    return q38_b_result(e,Q38_OK,"");
 }

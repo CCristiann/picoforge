@@ -1,0 +1,104 @@
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge.metallib"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+2026-10-13 14:22:58.354 test_parts[56662:500268] Metal API Validation Enabled
+{"check":"embedding_lookup","layer":4294967295,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"ple_gate_near_zero","layer":1,"err":5.960e-08,"gate":1e-06,"bitwise":false,"pass":true}
+{"check":"ple_u_near_zero","layer":1,"err":5.960e-08,"gate":1e-06,"bitwise":false,"pass":true}
+{"check":"moe_route_ids","layer":0,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":0,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":0,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"check":"moe_route_ids","layer":1,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":1,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":1,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"check":"ple_key","layer":1,"err":0.000e+00,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_query","layer":1,"err":0.000e+00,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_value","layer":1,"err":0.000e+00,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_gate","layer":1,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"ple_u","layer":1,"err":7.828e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_z","layer":1,"err":1.676e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_conv","layer":1,"err":1.795e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_delta","layer":1,"err":1.710e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_history","layer":1,"err":2.107e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_chunk_reset","layer":1,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"ple_key","layer":1,"err":0.000e+00,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_query","layer":1,"err":0.000e+00,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_value","layer":1,"err":0.000e+00,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_gate","layer":1,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"ple_u","layer":1,"err":1.534e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_z","layer":1,"err":2.264e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_conv","layer":1,"err":2.030e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_delta","layer":1,"err":1.737e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_history","layer":1,"err":1.676e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"ple_chunk_reset","layer":1,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_ids","layer":2,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":2,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":2,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"check":"moe_route_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":3,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":3,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"qsa_tokens":40,"chunk":13,"budget":8,"ties":false}
+{"check":"qsa_out","layer":3,"err":1.192e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.054e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":1.183e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.072e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":8.653e-08,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_scores","layer":3,"err":1.483e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"qsa_tokens":17,"chunk":1,"budget":8,"ties":true}
+{"check":"qsa_out","layer":3,"err":8.941e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.273e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.129e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":8.914e-08,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_scores","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"qsa_tokens":3,"chunk":1,"budget":8,"ties":false}
+{"check":"qsa_out","layer":3,"err":5.960e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.273e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":6.045e-08,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.129e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_scores","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"qsa_tokens":2053,"chunk":1023,"budget":2048,"ties":false}
+{"check":"qsa_out","layer":3,"err":8.941e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.045e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":1.126e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.777e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":1.358e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_scores","layer":3,"err":1.732e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_admission (__main__.CliTests.test_admission) ... ok
+test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits) ... ERROR
+
+======================================================================
+ERROR: test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_cli.py", line 20, in test_greedy_and_last_logits
+    subprocess.run(cmd, cwd=ROOT, check=True, capture_output=True)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.2_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge', '--qwen38', '/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g1/graph.gguf', '--tokens', '5,17,300', '--context', '32', '--chunk', '3', '--max-new', '5', '--logits', '/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g2/tmp61ogtnv5/gpu.f32', '--token-ids', '/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g2/tmp61ogtnv5/ids.json']' returned non-zero exit status 1.
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.039s
+
+FAILED (errors=1)
+make: *** [test-qwen38-cli] Error 1

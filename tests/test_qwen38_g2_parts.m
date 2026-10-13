@@ -8,6 +8,7 @@
 #include "qwen38_f_internal.h"
 #include "qwen38_moe.h"
 #include "qwen38_d_internal.h"
+#include "qwen38_e_internal.h"
 #include <assert.h>
 #include <stdlib.h>
 
@@ -305,8 +306,204 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
     free(qg); free(k); free(v); free(iq); free(ik); free(out); free(baseline);
 }
 
+/* E: disk rows and all PLE stages; independent CPU/GPU hash histories. */
+static void check_ple(uint32_t layer,size_t total,size_t chunk) {
+    Qwen38Error e; const Qwen38NgramConfig *c;
+    ok(qwen38_config_ngram(config,layer,&c,&e),&e,"PLE config");
+    ok(qwen38_gpu_session_reset(session,config,&e),&e,"PLE session reset");
+    size_t h=c->streams,d=c->hidden_size,ch=h*d,width=c->head_count*c->head_dim;
+    size_t halo=(c->conv_kernel-1)*c->order;
+    Qwen38NgramStore *stores[2]; Qwen38NgramState *states[2]; Qwen38PleWorkspace *cw;
+    for (size_t i=0;i<2;i++) {
+        ok(qwen38_ngram_open(&gguf,c,total,32u<<20,&stores[i],&e),&e,"PLE open");
+        ok(qwen38_ngram_state_create(stores[i],(Qwen38StateKey){config,layer,qwen38_gpu_session_info(session).key.epoch},
+            &states[i],&e),&e,"PLE state");
+    }
+    ok(q38e_ngram_gpu_bind(states[1],session,&e),&e,"PLE GPU bind");
+    ok(qwen38_ple_workspace_create(stores[0],224u<<20,&cw,&e),&e,"PLE workspace");
+    Qwen38PleWeights weights_cpu; Q38PackedCpuView pc[2];
+    const GgufBinding *gb[2]={binding(layer,Q38_PLE_KEY,&pc[0]),binding(layer,Q38_PLE_VALUE,&pc[1])};
+    Q38PackedLayout layout_data[2]={pc[0].layout,pc[1].layout};
+    const Q38PackedLayout *layouts=layout_data;
+    const GgufBinding *const *bindings=gb;
+    weights_cpu.key=pc[0]; weights_cpu.value=pc[1];
+    const Qwen38Role roles[]={Q38_PLE_KEY_NORM,Q38_PLE_QUERY_NORM,Q38_PLE_CONV_NORM,Q38_PLE_CONV};
+    Qwen38F32 *gains[]={&weights_cpu.gamma_key,&weights_cpu.gamma_query,&weights_cpu.gamma_conv,&weights_cpu.taps};
+    NSMutableArray<id<MTLBuffer>> *constants=[NSMutableArray new];
+    for (size_t i=0;i<4;i++) {
+        Q38PackedCpuView p; binding(layer,roles[i],&p);
+        id<MTLBuffer> b=shared(p.layout.n_out*p.layout.k_storage*4);
+        for (size_t r=0;r<p.layout.n_out;r++) ok(q38_packed_decode_row(&p,0,r,(float *)b.contents+r*p.layout.k_storage,
+            p.layout.k_storage,&e),&e,"PLE constant");
+        [constants addObject:b]; *gains[i]=cview(b.contents,i==3 ? ch : h,i==3 ? c->conv_kernel : d);
+    }
+    id<MTLBuffer> rows=shared(total*width*4),res=shared(total*ch*4),key=shared(total*ch*4),query=shared(total*ch*4),
+        value=shared(total*d*4),gate=shared(total*h*4),u=shared(total*ch*4),z=shared(total*ch*4),
+        conv=shared(total*ch*4),delta=shared(total*ch*4),history=shared(halo*ch*4);
+    NSArray *scratch=@[key,query,value,gate,u,z,conv,delta,history];
+    NSMutableArray *inputs=[constants mutableCopy]; [inputs addObjectsFromArray:@[rows,res]];
+    Q38EGpu *eg; Q38CGpu *ops; Q38PackedGpu *b;
+    ok(q38e_gpu_create((__bridge void *)device,(__bridge void *)library,&eg,&e),&e,"E GPU");
+    ok(q38c_gpu_create((__bridge void *)device,(__bridge void *)library,&ops,&e),&e,"C GPU");
+    ok(q38_packed_gpu_create((__bridge void *)device,(__bridge void *)library,&b,&e),&e,"B GPU");
+    float *x=random_rows(total*ch,61),*y=malloc(total*ch*4),*baseline=malloc(total*ch*4),*hist=malloc(MAX(halo*ch,1)*4);
+    int32_t *tokens=malloc(total*4);
+    for (size_t i=0;i<total;i++) tokens[i]=i%7==0 ? (int32_t)c->eos_id : (int32_t)(i%17);
+    double errors[9]={0}; bool replay=true;
+    for (size_t pass=0;pass<4;pass++) {
+        if (pass) {
+            ok(qwen38_gpu_session_reset(session,config,&e),&e,"PLE reset");
+            for (size_t i=0;i<2;i++) ok(qwen38_ngram_state_reset(states[i],qwen38_gpu_session_info(session).key.epoch,&e),&e,"hash reset");
+            for (id<MTLBuffer> buffer in scratch) memset(buffer.contents,0,buffer.length);
+        }
+        size_t step=pass<2 ? total : chunk;
+        for (size_t pos=0;pos<total;pos+=step) {
+            size_t n=MIN(step,total-pos); Qwen38NgramJob *jobs[2];
+            for (size_t i=0;i<2;i++) {
+                ok(qwen38_ngram_prepare(stores[i],states[i],tokens+pos,n,pos,&jobs[i],&e),&e,"PLE prepare");
+                ok(qwen38_ngram_read(jobs[i],&e),&e,"PLE read");
+            }
+            Qwen38F32 disk; ok(qwen38_ngram_rows(jobs[1],&disk,&e),&e,"PLE rows");
+            memcpy(rows.contents,disk.data,n*width*4); memcpy(res.contents,x+pos*ch,n*ch*4);
+            Q38EGpuWork w={.rows=gview(rows,0,n,width),.residual=g3(res,n,h,d),
+                .gamma_key=gview(constants[0],0,h,d),.gamma_query=gview(constants[1],0,h,d),
+                .gamma_conv=gview(constants[2],0,h,d),.taps=gview(constants[3],0,ch,c->conv_kernel),
+                .key=g3(key,n,h,d),.query=g3(query,n,h,d),.value=gview(value,0,n,d),.gate=gview(gate,0,n,h),
+                .u=g3(u,n,h,d),.z=g3(z,n,h,d),.conv=g3(conv,n,h,d),.delta=g3(delta,n,h,d),.history=gview(history,0,halo,ch)};
+            assert(q38e_ngram_gpu_commit(jobs[1],NULL)==Q38_BAD_STATE);
+            assert(qwen38_ple_cpu(jobs[1],&weights_cpu,(Qwen38F32){0},(Qwen38F32Mut){0},cw,NULL)==Q38_OWNER);
+            if (!pass) ((float *)res.contents)[0]=NAN;
+            __block Qwen38Error inner;
+            Qwen38Status rc=command(n,scratch,inputs,^(Qwen38GpuCommand cmd) {
+                Q38EGpuWork bad=w; bad.delta.span.bytes=0;
+                assert(q38e_ple_encode(eg,b,ops,cmd,c,store,bindings,layouts,&bad,NULL)==Q38_CAPACITY);
+                bad=w; bad.history=w.rows;
+                assert(q38e_ple_encode(eg,b,ops,cmd,c,store,bindings,layouts,&bad,NULL)==Q38_SHAPE);
+                bad=w; bad.delta=w.key;
+                assert(q38e_ple_encode(eg,b,ops,cmd,c,store,bindings,layouts,&bad,NULL)==Q38_INVALID_ARGUMENT);
+                return q38e_ple_encode(eg,b,ops,cmd,c,store,bindings,layouts,&w,&inner);
+            },&e);
+            if (!pass) {
+                assert(rc==Q38_GPU_ERROR && !qwen38_gpu_session_info(session).valid);
+                assert(q38e_ngram_gpu_commit(jobs[1],NULL)==Q38_BAD_STATE);
+                assert(states[1]->info.next_pos==0);
+                for (size_t i=0;i<2;i++) { ok(qwen38_ngram_abort(jobs[i],&e),&e,"abort"); ok(qwen38_ngram_job_release(jobs[i],&e),&e,"release"); }
+                break;
+            }
+            ok(rc,&inner,"PLE encode");
+            ok(qwen38_ple_cpu(jobs[0],&weights_cpu,q38c_ro(q38c_group(mview(x+pos*ch,n,ch),h,d)),
+                q38c_group(mview(y+pos*ch,n,ch),h,d),cw,&e),&e,"PLE CPU");
+            ok(qwen38_ngram_commit(states[0],jobs[0],&e),&e,"PLE CPU commit");
+            ok(q38e_ngram_gpu_commit(jobs[1],&e),&e,"PLE GPU commit");
+            assert(!memcmp(states[0]->previous,states[1]->previous,(c->order-1)*4));
+            ok(qwen38_conv_state_export(states[0]->conv.handle,mview(hist,halo,ch),&e),&e,"PLE history");
+            const float *got[]={key.contents,query.contents,value.contents,gate.contents,u.contents,z.contents,conv.contents,delta.contents,history.contents};
+            const float *ref[]={cw->key,cw->query,cw->value,cw->gate,cw->u,cw->z,cw->conv,y+pos*ch,hist};
+            size_t sizes[]={n*ch,n*ch,n*d,n*h,n*ch,n*ch,n*ch,n*ch,halo*ch};
+            for (size_t i=0;i<9;i++) { bool exact; errors[i]=fmax(errors[i],scaled(got[i],ref[i],sizes[i],&exact)); }
+            if (pass==1) memcpy(baseline+pos*ch,delta.contents,n*ch*4);
+            else replay &= !memcmp(baseline+pos*ch,delta.contents,n*ch*4);
+            for (size_t i=0;i<2;i++) ok(qwen38_ngram_job_release(jobs[i],&e),&e,"release");
+        }
+    }
+    const char *names[]={"ple_key","ple_query","ple_value","ple_gate","ple_u","ple_z","ple_conv","ple_delta","ple_history"};
+    for (size_t i=0;i<9;i++) report(names[i],layer,errors[i],i==3 ? 2e-6 : 3e-5,false);
+    report("ple_chunk_reset",layer,replay ? 0 : 1,0,replay);
+    free(x); free(y); free(baseline); free(hist); free(tokens);
+    q38e_gpu_destroy(eg); q38c_gpu_destroy(ops); q38_packed_gpu_free(b);
+    ok(qwen38_ple_workspace_destroy(cw,&e),&e,"workspace destroy");
+    for (size_t i=0;i<2;i++) { ok(qwen38_ngram_state_destroy(states[i],&e),&e,"state destroy"); ok(qwen38_ngram_close(stores[i],&e),&e,"store close"); }
+}
+
+/* Replay the preserved G3 near-tie on IDENTICAL FP32 scores. This checks
+ * the production route kernel independently from upstream KV precision. */
+static void check_route_replay(const char *path) {
+    enum { T=2,E=512,K=10 }; Qwen38Error e;
+    FILE *file=fopen(path,"rb"); assert(file);
+    id<MTLBuffer> logits=shared(T*E*4),probs=shared(T*E*4),ids=shared(T*K*4),weights_buf=shared(T*K*4);
+    assert(fread(logits.contents,4,T*E,file)==T*E && fgetc(file)==EOF); fclose(file);
+    float cpu_probs[T*E],cpu_weights[T*K]; uint32_t cpu_ids[T*K];
+    Qwen38MoeConfig c={.hidden_size=8,.experts=E,.top_k=K,.intermediate=5,.shared_intermediate=3,.down_physical=5,.norm_topk_prob=true};
+    Qwen38MoeRoutes routes={{cpu_ids,sizeof cpu_ids,T,K,K*4},mview(cpu_weights,T,K)};
+    ok(qwen38_moe_route(&c,cview(logits.contents,T,E),routes,mview(cpu_probs,T,E),&e),&e,"replay CPU route");
+    id<MTLFunction> fn=[library newFunctionWithName:@"q38f_route"];
+    id<MTLComputePipelineState> pipeline=[device newComputePipelineStateWithFunction:fn error:NULL]; assert(pipeline);
+    ok(command(T,@[probs,ids,weights_buf],@[logits],^(Qwen38GpuCommand cmd) {
+        id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+        uint32_t args[]={T,E,K,1,E}; [enc setComputePipelineState:pipeline];
+        [enc setBuffer:logits offset:0 atIndex:0]; [enc setBuffer:probs offset:0 atIndex:1];
+        [enc setBuffer:ids offset:0 atIndex:2]; [enc setBuffer:weights_buf offset:0 atIndex:3];
+        [enc setBytes:args length:sizeof args atIndex:4];
+        [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:5];
+        [enc dispatchThreads:MTLSizeMake(T,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)]; return Q38_OK;
+    },&e),&e,"replay GPU route");
+    bool exact=!memcmp(ids.contents,cpu_ids,sizeof cpu_ids);
+    report("real_near_tie_identical_scores_ids",7,exact ? 0 : 1,0,exact);
+    compare("real_near_tie_weights",7,weights_buf.contents,cpu_weights,T*K,2e-6);
+    printf("{\"native_boundary_expert\":%u,\"dwarfstar_boundary_expert\":%u}\n",cpu_ids[K-1],cpu_ids[2*K-1]);
+}
+
+static void check_lookup(void) {
+    Qwen38Error e; Q38PackedCpuView cpu; const GgufBinding *wb=binding(QWEN38_GLOBAL_LAYER,Q38_TOKEN_EMBD,&cpu);
+    size_t d=cpu.layout.k_logical; uint32_t vocab=(uint32_t)cpu.layout.n_out;
+    id<MTLBuffer> ids=shared(12),out=shared(3*d*4);
+    uint32_t values[]={0,vocab-1,vocab/2}; memcpy(ids.contents,values,sizeof values);
+    float *expected=malloc(3*d*4); assert(expected);
+    for (size_t i=0;i<3;i++) ok(q38_packed_decode_row(&cpu,0,values[i],expected+i*d,d,&e),&e,"embedding CPU");
+    Q38PackedGpu *b; ok(q38_packed_gpu_create((__bridge void *)device,(__bridge void *)library,&b,&e),&e,"embedding GPU");
+    const Q38PackedLayout *layout=&cpu.layout;
+    ok(command(3,@[out],@[ids],^(Qwen38GpuCommand cmd) {
+        Qwen38GpuSpan tokens={(__bridge void *)ids,0,12}; Qwen38GpuF32 y=gview(out,0,3,d),bad=y;
+        bad.span.bytes--; assert(q38_packed_lookup(b,&cmd,store,wb,layout,tokens,bad,NULL)==Q38_CAPACITY);
+        bad=y; bad.dim[1]++; assert(q38_packed_lookup(b,&cmd,store,wb,layout,tokens,bad,NULL)==Q38_SHAPE);
+        return q38_packed_lookup(b,&cmd,store,wb,layout,tokens,y,NULL);
+    },&e),&e,"embedding encode");
+    compare("embedding_lookup",QWEN38_GLOBAL_LAYER,out.contents,expected,3*d,0);
+    uint64_t position=qwen38_gpu_session_info(session).next_pos; ((uint32_t *)ids.contents)[0]=vocab;
+    assert(command(1,@[out],@[ids],^(Qwen38GpuCommand cmd) {
+        return q38_packed_lookup(b,&cmd,store,wb,layout,(Qwen38GpuSpan){(__bridge void *)ids,0,4},gview(out,0,1,d),NULL);
+    },&e)==Q38_GPU_ERROR);
+    assert(!qwen38_gpu_session_info(session).valid && qwen38_gpu_session_info(session).next_pos==position);
+    ok(qwen38_gpu_session_reset(session,config,&e),&e,"embedding reset");
+    q38_packed_gpu_free(b); free(expected);
+}
+
+/* Signed sqrt at zero, both sides of the clamp, and FP32 cancellation. */
+static void check_ple_gate(void) {
+    enum {T=8,H=2,D=4,N=T*H*D}; Qwen38Error e;
+    id<MTLBuffer> key=shared(N*4),query=shared(N*4),value=shared(T*D*4),gate=shared(T*H*4),u=shared(N*4);
+    float *k=key.contents,*q=query.contents,*v=value.contents;
+    const float dots[]={0,1e-8f,-1e-8f,1e-6f,-1e-6f,1,-1,0};
+    for (size_t i=0;i<T*D;i++) v[i]=1;
+    for (size_t i=0;i<T*H;i++) { k[i*D]=1; q[i*D]=dots[i/H]; }
+    /* Two different signs of a one-ULP cancellation, including exact zero. */
+    k[(T-1)*H*D]=k[(T-1)*H*D+1]=1; q[(T-1)*H*D]=1; q[(T-1)*H*D+1]=-1;
+    k[((T-1)*H+1)*D]=k[((T-1)*H+1)*D+1]=1; q[((T-1)*H+1)*D]=1; q[((T-1)*H+1)*D+1]=-0x1.fffffep-1f;
+    float expected_g[T*H],expected_u[N];
+    ok(qwen38_ple_gate(q38c_ro(q38c_group(mview(k,T,H*D),H,D)),q38c_ro(q38c_group(mview(q,T,H*D),H,D)),
+        cview(v,T,D),mview(expected_g,T,H),q38c_group(mview(expected_u,T,H*D),H,D),&e),&e,"analytic PLE CPU");
+    id<MTLFunction> fn=[library newFunctionWithName:@"q38e_gate_gpu"];
+    id<MTLComputePipelineState> pipeline=[device newComputePipelineStateWithFunction:fn error:NULL]; assert(pipeline);
+    ok(command(T,@[gate,u],@[key,query,value],^(Qwen38GpuCommand cmd) {
+        id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+        [enc setComputePipelineState:pipeline];
+        [enc setBuffer:key offset:0 atIndex:0]; [enc setBuffer:query offset:0 atIndex:1];
+        [enc setBuffer:value offset:0 atIndex:2]; [enc setBuffer:gate offset:0 atIndex:3]; [enc setBuffer:u offset:0 atIndex:4];
+        uint32_t args[]={T,H,D,0}; [enc setBytes:args length:sizeof args atIndex:6];
+        [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:7];
+        [enc dispatchThreads:MTLSizeMake(T*H,1,1) threadsPerThreadgroup:MTLSizeMake(T*H,1,1)]; return Q38_OK;
+    },&e),&e,"analytic PLE GPU");
+    const float *got=gate.contents;
+    for (size_t i=0;i<T*H;i++) {
+        float dot=q38e_ple_scaled_dot(k+i*D,q+i*D,D);
+        assert((dot==0 && got[i]==0.5f) || (dot>0 && got[i]>0.5f) || (dot<0 && got[i]<0.5f));
+    }
+    compare("ple_gate_near_zero",1,gate.contents,expected_g,T*H,1e-6);
+    compare("ple_u_near_zero",1,u.contents,expected_u,N,1e-6);
+}
+
 int main(int argc, char **argv) {
-    if (argc != 3) { fprintf(stderr, "usage: %s GGUF METALLIB\n", argv[0]); return 2; }
+    if (argc != 3 && argc != 4) { fprintf(stderr, "usage: %s GGUF METALLIB [NEAR_TIE_SCORES]\n", argv[0]); return 2; }
     @autoreleasepool {
         device = MTLCreateSystemDefaultDevice();
         NSError *err = nil;
@@ -319,16 +516,22 @@ int main(int argc, char **argv) {
         store = gpu_weights_open((__bridge void *)device, &gguf, 0);
         ok(qwen38_weights_attach(weights, &gguf, gpu_weights_plan(store), &e), &e, "attach");
         ok(qwen38_gpu_session_create((__bridge void *)device, config, 1u << 20, &session, &e), &e, "session");
+        if (argc==4) check_route_replay(argv[3]);
+        else {
+        check_lookup();
+        check_ple_gate();
         for (uint32_t layer = 0; layer < qwen38_config_view(config)->trunk_blocks; ++layer) {
             const Qwen38Layer *kind; Qwen38Error le;
             ok(qwen38_config_layer(config, layer, &kind, &le), &le, "kind");
             check_moe(layer, 24);
+            if (kind->has_ple) { check_ple(layer,40,13); check_ple(layer,17,1); }
             if (kind->kind == Q38_LAYER_QSA) {
                 check_qsa(layer,40,13,0,false);
                 check_qsa(layer,17,1,0,true);
                 check_qsa(layer,3,1,0,false); /* no completed blocks */
                 check_qsa(layer,2053,1023,2048,false);
             }
+        }
         }
         ok(qwen38_gpu_session_destroy(session, &e), &e, "session destroy");
         gpu_weights_close(store); qwen38_weights_free(weights); qwen38_config_free(config); gguf_close(&gguf);

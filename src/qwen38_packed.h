@@ -30,6 +30,11 @@ Qwen38Status q38_packed_encode(Q38PackedGpu *, const Qwen38GpuCommand *,
 Qwen38Status q38_packed_encode_indexed(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
     Qwen38GpuSpan expert_ids, size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
+/* Gather embedding rows using device uint32 token IDs; y=[T,k_logical].
+ * One matrix only; invalid IDs set the command bounds error. */
+Qwen38Status q38_packed_lookup(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
+    Qwen38GpuSpan ids, Qwen38GpuF32 y, Qwen38Error *);
 /* Weight storage bridge: coordinator implementation in gpu_weights.m.
  * Borrowed read-only mapped bytes, no new mmap/copy and no disk PLE span. */
 Qwen38Status qwen38_weights_cpu_span(const GpuWeightStore *,

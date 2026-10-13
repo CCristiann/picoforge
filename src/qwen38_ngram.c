@@ -498,8 +498,8 @@ Qwen38Status qwen38_ngram_prepare(Qwen38NgramStore *s, Qwen38NgramState *state,
     if (!code) code=q38e_allocate(s,(s->config.order-1u)*sizeof(int32_t),(void **)&j->next,e);
     if (!code) code=qwen38_ngram_ids(&s->config,state->previous,s->config.order-1u,tokens,count,
         j->ids,count*s->config.head_count,j->next,s->config.order-1u,e);
-    if (!code && count) code=conv_new(s,j->key,&j->candidate,e);
-    if (!code && count) code=qwen38_conv_state_copy(j->candidate.handle,state->conv.handle,e);
+    if (!code && count && !state->gpu_session) code=conv_new(s,j->key,&j->candidate,e);
+    if (!code && count && !state->gpu_session) code=qwen38_conv_state_copy(j->candidate.handle,state->conv.handle,e);
     if (code) { job_free(j); return code; }
     s->job=j; state->info.busy=true; *out=j; return q38e_error(e,Q38_OK,NULL);
 }
@@ -542,11 +542,13 @@ Qwen38Status qwen38_ngram_commit(Qwen38NgramState *state, Qwen38NgramJob *j, Qwe
         Qwen38F32 rows;
         code=qwen38_ngram_rows(j,&rows,e);
         if (code) { j->phase=Q38E_ABORTED; return code; }
-        Qwen38StateInfo candidate=qwen38_conv_state_info(j->candidate.handle);
-        if (!candidate.valid || candidate.next_pos!=j->position+j->count)
-            return q38e_error(e,Q38_BAD_STATE,"candidate history incomplete");
-        code=qwen38_conv_state_copy(state->conv.handle,j->candidate.handle,e);
-        if (code) { state->info.valid=false; j->phase=Q38E_ABORTED; return code; }
+        if (!state->gpu_session) {
+            Qwen38StateInfo candidate=qwen38_conv_state_info(j->candidate.handle);
+            if (!candidate.valid || candidate.next_pos!=j->position+j->count)
+                return q38e_error(e,Q38_BAD_STATE,"candidate history incomplete");
+            code=qwen38_conv_state_copy(state->conv.handle,j->candidate.handle,e);
+            if (code) { state->info.valid=false; j->phase=Q38E_ABORTED; return code; }
+        }
         memcpy(state->previous,j->next,(j->store->config.order-1u)*sizeof(int32_t));
         state->info.next_pos+=j->count;
     }

@@ -1,0 +1,12 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -ffp-contract=off -fno-fast-math -fobjc-arc -c -o src/qwen38_cli.m.o src/qwen38_cli.m
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o picoforge src/bench.o src/config.o src/eval.o src/expert_cost.o src/generate.o src/gguf.o src/gguf_plan.o src/gguf_reader.o src/json.o src/main.o src/model.o src/normalize.o src/ops.o src/quant.o src/qwen38_attention.o src/qwen38_base.o src/qwen38_chat.o src/qwen38_config.o src/qwen38_conv.o src/qwen38_forward.o src/qwen38_gdn.o src/qwen38_moe.o src/qwen38_ngram.o src/qwen38_packed.o src/qwen38_ple.o src/qwen38_tokenizer.o src/qwen38_unicode.o src/qwen38_weights.o src/safetensors.o src/speculate.o src/tokenizer.o src/unicode_tables.o src/util.o src/gpu_forward.m.o src/gpu_weights.m.o src/metal.m.o src/qwen38_attention_gpu.m.o src/qwen38_cli.m.o src/qwen38_forward_gpu.m.o src/qwen38_gpu.m.o src/qwen38_moe.m.o src/qwen38_packed_gpu.m.o src/qwen38_ple_gpu.m.o src/qwen38_recurrent_gpu.m.o -lm -framework Metal -framework Foundation
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_admission (__main__.CliTests.test_admission) ... ok
+test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits) ... ok
+test_text_modes (__main__.CliTests.test_text_modes) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.659s
+
+OK

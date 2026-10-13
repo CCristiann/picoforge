@@ -34,8 +34,12 @@ build/kernels.air: src/kernels.metal
 	# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
 	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/kernels.air
 
-$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air
+$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air build/qwen38-e/ple.air build/qwen38-g2/forward.air
 	xcrun -sdk macosx metallib $^ -o $@
+
+build/qwen38-e/ple.air: src/qwen38_ple.metal
+	@mkdir -p $(@D)
+	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -c $< -o $@
 
 # Differential test: the C primitives judged by the Python oracle.
 tests/test_ops: tests/test_ops.c src/ops.o src/picoforge.h
@@ -82,6 +86,7 @@ test-qwen38-tools: build/process_memory build/memory_budget
 	@$(PYTHON) tests/test_qwen38_evidence.py
 
 src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.m.o src/main.o: src/gguf.h
+src/main.o: src/qwen38_cli.h
 
 build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/util.c src/gguf.h src/picoforge.h
 	@mkdir -p build
@@ -214,3 +219,7 @@ test-qwen38-contracts:
 .PHONY: test-qwen38-contracts
 
 include tools/qwen38.mk
+
+build/qwen38-g2/forward.air: src/qwen38_forward.metal
+	@mkdir -p $(@D)
+	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -c $< -o $@

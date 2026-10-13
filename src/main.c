@@ -4,6 +4,7 @@
  */
 #include "picoforge.h"
 #include "gguf.h"
+#include "qwen38_cli.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,6 +51,7 @@ static void fingerprint(const SafeTensors *st, const char *name, int n) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--qwen38")) return qwen38_cli(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "--inspect-gguf")) {
         if (argc != 3) die("usage: picoforge --inspect-gguf FILE");
         Gguf g;

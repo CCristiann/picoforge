@@ -1,0 +1,14 @@
+ds4: Qwen BF16 n-grams: 95.37 GiB, disk reads only
+ds4: memory: KV 0.00 GiB (raw 0.00 + compressed 0.00) + buffers 0.00 GiB = 0.00 GiB context
+ds4: memory detail: ctx=32768 prefill_cap=0 raw_kv_rows=1 compressed_kv_rows=8194 backend=cpu
+ds4: diagnostic run completed on the native cpu path.
+last-position logits: min=-8.19646 max=20.6915 rms=1.88125
+top logits after Qwen3.8 CPU pass over 12 tokens:
+    5347    20.6915  anges
+       8    14.8235  )
+      16    14.5718  1
+      11    13.4615  ,
+  248046    12.7251  <|im_end|>
+    1590    12.3194  ):
+      25    12.1036  :
+    1951    11.6546  _list

@@ -1,0 +1,18 @@
+{
+  "metal_allocated_bytes": 46294941696,
+  "metal_recommended_bytes": 55662788608,
+  "graph_buffer_bytes": 1497537024,
+  "sampled_peak_footprint_bytes": 1665224592,
+  "lifetime_peak_footprint_bytes": 1693454224,
+  "samples": 41,
+  "sample_interval_s": 0.25,
+  "pressure_levels": [
+    1
+  ],
+  "sampled_peak_resident_bytes": 671858688,
+  "peak_system_wired_bytes": 50642255872,
+  "baseline_system_wired_bytes": 4128227328,
+  "system_swap_used_delta_bytes": 0,
+  "system_swapins_delta_pages": 0,
+  "system_swapouts_delta_pages": 0
+}

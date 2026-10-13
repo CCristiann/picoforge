@@ -1,0 +1,41 @@
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_g3.py --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --dwarfstar "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline" --output "build/qwen38-g3-final"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+{
+  "hidden_max": 2.560192690342646e-06,
+  "fp32_reference": {
+    "scaled": 2.24068968139272e-06,
+    "absolute": 5.91278076171875e-05,
+    "argmax_matches": 12,
+    "margin_decided": 12,
+    "per_token_scaled": [
+      1.52208446064579e-06,
+      1.5901668706658015e-06,
+      2.4037704498158223e-06,
+      2.201629014024377e-06,
+      1.837063569235081e-06,
+      1.533188433350053e-06,
+      1.853011744221066e-06,
+      2.2501304531276416e-06,
+      1.2482008225310566e-06,
+      1.95803708957367e-06,
+      1.6427125143881637e-06,
+      2.212326975289967e-06
+    ],
+    "per_token_margin": [
+      0.28656578063964844,
+      12.296346664428711,
+      0.0073604583740234375,
+      0.9246845245361328,
+      3.666790008544922,
+      4.601741790771484,
+      1.3789196014404297,
+      8.349420547485352,
+      3.6648025512695312,
+      3.5181493759155273,
+      6.9058380126953125,
+      5.868039131164551
+    ]
+  },
+  "stock_metal_pass": false,
+  "pass_fp32": true
+}

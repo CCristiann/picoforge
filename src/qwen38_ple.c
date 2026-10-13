@@ -147,6 +147,7 @@ static Qwen38Status gain_shape(Qwen38F32 *g, size_t streams, size_t width) {
 Qwen38Status qwen38_ple_cpu(Qwen38NgramJob *j, const Qwen38PleWeights *weights,
     Qwen38F32 residual, Qwen38F32Mut delta, Qwen38PleWorkspace *w, Qwen38Error *e) {
     Qwen38Status code=q38e_job_check(j,e); if (code) return code;
+    if (j->state->gpu_session) return result(e,Q38_OWNER,"GPU state cannot use CPU PLE");
     if (!w || !weights) return result(e,Q38_INVALID_ARGUMENT,"PLE arguments");
     if (w->store!=j->store) return result(e,Q38_OWNER,"workspace owner");
     if (w->job) return result(e,Q38_BUSY,"workspace already referenced");

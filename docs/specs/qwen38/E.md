@@ -984,3 +984,16 @@ CPU mancante è sostituita da stub e nessun file altrui è stato modificato.
 
 Manifest finale della slice reale (`build/qwen38-e/real-ple-final/manifest.json`),
 SHA-256: `7867992a96b012551a83751c86a338cc4cf7639ed036603dc0dd97f000ae93ae`.
+
+## Integrazione Metal G2 (2026-10-13)
+
+`qwen38_ple_gpu.m`/`.metal` compongono B proiezioni packed, C RMS e conv,
+gate signed-sqrt e Delta FP32. `qwen38_e_internal.h` contiene il contratto
+privato di encode: viste dense, scratch/history disgiunti, preflight e
+nessuna submission interna. Il bind esplicito dello stato E a G0 separa
+la storia conv su GPU da quella CPU; prepare non clona una conv CPU obsoleta,
+e il commit hash verifica epoch/posizione/completion della sessione.
+
+Il reader e i suoi controlli di file/lease rimangono invariati. Le righe SSD
+sono Shared bounded e restano vive fino a completion. Errori e reset sono
+gestiti dal grafo globale. Test, misure, CLI e limiti in [G2.md](G2.md).

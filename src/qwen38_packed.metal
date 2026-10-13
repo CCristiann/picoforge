@@ -115,3 +115,18 @@ kernel void q38_packed_linear_indexed(device const uchar *weights [[buffer(0)]],
     }
     y[yi]=sum;
 }
+
+kernel void q38_packed_lookup(device const uchar *weights [[buffer(0)]],
+    device const uint *ids [[buffer(1)]], device float *y [[buffer(2)]],
+    device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
+    uint2 at [[thread_position_in_grid]]) {
+    if (at.x>=p.k_logical || at.y>=p.rows || atomic_load_explicit(error,memory_order_relaxed)) return;
+    uint id=ids[at.y];
+    if (id>=p.n_out) { atomic_fetch_or_explicit(error,2u,memory_order_relaxed); return; }
+    ulong row=p.weight_offset+ulong(id)*p.row_bytes, dst=ulong(at.y)*(p.y_stride/4)+at.x;
+    if (!row_bounds(p,row,error)) return;
+    if (dst>=p.y_bytes/4) { atomic_fetch_or_explicit(error,2u,memory_order_relaxed); return; }
+    float value=packed_value(weights+row,at.x,p.type);
+    if (!isfinite(value)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    y[dst]=value;
+}

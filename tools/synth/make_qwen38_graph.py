@@ -85,7 +85,7 @@ def payload(rng, name, shape, fmt, domain):
     raise ValueError(f"no generator for {fmt}")
 
 
-def write_graph(path, hf, seed):
+def write_graph(path, hf, seed, text_meta=None):
     meta = ref.reference_metadata(hf)
     meta.update({"general.architecture": "qwen4exp", "general.alignment": ALIGN,
                  ref.PREFIX + "ple.row_count": 128,
@@ -94,10 +94,16 @@ def write_graph(path, hf, seed):
                  ref.PREFIX + "ple.head_vocab_sizes": [7] * 4,
                  "ds4.qwen4.down.logical_input": 64, "ds4.qwen4.down.physical_input": 256})
     ref.check_metadata(hf, meta)
+    meta.update(text_meta or {})
     tensors = ref.reference_tensors(hf, 128)
     header = bytearray(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta)))
     for key, value in meta.items():
         if isinstance(value, str): kind, data = 8, string(value)
+        elif isinstance(value, bool): kind, data = 7, struct.pack("<?", value)
+        elif key in ("tokenizer.ggml.tokens", "tokenizer.ggml.merges"):
+            kind, data = 9, struct.pack("<IQ", 8, len(value)) + b"".join(map(string, value))
+        elif key == "tokenizer.ggml.token_type":
+            kind, data = 9, struct.pack("<IQ", 5, len(value)) + struct.pack("<" + "i" * len(value), *value)
         elif isinstance(value, list):
             kind, data = 9, struct.pack("<IQ", 10, len(value)) + struct.pack("<" + "Q" * len(value), *value)
         elif key.endswith(("freq_base", "epsilon")): kind, data = 6, struct.pack("<f", value)

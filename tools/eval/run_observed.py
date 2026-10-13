@@ -47,8 +47,14 @@ def run(output, cwd, command, timeout=1200, interval=1.0):
     meta_path = output / "process.json"
     meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
     start = now()
+    # Preserve a caller-owned GPU lock even if the observer dies. The child
+    # may run in another checkout, so it must inherit, never reacquire it.
+    lock_fd = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    pass_fds = (int(lock_fd),) if lock_fd is not None else ()
+    for fd in pass_fds:
+        os.fstat(fd)
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, start_new_session=True)
+                               stderr=subprocess.PIPE, start_new_session=True, pass_fds=pass_fds)
     selector = selectors.DefaultSelector()
     logs = {name: (output / f"{name}.log").open("wb") for name in ("stdout", "stderr")}
     for name in logs:

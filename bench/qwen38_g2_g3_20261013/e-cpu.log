@@ -1,0 +1,31 @@
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_ngram.py -v
+test_all_finite_bf16_patterns_against_torch (__main__.NativeTests.test_all_finite_bf16_patterns_against_torch) ... ok
+test_bf16_duplicates_order_page_boundary_and_last_row (__main__.NativeTests.test_bf16_duplicates_order_page_boundary_and_last_row) ... ok
+test_complete_ple_32k_history (__main__.NativeTests.test_complete_ple_32k_history) ... ok
+test_complete_ple_f32_q8_abort_reset_and_history (__main__.NativeTests.test_complete_ple_f32_q8_abort_reset_and_history) ... ok
+test_hash_to_lookup_composition (__main__.NativeTests.test_hash_to_lookup_composition) ... ok
+test_native_errors (__main__.NativeTests.test_native_errors) ... ok
+test_native_gate_empty_and_saturated (__main__.NativeTests.test_native_gate_empty_and_saturated) ... ok
+test_native_gate_normalized_inputs_strides_and_chunks (__main__.NativeTests.test_native_gate_normalized_inputs_strides_and_chunks) ... ok
+test_native_gate_signed_root_and_cancellation (__main__.NativeTests.test_native_gate_signed_root_and_cancellation) ... ok
+test_native_ids_against_independent_upstream (__main__.NativeTests.test_native_ids_against_independent_upstream) ... ok
+test_nonfinite_invalid_row_and_staging_errors_publish_nothing (__main__.NativeTests.test_nonfinite_invalid_row_and_staging_errors_publish_nothing) ... ok
+test_other_geometries_and_integer_boundaries (__main__.NativeTests.test_other_geometries_and_integer_boundaries) ... ok
+test_chunks_and_interleaved_sessions (__main__.OracleTests.test_chunks_and_interleaved_sessions) ... ok
+test_frozen_provenance_and_golden (__main__.OracleTests.test_frozen_provenance_and_golden) ... ok
+test_gate_upstream_analytical_cases (__main__.OracleTests.test_gate_upstream_analytical_cases) ... ok
+test_input_and_metadata_errors (__main__.OracleTests.test_input_and_metadata_errors) ... ok
+test_unverified_source_is_not_executed (__main__.OracleTests.test_unverified_source_is_not_executed) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 15.026s
+
+OK
+PLE composed T=32768 max |Delta-ref|=7.15255737e-07; formats=(8,), chunks=(255, 1024)
+PLE composed T=23 max |Delta-ref|=2.38418579e-07; formats=(0, 8), chunks=(1, 2, 7, 9, 23)
+PLE measured max |gate-ref|=2.68220901e-07, |dot-ref|=3.33786011e-06
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.956s
+
+OK

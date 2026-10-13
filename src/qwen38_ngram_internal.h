@@ -2,6 +2,7 @@
 #ifndef QWEN38_NGRAM_INTERNAL_H
 #define QWEN38_NGRAM_INTERNAL_H
 #include "qwen38_ngram.h"
+#include "qwen38_gpu.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -60,6 +61,7 @@ struct Qwen38NgramState {
     Qwen38StateInfo info;
     int32_t *previous;
     Q38eConv conv;
+    Qwen38GpuSession *gpu_session; /* borrowed; explicit external conv history */
 };
 struct Qwen38NgramJob {
     Qwen38NgramStore *store;
@@ -83,6 +85,11 @@ Qwen38Status q38e_error(Qwen38Error *, Qwen38Status, const char *);
 Qwen38Status q38e_allocate(Qwen38NgramStore *, size_t, void **, Qwen38Error *);
 void q38e_free(Qwen38NgramStore *, void *, size_t);
 Qwen38Status q38e_job_check(const Qwen38NgramJob *, Qwen38Error *);
+/* Bind a fresh state to the graph's G0 session. CPU PLE is then forbidden.
+ * Caller owns/zeros GPU conv history on reset and keeps session alive. */
+Qwen38Status q38e_ngram_gpu_bind(Qwen38NgramState *, Qwen38GpuSession *, Qwen38Error *);
+/* Only after G0 finish succeeds: publishes hash history, never reads back conv. */
+Qwen38Status q38e_ngram_gpu_commit(Qwen38NgramJob *, Qwen38Error *);
 /* Fault seams use the same production path. Allocator context must outlive store. */
 Qwen38Status q38e_ngram_open_test(const Gguf *, const Qwen38NgramConfig *, size_t,
     size_t, const Q38eAllocator *, Qwen38NgramStore **, Qwen38Error *);

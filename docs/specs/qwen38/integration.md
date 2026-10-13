@@ -1,6 +1,6 @@
 # Qwen3.8 Q2 — contratto consolidato v1
 
-Stato implementativo aggiornato: **BASE_INTEGRATA v1, §11**. Le sezioni
+Stato implementativo aggiornato: **grafo GPU e generazione G2/G3, §14**. Le sezioni
 precedenti conservano contratto e provenienza del consolidamento.
 
 2026-10-12 · MODALITA=CONSOLIDA · SPEC_ID=ALL.
@@ -750,3 +750,17 @@ Branch `coord/qwen38-g1-cpu` da G0 `245ef41`. Grafo 48-layer CPU dal catalogo A
 (`src/qwen38_forward.{h,c}`), oracle di composizione e fixture non degenere;
 gate congelati, evidenza e limiti in [G1.md](G1.md). §2–7 invariati. Nessun
 merge/push su main. Prossimo passo: G2 sopra il lifecycle G0, con G1 come oracle.
+
+## 14. G2/G3 — esecuzione ordinaria GPU (2026-10-13)
+
+Il coordinatore ha completato PLE Metal, lookup embedding GPU e il grafo
+ordinario sopra G0, riutilizzando C/GDN, D/QSA e F/routing su device.
+`src/qwen38_forward_gpu.h` espone create/append/info/reset/destroy, logits
+bounded e tracce dopo completion. `picoforge --qwen38` collega tokenizer e
+template A alla generazione greedy sul checkpoint reale. Nessun MTP.
+
+Contratto, comandi, evidenza dei 48 layer e decisione sui near-tie del backend
+DwarfStar Metal FP16: [G2.md](G2.md). Il gate a pari precisione usa il riferimento
+CPU FP32 non modificato di DwarfStar fissato; il caso stock Metal divergente
+rimane registrato come FAIL separato. Nessuna modifica alle tolleranze §6,
+nessun merge/push su main, nessuna nuova dipendenza o conversione dei pesi.

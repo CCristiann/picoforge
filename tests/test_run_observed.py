@@ -1,6 +1,7 @@
 """Exercise capture, nonzero exit, timeout and memory-guard termination."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -39,6 +40,13 @@ class ObservedTests(unittest.TestCase):
         rc, meta, _, _ = self.execute("raise SystemExit(7)")
         self.assertEqual(rc, 7)
         self.assertFalse(meta["complete"])
+
+    def test_preserves_caller_lock_descriptor(self):
+        with tempfile.TemporaryFile() as lock:
+            with patch.dict(os.environ, {"PICOFORGE_GPU_LOCK_FD": str(lock.fileno())}):
+                rc, meta, out, _ = self.execute("import os;os.fstat(int(os.environ['PICOFORGE_GPU_LOCK_FD']));print('inherited')")
+        self.assertEqual((rc, out), (0, b"inherited\n"))
+        self.assertTrue(meta["complete"])
 
     def test_timeout_keeps_evidence(self):
         rc, meta, _, _ = self.execute("import time;time.sleep(30)", .15)
