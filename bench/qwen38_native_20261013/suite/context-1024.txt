@@ -1,0 +1,36 @@
+Archivio sintetico. Usa soltanto i fatti qui forniti.
+Il codice del progetto Iris è ROMA47. La chiave di Loto è VERDE82.
+Riga 0000: lotto L0000, stato registrato, reparto R00.
+Riga 0001: lotto L0001, stato registrato, reparto R01.
+Riga 0002: lotto L0002, stato registrato, reparto R02.
+Riga 0003: lotto L0003, stato registrato, reparto R03.
+Riga 0004: lotto L0004, stato registrato, reparto R04.
+Riga 0005: lotto L0005, stato registrato, reparto R05.
+Riga 0006: lotto L0006, stato registrato, reparto R06.
+Riga 0007: lotto L0007, stato registrato, reparto R07.
+Riga 0008: lotto L0008, stato registrato, reparto R08.
+Riga 0009: lotto L0009, stato registrato, reparto R09.
+Riga 0010: lotto L0010, stato registrato, reparto R10.
+Riga 0011: lotto L0011, stato registrato, reparto R11.
+Riga 0012: lotto L0012, stato registrato, reparto R12.
+Riga 0013: lotto L0013, stato registrato, reparto R13.
+Riga 0014: lotto L0014, stato registrato, reparto R14.
+Riga 0015: lotto L0015, stato registrato, reparto R15.
+Riga 0016: lotto L0016, stato registrato, reparto R16.
+Riga 0017: lotto L0017, stato registrato, reparto R00.
+Riga 0018: lotto L0018, stato registrato, reparto R01.
+Riga 0019: lotto L0019, stato registrato, reparto R02.
+Riga 0020: lotto L0020, stato registrato, reparto R03.
+Riga 0021: lotto L0021, stato registrato, reparto R04.
+Riga 0022: lotto L0022, stato registrato, reparto R05.
+Riga 0023: lotto L0023, stato registrato, reparto R06.
+Riga 0024: lotto L0024, stato registrato, reparto R07.
+Riga 0025: lotto L0025, stato registrato, reparto R08.
+Riga 0026: lotto L0026, stato registrato, reparto R09.
+Riga 0027: lotto L0027, stato registrato, reparto R10.
+Riga 0028: lotto L0028, stato registrato, reparto R11.
+Riga 0029: lotto L0029, stato registrato, reparto R12.
+Riga 0030: lotto L0030, stato registrato, reparto R13.
+Riga 0031: lotto L0031, stato registrato, reparto R14.
+Rettifica: il codice attuale di Iris è BARI29; sostituisce ROMA47.
+Rispondi soltanto con JSON con chiavi Iris (codice attuale) e Loto (chiave).

@@ -65,5 +65,37 @@ class CliTests(unittest.TestCase):
         self.assertEqual(subprocess.run([str(ROOT/'picoforge'), '--qwen38', '--help'],
                          cwd=ROOT, capture_output=True).returncode, 0)
 
+    def test_repeat_cancel_files_and_measurement(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
+            p = Path(directory)
+            (p/'prompt.txt').write_text('caffè')
+            base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '64',
+                    '--chunk', '6', '--max-new', '5']
+            encoded = self.run_cli(base+['--complete-file', str(p/'prompt.txt'), '--encode-only'])
+            self.assertEqual(json.loads(encoded.stdout)['prompt_ids'], list('caffè'.encode()))
+            self.run_cli(base+['--tokens', '5,17,300', '--warmup', '1', '--repeat', '2',
+                              '--replay-chunk', '1', '--runs-jsonl', str(p/'runs.jsonl')])
+            rows = [json.loads(x) for x in (p/'runs.jsonl').read_text().splitlines()]
+            self.assertEqual([r['warmup'] for r in rows], [True, False, False])
+            self.assertEqual([r['chunk'] for r in rows], [6, 1, 1])
+            self.assertTrue(all(r['generated_ids']==rows[0]['generated_ids'] for r in rows))
+            for r in rows:
+                self.assertEqual(r['decode_tokens'], r['generated_tokens']-1)
+                self.assertGreater(r['load_s'], 0)
+                self.assertGreater(r['prefill_s'], 0)
+                self.assertGreaterEqual(r['request_s'], r['prefill_s']+r['decode_s'])
+                self.assertLessEqual(r['ttft_request_s'], r['request_s'])
+                self.assertGreater(r['metal_allocated_bytes'], r['graph_buffer_bytes'])
+            self.run_cli(base+['--tokens', '5,17,300', '--stop-after', '2', '--repeat', '2',
+                              '--runs-jsonl', str(p/'stop.jsonl')])
+            stop = [json.loads(x) for x in (p/'stop.jsonl').read_text().splitlines()]
+            self.assertEqual(stop[0]['generated_ids'], rows[0]['generated_ids'][:2])
+            self.assertEqual(stop[0]['generated_ids'], stop[1]['generated_ids'])
+            self.assertEqual(stop[0]['stop_reason'], 'cancelled')
+            self.assertEqual(stop[0]['position'], 4)
+            done = subprocess.run(base+['--tokens', '5', '--runs-jsonl', str(p/'runs.jsonl')],
+                                  cwd=ROOT, capture_output=True)
+            self.assertNotEqual(done.returncode, 0)
+
 if __name__ == '__main__':
     unittest.main()

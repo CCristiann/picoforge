@@ -1,0 +1,11 @@
+./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_admission (__main__.CliTests.test_admission) ... ok
+test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits) ... ok
+test_repeat_cancel_files_and_measurement (__main__.CliTests.test_repeat_cancel_files_and_measurement) ... ok
+test_text_modes (__main__.CliTests.test_text_modes) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 1.004s
+
+OK
