@@ -4,6 +4,7 @@
 #include "qwen38_forward.h"
 #include "qwen38_c_internal.h"
 #include "qwen38_moe.h"
+#include "qwen38_ngram.h"
 #include <stdlib.h>
 
 typedef struct { Q38PackedCpuView down, up, inject; float *gain; } G1Hc;
@@ -14,9 +15,16 @@ typedef struct {
     void *gdn_memory[5];          /* conv/GDN metadata+payload, decoded constants */
     Qwen38Moe *moe;
     Qwen38MoeWork *moe_work;
+    Qwen38NgramStore *ple_store;  /* E: disk rows, history and PLE Delta */
+    Qwen38NgramState *ple_state;
+    Qwen38PleWorkspace *ple_work;
+    Qwen38NgramJob *ple_job;      /* pending until the whole append succeeds */
+    Qwen38PleWeights ple;
+    float *ple_constant[4];       /* gains key/query/conv [H,E], taps [H*E,K] */
 } G1Layer;
 struct Qwen38Forward {
     Qwen38ConfigView c;
+    const Gguf *gguf;
     const Qwen38Config *config;
     const Qwen38Weights *weights;
     const GpuWeightStore *store;
@@ -166,6 +174,24 @@ static Qwen38Status create_moe(Qwen38Forward *f, uint32_t i, Qwen38Error *e) {
     if (bytes > 32u << 20) return fail(e, Q38_CAPACITY, "MoE workspace exceeds the 32 MiB budget");
     return qwen38_moe_work_create(l->moe, f->max_tokens, bytes, &l->moe_work, e);
 }
+/* E reads its disk-only table through its own fd; B projects, C norms/convs. */
+static Qwen38Status create_ple(Qwen38Forward *f, uint32_t i, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    const Qwen38NgramConfig *nc;
+    size_t h = f->c.hc.streams, w = f->c.hidden_size;
+    TRY(qwen38_config_ngram(f->config, i, &nc, e));
+    TRY(bind(f, i, Q38_PLE_KEY, &l->ple.key, e));
+    TRY(bind(f, i, Q38_PLE_VALUE, &l->ple.value, e));
+    const Qwen38Role roles[] = {Q38_PLE_KEY_NORM, Q38_PLE_QUERY_NORM, Q38_PLE_CONV_NORM, Q38_PLE_CONV};
+    Qwen38F32 *views[] = {&l->ple.gamma_key, &l->ple.gamma_query, &l->ple.gamma_conv, &l->ple.taps};
+    for (size_t j = 0; j < 4; ++j) {
+        TRY(constant(f, i, roles[j], &l->ple_constant[j], e));
+        *views[j] = q38c_ro(j < 3 ? mat(l->ple_constant[j], h, w) : mat(l->ple_constant[j], h*w, nc->conv_kernel));
+    }
+    TRY(qwen38_ngram_open(f->gguf, nc, f->max_tokens, 32u << 20, &l->ple_store, e));
+    TRY(qwen38_ngram_state_create(l->ple_store, (Qwen38StateKey){f->config, i, f->epoch}, &l->ple_state, e));
+    return qwen38_ple_workspace_create(l->ple_store, 224u << 20, &l->ple_work, e);
+}
 
 static Qwen38Status create(Qwen38Forward *f, Qwen38Error *e) {
     TRY(bind(f, QWEN38_GLOBAL_LAYER, Q38_TOKEN_EMBD, &f->embed, e));
@@ -184,6 +210,7 @@ static Qwen38Status create(Qwen38Forward *f, Qwen38Error *e) {
         else TRY(create_gdn(f, i, &f->c_work.bytes, e));
         TRY(bind_hc(f, i, ffn_roles, &f->layer[i].ffn, e));
         TRY(create_moe(f, i, e));
+        if (kind->has_ple) TRY(create_ple(f, i, e));
     }
     TRY(aligned(&f->c_work.data, f->c_work.bytes, e));
     return arena(f, e);
@@ -200,7 +227,7 @@ Qwen38Status qwen38_forward_create(const Gguf *g, const Qwen38Config *config,
         return fail(e, Q38_RANGE, "graph needs 0 < max_tokens <= capacity <= max_positions");
     Qwen38Forward *f = calloc(1, sizeof *f);
     if (!f) return fail(e, Q38_OOM, "graph");
-    *f = (Qwen38Forward){.c=*view, .config=config, .weights=weights, .store=store,
+    *f = (Qwen38Forward){.c=*view, .gguf=g, .config=config, .weights=weights, .store=store,
         .max_tokens=max_tokens, .capacity=capacity, .epoch=1, .valid=true};
     Qwen38Status rc = create(f, e);
     if (rc != Q38_OK) { qwen38_forward_destroy(f); return rc; }
@@ -215,6 +242,11 @@ void qwen38_forward_destroy(Qwen38Forward *f) {
         free(l->attn.gain); free(l->ffn.gain);
         qwen38_moe_work_destroy(l->moe_work); qwen38_moe_destroy(l->moe);
         for (size_t j = 0; j < 5; ++j) free(l->gdn_memory[j]);
+        if (l->ple_job) { qwen38_ngram_abort(l->ple_job, NULL); qwen38_ngram_job_release(l->ple_job, NULL); }
+        if (l->ple_work) qwen38_ple_workspace_destroy(l->ple_work, NULL);
+        if (l->ple_state) qwen38_ngram_state_destroy(l->ple_state, NULL);
+        if (l->ple_store) qwen38_ngram_close(l->ple_store, NULL);
+        for (size_t j = 0; j < 4; ++j) free(l->ple_constant[j]);
     }
     free(f->c_work.data); free(f->final.gain); free(f->layer); free(f->arena); free(f);
 }
@@ -240,13 +272,31 @@ static Qwen38Status gdn_cpu(Qwen38Forward *f, uint32_t i, size_t t, Qwen38GraphT
     return Q38_OK;
 }
 
-static Qwen38Status layer_cpu(Qwen38Forward *f, uint32_t i, size_t t, Qwen38GraphTrace trace,
-        void *user, Qwen38Error *e) {
+/* PLE before HC-attn: E produces Delta from the n-gram rows; the graph adds
+ * R+Delta exactly once. E's history stays a candidate until finish(). */
+static Qwen38Status ple_cpu(Qwen38Forward *f, uint32_t i, const int32_t *tokens, size_t t,
+        Qwen38GraphTrace trace, void *user, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    size_t h = f->c.hc.streams, w = f->c.hidden_size, n = t*h*w;
+    TRY(qwen38_ngram_prepare(l->ple_store, l->ple_state, tokens, t, f->next_pos, &l->ple_job, e));
+    TRY(qwen38_ngram_read(l->ple_job, e));
+    float *delta = f->normed;              /* HC has not started: scratch is free */
+    TRY(qwen38_ple_cpu(l->ple_job, &l->ple, q38c_ro(cube(f->r, t, h, w)), cube(delta, t, h, w), l->ple_work, e));
+    emit(trace, user, i, Q38G_PLE_DELTA, cube(delta, t, h, w));
+    for (size_t j = 0; j < n; ++j) {
+        f->r[j] += delta[j];
+        if (!isfinite(f->r[j])) return fail(e, Q38_NONFINITE, "PLE residual overflow");
+    }
+    return Q38_OK;
+}
+
+static Qwen38Status layer_cpu(Qwen38Forward *f, uint32_t i, const int32_t *tokens, size_t t,
+        Qwen38GraphTrace trace, void *user, Qwen38Error *e) {
     const Qwen38Layer *kind;
     size_t h = f->c.hc.streams, w = f->c.hidden_size;
     TRY(qwen38_config_layer(f->config, i, &kind, e));
     if (kind->kind != Q38_LAYER_GDN) return fail(e, Q38_UNSUPPORTED, "QSA layers are not wired yet");
-    if (kind->has_ple) return fail(e, Q38_UNSUPPORTED, "PLE is not wired yet");
+    if (kind->has_ple) TRY(ple_cpu(f, i, tokens, t, trace, user, e));
     TRY(gdn_cpu(f, i, t, trace, user, e));
     emit(trace, user, i, Q38G_ATTN_RESIDUAL, cube(f->r, t, h, w));
     G1Layer *l = &f->layer[i];               /* HC-ffn -> MoE -> inject */
@@ -271,10 +321,26 @@ static Qwen38Status run(Qwen38Forward *f, const int32_t *tokens, size_t t, uint3
     Qwen38F32Mut first = mat(f->r, t, w); first.stride_bytes[0] = h*w*4;
     first.capacity_bytes = t*h*w*4;
     emit(trace, user, QWEN38_GLOBAL_LAYER, Q38G_EMBEDDING, first);
-    for (uint32_t i = 0; i < layers; ++i) TRY(layer_cpu(f, i, t, trace, user, e));
+    for (uint32_t i = 0; i < layers; ++i) TRY(layer_cpu(f, i, tokens, t, trace, user, e));
     TRY(hc_read(f, &f->final, t, e));          /* output mixer: no inject */
     emit(trace, user, QWEN38_GLOBAL_LAYER, Q38G_FINAL, mat(f->mixed, t, w));
     return q38_packed_matmul(&f->head, 0, q38c_ro(mat(f->mixed + (t-rows)*w, rows, w)), logits, e);
+}
+
+/* Deferred commits: E's candidate history becomes the state only once every
+ * layer succeeded; otherwise abort. Either way release the job. */
+static Qwen38Status finish(Qwen38Forward *f, bool commit, Qwen38Status rc, Qwen38Error *e) {
+    Qwen38Error local;
+    for (uint32_t i = 0; i < f->c.trunk_blocks; ++i) {
+        G1Layer *l = &f->layer[i];
+        if (!l->ple_job) continue;
+        Qwen38Status s = commit ? qwen38_ngram_commit(l->ple_state, l->ple_job, &local)
+                                : qwen38_ngram_abort(l->ple_job, &local);
+        Qwen38Status r = qwen38_ngram_job_release(l->ple_job, s == Q38_OK ? &local : NULL);
+        l->ple_job = NULL;
+        if (rc == Q38_OK && (s != Q38_OK || r != Q38_OK)) { rc = s != Q38_OK ? s : r; if (e) *e = local; }
+    }
+    return rc;
 }
 
 Qwen38Status qwen38_forward_cpu(Qwen38Forward *f, const int32_t *tokens, size_t count,
@@ -291,6 +357,7 @@ Qwen38Status qwen38_forward_cpu(Qwen38Forward *f, const int32_t *tokens, size_t 
         if (tokens[i] < 0 || (uint32_t)tokens[i] >= f->c.vocab_size) return fail(e, Q38_RANGE, "token outside vocabulary");
     if (!count) return fail(e, Q38_OK, NULL);
     Qwen38Status rc = run(f, tokens, count, layers, logits, trace, user, e);
+    rc = finish(f, rc == Q38_OK && layers == f->c.trunk_blocks, rc, e);
     /* Prefix slices and failures leave layer states mid-stream: reset first. */
     if (rc != Q38_OK || layers < f->c.trunk_blocks) f->valid = false;
     else f->next_pos += count;
@@ -303,6 +370,8 @@ Qwen38Status qwen38_forward_reset(Qwen38Forward *f, Qwen38Error *e) {
     uint64_t epoch = f->epoch + 1;
     for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)
         if (f->layer[i].gdn.bound) TRY(q38c_block_reset(&f->layer[i].gdn_state, epoch, e));
+    for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)
+        if (f->layer[i].ple_state) TRY(qwen38_ngram_state_reset(f->layer[i].ple_state, epoch, e));
     f->epoch = epoch; f->next_pos = 0; f->valid = true;
     return fail(e, Q38_OK, NULL);
 }

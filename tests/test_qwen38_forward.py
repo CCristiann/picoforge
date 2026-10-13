@@ -28,7 +28,7 @@ GATE_PLE = 2e-4     # E §6: Delta atol = rtol
 TOKENS = [5, 17, 300, 42, 7, 99, 511, 3, 3, 3, 250, 128, 64, 1, 2, 400, 77, 33, 12, 511, 9, 8, 200, 150]
 STAGES = ("ple_delta", "attn_mixed", "attn_inject", "attn_contribution", "attn_residual",
           "ffn_mixed", "ffn_inject", "moe", "output")
-SLICES = (1,)       # prefix depths exercised so far
+SLICES = (1, 2, 3)       # prefix depths exercised so far
 NATIVE = GGUF = None
 REFS = None
 
