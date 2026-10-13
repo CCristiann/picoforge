@@ -3,10 +3,18 @@
  * activations and HC are C's primitives. See qwen38_forward.h for the order. */
 #include "qwen38_forward.h"
 #include "qwen38_c_internal.h"
+#include "qwen38_moe.h"
 #include <stdlib.h>
 
 typedef struct { Q38PackedCpuView down, up, inject; float *gain; } G1Hc;
-typedef struct { G1Hc attn, ffn; } G1Layer;
+typedef struct {
+    G1Hc attn, ffn;               /* attn only for QSA: C binds GDN's HC-attn */
+    Q38CLayer gdn;                /* C composition: HC-attn+GDN+out+combine */
+    Q38CBlockState gdn_state;
+    void *gdn_memory[5];          /* conv/GDN metadata+payload, decoded constants */
+    Qwen38Moe *moe;
+    Qwen38MoeWork *moe_work;
+} G1Layer;
 struct Qwen38Forward {
     Qwen38ConfigView c;
     const Qwen38Config *config;
@@ -18,8 +26,9 @@ struct Qwen38Forward {
     Q38PackedCpuView embed, head;
     G1Hc final;
     G1Layer *layer;
+    Qwen38Memory c_work;          /* one C workspace, re-viewed per GDN layer */
     /* One arena: residual R[T,H,E], HC scratch, then per-block outputs. */
-    float *arena, *r, *normed, *low, *act, *gate, *il, *inject, *mixed;
+    float *arena, *r, *normed, *low, *act, *gate, *il, *inject, *mixed, *block;
 };
 
 static Qwen38Status fail(Qwen38Error *e, Qwen38Status code, const char *detail) {
@@ -98,14 +107,64 @@ static const Qwen38Role final_roles[4] = {Q38_OUTPUT_HC_NORM, Q38_OUTPUT_HC_DOWN
 
 static Qwen38Status arena(Qwen38Forward *f, Qwen38Error *e) {
     size_t t = f->max_tokens, h = f->c.hc.streams, w = f->c.hidden_size, r = f->c.hc.low_rank;
-    float **slot[] = {&f->r, &f->normed, &f->low, &f->act, &f->gate, &f->il, &f->inject, &f->mixed};
-    size_t width[] = {h*w, h*w, r, r, h*w, h, h, w}, total = 0;
+    float **slot[] = {&f->r, &f->normed, &f->low, &f->act, &f->gate, &f->il, &f->inject, &f->mixed, &f->block};
+    size_t width[] = {h*w, h*w, r, r, h*w, h, h, w, w}, total = 0;
     for (size_t i = 0; i < sizeof width / sizeof *width; ++i) total += (t*width[i] + 15) & ~(size_t)15;
     if (!(f->arena = aligned_alloc(64, total*4))) return fail(e, Q38_OOM, "graph scratch");
     for (size_t i = 0, offset = 0; i < sizeof width / sizeof *width; ++i) {
         *slot[i] = f->arena + offset; offset += (t*width[i] + 15) & ~(size_t)15;
     }
     return Q38_OK;
+}
+
+static Qwen38Status aligned(void **out, size_t bytes, Qwen38Error *e) {
+    *out = bytes ? aligned_alloc(64, (bytes + 63) & ~(size_t)63) : NULL;
+    if (bytes && !*out) return fail(e, Q38_OOM, "graph backing");
+    if (bytes) memset(*out, 0, bytes);
+    return Q38_OK;
+}
+/* C plans/binds the GDN block; states live in graph-owned aligned backings. */
+static Qwen38Status create_gdn(Qwen38Forward *f, uint32_t i, size_t *work, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    TRY(q38c_layer_plan(f->config, f->weights, i, &l->gdn, e));
+    Qwen38CpuSpan spans[Q38CW_COUNT];
+    for (size_t j = 0; j < Q38CW_COUNT; ++j) {
+        Q38PackedCpuView v;
+        TRY(bind(f, i, q38c_layer_roles[j], &v, e));
+        spans[j] = v.span;
+    }
+    TRY(aligned(&l->gdn_memory[4], l->gdn.constant_bytes, e));
+    TRY(q38c_layer_bind(&l->gdn, spans, (Qwen38Memory){l->gdn_memory[4], l->gdn.constant_bytes}, e));
+    Qwen38StateSize cs, gs; Qwen38ConvState *conv; Qwen38GdnState *gdn;
+    TRY(qwen38_conv_state_bytes(&l->gdn.conv, &cs, e));
+    TRY(qwen38_gdn_state_bytes(&f->c.gdn, &gs, e));
+    size_t bytes[4] = {cs.metadata_bytes, cs.payload_bytes, gs.metadata_bytes, gs.payload_bytes};
+    for (size_t j = 0; j < 4; ++j) TRY(aligned(&l->gdn_memory[j], bytes[j], e));
+    Qwen38StateKey key = {f->config, i, f->epoch};
+    TRY(qwen38_conv_state_init(&l->gdn.conv, key, (Qwen38Memory){l->gdn_memory[0], bytes[0]},
+        (Qwen38Memory){l->gdn_memory[1], bytes[1]}, &conv, e));
+    TRY(qwen38_gdn_state_init(&f->c.gdn, key, (Qwen38Memory){l->gdn_memory[2], bytes[2]},
+        (Qwen38Memory){l->gdn_memory[3], bytes[3]}, &gdn, e));
+    TRY(q38c_block_init(&l->gdn, conv, gdn, &l->gdn_state, e));
+    size_t need;
+    TRY(q38c_work_size(&l->gdn, f->max_tokens, &need, e));
+    if (need > *work) *work = need;
+    return Q38_OK;
+}
+/* F owns routing and experts; every product inside goes through B. */
+static Qwen38Status create_moe(Qwen38Forward *f, uint32_t i, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    Qwen38MoeWeights w;
+    Q38PackedCpuView *views[] = {&w.router, &w.gate, &w.up, &w.down, &w.shared_gate, &w.shared_up,
+        &w.shared_down, &w.shared_router};
+    const Qwen38Role roles[] = {Q38_MOE_ROUTER, Q38_MOE_GATE, Q38_MOE_UP, Q38_MOE_DOWN,
+        Q38_SHARED_GATE, Q38_SHARED_UP, Q38_SHARED_DOWN, Q38_SHARED_ROUTER};
+    for (size_t j = 0; j < 8; ++j) TRY(bind(f, i, roles[j], views[j], e));
+    TRY(qwen38_moe_create(&f->c.moe, &w, &l->moe, e));
+    size_t bytes;
+    TRY(qwen38_moe_work_size(l->moe, f->max_tokens, &bytes, e));
+    if (bytes > 32u << 20) return fail(e, Q38_CAPACITY, "MoE workspace exceeds the 32 MiB budget");
+    return qwen38_moe_work_create(l->moe, f->max_tokens, bytes, &l->moe_work, e);
 }
 
 static Qwen38Status create(Qwen38Forward *f, Qwen38Error *e) {
@@ -122,8 +181,11 @@ static Qwen38Status create(Qwen38Forward *f, Qwen38Error *e) {
         if (kind->domain != Q38_TRUNK) return fail(e, Q38_UNSUPPORTED, "trunk layer outside the trunk domain");
         /* GDN layers: C's composition binds its own HC-attn (see layer steps). */
         if (kind->kind == Q38_LAYER_QSA) TRY(bind_hc(f, i, attn_roles, &f->layer[i].attn, e));
+        else TRY(create_gdn(f, i, &f->c_work.bytes, e));
         TRY(bind_hc(f, i, ffn_roles, &f->layer[i].ffn, e));
+        TRY(create_moe(f, i, e));
     }
+    TRY(aligned(&f->c_work.data, f->c_work.bytes, e));
     return arena(f, e);
 }
 
@@ -149,9 +211,12 @@ Qwen38Status qwen38_forward_create(const Gguf *g, const Qwen38Config *config,
 void qwen38_forward_destroy(Qwen38Forward *f) {
     if (!f) return;
     for (uint32_t i = 0; f->layer && i < f->c.trunk_blocks; ++i) {
-        free(f->layer[i].attn.gain); free(f->layer[i].ffn.gain);
+        G1Layer *l = &f->layer[i];
+        free(l->attn.gain); free(l->ffn.gain);
+        qwen38_moe_work_destroy(l->moe_work); qwen38_moe_destroy(l->moe);
+        for (size_t j = 0; j < 5; ++j) free(l->gdn_memory[j]);
     }
-    free(f->final.gain); free(f->layer); free(f->arena); free(f);
+    free(f->c_work.data); free(f->final.gain); free(f->layer); free(f->arena); free(f);
 }
 
 Qwen38StateInfo qwen38_forward_info(const Qwen38Forward *f) {
@@ -160,11 +225,39 @@ Qwen38StateInfo qwen38_forward_info(const Qwen38Forward *f) {
         .next_pos=f->next_pos, .valid=f->valid};
 }
 
-/* Placeholder until the block steps land: refuses, never fakes success. */
+/* GDN: C's verified composition runs HC-attn, projections, conv, scan, gated
+ * norm, Wout and the inject combine on R in place, at the session position. */
+static Qwen38Status gdn_cpu(Qwen38Forward *f, uint32_t i, size_t t, Qwen38GraphTrace trace,
+        void *user, Qwen38Error *e) {
+    G1Layer *l = &f->layer[i];
+    Q38CWork work;
+    TRY(q38c_work_init(&l->gdn, f->max_tokens, f->c_work, &work, e));
+    TRY(q38c_block_cpu(&l->gdn, &work, cube(f->r, t, f->c.hc.streams, f->c.hidden_size), &l->gdn_state,
+        f->next_pos, e));
+    emit(trace, user, i, Q38G_ATTN_MIXED, q38c_trace(&work, Q38CT_MIX, t));
+    emit(trace, user, i, Q38G_ATTN_INJECT, q38c_trace(&work, Q38CT_INJECT, t));
+    emit(trace, user, i, Q38G_ATTN_CONTRIBUTION, q38c_trace(&work, Q38CT_OUT, t));
+    return Q38_OK;
+}
+
 static Qwen38Status layer_cpu(Qwen38Forward *f, uint32_t i, size_t t, Qwen38GraphTrace trace,
         void *user, Qwen38Error *e) {
-    (void)f; (void)i; (void)t; (void)trace; (void)user;
-    return fail(e, Q38_UNSUPPORTED, "graph layers are not wired yet");
+    const Qwen38Layer *kind;
+    size_t h = f->c.hc.streams, w = f->c.hidden_size;
+    TRY(qwen38_config_layer(f->config, i, &kind, e));
+    if (kind->kind != Q38_LAYER_GDN) return fail(e, Q38_UNSUPPORTED, "QSA layers are not wired yet");
+    if (kind->has_ple) return fail(e, Q38_UNSUPPORTED, "PLE is not wired yet");
+    TRY(gdn_cpu(f, i, t, trace, user, e));
+    emit(trace, user, i, Q38G_ATTN_RESIDUAL, cube(f->r, t, h, w));
+    G1Layer *l = &f->layer[i];               /* HC-ffn -> MoE -> inject */
+    TRY(hc_read(f, &l->ffn, t, e));
+    emit(trace, user, i, Q38G_FFN_MIXED, mat(f->mixed, t, w));
+    emit(trace, user, i, Q38G_FFN_INJECT, mat(f->inject, t, h));
+    TRY(qwen38_moe_forward(l->moe, q38c_ro(mat(f->mixed, t, w)), mat(f->block, t, w), NULL, l->moe_work, e));
+    emit(trace, user, i, Q38G_MOE, mat(f->block, t, w));
+    TRY(qwen38_hc_add(&f->c.hc, cube(f->r, t, h, w), q38c_ro(mat(f->block, t, w)), q38c_ro(mat(f->inject, t, h)), e));
+    emit(trace, user, i, Q38G_OUTPUT, cube(f->r, t, h, w));
+    return Q38_OK;
 }
 
 static Qwen38Status run(Qwen38Forward *f, const int32_t *tokens, size_t t, uint32_t layers,
@@ -207,6 +300,9 @@ Qwen38Status qwen38_forward_cpu(Qwen38Forward *f, const int32_t *tokens, size_t 
 Qwen38Status qwen38_forward_reset(Qwen38Forward *f, Qwen38Error *e) {
     if (!f) return fail(e, Q38_INVALID_ARGUMENT, "missing graph");
     if (f->epoch == UINT64_MAX) return fail(e, Q38_OVERFLOW, "epoch exhausted");
-    f->epoch++; f->next_pos = 0; f->valid = true;
+    uint64_t epoch = f->epoch + 1;
+    for (uint32_t i = 0; i < f->c.trunk_blocks; ++i)
+        if (f->layer[i].gdn.bound) TRY(q38c_block_reset(&f->layer[i].gdn_state, epoch, e));
+    f->epoch = epoch; f->next_pos = 0; f->valid = true;
     return fail(e, Q38_OK, NULL);
 }

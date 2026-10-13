@@ -26,6 +26,9 @@ GATE_PLE = 2e-4     # E §6: Delta atol = rtol
 # 24 tokens: two EOS (511) cut the PLE n-gram history; >= 12 positions make
 # QSA select a strict subset of the 4-token blocks (budget 8 = 2 blocks).
 TOKENS = [5, 17, 300, 42, 7, 99, 511, 3, 3, 3, 250, 128, 64, 1, 2, 400, 77, 33, 12, 511, 9, 8, 200, 150]
+STAGES = ("ple_delta", "attn_mixed", "attn_inject", "attn_contribution", "attn_residual",
+          "ffn_mixed", "ffn_inject", "moe", "output")
+SLICES = (1,)       # prefix depths exercised so far
 NATIVE = GGUF = None
 REFS = None
 
@@ -55,6 +58,22 @@ class GraphTests(unittest.TestCase):
         print(f"  {label:34s} {error:.3e} (gate {gate:g})")
         self.assertLessEqual(error, gate, label)
         return error
+
+    def compare(self, native, ref, layers, gate, tag):
+        for i in range(layers):
+            for stage in STAGES:
+                key = f"layer{i}.{stage}"
+                if key in ref:
+                    self.check(native[key], ref[key], gate, f"{tag} {key}")
+        self.check(native["global.final"], ref["final"], gate, f"{tag} final")
+        self.check(native["logits"], ref["logits"], gate, f"{tag} logits")
+
+    def test_prefix_slices_end_to_end(self):
+        """Oracle sees only tokens; every boundary of each prefix stack."""
+        for layers in SLICES:
+            _, native = run_native(layers, len(TOKENS))
+            ref = oracle.flatten(oracle.forward(GGUF, TOKENS, REFS, layers=layers))
+            self.compare(native, ref, layers, GATE_E2E, f"L={layers}")
 
     def test_embedding_mixer_and_head_slice(self):
         """layers=0: embedding repeat, output-HC mixer and untied head only."""
