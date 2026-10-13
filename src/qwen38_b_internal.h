@@ -16,6 +16,14 @@ typedef struct {
 _Static_assert(sizeof(Q38PackedArgs) == 80 && offsetof(Q38PackedArgs,row_bytes) == 24 &&
                offsetof(Q38PackedArgs,y_bytes) == 72, "packed Metal argument layout");
 
+typedef struct {
+    Q38PackedArgs base;            /* weight_offset = tensor start, weight_end = tensor end */
+    uint64_t expert_bytes;
+    uint32_t experts, x_divisor;
+} Q38PackedIndexedArgs;
+_Static_assert(sizeof(Q38PackedIndexedArgs) == 96 && offsetof(Q38PackedIndexedArgs,expert_bytes) == 80,
+               "indexed Metal argument layout");
+
 Q38_B_INLINE Qwen38Status q38_b_result(Qwen38Error *err, Qwen38Status code,
                                        const char *detail) {
     if (err) {

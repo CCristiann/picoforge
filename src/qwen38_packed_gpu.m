@@ -4,7 +4,7 @@
 #include "qwen38_b_internal.h"
 #include <stdlib.h>
 
-struct Q38PackedGpu { void *device, *linear; };
+struct Q38PackedGpu { void *device, *linear, *indexed; };
 
 Qwen38Status q38_packed_gpu_create(void *device, void *library,
                                   Q38PackedGpu **out, Qwen38Error *err) {
@@ -14,20 +14,23 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLLibrary> lib=(__bridge id<MTLLibrary>)library;
     if (lib.device != dev) return q38_b_result(err,Q38_OWNER,"library device differs");
     id<MTLFunction> function=[lib newFunctionWithName:@"q38_packed_linear"];
-    if (!function) return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
+    id<MTLFunction> gather=[lib newFunctionWithName:@"q38_packed_linear_indexed"];
+    if (!function || !gather) return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
     NSError *failure=nil;
     id<MTLComputePipelineState> pipeline=[dev newComputePipelineStateWithFunction:function error:&failure];
-    if (!pipeline) return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
+    id<MTLComputePipelineState> indexed=[dev newComputePipelineStateWithFunction:gather error:&failure];
+    if (!pipeline || !indexed) return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
     Q38PackedGpu *ctx=calloc(1,sizeof *ctx);
     if (!ctx) return q38_b_result(err,Q38_OOM,"cannot allocate packed context");
     ctx->device=(__bridge_retained void *)dev;
     ctx->linear=(__bridge_retained void *)pipeline;
+    ctx->indexed=(__bridge_retained void *)indexed;
     *out=ctx;
     return q38_b_result(err,Q38_OK,"");
 }
 void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (!ctx) return;
-    CFRelease(ctx->linear); CFRelease(ctx->device); free(ctx);
+    CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->device); free(ctx);
 }
 
 static Qwen38Status gpu_span(id<MTLDevice> dev, Qwen38GpuSpan span, size_t needed,
@@ -52,9 +55,11 @@ static bool gpu_alias(id<MTLBuffer> a, size_t oa, size_t na,
     return false;
 }
 
-Qwen38Status q38_packed_encode(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+/* Shared admission of both entry points; rows_x is the reachable input rows. */
+typedef struct { id<MTLBuffer> input, output, word, weights; size_t xb, yb; } Admitted;
+static Qwen38Status admit(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
-        size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
+        Qwen38GpuF32 x, Qwen38GpuF32 y, size_t rows_x, Admitted *a, Qwen38Error *err) {
     if (!ctx || !command || !store || !binding || !layout || !command->compute_encoder)
         return q38_b_result(err,Q38_INVALID_ARGUMENT,"missing encode argument");
     id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
@@ -68,47 +73,94 @@ Qwen38Status q38_packed_encode(Q38PackedGpu *ctx, const Qwen38GpuCommand *comman
     status=q38_packed_layout_init(&binding->tensor,layout->k_logical,&expected,err);
     if (status) return status;
     if (!q38_b_same_layout(layout,&expected)) return q38_b_result(err,Q38_FORMAT,"binding/layout mismatch");
-    if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
-    size_t xb,yb;
-    status=q38_b_matrix(x.rank,x.dim,x.stride_bytes,x.span.bytes,&xb);
+    status=q38_b_matrix(x.rank,x.dim,x.stride_bytes,x.span.bytes,&a->xb);
     if (status) return q38_b_result(err,status,"invalid GPU input view");
-    status=q38_b_matrix(y.rank,y.dim,y.stride_bytes,y.span.bytes,&yb);
+    status=q38_b_matrix(y.rank,y.dim,y.stride_bytes,y.span.bytes,&a->yb);
     if (status) return q38_b_result(err,status,"invalid GPU output view");
-    if (x.dim[0]!=y.dim[0] || x.dim[1]!=layout->k_logical || y.dim[1]!=layout->n_out)
+    if (x.dim[0]!=rows_x || x.dim[1]!=layout->k_logical || y.dim[1]!=layout->n_out)
         return q38_b_result(err,Q38_SHAPE,"GPU matrix dimensions differ");
-    if (layout->k_storage>UINT32_MAX || layout->n_out>UINT32_MAX || x.dim[0]>UINT32_MAX)
+    if (layout->k_storage>UINT32_MAX || layout->n_out>UINT32_MAX || y.dim[0]>UINT32_MAX ||
+        layout->n_experts>UINT32_MAX)
         return q38_b_result(err,Q38_RANGE,"kernel dimensions exceed uint32");
-    id<MTLBuffer> input=nil,output=nil,word=nil;
-    status=gpu_span(dev,x.span,xb,&input);
+    status=gpu_span(dev,x.span,a->xb,&a->input);
     if (status) return q38_b_result(err,status,"invalid GPU input span");
-    status=gpu_span(dev,y.span,yb,&output);
+    status=gpu_span(dev,y.span,a->yb,&a->output);
     if (status) return q38_b_result(err,status,"invalid GPU output span");
-    status=gpu_span(dev,command->error_word,4,&word);
+    status=gpu_span(dev,command->error_word,4,&a->word);
     if (status) return q38_b_result(err,status,"invalid GPU error word");
-    if (word.storageMode!=MTLStorageModeShared)
+    if (a->word.storageMode!=MTLStorageModeShared)
         return q38_b_result(err,Q38_TYPE,"error word must use Shared storage");
-    id<MTLBuffer> weights=(__bridge id<MTLBuffer>)gpu_weights_buffer(store,binding);
-    if (weights.device!=dev) return q38_b_result(err,Q38_OWNER,"weight device differs");
+    a->weights=(__bridge id<MTLBuffer>)gpu_weights_buffer(store,binding);
+    if (a->weights.device!=dev) return q38_b_result(err,Q38_OWNER,"weight device differs");
     size_t wo=binding->offset, wn=layout->tensor_bytes, xo=x.span.offset_bytes, yo=y.span.offset_bytes;
-    size_t eo=command->error_word.offset_bytes;
-    if (gpu_alias(input,xo,xb,output,yo,yb) || gpu_alias(weights,wo,wn,input,xo,xb) ||
-        gpu_alias(weights,wo,wn,output,yo,yb) || gpu_alias(word,eo,4,input,xo,xb) ||
-        gpu_alias(word,eo,4,output,yo,yb) || gpu_alias(word,eo,4,weights,wo,wn))
+    size_t eo=command->error_word.offset_bytes, xb=a->xb, yb=a->yb;
+    if (gpu_alias(a->input,xo,xb,a->output,yo,yb) || gpu_alias(a->weights,wo,wn,a->input,xo,xb) ||
+        gpu_alias(a->weights,wo,wn,a->output,yo,yb) || gpu_alias(a->word,eo,4,a->input,xo,xb) ||
+        gpu_alias(a->word,eo,4,a->output,yo,yb) || gpu_alias(a->word,eo,4,a->weights,wo,wn))
         return q38_b_result(err,Q38_INVALID_ARGUMENT,"aliased GPU resources");
+    return Q38_OK;
+}
+static Q38PackedArgs wire(const Q38PackedLayout *layout, size_t offset, size_t end, size_t rows,
+        Qwen38GpuF32 x, Qwen38GpuF32 y, const Admitted *a) {
+    return (Q38PackedArgs){.type=layout->gguf_type,.k_storage=(uint32_t)layout->k_storage,
+        .k_logical=(uint32_t)layout->k_logical,.n_out=(uint32_t)layout->n_out,.rows=(uint32_t)rows,
+        .row_bytes=layout->row_bytes,.weight_offset=offset,.weight_end=end,
+        .x_stride=x.stride_bytes[0],.y_stride=y.stride_bytes[0],.x_bytes=a->xb,.y_bytes=a->yb};
+}
+static void bind(id<MTLComputeCommandEncoder> encoder, const Admitted *a, Qwen38GpuF32 x,
+        Qwen38GpuF32 y, const Qwen38GpuCommand *command) {
+    [encoder setBuffer:a->weights offset:0 atIndex:0];
+    [encoder setBuffer:a->input offset:x.span.offset_bytes atIndex:1];
+    [encoder setBuffer:a->output offset:y.span.offset_bytes atIndex:2];
+    [encoder setBuffer:a->word offset:command->error_word.offset_bytes atIndex:3];
+}
+
+Qwen38Status q38_packed_encode(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
+        size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
+    Admitted a;
+    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
+    if (status) return status;
+    if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
     if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
-    size_t offset=wo+expert*layout->expert_bytes;
-    Q38PackedArgs args={.type=layout->gguf_type,.k_storage=(uint32_t)layout->k_storage,
-        .k_logical=(uint32_t)layout->k_logical,.n_out=(uint32_t)layout->n_out,.rows=(uint32_t)x.dim[0],
-        .row_bytes=layout->row_bytes,.weight_offset=offset,.weight_end=offset+layout->expert_bytes,
-        .x_stride=x.stride_bytes[0],.y_stride=y.stride_bytes[0],.x_bytes=xb,.y_bytes=yb};
+    size_t offset=binding->offset+expert*layout->expert_bytes;
+    Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
     id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)ctx->linear;
     [encoder setComputePipelineState:pipeline];
-    [encoder setBuffer:weights offset:0 atIndex:0];
-    [encoder setBuffer:input offset:xo atIndex:1];
-    [encoder setBuffer:output offset:yo atIndex:2];
-    [encoder setBuffer:word offset:eo atIndex:3];
+    bind(encoder,&a,x,y,command);
     [encoder setBytes:&args length:sizeof args atIndex:4];
     NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
     [encoder dispatchThreads:MTLSizeMake(layout->n_out,x.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    return q38_b_result(err,Q38_OK,"");
+}
+
+Qwen38Status q38_packed_encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
+        Qwen38GpuSpan ids, size_t divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
+    if (!divisor || divisor>UINT32_MAX || y.dim[0]%divisor)
+        return q38_b_result(err,Q38_SHAPE,"output rows must be a multiple of the input divisor");
+    Admitted a;
+    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0]/divisor,&a,err);
+    if (status) return status;
+    id<MTLBuffer> route=nil;
+    status=gpu_span((__bridge id<MTLDevice>)ctx->device,ids,y.dim[0]*4,&route);
+    if (status) return q38_b_result(err,status,"invalid GPU expert-ID span");
+    size_t wo=binding->offset, io=ids.offset_bytes, n=y.dim[0]*4;
+    if (gpu_alias(route,io,n,a.output,y.span.offset_bytes,a.yb) ||
+        gpu_alias(route,io,n,a.word,command->error_word.offset_bytes,4) ||
+        gpu_alias(route,io,n,a.weights,wo,layout->tensor_bytes))
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"expert IDs alias an output or weights");
+    if (!y.dim[0]) return q38_b_result(err,Q38_OK,"");
+    Q38PackedIndexedArgs args={.base=wire(layout,wo,wo+layout->tensor_bytes,y.dim[0],x,y,&a),
+        .expert_bytes=layout->expert_bytes,.experts=(uint32_t)layout->n_experts,.x_divisor=(uint32_t)divisor};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)ctx->indexed;
+    [encoder setComputePipelineState:pipeline];
+    bind(encoder,&a,x,y,command);
+    [encoder setBytes:&args length:sizeof args atIndex:4];
+    [encoder setBuffer:route offset:io atIndex:5];
+    NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
+    [encoder dispatchThreads:MTLSizeMake(layout->n_out,y.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }

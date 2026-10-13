@@ -8,6 +8,8 @@ struct PackedArgs {
     ulong row_bytes, weight_offset, weight_end, x_stride, y_stride, x_bytes, y_bytes;
 };
 static_assert(sizeof(PackedArgs) == 80, "host/Metal wire record size");
+struct IndexedArgs { PackedArgs base; ulong expert_bytes; uint experts, x_divisor; };
+static_assert(sizeof(IndexedArgs) == 96, "indexed wire record size");
 constant ulong iq2_grid[256] = {
 #include "qwen38_iq2_grid.inc"
 };
@@ -74,6 +76,32 @@ kernel void q38_packed_linear(device const uchar *weights [[buffer(0)]],
     ulong row=p.weight_offset+ulong(at.x)*p.row_bytes;
     if (!row_bounds(p,row,error)) return;
     ulong xi=ulong(at.y)*(p.x_stride/4), yi=ulong(at.y)*(p.y_stride/4)+at.x;
+    if (xi>p.x_bytes/4 || p.k_logical>p.x_bytes/4-xi || yi>=p.y_bytes/4) {
+        atomic_fetch_or_explicit(error,2u,memory_order_relaxed); return;
+    }
+    float sum=0;
+    for (uint k=0;k<p.k_logical;k++) {
+        float value=packed_value(weights+row,k,p.type), input=x[xi+k];
+        float product=value*input;
+        sum+=product;
+        if (!isfinite(value) || !isfinite(input) || !isfinite(product) || !isfinite(sum))
+            atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    }
+    y[yi]=sum;
+}
+/* Same decoder and FP32 accumulation order as q38_packed_linear; only the
+ * expert (from the GPU route buffer) and the input row are per output row. */
+kernel void q38_packed_linear_indexed(device const uchar *weights [[buffer(0)]],
+        device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
+        device atomic_uint *error [[buffer(3)]], constant IndexedArgs &a [[buffer(4)]],
+        device const uint *ids [[buffer(5)]], uint2 at [[thread_position_in_grid]]) {
+    constant PackedArgs &p=a.base;
+    if (at.x>=p.n_out || at.y>=p.rows) return;
+    uint expert=ids[at.y];
+    if (expert>=a.experts) { atomic_fetch_or_explicit(error,2u,memory_order_relaxed); return; }
+    ulong row=p.weight_offset+ulong(expert)*a.expert_bytes+ulong(at.x)*p.row_bytes;
+    if (!row_bounds(p,row,error)) return;
+    ulong xi=ulong(at.y/a.x_divisor)*(p.x_stride/4), yi=ulong(at.y)*(p.y_stride/4)+at.x;
     if (xi>p.x_bytes/4 || p.k_logical>p.x_bytes/4-xi || yi>=p.y_bytes/4) {
         atomic_fetch_or_explicit(error,2u,memory_order_relaxed); return;
     }

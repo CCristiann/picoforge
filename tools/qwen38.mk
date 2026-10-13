@@ -136,3 +136,5 @@ include tools/qwen38_v2.mk
 include tools/qwen38_g0.mk
 
 include tools/qwen38_g1.mk
+
+include tools/qwen38_g2.mk

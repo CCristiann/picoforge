@@ -203,3 +203,87 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
     gpu_trace(f,cmd,12,SIZE_MAX,x,y);
     return q38c_error(err,Q38_OK,NULL);
 }
+
+/* ---- Device-routed MoE (G2). Same stage order as moe_batch, without grouping:
+ * each (token, slot) pair is its own row, its expert read by B from the IDs. */
+struct Q38FRouted { void *device, *route, *iota, *product, *reduce; };
+void q38f_routed_destroy(Q38FRouted *r) {
+    if (!r) return;
+    void *all[]={r->route,r->iota,r->product,r->reduce,r->device};
+    for (size_t i=0;i<5;i++) if (all[i]) CFRelease(all[i]);
+    free(r);
+}
+Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen38Error *err) {
+    if (out) *out=NULL;
+    if (!out || !device || !library) return q38c_error(err,Q38_INVALID_ARGUMENT,"missing routed MoE argument");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device; id<MTLLibrary> lib=(__bridge id<MTLLibrary>)library;
+    Q38FRouted *r=calloc(1,sizeof *r); if (!r) return q38c_error(err,Q38_OOM,"routed MoE context");
+    r->device=(__bridge_retained void *)dev;
+    NSArray *names=@[@"q38f_route",@"q38f_iota",@"q38f_product",@"q38f_reduce"];
+    void **slots[]={&r->route,&r->iota,&r->product,&r->reduce};
+    for (size_t j=0;j<4;j++) {
+        id<MTLFunction> fn=[lib newFunctionWithName:names[j]];
+        id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
+        if (!p) { q38f_routed_destroy(r); return q38c_error(err,Q38_GPU_ERROR,"routed MoE pipeline"); }
+        *slots[j]=(__bridge_retained void *)p;
+    }
+    *out=r; return q38c_error(err,Q38_OK,NULL);
+}
+static void run(id<MTLComputeCommandEncoder> enc,void *pipeline,size_t count) {
+    id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)pipeline;
+    [enc setComputePipelineState:p];
+    [enc dispatchThreads:MTLSizeMake(count,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,p.maxTotalThreadsPerThreadgroup),1,1)];
+    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+static void at(id<MTLComputeCommandEncoder> enc,Qwen38GpuSpan s,NSUInteger i) {
+    [enc setBuffer:(__bridge id<MTLBuffer>)s.buffer offset:s.offset_bytes atIndex:i];
+}
+static bool dense(Qwen38GpuF32 v,size_t rows,size_t cols) {
+    return v.rank==2 && v.dim[0]==rows && v.dim[1]==cols && v.stride_bytes[0]==cols*4 &&
+        v.stride_bytes[1]==4 && v.span.buffer && v.span.bytes>=rows*cols*4 && !(v.span.offset_bytes%4);
+}
+Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen38GpuCommand cmd,
+    const Qwen38MoeConfig *c,const GpuWeightStore *store,const GgufBinding *const wb[8],
+    const Q38PackedLayout wl[8],Qwen38GpuF32 x,Qwen38GpuF32 y,const Q38FRoutedWork *w,Qwen38Error *err) {
+    if (!r || !b || !ops || !c || !store || !wb || !wl || !w || !cmd.compute_encoder)
+        return q38c_error(err,Q38_INVALID_ARGUMENT,"missing routed MoE input");
+    if (cmd.device!=r->device) return q38c_error(err,Q38_OWNER,"routed MoE device");
+    size_t t=x.dim[0],h=c->hidden_size,e=c->experts,k=c->top_k,i=c->intermediate,s=c->shared_intermediate,p=t*k;
+    if (x.rank!=2 || x.dim[1]!=h || y.rank!=2 || y.dim[0]!=t || y.dim[1]!=h || y.stride_bytes[0]/4>UINT32_MAX)
+        return q38c_error(err,Q38_SHAPE,"routed MoE x/y");
+    if (!dense(w->logits,t,e) || !dense(w->probs,t,e) || !dense(w->weights,t,k) || !dense(w->gate,p,i) ||
+        !dense(w->up,p,i) || !dense(w->act,p,i) || !dense(w->down,p,h) || !dense(w->sgate,t,s) ||
+        !dense(w->sup,t,s) || !dense(w->sact,t,s) || !dense(w->shared,t,h) || !dense(w->slogit,t,1) ||
+        !dense(w->ssig,t,1) || !dense(w->routed,t,h) || w->ids.bytes<p*4 || w->identity.bytes<p*4)
+        return q38c_error(err,Q38_SHAPE,"routed MoE workspace views");
+    if (!t) return q38c_error(err,Q38_OK,NULL);
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+#define LIN(slot,in,out) do { Q38C_TRY(q38_packed_encode(b,&cmd,store,wb[slot],&wl[slot],0,in,out,err)); \
+    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
+#define IDX(slot,in,out,div) do { Q38C_TRY(q38_packed_encode_indexed(b,&cmd,store,wb[slot],&wl[slot],w->ids,div,in,out,err)); \
+    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
+#define ACT(kind,in,out) do { Q38CGpuSpec spec={.activation=kind}; Qwen38GpuF32 v[]={in,out}; \
+    Q38C_TRY(q38c_gpu_encode(ops,cmd,Q38C_ACT,&spec,v,2,err)); } while (0)
+#define MUL(a,u,n) do { at(enc,(a).span,0); at(enc,(u).span,1); at(enc,cmd.error_word,2); run(enc,r->product,n); } while (0)
+    LIN(0,x,w->logits);
+    struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
+    at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
+    [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5); run(enc,r->route,t);
+    at(enc,w->identity,0); run(enc,r->iota,p);
+    IDX(1,x,w->gate,k); IDX(2,x,w->up,k);
+    ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i);
+    IDX(3,w->act,w->down,1);
+    LIN(4,x,w->sgate); LIN(5,x,w->sup);
+    ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
+    LIN(6,w->sact,w->shared); LIN(7,x,w->slogit);
+    ACT(Q38_SIGMOID,w->slogit,w->ssig);
+    FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
+    at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
+    at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
+    at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
+#undef LIN
+#undef IDX
+#undef ACT
+#undef MUL
+    return q38c_error(err,Q38_OK,NULL);
+}

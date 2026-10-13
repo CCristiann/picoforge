@@ -2,6 +2,9 @@
 #ifndef PICOFORGE_QWEN38_F_INTERNAL_H
 #define PICOFORGE_QWEN38_F_INTERNAL_H
 #include "qwen38_moe.h"
+#ifndef __METAL_VERSION__
+typedef struct Q38CGpu Q38CGpu;
+#endif
 
 /* Optional synchronous diagnostics, private to F tests. Never substitutes an
  * operator. Views are borrowed only during the call; observers must not mutate
@@ -26,6 +29,27 @@ void q38f_gpu_destroy(Q38FMoeGpu *);
 size_t q38f_gpu_bytes(const Q38FMoeGpu *);
 Qwen38Status q38f_gpu_encode(Q38FMoeGpu *,Qwen38GpuCommand,Qwen38GpuF32 x,
     Qwen38GpuF32 y,Qwen38MoeRoutes frozen_routes,Qwen38Error *);
+
+/* Device-routed MoE for the G2 graph: router product, softmax/top-k, indexed
+ * expert products and reduction all stay on the GPU; IDs are never read back.
+ * Every view below is caller-owned scratch sized for T tokens / P=T*K pairs,
+ * disjoint from x/y/weights; the caller declares it to the session. */
+typedef struct {
+    Qwen38GpuF32 logits, probs, weights;          /* [T,E], [T,E], [T,K] */
+    Qwen38GpuF32 gate, up, act, down;             /* [P,I], [P,I], [P,I], [P,H] */
+    Qwen38GpuF32 sgate, sup, sact, shared;        /* [T,Is] x3, [T,H] */
+    Qwen38GpuF32 slogit, ssig, routed;            /* [T,1], [T,1], [T,H] */
+    Qwen38GpuSpan ids, identity;                  /* uint32 [P] each */
+} Q38FRoutedWork;
+typedef struct Q38FRouted Q38FRouted;
+Qwen38Status q38f_routed_create(void *device, void *library, Q38FRouted **, Qwen38Error *);
+void q38f_routed_destroy(Q38FRouted *);
+/* weights/layouts in Qwen38MoeWeights order: router, gate, up, down,
+ * shared gate, shared up, shared down, shared router. */
+Qwen38Status q38f_routed_encode(Q38FRouted *, Q38PackedGpu *, Q38CGpu *, Qwen38GpuCommand,
+    const Qwen38MoeConfig *, const GpuWeightStore *, const GgufBinding *const weights[8],
+    const Q38PackedLayout layouts[8], Qwen38GpuF32 x, Qwen38GpuF32 y,
+    const Q38FRoutedWork *, Qwen38Error *);
 
 typedef struct {
     size_t *offsets;                 /* [experts+1], group [offsets[e],offsets[e+1]) */
