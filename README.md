@@ -57,6 +57,19 @@ the chat reasoning prefix. `--logits FILE.f32` saves one FP32 vocabulary row
 per sampling step; `--token-ids FILE.json` saves prompt/output IDs. This is a
 correctness baseline with no native performance claim or MTP execution.
 
+The [interactive native report](bench/qwen38_g2_g3_20261013/report.html) shows
+the recorded output, all 48 layer errors, the FP32/Metal comparison and memory.
+Open the HTML directly, or serve it locally:
+
+```sh
+python3 -m http.server 8766 --bind 127.0.0.1 --directory bench
+# http://127.0.0.1:8766/qwen38_g2_g3_20261013/report.html
+```
+
+This page explores saved evidence; it does not start inference. Regenerate it
+without additional dependencies using
+`python3 tools/eval/render_qwen38_native.py bench/qwen38_g2_g3_20261013 bench/qwen38_g2_g3_20261013/report.html`.
+
 For the Qwen3 path, context includes prompt and output and defaults to 1,024
 tokens. Its attention is tested through 4,096 tokens; larger requests are
 checked against the model limit and GPU threadgroup-memory capacity.
