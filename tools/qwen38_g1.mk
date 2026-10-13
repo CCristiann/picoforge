@@ -15,3 +15,9 @@ test-qwen38-g1: build/qwen38-g1/test_forward build/qwen38-g1/graph.gguf $(METALL
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_forward.py --native $< --gguf build/qwen38-g1/graph.gguf -v
 
 .PHONY: test-qwen38-g1
+
+# Unsanitized build of the same harness, for bounded smoke runs on the real
+# checkpoint (the sanitized one remains the correctness gate).
+build/qwen38-g1/forward_real: tests/test_qwen38_forward.c $(Q38_G1_CPU) src/gpu_weights.m src/metal.m $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@

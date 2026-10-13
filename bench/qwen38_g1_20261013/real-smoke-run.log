@@ -1,0 +1,20 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+{"tokens":12,"layers":48,"chunk":4,"next_pos":12,"valid":true,"replay":"none"}
+      370.91 real       173.14 user         2.11 sys
+         10154278912  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               13546  page reclaims
+              606475  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 260  voluntary context switches
+              104824  involuntary context switches
+       6533669483971  instructions retired
+        732364595477  cycles elapsed
+           219248904  peak memory footprint
