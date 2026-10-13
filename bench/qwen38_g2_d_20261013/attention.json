@@ -1,0 +1,291 @@
+{
+  "calls": 214,
+  "peak_metal_allocated_bytes": 5079040,
+  "max_error_vs_cpu": {
+    "attend": 1.7881393432617188e-07,
+    "pool": 0.0,
+    "scores": 0.0,
+    "rope": 2.384185791015625e-07
+  },
+  "slice_error": 4.869872800157516e-08,
+  "selection": [
+    {
+      "visible": 0,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 0,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 0,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 1,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 1,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 1,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 3,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 3,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 3,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 4,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 4,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 4,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 7,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 7,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 7,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2047,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2047,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2047,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2048,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2048,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2048,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2049,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2049,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2049,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2050,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2050,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2050,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2051,
+      "pattern": "random",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2051,
+      "pattern": "ties",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2051,
+      "pattern": "near",
+      "gap": null,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2052,
+      "pattern": "random",
+      "gap": 0.0134047269821167,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2052,
+      "pattern": "ties",
+      "gap": 0.0,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2052,
+      "pattern": "near",
+      "gap": 1.1920928955078125e-07,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2053,
+      "pattern": "random",
+      "gap": 0.011919975280761719,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2053,
+      "pattern": "ties",
+      "gap": 0.0,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 2053,
+      "pattern": "near",
+      "gap": 1.1920928955078125e-07,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 32768,
+      "pattern": "random",
+      "gap": 2.9802322387695312e-06,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 32768,
+      "pattern": "ties",
+      "gap": 0.0,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    },
+    {
+      "visible": 32768,
+      "pattern": "near",
+      "gap": 1.1920928955078125e-07,
+      "identical_fp32_scores": true,
+      "ids_bit_exact": true
+    }
+  ],
+  "slice_fixture_sha256": "946fd83498acbce9097460743f0d9a8e56184e82847dbe9ca2120b9cf3d8108a",
+  "source_sha256": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+  "metal_sha256": "974648f7390831bcb4d84c23242df53653dde8b9c002496898368bdfa70891ea",
+  "test_sha256": "f465621e998cac231ec9e72b30166630aaf73ce3ea9451bcdfa2a86f709fedfb",
+  "scope": "Private Metal stages and device selection; no full graph or BF16 loss"
+}

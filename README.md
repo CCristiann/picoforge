@@ -12,7 +12,9 @@ local measurements linked below; there is no measured lead over other runtimes.
 The development target is **Qwen3.8-Flash-Next Q2** on the M5 Pro with 64 GiB.
 Its [local DwarfStar baseline](docs/qwen38-q2-baseline.md) is measured. Native
 [GGUF storage and multiple no-copy Metal views](docs/qwen38-storage.md) are
-implemented and tested; Qwen3.8 generation in picoforge is not implemented yet.
+implemented and tested. Native Qwen3.8 greedy generation now runs the full
+48-layer FP32 graph on Metal, including SSD n-grams and device-side QSA/MoE
+selection. [Implementation and correctness evidence](docs/specs/qwen38/G2.md).
 The existing Qwen3 models remain the inference and regression reference.
 
 ## Build and run
@@ -41,9 +43,48 @@ make test-all
 make ui                       # http://127.0.0.1:8000
 ```
 
-The context includes prompt and output. Its default is 1,024 tokens. Attention
-is tested through 4,096 tokens; larger requests are checked against the model
-limit and the GPU's threadgroup-memory capacity before dispatch.
+Qwen3.8 uses its GGUF directly (the n-gram table stays on disk):
+
+```sh
+tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
+  ./picoforge --qwen38 models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
+  --chat "Rispondi in italiano: quanto fa 2 + 2?" --max-new 32
+```
+
+This path defaults to context 8192, prefill chunk 1024, greedy decoding and
+thinking disabled. `--complete TEXT` supplies raw text; `--thinking` enables
+the chat reasoning prefix. `--logits FILE.f32` saves one FP32 vocabulary row
+per sampling step; `--token-ids FILE.json` saves prompt/output IDs. This is a
+FP32 baseline; reproducible native measurements and the resident local chat are
+documented in [native increments](docs/specs/qwen38/native-next.md). Add `--mtp`
+for the real checkpoint predictor with exact greedy verification and full
+state rollback; see the [MTP contract and gates](docs/specs/qwen38/MTP.md).
+
+The [updated native report](bench/qwen38_native_20261013/report-mtp-final.html)
+includes the ordinary 8K trial, native measurements, bounded CPU checks and
+the paired MTP pilot. Earlier report snapshots remain available.
+The [original G2/G3 report](bench/qwen38_g2_g3_20261013/report.html) shows
+the recorded output, all 48 layer errors, the FP32/Metal comparison and memory.
+Open the HTML directly, or serve it locally:
+
+```sh
+python3 -m http.server 8766 --bind 127.0.0.1 --directory bench
+# http://127.0.0.1:8766/qwen38_g2_g3_20261013/report.html
+```
+
+This page explores saved evidence; it does not start inference. Regenerate it
+without additional dependencies using
+`python3 tools/eval/render_qwen38_native.py bench/qwen38_g2_g3_20261013 bench/qwen38-report-new.html`.
+The output path must be new; recorded evidence is never overwritten.
+
+Start the live Qwen3.8 chat with `make ui-qwen38`, then open
+`http://127.0.0.1:8001`. One resident worker owns the common GPU lock and replays
+the complete conversation through the native template on every turn. Stop the
+service before running benchmarks. No additional dependencies are required.
+
+For the Qwen3 path, context includes prompt and output and defaults to 1,024
+tokens. Its attention is tested through 4,096 tokens; larger requests are
+checked against the model limit and GPU threadgroup-memory capacity.
 
 ## Supported paths
 
@@ -54,6 +95,7 @@ limit and the GPU's threadgroup-memory capacity before dispatch.
 | MoE GPU experts | bf16 or q8_row; Q4 experts are not implemented |
 | Qwen3 checkpoints | Hugging Face safetensors; GPU needs a single file, CPU accepts shards |
 | Qwen3.8 storage | Bounded GGUF v3 inventory; mixed packed formats; multiple Metal views excluding disk-only n-grams |
+| Qwen3.8 inference | Full FP32 Metal graph; PLE, HC/GDN, QSA, routed/shared MoE; bounded prefill, greedy chat/completion, reset/replay |
 | Generation | Single-turn chat, sampling, greedy, prompt-lookup or model-based speculation |
 | Adaptive drafting | Default uses acceptance and timings; optional `auto-experts` forecasts cost from accepted routes |
 | Local UI | Python standard-library server; loads a new engine process for each request |
@@ -133,10 +175,14 @@ then Metal with the C path. Speculative tests compare complete token sequences
 with ordinary greedy generation. Long-context tests also compare attention
 with an fp64 reference and all router choices with Transformers on the tiny MoE.
 
-The next Qwen3.8 increment is independent numerical references and native
-operators for its packed weights and hybrid architecture, followed by ordinary
-generation. Storage validation does not establish logits or recurrent-state
-correctness. The [handoff](docs/qwen38-q2-session-prompt.md) sets the order.
+Qwen3.8 now has independent operator references, a CPU graph and the ordinary
+Metal generation path. The full-checkpoint gate compares all 48 layer outputs
+and logits against pinned DwarfStar FP32; its stock Metal FP16 cache comparison
+is recorded separately, including a near-tie routing divergence. See the
+[G2/G3 report](docs/specs/qwen38/G2.md). The subsequent
+[native trials](bench/qwen38_native_20261013/README.md) measure FP32 QSA tuning,
+latency and memory separately from response quality. MTP is opt-in and
+retains the ordinary greedy path as its reference.
 The 30B [expert-cost experiment](docs/phase4-expert-experiment.md) remains
 available; its pilot does not justify replacing the default scheduler.
 The [project review](docs/project-review-2026-10-11.md) records the scope and

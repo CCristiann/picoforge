@@ -14,6 +14,7 @@ void gguf_plan(const Gguf *g, size_t page, size_t limit, GgufPlan *p) {
     if (!page || (page & (page - 1)) || !(limit &= ~(page - 1)))
         die("gguf: invalid page size or buffer limit");
     p->page_size = page;
+    p->source = g;
     p->file_size = g->file_size;
     p->views = calloc(g->tensor_count, sizeof *p->views);
     p->weights = calloc(g->tensor_count, sizeof *p->weights);

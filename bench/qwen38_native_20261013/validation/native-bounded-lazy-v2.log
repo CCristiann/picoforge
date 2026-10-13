@@ -1,0 +1,8 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+Traceback (most recent call last):
+  File "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/eval/qwen38_native_bounded.py", line 68, in <module>
+    a=p.parse_args(); run(a.suite.resolve(),a.output.resolve(),a.dwarfstar.resolve())
+                      ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/eval/qwen38_native_bounded.py", line 48, in run
+    raise RuntimeError('CPU oracle interrupted/failed; observed evidence retained')
+RuntimeError: CPU oracle interrupted/failed; observed evidence retained

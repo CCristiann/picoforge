@@ -1,0 +1,442 @@
+[
+  {
+    "check": "moe_route_ids",
+    "layer": 0,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 0,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 0,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 1,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 1,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 2,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 2,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 2,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_route_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "moe_route_weights",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 2e-06,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "moe_y",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 0.0005,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "qsa_tokens": 40,
+    "chunk": 13,
+    "budget": 8,
+    "ties": false
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 1.192e-07,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.054e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 1.183e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.072e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 8.653e-08,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 1.483e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "qsa_tokens": 17,
+    "chunk": 1,
+    "budget": 8,
+    "ties": true
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 8.941e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.273e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.129e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 8.914e-08,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "qsa_tokens": 3,
+    "chunk": 1,
+    "budget": 8,
+    "ties": false
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.273e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 6.045e-08,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.129e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 2e-05,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "qsa_tokens": 2053,
+    "chunk": 1023,
+    "budget": 2048,
+    "ties": false
+  },
+  {
+    "check": "qsa_out",
+    "layer": 3,
+    "err": 8.941e-08,
+    "gate": 3e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_q",
+    "layer": 3,
+    "err": 1.045e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_gate",
+    "layer": 3,
+    "err": 5.96e-08,
+    "gate": 1e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_iq",
+    "layer": 3,
+    "err": 1.126e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_keys",
+    "layer": 3,
+    "err": 1.777e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_raw_index",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_blocks",
+    "layer": 3,
+    "err": 1.358e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_scores",
+    "layer": 3,
+    "err": 1.732e-07,
+    "gate": 2e-05,
+    "bitwise": false,
+    "pass": true
+  },
+  {
+    "check": "qsa_ids",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  },
+  {
+    "check": "qsa_chunk_reset",
+    "layer": 3,
+    "err": 0.0,
+    "gate": 0,
+    "bitwise": true,
+    "pass": true
+  }
+]

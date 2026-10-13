@@ -1,0 +1,356 @@
+{
+  "complete": true,
+  "repetitions": 25,
+  "warmup_gpu_s": 0.5,
+  "clock": "Metal GPU timestamps and CLOCK_MONOTONIC wall",
+  "executable_sha256": "9d6fe2130a789725874fa0bd438fc9896454f3ce4361a9e366c20c0e027a6699",
+  "metallib_sha256": "5d1ac8564f5b01c19e957267d5110c42148b27d010cb833111b1d43d737bacf9",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "source_sha256": {
+    "tools/eval/bench_qwen38_attention.py": "3ac1140005ee6b0ac7aae4b5e2936f37cd5719d8a8455860010c143ed7060728",
+    "tools/probe/qwen38_attention_bench.m": "80fd667ca884b8da075875d33f6e1e4ee27099e021abf39880fb232bfda7725c",
+    "src/qwen38_attention.metal": "611077de5fc6a35cfdd8d2637c14c3f1181c1e61477ca81dfa92a64aad90603d"
+  },
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "commands": [
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/64-cooperative",
+      "64",
+      "25",
+      "cooperative"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/64-scalar",
+      "64",
+      "25",
+      "scalar"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/256-cooperative",
+      "256",
+      "25",
+      "cooperative"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/256-scalar",
+      "256",
+      "25",
+      "scalar"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/512-scalar",
+      "512",
+      "25",
+      "scalar"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/512-cooperative",
+      "512",
+      "25",
+      "cooperative"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/1024-cooperative",
+      "1024",
+      "25",
+      "cooperative"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/1024-scalar",
+      "1024",
+      "25",
+      "scalar"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/2048-cooperative",
+      "2048",
+      "25",
+      "cooperative"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/2048-scalar",
+      "2048",
+      "25",
+      "scalar"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/8192-cooperative",
+      "8192",
+      "25",
+      "cooperative"
+    ],
+    [
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
+      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/8192-scalar",
+      "8192",
+      "25",
+      "scalar"
+    ]
+  ],
+  "results": [
+    {
+      "n": 64,
+      "selected": 64,
+      "order": [
+        "cooperative",
+        "scalar"
+      ],
+      "cooperative": {
+        "gpu_s": {
+          "median": 0.000645042,
+          "p10": 0.000644917,
+          "p90": 0.000660083,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.00078,
+          "p10": 0.000765,
+          "p90": 0.000797,
+          "n": 25
+        },
+        "output_sha256": "344bf3d5564054e85e01dd38303b113183293f08bc892019cfe4905b03783f13"
+      },
+      "scalar": {
+        "gpu_s": {
+          "median": 0.004163125,
+          "p10": 0.003893,
+          "p90": 0.004196667,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.004295,
+          "p10": 0.004007,
+          "p90": 0.004336,
+          "n": 25
+        },
+        "output_sha256": "344bf3d5564054e85e01dd38303b113183293f08bc892019cfe4905b03783f13"
+      },
+      "bit_identical": true,
+      "speedup": 6.45403710146006
+    },
+    {
+      "n": 256,
+      "selected": 256,
+      "order": [
+        "cooperative",
+        "scalar"
+      ],
+      "cooperative": {
+        "gpu_s": {
+          "median": 0.002581,
+          "p10": 0.002569792,
+          "p90": 0.00259525,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.002721,
+          "p10": 0.002688,
+          "p90": 0.002792,
+          "n": 25
+        },
+        "output_sha256": "782cb8f4907c6ff0d31eca6326997452f34e439512858a4025fa57594da23ca9"
+      },
+      "scalar": {
+        "gpu_s": {
+          "median": 0.016057083,
+          "p10": 0.015741,
+          "p90": 0.016325875,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.016237,
+          "p10": 0.015877,
+          "p90": 0.016503,
+          "n": 25
+        },
+        "output_sha256": "782cb8f4907c6ff0d31eca6326997452f34e439512858a4025fa57594da23ca9"
+      },
+      "bit_identical": true,
+      "speedup": 6.2212642386671835
+    },
+    {
+      "n": 512,
+      "selected": 512,
+      "order": [
+        "scalar",
+        "cooperative"
+      ],
+      "scalar": {
+        "gpu_s": {
+          "median": 0.033090958,
+          "p10": 0.031729042,
+          "p90": 0.033443042,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.033273,
+          "p10": 0.031898,
+          "p90": 0.033671,
+          "n": 25
+        },
+        "output_sha256": "6e1b7c93132737e5a3998bcfbe7b3133691fde8bc0c4a7d3a9b63c92ce234eb4"
+      },
+      "cooperative": {
+        "gpu_s": {
+          "median": 0.005170875,
+          "p10": 0.005162292,
+          "p90": 0.0051885,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.005298,
+          "p10": 0.005282,
+          "p90": 0.005334,
+          "n": 25
+        },
+        "output_sha256": "6e1b7c93132737e5a3998bcfbe7b3133691fde8bc0c4a7d3a9b63c92ce234eb4"
+      },
+      "bit_identical": true,
+      "speedup": 6.399489061329078
+    },
+    {
+      "n": 1024,
+      "selected": 1024,
+      "order": [
+        "cooperative",
+        "scalar"
+      ],
+      "cooperative": {
+        "gpu_s": {
+          "median": 0.01027175,
+          "p10": 0.010270875,
+          "p90": 0.01028025,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.010446,
+          "p10": 0.01044,
+          "p90": 0.010462,
+          "n": 25
+        },
+        "output_sha256": "ac606c66e7fc1f48f6dae59f4fa35f19c68f0444f0dfcf1539b662fd0fe52d2d"
+      },
+      "scalar": {
+        "gpu_s": {
+          "median": 0.06564325,
+          "p10": 0.064283083,
+          "p90": 0.068132417,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.065813,
+          "p10": 0.064473,
+          "p90": 0.068389,
+          "n": 25
+        },
+        "output_sha256": "ac606c66e7fc1f48f6dae59f4fa35f19c68f0444f0dfcf1539b662fd0fe52d2d"
+      },
+      "bit_identical": true,
+      "speedup": 6.390658845863656
+    },
+    {
+      "n": 2048,
+      "selected": 2048,
+      "order": [
+        "cooperative",
+        "scalar"
+      ],
+      "cooperative": {
+        "gpu_s": {
+          "median": 0.02089425,
+          "p10": 0.02088375,
+          "p90": 0.020986167,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.021073,
+          "p10": 0.021029,
+          "p90": 0.021154,
+          "n": 25
+        },
+        "output_sha256": "2b80ca428d4a1f09e78ce28a323445843bb7e29554f86bdae1658b1a4be7cb1f"
+      },
+      "scalar": {
+        "gpu_s": {
+          "median": 0.130320583,
+          "p10": 0.128458833,
+          "p90": 0.136341458,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.130468,
+          "p10": 0.128636,
+          "p90": 0.136505,
+          "n": 25
+        },
+        "output_sha256": "2b80ca428d4a1f09e78ce28a323445843bb7e29554f86bdae1658b1a4be7cb1f"
+      },
+      "bit_identical": true,
+      "speedup": 6.237150555774914
+    },
+    {
+      "n": 8192,
+      "selected": 2048,
+      "order": [
+        "cooperative",
+        "scalar"
+      ],
+      "cooperative": {
+        "gpu_s": {
+          "median": 0.020902042,
+          "p10": 0.020883375,
+          "p90": 0.020990583,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.021064,
+          "p10": 0.021022,
+          "p90": 0.021156,
+          "n": 25
+        },
+        "output_sha256": "2b80ca428d4a1f09e78ce28a323445843bb7e29554f86bdae1658b1a4be7cb1f"
+      },
+      "scalar": {
+        "gpu_s": {
+          "median": 0.12954575,
+          "p10": 0.127434,
+          "p90": 0.136092583,
+          "n": 25
+        },
+        "wall_s": {
+          "median": 0.129731,
+          "p10": 0.127613,
+          "p90": 0.136276,
+          "n": 25
+        },
+        "output_sha256": "2b80ca428d4a1f09e78ce28a323445843bb7e29554f86bdae1658b1a4be7cb1f"
+      },
+      "bit_identical": true,
+      "speedup": 6.197755702528968
+    }
+  ],
+  "thermal_after": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n"
+}

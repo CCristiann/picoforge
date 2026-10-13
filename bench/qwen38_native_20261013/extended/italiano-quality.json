@@ -1,0 +1,17 @@
+{
+  "case": "italiano",
+  "grading": "manual",
+  "answer_sha256": "a9c1d6bcc09987a065ba329539e0d98cda01e68b8a3d1aa34e7d345e33621166",
+  "word_count_whitespace": 256,
+  "criteria": {
+    "italian": true,
+    "copy_vs_restore": true,
+    "periodic_restore_test": true,
+    "integrity_checks_and_examples": true,
+    "approximately_250_words": true
+  },
+  "limitations": [
+    "Valutazione qualitativa manuale di una sola risposta; nessuna misura di qualità generale.",
+    "La frase finale sulla certezza assoluta è troppo forte: la prova vale per i dati e le condizioni testati."
+  ]
+}

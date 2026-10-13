@@ -1,0 +1,64 @@
+{
+  "command": [
+    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+  ],
+  "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+  "pilot": true,
+  "complete": true,
+  "recorded_utc": "2026-10-13T19:42:54.218139+00:00",
+  "executable_sha256": "fe3648c506a5f8d12c6f70203e845a07d66cd06e36473c5e6d69c0dbe447ae15",
+  "environment": {
+    "DS4_METAL_MEMORY_REPORT": "1",
+    "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
+    "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/reference.f32"
+  },
+  "removed_environment_names": [],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "sample_interval_s": 0.5,
+  "system_before": {
+    "pid": 92983,
+    "monotonic_s": 6659.665281,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1376616,
+    "lifetime_peak_phys_footprint_bytes": 1409384,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 3633971200,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 189628,
+    "system_swapouts_pages": 558292,
+    "page_bytes": 16384,
+    "system_wired_pages": 308765,
+    "system_compressor_pages": 26310
+  },
+  "guard": "stop after 3 samples: critical pressure or swap growth > 2 GiB",
+  "pid": 92985,
+  "start_monotonic_s": 6659.674159,
+  "process_s": 130.16280800000004,
+  "returncode": 0,
+  "stop_reason": null,
+  "first_stream_bytes_s": {
+    "stderr": 0.25889699999970617,
+    "stdout": 130.16090600000007
+  },
+  "system_after": {
+    "pid": 94649,
+    "monotonic_s": 6789.839759,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1376616,
+    "lifetime_peak_phys_footprint_bytes": 1409384,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 3150774272,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 209688,
+    "system_swapouts_pages": 560289,
+    "page_bytes": 16384,
+    "system_wired_pages": 313694,
+    "system_compressor_pages": 25276
+  },
+  "samples": 257,
+  "sampled_peak_footprint_bytes": 197867712,
+  "lifetime_peak_footprint_bytes": 197867712
+}

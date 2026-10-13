@@ -1,0 +1,10 @@
+last-position logits: min=-10.6128 max=21.7023 rms=1.84065
+top logits after Qwen3.8 CPU pass over 24 tokens:
+  248046    21.7023  <|im_end|>
+      18    19.0091  3
+      22    17.8730  7
+      20    17.7673  5
+      16    17.5446  1
+      19    17.0659  4
+      24    16.4869  9
+      17    15.7692  2

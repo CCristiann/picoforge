@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-12",
+  "scope": "Independent CPU oracle only; no frozen runtime API, GPU, benchmark or BF16 quality measurement",
+  "picoforge_base": "7c0b2379b93c478a46b0d6e75c3bde91a57b1bce",
+  "spec_commit": "82f38ce6b8c8ab16e99b08dd86e2c96f729312b4",
+  "oracle_code_commit": "c6efc109b96479444cb0ba96378875502754827b",
+  "python_executable": "/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python",
+  "ggml_constants": {
+    "revision": "8bb3cf0d216a5ae48360179f2931daf284be4d01",
+    "common_header_sha256": "0061131b615c5721fc88a78feeb22c1f8c450f1c2646a317d80796a653bf595c",
+    "grid_bytes": 2048,
+    "grid_sha256": "05826b5d3e472a3a78f196be62ac78acf81df0f909626e12ab9fa2a5d490dd54",
+    "sign_bytes": 128,
+    "sign_sha256": "a76742a603f8beca5212ecce0f1f02f11a4887fd2f7c8b15aca0ea3eb3380c31",
+    "verification": "Canonical source tables compared during SPEC B; gguf package not executed"
+  },
+  "test_runs": [
+    {
+      "schema_version": 1,
+      "success": true,
+      "tests_run": 21,
+      "failures": [],
+      "errors": [],
+      "skipped": [],
+      "python": "3.14.2 (main, Dec  5 2025, 16:49:16) [Clang 17.0.0 (clang-1700.6.3.2)]",
+      "numpy": "2.5.1",
+      "command": [
+        "tests/test_qwen38_packed.py",
+        "--reference",
+        "build/qwen38-packed/oracle/reference",
+        "--report",
+        "build/qwen38-packed/tests-cpu-final.json",
+        "-v"
+      ],
+      "reference_manifest": {
+        "schema_version": 1,
+        "upstream_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+        "decoder": "ds4.c:qwen4_ref_row",
+        "adapter_sha256": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
+        "source_sha256": {
+          "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/tools/oracle/qwen38_packed_reference.c": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c": "d137a9a5936d35152d1aa7abd9631462697abd69b429f52e51663292c1d063bd",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.h": "e3bdab439fdb4459fa7105e05f7209ee77190a98d97d58b6dde8c3730f2a22da",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_ssd.h": "61f4312a8b3686d5f5591f52365e6cb6301fd44d63775d5f490bbc2dd5c8e348",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tool_text.h": "a9c09f4a4d1cf2a3260d9c539de222cd949b5cd7710c7bf17ec9be5bc58bd159",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_distributed.h": "cf2f60eb677e0eb8aeb3f8d2966636ae075893ae2198beb5e446e483af537f9e",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_image.h": "519ee87d7edd4cba3f443bb855cb4e6f712e9f63569265292ef13596e2152a63",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_engram.h": "f84a264e0fe199d23a6f0c56fbbd19e222adc7009eed13c185af6403f68f7f5c",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tp.h": "df9fe502bcb68827d3484bf6ec8cbd73352a5227d1494776d56b3f0214821b10",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_layer_pack.h": "cbe111519a7a1035f934f890d3512e42d068c8d683295ee077a984cc5ae32bcf",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_gpu_mgpu.h": "57d3977180a391d7ac50ab063ba157047578fb0004551bff16a48225a6389f87",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_streaming_hotlist.inc": "f531a6ce780abd31eeabafb865221f8407965f358184850996a5e010a6386d92",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_streaming_hotlist_glm52.inc": "f90296ccf162cbf4d438a6e44c129b0367683ba9cf72a54621ca14b2ad5c2cb8",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_qwen4_unicode.inc": "7ba13d74558dd013f38f691908bddcddb81c7874a5ab582e5bbc865764617b61",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/LICENSE": "4a8a1358f5b048627d71e4988de0bafd386f4988991929629e6cb9e29b7b9b2f"
+        },
+        "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+        "command": [
+          "clang",
+          "-std=c11",
+          "-O2",
+          "-fno-fast-math",
+          "-ffp-contract=off",
+          "-Wall",
+          "-Wextra",
+          "-Wno-unused-function",
+          "-DDS4_REFERENCE_SOURCE=\"/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c\"",
+          "-I",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/tools/oracle/qwen38_packed_reference.c",
+          "-Wl,-dead_strip",
+          "-lm",
+          "-pthread",
+          "-o",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/build/qwen38-packed/oracle/reference"
+        ],
+        "binary_sha256": "ed19f951c466999b15d0ec84dad0898ba9f547f37cddba4f68da440d5bb89106",
+        "sanitizer": false,
+        "byte_limit": 33554432,
+        "gpu": false
+      },
+      "source_sha256": {
+        "tests/test_qwen38_packed.py": "923abef0b07b4bda19e5632a2a45d2ee751365f41a5cb6d039e883069a29f121",
+        "tools/oracle/qwen38_packed.py": "690c0296fbff6a7fbfaec8552cc755ffc54fc1c3d86333a1d411d110f7f7b763",
+        "tools/oracle/qwen38_packed_reference.c": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098"
+      }
+    },
+    {
+      "schema_version": 1,
+      "success": true,
+      "tests_run": 21,
+      "failures": [],
+      "errors": [],
+      "skipped": [],
+      "python": "3.14.2 (main, Dec  5 2025, 16:49:16) [Clang 17.0.0 (clang-1700.6.3.2)]",
+      "numpy": "2.5.1",
+      "command": [
+        "tests/test_qwen38_packed.py",
+        "--reference",
+        "build/qwen38-packed/sanitized-strict/reference",
+        "--report",
+        "build/qwen38-packed/tests-sanitized-final.json",
+        "-v"
+      ],
+      "reference_manifest": {
+        "schema_version": 1,
+        "upstream_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+        "decoder": "ds4.c:qwen4_ref_row",
+        "adapter_sha256": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
+        "source_sha256": {
+          "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/tools/oracle/qwen38_packed_reference.c": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c": "d137a9a5936d35152d1aa7abd9631462697abd69b429f52e51663292c1d063bd",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.h": "e3bdab439fdb4459fa7105e05f7209ee77190a98d97d58b6dde8c3730f2a22da",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_ssd.h": "61f4312a8b3686d5f5591f52365e6cb6301fd44d63775d5f490bbc2dd5c8e348",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tool_text.h": "a9c09f4a4d1cf2a3260d9c539de222cd949b5cd7710c7bf17ec9be5bc58bd159",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_distributed.h": "cf2f60eb677e0eb8aeb3f8d2966636ae075893ae2198beb5e446e483af537f9e",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_image.h": "519ee87d7edd4cba3f443bb855cb4e6f712e9f63569265292ef13596e2152a63",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_engram.h": "f84a264e0fe199d23a6f0c56fbbd19e222adc7009eed13c185af6403f68f7f5c",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tp.h": "df9fe502bcb68827d3484bf6ec8cbd73352a5227d1494776d56b3f0214821b10",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_layer_pack.h": "cbe111519a7a1035f934f890d3512e42d068c8d683295ee077a984cc5ae32bcf",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_gpu_mgpu.h": "57d3977180a391d7ac50ab063ba157047578fb0004551bff16a48225a6389f87",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_streaming_hotlist.inc": "f531a6ce780abd31eeabafb865221f8407965f358184850996a5e010a6386d92",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_streaming_hotlist_glm52.inc": "f90296ccf162cbf4d438a6e44c129b0367683ba9cf72a54621ca14b2ad5c2cb8",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_qwen4_unicode.inc": "7ba13d74558dd013f38f691908bddcddb81c7874a5ab582e5bbc865764617b61",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/LICENSE": "4a8a1358f5b048627d71e4988de0bafd386f4988991929629e6cb9e29b7b9b2f"
+        },
+        "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+        "command": [
+          "clang",
+          "-std=c11",
+          "-O2",
+          "-fno-fast-math",
+          "-ffp-contract=off",
+          "-Wall",
+          "-Wextra",
+          "-Wno-unused-function",
+          "-DDS4_REFERENCE_SOURCE=\"/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c\"",
+          "-I",
+          "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+          "-fsanitize=address,undefined",
+          "-fno-sanitize-recover=all",
+          "-fno-omit-frame-pointer",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/tools/oracle/qwen38_packed_reference.c",
+          "-Wl,-dead_strip",
+          "-lm",
+          "-pthread",
+          "-o",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/build/qwen38-packed/sanitized-strict/reference"
+        ],
+        "binary_sha256": "5b3cd2b27b5fddcb5546cf40bd4a3345ae13a0a8013ef92c1f6f6719af5b33e3",
+        "sanitizer": true,
+        "byte_limit": 33554432,
+        "gpu": false
+      },
+      "source_sha256": {
+        "tests/test_qwen38_packed.py": "923abef0b07b4bda19e5632a2a45d2ee751365f41a5cb6d039e883069a29f121",
+        "tools/oracle/qwen38_packed.py": "690c0296fbff6a7fbfaec8552cc755ffc54fc1c3d86333a1d411d110f7f7b763",
+        "tools/oracle/qwen38_packed_reference.c": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098"
+      }
+    }
+  ],
+  "synthetic_coverage": {
+    "seed": 3811,
+    "q2_scale_min_code_combinations": 1024,
+    "q2_independent_column_impulses": 256,
+    "iq2_grid_sign_scale_vectors": 524288,
+    "iq2_grid_sign_scale_values": 4194304,
+    "padding_logical": 640,
+    "padding_physical": 768,
+    "decode_tolerance": "bit-exact FP32",
+    "saved_product_tolerance": "exact FP64 dyadic fixtures"
+  },
+  "real_slices": {
+    "runs": [
+      {
+        "schema_version": 1,
+        "complete": true,
+        "seed": 3811,
+        "kind": 10,
+        "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+        "checkpoint_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+        "checkpoint_identity": [
+          16777231,
+          30631842,
+          147207127040,
+          1791785892435960350,
+          1791785946727934786
+        ],
+        "header_sha256": "ec931bcfabe3d85d69a0f7a07cd697b7205afd620b220d4b3099c7cced7a6e75",
+        "bytes_read": 6804,
+        "header_bytes_read": 11025376,
+        "generator_sha256": "690c0296fbff6a7fbfaec8552cc755ffc54fc1c3d86333a1d411d110f7f7b763",
+        "scope": "same-checkpoint decode and FP64 products; no native/GPU/BF16-quality claim",
+        "artifact_directory": "build/qwen38-packed/q2-verified",
+        "original_manifest_sha256": "cc4062d3efa819c9cac2b3fbfdade024ed4ba33a96c19a68bb93908527e81f03",
+        "oracle_binary_sha256": "5b3cd2b27b5fddcb5546cf40bd4a3345ae13a0a8013ef92c1f6f6719af5b33e3",
+        "rows": 27,
+        "replay": {
+          "exit_code": 0,
+          "rows": 27,
+          "command": [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/tools/oracle/qwen38_packed.py",
+            "replay",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/build/qwen38-packed/sanitized-strict/reference",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/build/qwen38-packed/q2-verified"
+          ]
+        }
+      },
+      {
+        "schema_version": 1,
+        "complete": true,
+        "seed": 3811,
+        "kind": 16,
+        "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+        "checkpoint_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+        "checkpoint_identity": [
+          16777231,
+          30631842,
+          147207127040,
+          1791785892435960350,
+          1791785946727934786
+        ],
+        "header_sha256": "ec931bcfabe3d85d69a0f7a07cd697b7205afd620b220d4b3099c7cced7a6e75",
+        "bytes_read": 35640,
+        "header_bytes_read": 11025376,
+        "generator_sha256": "690c0296fbff6a7fbfaec8552cc755ffc54fc1c3d86333a1d411d110f7f7b763",
+        "scope": "same-checkpoint decode and FP64 products; no native/GPU/BF16-quality claim",
+        "artifact_directory": "build/qwen38-packed/iq2-verified",
+        "original_manifest_sha256": "732157832bf47ae6ba8409b0f5a95f9e0fa2a681c1fba3ec5f946dd9f683f9a4",
+        "oracle_binary_sha256": "5b3cd2b27b5fddcb5546cf40bd4a3345ae13a0a8013ef92c1f6f6719af5b33e3",
+        "rows": 54,
+        "replay": {
+          "exit_code": 0,
+          "rows": 54,
+          "command": [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/tools/oracle/qwen38_packed.py",
+            "replay",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/build/qwen38-packed/sanitized-strict/reference",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-oracle-b/build/qwen38-packed/iq2-verified"
+          ]
+        }
+      }
+    ],
+    "total_rows": 81,
+    "total_payload_bytes": 42444,
+    "total_decoded_values": 158976,
+    "payload_files_committed": false,
+    "full_checkpoint_hash_recomputed": false,
+    "prior_full_hash_record": "bench/qwen38_q2_20261011_phase0/checkpoint.verification.json",
+    "row_index": {
+      "file": "slices.jsonl",
+      "rows": 81,
+      "bytes": 72648,
+      "sha256": "664c40c57e20638088351f91077471ecde20865ded63cb6324514d00a7637ea5"
+    }
+  }
+}

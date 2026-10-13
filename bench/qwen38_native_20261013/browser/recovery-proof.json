@@ -1,0 +1,69 @@
+{
+  "case": "recovery-after-context-error",
+  "error": "",
+  "headerTop": 0,
+  "metrics": "Primo token 4,2 s · 1,11 token/s · 3 token · 24/8192 token totali · 42,39 GiB Metal",
+  "overflow": false,
+  "status": {
+    "active": false,
+    "context": 8192,
+    "error": null,
+    "messages": [
+      {
+        "content": "Rispondi soltanto con la parola: pronto.",
+        "role": "user"
+      },
+      {
+        "content": "pronto",
+        "role": "assistant"
+      }
+    ],
+    "metrics": {
+      "chunk": 128,
+      "context": 8192,
+      "decode_profile": {
+        "encode_s": 0.005201,
+        "gpu_s": 1.785240917,
+        "ngram_bytes": 10240,
+        "ngram_calls": 32,
+        "ngram_rows": 32,
+        "prepare_s": 0.010243,
+        "wait_s": 1.786984
+      },
+      "decode_s": 1.80297,
+      "decode_tokens": 2,
+      "event": "done",
+      "first_token_from_entry_s": null,
+      "generated_ids": [
+        631,
+        9641,
+        248046
+      ],
+      "generated_tokens": 3,
+      "graph_buffer_bytes": 713683968,
+      "load_s": 0.199539,
+      "metal_allocated_bytes": 45511098368,
+      "metal_recommended_bytes": 55662788608,
+      "position": 23,
+      "prefill_profile": {
+        "encode_s": 0.004001,
+        "gpu_s": 3.367271625,
+        "ngram_bytes": 107520,
+        "ngram_calls": 336,
+        "ngram_rows": 336,
+        "prepare_s": 0.011815,
+        "wait_s": 4.158776
+      },
+      "prefill_s": 4.175209,
+      "prompt_tokens": 21,
+      "repetition": 7,
+      "request_s": 5.998013,
+      "reset_s": 0.019687,
+      "stop_reason": "stop",
+      "ttft_request_s": 4.195043,
+      "warmup": false
+    },
+    "session_mode": "resident_model_reset_replay",
+    "state": "ready"
+  }
+}

@@ -1,0 +1,1 @@
+Trova il più piccolo intero n maggiore di 1000 che lascia resto 2 modulo 7, 5 modulo 11 e 8 modulo 13. Rispondi soltanto con JSON contenente la chiave n.

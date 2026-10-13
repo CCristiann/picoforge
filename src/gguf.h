@@ -45,6 +45,7 @@ typedef struct {
     const GgufPlan *owner;           /* borrowed; valid until the plan is freed */
 } GgufBinding;
 struct GgufPlan {
+    const Gguf *source;              /* identity witness only; never dereferenced */
     GgufView *views;
     GgufBinding *weights;            /* plan owns descriptors; no header borrows */
     size_t view_count, weight_count, page_size, file_size;

@@ -1,0 +1,8 @@
+{
+  "case": "two-file-fix",
+  "format_followed": true,
+  "tests_passed": true,
+  "returncode": 0,
+  "stdout": "PASS: both files, boundaries, validation, true division\n",
+  "stderr": ""
+}

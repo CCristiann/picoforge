@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "gguf.h"
+#include "qwen38_packed.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,13 @@ int main(int argc, char **argv) {
         const size_t count = plan->weight_count, views = plan->view_count;
         if (!real) assert(count == 3 && views == 3);
         assert(!gpu_weights_find(store, "per_layer_token_embd.weight"));
+        assert(plan->source == &g);
+        Qwen38CpuSpan span;
+        Qwen38Error span_error;
+        GgufBinding copy = plan->weights[0];
+        assert(qwen38_weights_cpu_span(store, &copy, &span, &span_error) == Q38_OWNER);
+        assert(!span.data && !span.bytes && span_error.code == Q38_OWNER);
+        assert(qwen38_weights_cpu_span(store, NULL, &span, NULL) == Q38_INVALID_ARGUMENT);
         if (!strcmp(mode, "--foreign")) {
             GgufBinding foreign = plan->weights[0]; foreign.owner = NULL;
             (void)gpu_weights_buffer(store, &foreign);
@@ -73,11 +81,14 @@ int main(int argc, char **argv) {
             const GgufBinding *b = &plan->weights[i];
             assert(b->owner == plan);
             assert(gpu_weights_find(store, b->tensor.name) == b);
+            assert(qwen38_weights_cpu_span(store, b, &span, &span_error) == Q38_OK);
+            assert(span.bytes == b->tensor.bytes && span_error.code == Q38_OK);
             uint64_t at[] = {b->offset, b->offset + b->tensor.bytes/2, b->offset + b->tensor.bytes-1};
             uint32_t base = (uint32_t)(i*3);
             for (size_t j = 0; j < 3; j++) {
                 size_t offset = b->tensor.file_offset + (size_t)(at[j] - b->offset);
                 assert(pread(g.fd, expected+i*3+j, 1, (off_t)offset) == 1);
+                assert(span.data[at[j] - b->offset] == expected[i*3+j]);
             }
             [encoder setBuffer:(__bridge id<MTLBuffer>)gpu_weights_buffer(store, b) offset:0 atIndex:0];
             [encoder setBytes:at length:sizeof at atIndex:2];

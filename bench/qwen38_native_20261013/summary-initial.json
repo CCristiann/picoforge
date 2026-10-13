@@ -1,0 +1,592 @@
+{
+  "schema": 1,
+  "pilot": true,
+  "groups": [
+    {
+      "group": "extended",
+      "case": "italiano",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 65,
+      "context": 8192,
+      "chunk": 1024,
+      "generated_tokens": [
+        373
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 1648.3335819999993,
+      "first_stdout_s": 12.333746999996947,
+      "load_s": 0.193969,
+      "memory": {
+        "metal_allocated_bytes": 46294941696,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 1497537024,
+        "lifetime_peak_footprint_bytes": 1751781360,
+        "sampled_peak_footprint_bytes": 1725583344,
+        "samples": 1183,
+        "peak_system_wired_bytes": 52919926784,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended/italiano.runs.jsonl",
+      "prefill_s": {
+        "median": 12.136002,
+        "p10": 12.136002,
+        "p90": 12.136002,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 1635.53577,
+        "p10": 1635.53577,
+        "p90": 1635.53577,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 12.136126,
+        "p10": 12.136126,
+        "p90": 12.136126,
+        "n": 1
+      },
+      "request_s": {
+        "median": 1647.671896,
+        "p10": 1647.671896,
+        "p90": 1647.671896,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 0.2274484036506276,
+        "p10": 0.2274484036506276,
+        "p90": 0.2274484036506276,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 5.3559648391620245,
+        "p10": 5.3559648391620245,
+        "p90": 5.3559648391620245,
+        "n": 1
+      },
+      "answer": "Verificare un backup è un passaggio critico che spesso viene trascurato, ma è essenziale per garantire la sicurezza dei propri dati. È fondamentale distinguere tra una **copia riuscita** e un **ripristino riuscito**. Una copia riuscita significa semplicemente che il software ha trasferito i file nel luogo di destinazione senza errori di lettura o scrittura; tuttavia, ciò non garantisce che i dati siano accessibili o corretti. Un ripristino riuscito, invece, implica che i dati siano stati estratti dal backup e reintegrati nel sistema operativo, risultando immediatamente utilizzabili e coerenti.\n\nPer assicurarsi della validità delle proprie procedure, si raccomanda di istituire una **prova periodica di ripristino**. Ad esempio, ogni mese, scegliete un file critico, come un documento di lavoro o una cartella di foto, e provate a ripristinarlo su una macchina virtuale isolata o su un disco rigido esterno temporaneo. Questo test simula un disastro reale senza rischiare i dati in produzione.\n\nInfine, controllare l’**integrità dei dati recuperati** è cruciale. Non limitatevi a verificare che il file esista: apritelo. Se state ripristinando un database, eseguite una query di controllo per verificare che le tabelle siano complete. Se ripristinate un’immagine di sistema, avviate la macchina virtuale e controllate che i servizi principali funzionino. Utilizzare checksum (come MD5 o SHA-256) può aiutare a confrontare le firme digitali dei file originali con quelle ripristinate, assicurando bit-per-bit che non vi siano corruzioni. Solo combinando la verifica automatica della copia con test manuali di ripristino e controllo di integrità si può avere la certezza che il proprio sistema di backup sia realmente affidabile.\n"
+    },
+    {
+      "group": "extended",
+      "case": "lower-bound",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 126,
+      "context": 8192,
+      "chunk": 1024,
+      "generated_tokens": [
+        123
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 155.37353399999847,
+      "first_stdout_s": 27.948021000000153,
+      "load_s": 0.145449,
+      "memory": {
+        "metal_allocated_bytes": 46294941696,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 1497537024,
+        "lifetime_peak_footprint_bytes": 1736101800,
+        "sampled_peak_footprint_bytes": 1681805224,
+        "samples": 298,
+        "peak_system_wired_bytes": 50714853376,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended/lower-bound.runs.jsonl",
+      "prefill_s": {
+        "median": 27.798697,
+        "p10": 27.798697,
+        "p90": 27.798697,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 127.361443,
+        "p10": 127.361443,
+        "p90": 127.361443,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 27.798819,
+        "p10": 27.798819,
+        "p90": 27.798819,
+        "n": 1
+      },
+      "request_s": {
+        "median": 155.160262,
+        "p10": 155.160262,
+        "p90": 155.160262,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 0.9579037197309394,
+        "p10": 0.9579037197309394,
+        "p90": 0.9579037197309394,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 4.532586545333402,
+        "p10": 4.532586545333402,
+        "p90": 4.532586545333402,
+        "n": 1
+      },
+      "answer": "```c\n#include <limits.h>\n#include <stddef.h>\n\nsize_t lower_bound_int(const int *a, size_t n, int x) {\n    size_t lo = 0;\n    size_t hi = n;\n    while (lo < hi) {\n        size_t mid = lo + (hi - lo) / 2;\n        if (a[mid] < x) {\n            lo = mid + 1;\n        } else {\n            hi = mid;\n        }\n    }\n    return lo;\n}\n```\n"
+    },
+    {
+      "group": "extended",
+      "case": "ragionamento",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 1024,
+      "generated_tokens": [
+        14
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 22.864025999999285,
+      "first_stdout_s": 10.51959799999895,
+      "load_s": 0.18422,
+      "memory": {
+        "metal_allocated_bytes": 46294941696,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 1497537024,
+        "lifetime_peak_footprint_bytes": 1736167312,
+        "sampled_peak_footprint_bytes": 1679544208,
+        "samples": 44,
+        "peak_system_wired_bytes": 50634752000,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 10.331654,
+        "p10": 10.331654,
+        "p90": 10.331654,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 12.299655,
+        "p10": 12.299655,
+        "p90": 12.299655,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 10.331795,
+        "p10": 10.331795,
+        "p90": 10.331795,
+        "n": 1
+      },
+      "request_s": {
+        "median": 22.63145,
+        "p10": 22.63145,
+        "p90": 22.63145,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.05694021498977,
+        "p10": 1.05694021498977,
+        "p90": 1.05694021498977,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 5.904185331796826,
+        "p10": 5.904185331796826,
+        "p90": 5.904185331796826,
+        "n": 1
+      },
+      "answer": "{\n  \"n\": 1002\n}\n"
+    },
+    {
+      "group": "native-paired/cooperative",
+      "case": "ragionamento",
+      "warmups": 1,
+      "repetitions": 3,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 82.22488999999996,
+      "first_stdout_s": 9.591906000000108,
+      "load_s": 0.156729,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 860196872,
+        "sampled_peak_footprint_bytes": 839356424,
+        "samples": 154,
+        "peak_system_wired_bytes": 49877925888,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "native-paired/cooperative/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 8.647221,
+        "p10": 8.638855,
+        "p90": 8.684329,
+        "n": 3
+      },
+      "decode_s": {
+        "median": 11.653333,
+        "p10": 11.650646,
+        "p90": 11.657944,
+        "n": 3
+      },
+      "ttft_request_s": {
+        "median": 8.649895,
+        "p10": 8.641743,
+        "p90": 8.687034,
+        "n": 3
+      },
+      "request_s": {
+        "median": 20.303228,
+        "p10": 20.299687,
+        "p90": 20.33768,
+        "n": 3
+      },
+      "reset_s": {
+        "median": 0.002583,
+        "p10": 0.002548,
+        "p90": 0.002751,
+        "n": 3
+      },
+      "decode_tps": {
+        "median": 1.1155606726418956,
+        "p10": 1.1151194413011418,
+        "p90": 1.1158179555022099,
+        "n": 3
+      },
+      "prefill_tps": {
+        "median": 7.054289464788745,
+        "p10": 7.024146597854595,
+        "p90": 7.061120947162558,
+        "n": 3
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.000607,
+          "p10": 0.00057,
+          "p90": 0.000693,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.006048,
+          "p10": 0.005853,
+          "p90": 0.006212,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 8.640672,
+          "p10": 8.631828,
+          "p90": 8.677509,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 8.63984425,
+          "p10": 8.630909958,
+          "p90": 8.676764417,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 296960,
+          "p10": 296960,
+          "p90": 296960,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000254,
+          "p10": 0.000252,
+          "p90": 0.000268,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.034021,
+          "p10": 0.033359,
+          "p90": 0.034444,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 11.615159,
+          "p10": 11.613895,
+          "p90": 11.620468,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 11.605602208,
+          "p10": 11.603646458,
+          "p90": 11.608121,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 66560,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        }
+      }
+    },
+    {
+      "group": "native-paired/scalar",
+      "case": "ragionamento",
+      "warmups": 1,
+      "repetitions": 3,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 93.98826999999983,
+      "first_stdout_s": 15.075378999999884,
+      "load_s": 0.148954,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 938168352,
+        "sampled_peak_footprint_bytes": 891162656,
+        "samples": 182,
+        "peak_system_wired_bytes": 49973346304,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "native-paired/scalar/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 9.889159,
+        "p10": 9.886936,
+        "p90": 9.890221,
+        "n": 3
+      },
+      "decode_s": {
+        "median": 12.28828,
+        "p10": 12.269368,
+        "p90": 12.30098,
+        "n": 3
+      },
+      "ttft_request_s": {
+        "median": 9.891976,
+        "p10": 9.889809,
+        "p90": 9.893086,
+        "n": 3
+      },
+      "request_s": {
+        "median": 22.181366,
+        "p10": 22.159177,
+        "p90": 22.192956,
+        "n": 3
+      },
+      "reset_s": {
+        "median": 0.002733,
+        "p10": 0.002682,
+        "p90": 0.00274,
+        "n": 3
+      },
+      "decode_tps": {
+        "median": 1.057918602115186,
+        "p10": 1.056826366679728,
+        "p90": 1.0595492775177988,
+        "n": 3
+      },
+      "prefill_tps": {
+        "median": 6.168370839218988,
+        "p10": 6.167708486999431,
+        "p90": 6.169757749013446,
+        "n": 3
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.000652,
+          "p10": 0.000643,
+          "p90": 0.0007,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.006322,
+          "p10": 0.006134,
+          "p90": 0.006377,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 9.882016,
+          "p10": 9.879791,
+          "p90": 9.883324,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 9.881182792,
+          "p10": 9.878875875,
+          "p90": 9.882829708,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 296960,
+          "p10": 296960,
+          "p90": 296960,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000259,
+          "p10": 0.000254,
+          "p90": 0.000263,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.034528,
+          "p10": 0.034031,
+          "p90": 0.035271,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 12.250305,
+          "p10": 12.230564,
+          "p90": 12.263411,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 12.238496958,
+          "p10": 12.218804083,
+          "p90": 12.251436625,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 66560,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        }
+      }
+    }
+  ],
+  "notes": [
+    "Native FP32 only; DwarfStar 30 token/s belongs to another runtime.",
+    "Warmups retained but excluded. One measured request is not a repeatability benchmark.",
+    "OS file/shader caches are uncontrolled; no cold-cache claim.",
+    "GPU time overlaps wait time. prepare_s includes n-gram I/O, dedup, decode and staging.",
+    "N-gram bytes are logical pread bytes, not physical SSD traffic.",
+    "Footprint, Metal allocations and system wired memory overlap and must not be summed.",
+    "Exact reset/replay within this runtime does not establish independent numerical parity."
+  ]
+}

@@ -1,0 +1,162 @@
+./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_speculative.py -v
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_accept_reject_false_stop_and_verified_stop (__main__.Speculative.test_accept_reject_false_stop_and_verified_stop) ... ok
+test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) ... 
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=0) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=1) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=2) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=3) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=7) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=0) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=1) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=2) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=3) ... FAIL
+  test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=7) ... FAIL
+test_seeded_state_rejection_and_replay (__main__.Speculative.test_seeded_state_rejection_and_replay) ... ok
+test_streaming_signal_stop_and_reset (__main__.Speculative.test_streaming_signal_stop_and_reset) ... ok
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=0)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=3)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=0, stop=7)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=0)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=1)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=2)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=3)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+======================================================================
+FAIL: test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) (n=1, stop=7)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_qwen38_speculative.py", line 87, in test_first_stop_budgets_chunk_one_and_cancellation
+    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+          ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "tests/test_qwen38_speculative.py", line 59, in run_cli
+    self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 0 : Qwen3.8: 4 layers, 1 prompt tokens, context 2, chunk 1; graph buffers 0.2 MiB
+picoforge: Qwen3.8 status 10 : 
+
+
+----------------------------------------------------------------------
+Ran 4 tests in 3.217s
+
+FAILED (failures=10)
+make: *** [test-qwen38-speculative] Error 1

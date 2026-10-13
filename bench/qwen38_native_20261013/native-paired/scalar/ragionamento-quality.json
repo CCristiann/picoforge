@@ -1,0 +1,11 @@
+{
+  "grading": "JSON esatto",
+  "tests_passed": false,
+  "expected": {
+    "n": 1633
+  },
+  "actual": {
+    "n": 1002
+  },
+  "scope": "Stesse otto sequenze; verifica aritmetica indipendente dal runtime."
+}

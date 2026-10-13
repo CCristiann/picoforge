@@ -1,0 +1,81 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_g2_parts.m src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m src/qwen38_attention_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-g2/test_parts
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge.metallib"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+2026-10-13 13:28:32.231 test_parts[85190:265795] Metal API Validation Enabled
+{"check":"moe_route_ids","layer":0,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":0,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":0,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"check":"moe_route_ids","layer":1,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":1,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":1,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"check":"moe_route_ids","layer":2,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":2,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":2,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"check":"moe_route_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"moe_route_weights","layer":3,"err":5.960e-08,"gate":2e-06,"bitwise":false,"pass":true}
+{"check":"moe_y","layer":3,"err":5.960e-08,"gate":0.0005,"bitwise":false,"pass":true}
+{"qsa_tokens":40,"chunk":13,"budget":8,"ties":false}
+{"check":"qsa_out","layer":3,"err":1.192e-07,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.054e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":1.183e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.072e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":8.653e-08,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_scores","layer":3,"err":1.483e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"qsa_tokens":17,"chunk":1,"budget":8,"ties":true}
+{"check":"qsa_out","layer":3,"err":8.941e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.273e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.129e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":8.914e-08,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_scores","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"qsa_tokens":3,"chunk":1,"budget":8,"ties":false}
+{"check":"qsa_out","layer":3,"err":5.960e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.273e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":6.045e-08,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.129e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_scores","layer":3,"err":0.000e+00,"gate":2e-05,"bitwise":true,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"qsa_tokens":2053,"chunk":1023,"budget":2048,"ties":false}
+{"check":"qsa_out","layer":3,"err":8.941e-08,"gate":3e-05,"bitwise":false,"pass":true}
+{"check":"qsa_q","layer":3,"err":1.045e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_gate","layer":3,"err":5.960e-08,"gate":1e-05,"bitwise":false,"pass":true}
+{"check":"qsa_iq","layer":3,"err":1.126e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_keys","layer":3,"err":1.777e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_raw_index","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_blocks","layer":3,"err":1.358e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_scores","layer":3,"err":1.732e-07,"gate":2e-05,"bitwise":false,"pass":true}
+{"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+{"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_attention.m src/qwen38_attention.c src/qwen38_attention_gpu.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_recurrent_gpu.m src/qwen38_packed_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-d/test_attention_gpu
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_attention.py --source build/qwen38-f/upstream/modeling_qwen4_exp.py --native build/qwen38-d/test_attention --metal build/qwen38-d/test_attention_gpu --metal-library "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge.metallib" --slice-fixture build/qwen38-d/slice-01 MetalAttentionTests -v
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+test_attention_sdpa (__main__.MetalAttentionTests.test_attention_sdpa) ... ok
+test_c_norm_and_sigmoid_then_d_rope_one_command (__main__.MetalAttentionTests.test_c_norm_and_sigmoid_then_d_rope_one_command) ... ok
+test_device_selection_tail_sparse_boundary_and_32k (__main__.MetalAttentionTests.test_device_selection_tail_sparse_boundary_and_32k) ... ok
+test_kernel_bounds_and_nonfinite_error_bits (__main__.MetalAttentionTests.test_kernel_bounds_and_nonfinite_error_bits) ... ok
+test_online_rescale_and_poison (__main__.MetalAttentionTests.test_online_rescale_and_poison) ... ok
+test_pool (__main__.MetalAttentionTests.test_pool) ... ok
+test_q2_slice_device_stages (__main__.MetalAttentionTests.test_q2_slice_device_stages) ... ok
+test_real_index_margin (__main__.MetalAttentionTests.test_real_index_margin) ... ok
+test_real_rope (__main__.MetalAttentionTests.test_real_rope) ... ok
+test_rope (__main__.MetalAttentionTests.test_rope) ... ok
+test_scores_and_device_selection (__main__.MetalAttentionTests.test_scores_and_device_selection) ... ok
+test_selection_ties_and_nonfinite (__main__.MetalAttentionTests.test_selection_ties_and_nonfinite) ... ok
+test_selection_to_attention_one_command_at_32k (__main__.MetalAttentionTests.test_selection_to_attention_one_command_at_32k) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 30.939s
+
+OK

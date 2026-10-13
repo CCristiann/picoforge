@@ -1,0 +1,8 @@
+{
+  "case": "lower-bound",
+  "format_followed": false,
+  "tests_passed": true,
+  "returncode": 0,
+  "stdout": "PASS: lower_bound linear oracle and sanitizers\n",
+  "stderr": ""
+}

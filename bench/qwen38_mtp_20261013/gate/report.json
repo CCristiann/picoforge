@@ -1,0 +1,984 @@
+{
+  "complete": true,
+  "gate": 0.001,
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "checkpoint_sha256_recomputed": false,
+  "revision": "888f47fa2ec4ba41a31390bce9e1a0d3f1b31ddb",
+  "diff": "diff --git a/src/qwen38.h b/src/qwen38.h\nindex 641d373..0b54f6f 100644\n--- a/src/qwen38.h\n+++ b/src/qwen38.h\n@@ -48,7 +48,9 @@ typedef enum {\n     Q38_MOE_ROUTER, Q38_MOE_GATE, Q38_MOE_UP, Q38_MOE_DOWN,\n     Q38_SHARED_GATE, Q38_SHARED_UP, Q38_SHARED_DOWN, Q38_SHARED_ROUTER,\n     Q38_PLE_KEY, Q38_PLE_VALUE, Q38_PLE_KEY_NORM, Q38_PLE_QUERY_NORM,\n-    Q38_PLE_CONV_NORM, Q38_PLE_CONV, Q38_ROLE_COUNT\n+    Q38_PLE_CONV_NORM, Q38_PLE_CONV,\n+    Q38_MTP_EH, Q38_MTP_E_NORM, Q38_MTP_H_NORM,\n+    Q38_MTP_HEAD_NORM, Q38_MTP_HEAD_DOWN, Q38_MTP_HEAD_UP, Q38_ROLE_COUNT\n } Qwen38Role;\n Qwen38Status qwen38_config_load(const Gguf *, Qwen38Config **, Qwen38Error *);\n void qwen38_config_free(Qwen38Config *);\ndiff --git a/src/qwen38_b_internal.h b/src/qwen38_b_internal.h\nindex 1509e86..d847c33 100644\n--- a/src/qwen38_b_internal.h\n+++ b/src/qwen38_b_internal.h\n@@ -56,10 +56,9 @@ Q38_B_INLINE bool q38_b_same_layout(const Q38PackedLayout *a, const Q38PackedLay\n }\n /* Nonfatal admission before the existing registry's fatal unknown-ID path. */\n Q38_B_INLINE Qwen38Status q38_b_format(uint32_t type, const GgufFormat **format) {\n-    if (type == 0 || type == 1 || type == 8 || type == 10 || type == 16 || type == 30) {\n+    if (type == 0 || type == 1 || type == 8 || type == 10 || type == 12 || type == 16 || type == 30 || type == 39) {\n         *format = gguf_format(type); return Q38_OK;\n     }\n-    if (type == 12 || type == 39) return Q38_UNSUPPORTED;\n     return Q38_FORMAT;\n }\n /* Common rank-2 activation contract, usable by both CPU and GPU admission.\ndiff --git a/src/qwen38_cli.m b/src/qwen38_cli.m\nindex 7383ae1..86e9349 100644\n--- a/src/qwen38_cli.m\n+++ b/src/qwen38_cli.m\n@@ -39,6 +39,7 @@ static void usage(void) {\n         \"       [--repeat N] [--warmup N] [--replay-chunk N] [--runs-jsonl FILE]\\n\"\n         \"       [--session] (resident local worker protocol)\\n\"\n         \"       [--stop-after N] (SIGUSR1 also stops cooperatively)\\n\"\n+        \"       [--mtp] (one-token predictor, exact greedy verification)\\n\"\n         \"Greedy FP32 generation; defaults: context 8192, chunk 1024, max-new 32.\\n\");\n }\n static Qwen38Bytes bytes(const char *s) { return (Qwen38Bytes){(const uint8_t *)s,strlen(s)}; }\n@@ -142,10 +143,11 @@ int qwen38_cli(int argc,char **argv) {\n     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib=\"picoforge.metallib\";\n     const char *runs_path=NULL; char *owned_input=NULL;\n     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX;\n-    bool thinking=false,encode_only=false,session=false;\n+    bool thinking=false,encode_only=false,session=false,mtp=false;\n     for (int i=3;i<argc;i++) {\n         const char *opt=argv[i];\n         if (!strcmp(opt,\"--session\")) { if (mode) die(\"choose one mode\"); session=true; mode=\"session\"; continue; }\n+        if (!strcmp(opt,\"--mtp\")) { mtp=true; continue; }\n         if (!strcmp(opt,\"--thinking\")) { thinking=true; continue; }\n         if (!strcmp(opt,\"--encode-only\")) { encode_only=true; continue; }\n         if (i+1==argc) die(\"missing value for %s\",opt);\n@@ -174,6 +176,7 @@ int qwen38_cli(int argc,char **argv) {\n     }\n     if (thinking && strcmp(mode,\"--chat\")) die(\"--thinking requires --chat\");\n     chunk=MIN(chunk,capacity);\n+    if (mtp && capacity<2) die(\"MTP requires context >=2\");\n     if (replay_chunk>chunk) die(\"replay chunk exceeds allocated chunk\");\n     FILE *runs=runs_path ? fopen(runs_path,\"wx\") : NULL;\n     if (runs_path && !runs) die(\"runs output must be a new file\");\n@@ -219,11 +222,13 @@ int qwen38_cli(int argc,char **argv) {\n         GpuWeightStore *store=gpu_weights_open((__bridge void *)device,&g,0);\n         check(qwen38_weights_attach(weights,&g,gpu_weights_plan(store),&e),&e);\n         Qwen38GpuForward *graph;\n-        check(qwen38_gpu_forward_create(&g,config,weights,store,(__bridge void *)device,(__bridge void *)lib,chunk,capacity,1,&graph,&e),&e);\n+        check(qwen38_gpu_forward_create(&g,config,weights,store,(__bridge void *)device,(__bridge void *)lib,mtp ? MAX(chunk,2u) : chunk,capacity,mtp ? 2 : 1,&graph,&e),&e);\n+        if (mtp) check(qwen38_gpu_mtp_enable(graph,&e),&e);\n         fprintf(stderr,\"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\\n\",\n             c->trunk_blocks,count,capacity,chunk,(double)qwen38_gpu_forward_bytes(graph)/1048576.0);\n-        float *logits=malloc((size_t)c->vocab_size*4); if (!logits) die(\"logits allocation\");\n-        Qwen38F32Mut y={.data=logits,.capacity_bytes=(size_t)c->vocab_size*4,.rank=2,.dim={1,c->vocab_size},.stride_bytes={(size_t)c->vocab_size*4,4}};\n+        size_t logits_bytes=(size_t)c->vocab_size*4*(mtp ? 2u : 1u);\n+        float *logits=malloc(logits_bytes); if (!logits) die(\"logits allocation\");\n+        Qwen38F32Mut y={.data=logits,.capacity_bytes=logits_bytes,.rank=2,.dim={1,c->vocab_size},.stride_bytes={(size_t)c->vocab_size*4,4}};\n         double load_s=now()-entered;\n         Qwen38Decoder *decoder; check(qwen38_decoder_create(tok,true,&decoder,&e),&e);\n         if (session) { runs=stdout; fprintf(stdout,\"{\\\"event\\\":\\\"ready\\\",\\\"load_s\\\":%.9f,\\\"context\\\":%u}\\n\",load_s,capacity); fflush(stdout); }\n@@ -245,12 +250,23 @@ int qwen38_cli(int argc,char **argv) {\n         stopped=0;\n         if (session) { fprintf(stdout,\"{\\\"event\\\":\\\"started\\\",\\\"prompt_tokens\\\":%zu}\\n\",count); fflush(stdout); }\n         uint32_t current_chunk=repetition && replay_chunk ? replay_chunk : chunk;\n-        Qwen38GpuForwardStats prefill_stats={0},decode_stats={0};\n+        Qwen38GpuForwardStats prefill_stats={0},decode_stats={0},mtp_stats={0};\n+        size_t proposed=0,accepted=0,target_appends=0,rollback_count=0,verified_tokens=0;\n+        double mtp_prefill_s=0,draft_s=0,verify_s=0,snapshot_s=0,replay_s=0;\n+        size_t residual_offset=0; bool queued=false,catchup=false; int32_t catchup_id=0;\n         double prefill_start=now();\n         for (size_t start=0;start<count && !stopped;start+=current_chunk) {\n             size_t n=MIN((size_t)current_chunk,count-start); y.dim[0]=start+n==count ? 1 : 0;\n             check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);\n             accumulate(&prefill_stats,graph);\n+            residual_offset=n-1;\n+            if (mtp && !stopped) {\n+                size_t pairs=MIN(n,count-start-1); Qwen38F32Mut empty=y; empty.dim[0]=0;\n+                double mtp_start=now();\n+                if (pairs) check(qwen38_gpu_mtp(graph,0,tokens+start+1,pairs,empty,&e),&e);\n+                mtp_prefill_s+=now()-mtp_start;\n+                if (pairs) accumulate(&mtp_stats,graph);\n+            }\n             if (session) {\n                 fprintf(stdout,\"{\\\"event\\\":\\\"prefill\\\",\\\"completed\\\":%zu,\\\"prompt_tokens\\\":%zu}\\n\",start+n,count);\n                 fflush(stdout);\n@@ -276,8 +292,45 @@ int qwen38_cli(int argc,char **argv) {\n             if (!strcmp(reason,\"stop\")) break;\n             if (got==stop_after) { reason=\"cancelled\"; break; }\n             if (step+1<max_new) {\n-                check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);\n-                accumulate(&decode_stats,graph);\n+                if (queued) {\n+                    /* Both rows were already verified causally. The first has\n+                     * just emitted b; the next iteration emits c from row 1. */\n+                    memcpy(logits,logits+c->vocab_size,(size_t)c->vocab_size*4);\n+                    queued=false; catchup=true; catchup_id=id;\n+                } else if (mtp && max_new-got>=2 && stop_after-got>=2 &&\n+                           capacity-qwen38_gpu_forward_info(graph).next_pos>=2) {\n+                    int32_t confirmed[2]={catchup ? catchup_id : id,id};\n+                    double part=now();\n+                    check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,y,&e),&e);\n+                    draft_s+=now()-part; accumulate(&mtp_stats,graph); catchup=false;\n+                    if (stopped) break;\n+                    int32_t draft=0;\n+                    for (uint32_t j=0;j<c->vocab_size;j++) {\n+                        if (!isfinite(logits[j])) die(\"nonfinite MTP logit\");\n+                        if (logits[j]>logits[draft]) draft=(int32_t)j;\n+                    }\n+                    proposed++;\n+                    /* A proposed stop is checked using only a. It must never\n+                     * enter the trunk cache, even when it is accepted. */\n+                    bool draft_stop=qwen38_token_is_stop(tok,draft);\n+                    Qwen38GpuCheckpoint snapshot; part=now();\n+                    check(qwen38_gpu_checkpoint_save(graph,&snapshot,&e),&e); snapshot_s+=now()-part;\n+                    int32_t pair[2]={id,draft}; y.dim[0]=draft_stop ? 1 : 2; part=now();\n+                    check(qwen38_gpu_forward(graph,pair,y.dim[0],c->trunk_blocks,y,NULL,NULL,&e),&e);\n+                    verify_s+=now()-part; verified_tokens+=y.dim[0]; target_appends++; accumulate(&decode_stats,graph); y.dim[0]=1;\n+                    if (stopped) { check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e); break; }\n+                    int32_t target=0;\n+                    for (uint32_t j=1;j<c->vocab_size;j++) if (logits[j]>logits[target]) target=(int32_t)j;\n+                    if (target==draft) { accepted++; queued=!draft_stop; residual_offset=draft_stop ? 0 : 1; }\n+                    else if (!draft_stop) {\n+                        part=now(); check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e);\n+                        check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);\n+                        replay_s+=now()-part; rollback_count++; target_appends++; accumulate(&decode_stats,graph); residual_offset=0;\n+                    } else residual_offset=0;\n+                } else {\n+                    check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);\n+                    target_appends++; accumulate(&decode_stats,graph); residual_offset=0;\n+                }\n             }\n         }\n         double generation_end=now(); if (stopped) reason=\"cancelled\";\n@@ -307,6 +360,12 @@ int qwen38_cli(int argc,char **argv) {\n                 (unsigned long long)qwen38_gpu_forward_info(graph).next_pos,\n                 (size_t)device.currentAllocatedSize,(size_t)device.recommendedMaxWorkingSetSize,qwen38_gpu_forward_bytes(graph));\n             ids_json(runs,generated,got);\n+            fprintf(runs,\",\\\"mtp\\\":{\\\"enabled\\\":%s,\\\"proposed\\\":%zu,\\\"accepted\\\":%zu,\\\"rollback_count\\\":%zu,\"\n+                \"\\\"target_decode_appends\\\":%zu,\\\"verified_tokens\\\":%zu,\\\"prefill_s\\\":%.9f,\\\"draft_s\\\":%.9f,\"\n+                \"\\\"verify_s\\\":%.9f,\\\"snapshot_s\\\":%.9f,\\\"replay_s\\\":%.9f,\\\"checkpoint_host_bytes\\\":%zu}\",\n+                mtp ? \"true\":\"false\",proposed,accepted,rollback_count,target_appends,verified_tokens,\n+                mtp_prefill_s,draft_s,verify_s,snapshot_s,replay_s,qwen38_gpu_checkpoint_bytes(graph));\n+            stats_json(runs,\"mtp_profile\",mtp_stats);\n             stats_json(runs,\"prefill_profile\",prefill_stats); stats_json(runs,\"decode_profile\",decode_stats);\n             fputs(\"}\\n\",runs); fflush(runs);\n         }\ndiff --git a/src/qwen38_forward.metal b/src/qwen38_forward.metal\nindex b967d83..251aff0 100644\n--- a/src/qwen38_forward.metal\n+++ b/src/qwen38_forward.metal\n@@ -5,3 +5,18 @@ kernel void q38g_copy(device const float *x [[buffer(0)]],device float *y [[buff\n     constant uint4 &a [[buffer(2)]],uint i [[thread_position_in_grid]]) {\n     if (i<a.x) y[i]=x[a.w ? (i/(a.y*a.z))*a.y+i%a.y : i];\n }\n+/* [e,0], [0,h_0], ..., [0,h_H-1] for each token. */\n+kernel void q38g_mtp_cat(device const float *en [[buffer(0)]],device const float *hn [[buffer(1)]],\n+    device float *cat [[buffer(2)]],constant uint4 &a [[buffer(3)]],uint i [[thread_position_in_grid]]) {\n+    if (i>=a.x) return;\n+    uint d=i%(2*a.y), row=i/(2*a.y), stream=row%(a.z+1), t=row/(a.z+1);\n+    cat[i]=stream ? (d<a.y ? 0 : hn[(t*a.z+stream-1)*a.y+d-a.y]) : (d<a.y ? en[t*a.y+d] : 0);\n+}\n+kernel void q38g_mtp_sum(device const float *proj [[buffer(0)]],device float *r [[buffer(1)]],\n+    constant uint4 &a [[buffer(2)]],device atomic_uint *error [[buffer(3)]],uint i [[thread_position_in_grid]]) {\n+    if (i>=a.x) return;\n+    uint d=i%a.y, stream=(i/a.y)%a.z, t=i/(a.y*a.z);\n+    float value=proj[(t*(a.z+1)+stream+1)*a.y+d]+proj[t*(a.z+1)*a.y+d];\n+    if (!isfinite(value)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);\n+    r[i]=value;\n+}\ndiff --git a/src/qwen38_forward_gpu.h b/src/qwen38_forward_gpu.h\nindex 003d289..fb93bb8 100644\n--- a/src/qwen38_forward_gpu.h\n+++ b/src/qwen38_forward_gpu.h\n@@ -1,5 +1,5 @@\n /* G2: ordinary GPU graph, one G0 command and one completion per append.\n- * Inputs/weights remain borrowed until destroy. No MTP execution. */\n+ * Inputs/weights remain borrowed until destroy. MTP is explicitly enabled. */\n #ifndef PICOFORGE_QWEN38_FORWARD_GPU_H\n #define PICOFORGE_QWEN38_FORWARD_GPU_H\n #include \"qwen38_forward.h\"\n@@ -28,4 +28,23 @@ void qwen38_gpu_forward_destroy(Qwen38GpuForward *);\n /* Allocated Metal workspace/state/constants (excludes borrowed weights and\n  * optional transient trace storage). SSD staging is owned separately by E. */\n size_t qwen38_gpu_forward_bytes(const Qwen38GpuForward *);\n+/* One predictor block, own QSA cache. Enable only on a fresh graph. No PLE\n+ * and no additional weight load. A failure requires destroying the graph. */\n+Qwen38Status qwen38_gpu_mtp_enable(Qwen38GpuForward *,Qwen38Error *);\n+/* Pair residual rows from the LAST successful full trunk append with next\n+ * tokens. Predictor position must equal that append's start + offset. Rows\n+ * of logits (0..count) are the final rows. Does not overwrite trunk residuals.\n+ * Errors after admission poison both graphs; reset recovers. */\n+Qwen38Status qwen38_gpu_mtp(Qwen38GpuForward *,size_t offset,const int32_t *next_tokens,\n+    size_t count,Qwen38F32Mut logits,Qwen38Error *);\n+Qwen38StateInfo qwen38_gpu_mtp_info(const Qwen38GpuForward *);\n+/* One reusable host snapshot, excluding weights and disk tables. Save only\n+ * idle/valid state. Restore only within two successful trunk tokens, with\n+ * predictor unchanged. Saving/reset/restore invalidates previous handles.\n+ * Restore advances the trunk epoch and restores PLE hash history as well as\n+ * all device histories and the last trunk residual. */\n+typedef struct { const void *owner; uint64_t epoch,serial,position,mtp_position; } Qwen38GpuCheckpoint;\n+Qwen38Status qwen38_gpu_checkpoint_save(Qwen38GpuForward *,Qwen38GpuCheckpoint *,Qwen38Error *);\n+Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *,Qwen38GpuCheckpoint,Qwen38Error *);\n+size_t qwen38_gpu_checkpoint_bytes(const Qwen38GpuForward *);\n #endif\ndiff --git a/src/qwen38_forward_gpu.m b/src/qwen38_forward_gpu.m\nindex 840a518..511d0bc 100644\n--- a/src/qwen38_forward_gpu.m\n+++ b/src/qwen38_forward_gpu.m\n@@ -31,7 +31,7 @@ struct Qwen38GpuForward {\n     const Gguf *gguf; const Qwen38Config *config; const Qwen38Weights *weights; const GpuWeightStore *store;\n     Qwen38ConfigView c; uint32_t max_tokens,capacity,max_logits_rows;\n     uint64_t next_pos; /* published only after G0 AND all E commits succeed */\n-    void *device,*buffers,*histories,*copy; size_t bytes;\n+    void *device,*library,*buffers,*histories,*copy; size_t bytes,main_histories;\n     bool valid,busy; Qwen38GpuSession *session;\n     Q38PackedGpu *b; Q38CGpu *ops; Q38DGpu *d; Q38EGpu *e; Q38FRouted *moe;\n     G2Weight embed,head; G2Hc final; G2Layer *layer;\n@@ -39,6 +39,13 @@ struct Qwen38GpuForward {\n     Q38DGpuLayer dw; Q38EGpuWork ew; Q38FRoutedWork fw;\n     G2Trace *traces; size_t trace_count,trace_offset; Qwen38GpuSpan trace_span;\n     Qwen38GpuForwardStats stats;\n+    bool mtp_enabled,mtp_failed; Qwen38GpuSession *mtp_session;\n+    G2Weight mtp_eh; G2Hc mtp_head;\n+    Qwen38GpuF32 mtp_egain,mtp_hgain,mtp_en,mtp_hn,mtp_cat,mtp_proj,mtp_r;\n+    void *mtp_concat,*mtp_sum;\n+    uint64_t last_start,snapshot_serial,saved_start; size_t last_count,saved_count;\n+    void *snapshot; size_t snapshot_bytes;\n+    Qwen38GpuCheckpoint saved;\n };\n static Qwen38Status fail(Qwen38Error *e,Qwen38Status code,const char *detail) {\n     if (e) { memset(e,0,sizeof *e); e->code=code;\n@@ -199,7 +206,7 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {\n         f->head.layout.k_logical!=f->c.hidden_size || f->head.layout.n_out!=f->c.vocab_size)\n         return fail(e,Q38_SHAPE,\"embedding/head config\");\n     TRY(hc_bind(f,QWEN38_GLOBAL_LAYER,final_roles,&f->final,e));\n-    f->layer=calloc(f->c.trunk_blocks,sizeof *f->layer); f->traces=calloc(2+9*f->c.trunk_blocks,sizeof *f->traces);\n+    f->layer=calloc(f->c.blocks,sizeof *f->layer); f->traces=calloc(2+9*f->c.trunk_blocks,sizeof *f->traces);\n     if (!f->layer || !f->traces) return fail(e,Q38_OOM,\"graph metadata\");\n     TRY(scratch(f,e));\n     for (uint32_t i=0;i<f->c.trunk_blocks;i++) {\n@@ -211,6 +218,7 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {\n         for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); l->fb[j]=w.binding; l->fl[j]=w.layout; }\n         if (kind->has_ple) TRY(create_ple(f,i,e));\n     }\n+    f->main_histories=[(__bridge NSArray *)f->histories count];\n     return Q38_OK;\n }\n Qwen38Status qwen38_gpu_forward_create(const Gguf *g,const Qwen38Config *config,const Qwen38Weights *weights,\n@@ -225,13 +233,14 @@ Qwen38Status qwen38_gpu_forward_create(const Gguf *g,const Qwen38Config *config,\n     f->gguf=g; f->config=config; f->weights=weights; f->store=store; f->c=*c; f->max_tokens=max_tokens;\n     f->capacity=capacity; f->max_logits_rows=max_logits_rows; f->valid=true;\n     f->device=(__bridge_retained void *)(__bridge id<MTLDevice>)device;\n+    f->library=(__bridge_retained void *)(__bridge id<MTLLibrary>)library;\n     f->buffers=(__bridge_retained void *)[NSMutableArray new]; f->histories=(__bridge_retained void *)[NSMutableArray new];\n     Qwen38Status rc=create(f,library,e); if (rc) { qwen38_gpu_forward_destroy(f); return rc; }\n     *out=f; return fail(e,Q38_OK,NULL);\n }\n size_t qwen38_gpu_forward_bytes(const Qwen38GpuForward *f) { return f ? f->bytes : 0; }\n Qwen38GpuF32 q38g_gpu_state(Qwen38GpuForward *f,uint32_t layer,uint32_t slot) {\n-    if (!f || f->busy || layer>=f->c.trunk_blocks || slot>=Q38GS_COUNT) return (Qwen38GpuF32){0};\n+    if (!f || f->busy || layer>=f->c.trunk_blocks+(f->mtp_enabled ? 1u : 0u) || slot>=Q38GS_COUNT) return (Qwen38GpuF32){0};\n     G2Layer *l=&f->layer[layer];\n     Qwen38GpuF32 v[]={l->cw.history,l->cw.state,l->dw.key_cache,l->dw.value_cache,l->dw.index_cache,l->dw.block_cache,l->ew.history};\n     return v[slot];\n@@ -259,11 +268,15 @@ void qwen38_gpu_forward_destroy(Qwen38GpuForward *f) {\n     }\n     q38_packed_gpu_free(f->b); q38c_gpu_destroy(f->ops); q38d_gpu_destroy(f->d); q38e_gpu_destroy(f->e); q38f_routed_destroy(f->moe);\n     if (f->session) qwen38_gpu_session_destroy(f->session,NULL);\n+    if (f->mtp_session) qwen38_gpu_session_destroy(f->mtp_session,NULL);\n+    if (f->mtp_concat) CFRelease(f->mtp_concat);\n+    if (f->mtp_sum) CFRelease(f->mtp_sum);\n+    if (f->library) CFRelease(f->library);\n     if (f->copy) CFRelease(f->copy);\n     if (f->buffers) CFRelease(f->buffers);\n     if (f->histories) CFRelease(f->histories);\n     if (f->device) CFRelease(f->device);\n-    free(f->layer); free(f->traces); free(f);\n+    free(f->snapshot); free(f->layer); free(f->traces); free(f);\n }\n \n static void barrier(Qwen38GpuCommand cmd) { [(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder memoryBarrierWithScope:MTLBarrierScopeBuffers]; }\n@@ -343,13 +356,15 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size\n }\n static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size_t t,Qwen38Error *e) {\n     G2Layer *l=&f->layer[i];\n+    Qwen38MoeConfig mc=f->c.moe;\n+    if (i>=f->c.trunk_blocks) mc.down_physical=mc.intermediate;\n     for (size_t start=0;start<t;start+=32) {\n         size_t n=MIN(t-start,32),p=n*f->c.moe.top_k; Q38FRoutedWork w=f->fw;\n #define W(x,rows) w.x=time_view(w.x,rows)\n         W(logits,n); W(probs,n); W(weights,n); W(gate,p); W(up,p); W(act,p); W(down,p);\n         W(sgate,n); W(sup,n); W(sact,n); W(shared,n); W(slogit,n); W(ssig,n); W(routed,n);\n #undef W\n-        TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&f->c.moe,f->store,l->fb,l->fl,\n+        TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&mc,f->store,l->fb,l->fl,\n             slice(f->mixed,start,n),slice(f->block,start,n),&w,e)); barrier(cmd);\n     }\n     return Q38_OK;\n@@ -396,14 +411,14 @@ static Qwen38Status prepare(Qwen38GpuForward *f,const int32_t *tokens,size_t t,u\n     }\n     return Q38_OK;\n }\n-static Qwen38Status claim(Qwen38GpuForward *f,const Qwen38GpuTicket *ticket,Qwen38Error *e) {\n+static Qwen38Status claim(Qwen38GpuForward *f,Qwen38GpuSession *session,const Qwen38GpuTicket *ticket,Qwen38Error *e) {\n     for (id<MTLBuffer> b in (__bridge NSArray *)f->buffers)\n-        TRY(qwen38_gpu_session_claim(f->session,ticket,(Qwen38GpuSpan){(__bridge void *)b,0,b.length},Q38_GPU_USE_WRITE,e));\n-    if (f->trace_span.buffer) TRY(qwen38_gpu_session_claim(f->session,ticket,f->trace_span,Q38_GPU_USE_WRITE,e));\n+        TRY(qwen38_gpu_session_claim(session,ticket,(Qwen38GpuSpan){(__bridge void *)b,0,b.length},Q38_GPU_USE_WRITE,e));\n+    if (f->trace_span.buffer) TRY(qwen38_gpu_session_claim(session,ticket,f->trace_span,Q38_GPU_USE_WRITE,e));\n     const GgufPlan *plan=gpu_weights_plan(f->store);\n     for (size_t i=0;i<plan->weight_count;i++) {\n         const GgufBinding *w=&plan->weights[i];\n-        TRY(qwen38_gpu_session_claim(f->session,ticket,(Qwen38GpuSpan){gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes},Q38_GPU_USE_READ,e));\n+        TRY(qwen38_gpu_session_claim(session,ticket,(Qwen38GpuSpan){gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes},Q38_GPU_USE_READ,e));\n     }\n     return Q38_OK;\n }\n@@ -447,7 +462,7 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t\n     double encode_start=clock_s(); f->stats.prepare_s=encode_start-prepare_start;\n     Qwen38GpuTicket ticket; Qwen38GpuCommand cmd; bool begun=false,submitted=false;\n     if (!rc) { rc=qwen38_gpu_session_begin(f->session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc; }\n-    if (!rc) rc=claim(f,&ticket,e);\n+    if (!rc) rc=claim(f,f->session,&ticket,e);\n     if (!rc) rc=run(f,cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);\n     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }\n     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;\n@@ -457,7 +472,7 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t\n     if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->session);\n     rc=jobs(f,!rc && layers==f->c.trunk_blocks,rc,e);\n     if (rc || layers<f->c.trunk_blocks) f->valid=false;\n-    else f->next_pos+=count;\n+    else { f->last_start=f->next_pos; f->last_count=count; f->next_pos+=count; }\n     if (!rc) {\n         if (logits.dim[0]) memcpy(logits.data,contents(f->logits),logits.dim[0]*f->c.vocab_size*4);\n         if (trace) for (size_t j=0;j<f->trace_count;j++) {\n@@ -472,9 +487,165 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t\n Qwen38Status qwen38_gpu_forward_reset(Qwen38GpuForward *f,Qwen38Error *e) {\n     if (!f) return fail(e,Q38_INVALID_ARGUMENT,\"null graph\");\n     if (f->busy) return fail(e,Q38_BUSY,\"graph busy\");\n+    if (f->mtp_failed) return fail(e,Q38_BAD_STATE,\"MTP allocation failed; destroy graph\");\n     f->valid=false; TRY(qwen38_gpu_session_reset(f->session,f->config,e));\n+    if (f->mtp_session) TRY(qwen38_gpu_session_reset(f->mtp_session,f->config,e));\n     uint64_t epoch=qwen38_gpu_session_info(f->session).key.epoch;\n     for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) TRY(qwen38_ngram_state_reset(f->layer[i].estate,epoch,e));\n     for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) memset(b.contents,0,b.length);\n-    f->next_pos=0; f->valid=true; return fail(e,Q38_OK,NULL);\n+    f->next_pos=0; f->last_count=0; f->snapshot_serial++; f->valid=true; return fail(e,Q38_OK,NULL);\n+}\n+\n+static Qwen38Status mtp_create(Qwen38GpuForward *f,Qwen38Error *e) {\n+    uint32_t i=f->c.trunk_blocks; size_t t=f->max_tokens,h=f->c.hc.streams,d=f->c.hidden_size;\n+    const Qwen38Layer *kind; TRY(qwen38_config_layer(f->config,i,&kind,e));\n+    f->layer[i].kind=*kind;\n+    if (kind->kind!=Q38_LAYER_QSA || kind->has_ple) return fail(e,Q38_UNSUPPORTED,\"MTP requires QSA without PLE\");\n+    TRY(qwen38_gpu_session_create(f->device,f->config,f->capacity,&f->mtp_session,e));\n+    TRY(create_qsa(f,i,e)); TRY(hc_bind(f,i,ffn_roles,&f->layer[i].ffn,e));\n+    const Qwen38Role roles[]={Q38_MOE_ROUTER,Q38_MOE_GATE,Q38_MOE_UP,Q38_MOE_DOWN,Q38_SHARED_GATE,Q38_SHARED_UP,Q38_SHARED_DOWN,Q38_SHARED_ROUTER};\n+    for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); f->layer[i].fb[j]=w.binding; f->layer[i].fl[j]=w.layout; }\n+    const Qwen38Role head_roles[]={Q38_MTP_HEAD_NORM,Q38_MTP_HEAD_DOWN,Q38_MTP_HEAD_UP,Q38_ROLE_COUNT};\n+    TRY(hc_bind(f,i,head_roles,&f->mtp_head,e)); TRY(bind_weight(f,i,Q38_MTP_EH,&f->mtp_eh,e));\n+    TRY(constant(f,i,Q38_MTP_E_NORM,&f->mtp_egain,1,(size_t[]){d},e));\n+    TRY(constant(f,i,Q38_MTP_H_NORM,&f->mtp_hgain,1,(size_t[]){h*d},e));\n+    ALLOC(f->mtp_en,false,t,1,d); ALLOC(f->mtp_hn,false,t,1,h*d);\n+    ALLOC(f->mtp_cat,false,t*(h+1),2*d); ALLOC(f->mtp_proj,false,t*(h+1),d);\n+    ALLOC(f->mtp_r,false,t,h,d);\n+    NSString *names[]={@\"q38g_mtp_cat\",@\"q38g_mtp_sum\"}; void **dst[]={&f->mtp_concat,&f->mtp_sum};\n+    for (size_t j=0;j<2;j++) {\n+        id<MTLFunction> fn=[(__bridge id<MTLLibrary>)f->library newFunctionWithName:names[j]];\n+        id<MTLComputePipelineState> p=fn ? [(__bridge id<MTLDevice>)f->device newComputePipelineStateWithFunction:fn error:NULL] : nil;\n+        if (!p) return fail(e,Q38_GPU_ERROR,\"MTP wiring pipeline\"); *dst[j]=(__bridge_retained void *)p;\n+    }\n+    return Q38_OK;\n+}\n+Qwen38Status qwen38_gpu_mtp_enable(Qwen38GpuForward *f,Qwen38Error *e) {\n+    if (!f) return fail(e,Q38_INVALID_ARGUMENT,\"null graph\");\n+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);\n+    if (info.busy) return fail(e,Q38_BUSY,\"graph busy\");\n+    if (!info.valid || info.next_pos || f->mtp_enabled || f->mtp_failed) return fail(e,Q38_BAD_STATE,\"MTP requires fresh graph\");\n+    if (f->c.mtp_blocks!=1) return fail(e,Q38_UNSUPPORTED,\"exactly one MTP block required\");\n+    Qwen38Status rc=mtp_create(f,e);\n+    if (rc) { f->mtp_failed=true; f->valid=false; } else f->mtp_enabled=true;\n+    return rc ? rc : fail(e,Q38_OK,NULL);\n+}\n+Qwen38StateInfo qwen38_gpu_mtp_info(const Qwen38GpuForward *f) {\n+    if (!f || !f->mtp_enabled) return (Qwen38StateInfo){0};\n+    Qwen38StateInfo info=qwen38_gpu_session_info(f->mtp_session); info.valid &= f->valid; info.busy |= f->busy; return info;\n+}\n+static void mtp_wire(Qwen38GpuForward *f,Qwen38GpuCommand cmd,size_t t,bool sum) {\n+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;\n+    id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)(sum ? f->mtp_sum : f->mtp_concat);\n+    uint32_t h=(uint32_t)f->c.hc.streams,d=f->c.hidden_size;\n+    uint32_t a[4]={(uint32_t)t*(sum ? h*d : (h+1)*2*d),d,h,0};\n+    [enc setComputePipelineState:p];\n+    Qwen38GpuSpan spans[4]={sum ? f->mtp_proj.span : f->mtp_en.span,sum ? f->mtp_r.span : f->mtp_hn.span,f->mtp_cat.span,cmd.error_word};\n+    for (size_t j=0;j<(sum ? 2u : 3u);j++) [enc setBuffer:(__bridge id<MTLBuffer>)spans[j].buffer offset:spans[j].offset_bytes atIndex:j];\n+    if (sum) [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:3];\n+    [enc setBytes:a length:sizeof a atIndex:sum ? 2 : 3];\n+    [enc dispatchThreads:MTLSizeMake(a[0],1,1) threadsPerThreadgroup:MTLSizeMake(MIN(a[0],p.maxTotalThreadsPerThreadgroup),1,1)]; barrier(cmd);\n+}\n+static Qwen38Status mtp_run(Qwen38GpuForward *f,Qwen38GpuCommand cmd,size_t offset,size_t t,size_t rows,uint32_t pos,Qwen38Error *e) {\n+    size_t d=f->c.hidden_size,h=f->c.hc.streams; Q38CGpuSpec spec={.eps=f->c.hc.rms_eps};\n+    TRY(q38_packed_lookup(f->b,&cmd,f->store,f->embed.binding,&f->embed.layout,f->tokens.span,time_view(f->mixed,t),e)); barrier(cmd);\n+    Qwen38GpuF32 ev[]={shape(f->mixed.span,3,(size_t[]){t,1,d}),f->mtp_egain,time_view(f->mtp_en,t)};\n+    TRY(q38c_gpu_encode(f->ops,cmd,Q38C_RMS,&spec,ev,3,e));\n+    Qwen38GpuF32 hv[]={shape(slice(f->r,offset,t).span,3,(size_t[]){t,1,h*d}),f->mtp_hgain,time_view(f->mtp_hn,t)};\n+    TRY(q38c_gpu_encode(f->ops,cmd,Q38C_RMS,&spec,hv,3,e));\n+    mtp_wire(f,cmd,t,false);\n+    TRY(linear(f,cmd,f->mtp_eh,time_view(f->mtp_cat,t*(h+1)),time_view(f->mtp_proj,t*(h+1)),e));\n+    mtp_wire(f,cmd,t,true);\n+    /* The shared operators use r. Restore this borrowed view on EVERY exit. */\n+    Qwen38GpuF32 trunk=f->r; f->r=f->mtp_r; uint32_t i=f->c.trunk_blocks;\n+    Qwen38Status rc=qsa(f,cmd,i,t,pos,e);\n+    if (!rc) rc=hc_read(f,cmd,&f->layer[i].ffn,t,e);\n+    if (!rc) rc=moe(f,cmd,i,t,e);\n+    if (!rc) rc=hc_add(f,cmd,t,e);\n+    if (!rc && rows) rc=hc_read(f,cmd,&f->mtp_head,t,e);\n+    if (!rc && rows) rc=linear(f,cmd,f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e);\n+    f->r=trunk; return rc;\n+}\n+Qwen38Status qwen38_gpu_mtp(Qwen38GpuForward *f,size_t offset,const int32_t *tokens,size_t count,Qwen38F32Mut logits,Qwen38Error *e) {\n+    if (!f || (count && !tokens)) return fail(e,Q38_INVALID_ARGUMENT,\"MTP arguments\");\n+    if (f->busy) return fail(e,Q38_BUSY,\"graph busy\");\n+    Qwen38StateInfo before=qwen38_gpu_mtp_info(f);\n+    if (!before.valid) return fail(e,Q38_BAD_STATE,\"MTP disabled or requires reset\");\n+    if (offset>f->last_count || count>f->last_count-offset || before.next_pos!=f->last_start+offset)\n+        return fail(e,Q38_BAD_STATE,\"MTP requires consecutive last-trunk residual pairs\");\n+    if (count>f->capacity-before.next_pos) return fail(e,Q38_CAPACITY,\"MTP capacity\");\n+    TRY(q38c_view(q38c_ro(logits),e));\n+    if (logits.rank!=2 || logits.dim[0]>count || logits.dim[0]>f->max_logits_rows || logits.dim[1]!=f->c.vocab_size ||\n+        logits.stride_bytes[0]!=(size_t)f->c.vocab_size*4) return fail(e,Q38_SHAPE,\"dense bounded MTP logits required\");\n+    for (size_t j=0;j<count;j++) if (tokens[j]<0 || (uint32_t)tokens[j]>=f->c.vocab_size) return fail(e,Q38_RANGE,\"MTP token outside vocabulary\");\n+    size_t bytes=q38c_span(q38c_ro(logits));\n+    if (bytes) {\n+        for (id<MTLBuffer> b in (__bridge NSArray *)f->buffers)\n+            if (q38c_overlap(logits.data,bytes,b.contents,b.length)) return fail(e,Q38_INVALID_ARGUMENT,\"MTP logits alias storage\");\n+        const GgufPlan *plan=gpu_weights_plan(f->store);\n+        for (size_t j=0;j<plan->weight_count;j++) {\n+            Qwen38CpuSpan w; TRY(qwen38_weights_cpu_span(f->store,&plan->weights[j],&w,e));\n+            if (q38c_overlap(logits.data,bytes,w.data,w.bytes)) return fail(e,Q38_INVALID_ARGUMENT,\"MTP logits alias weights\");\n+        }\n+    }\n+    if (!count) return fail(e,Q38_OK,NULL);\n+    f->busy=true; f->stats=(Qwen38GpuForwardStats){0}; double start=clock_s(); memcpy(contents(f->tokens),tokens,count*4);\n+    Qwen38GpuTicket ticket; Qwen38GpuCommand cmd; bool begun=false,submitted=false;\n+    Qwen38Status rc=qwen38_gpu_session_begin(f->mtp_session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc;\n+    if (!rc) rc=claim(f,f->mtp_session,&ticket,e);\n+    if (!rc) rc=mtp_run(f,cmd,offset,count,logits.dim[0],(uint32_t)before.next_pos,e);\n+    if (!rc) { rc=qwen38_gpu_session_submit(f->mtp_session,&ticket,e); submitted=!rc; }\n+    double wait=clock_s(); f->stats.encode_s=wait-start;\n+    if (submitted) rc=qwen38_gpu_session_finish(f->mtp_session,&ticket,e);\n+    else if (begun) qwen38_gpu_session_abort(f->mtp_session,&ticket,false,NULL);\n+    f->stats.wait_s=clock_s()-wait;\n+    if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->mtp_session);\n+    if (rc) f->valid=false;\n+    else if (bytes) memcpy(logits.data,contents(f->logits),bytes);\n+    f->busy=false; return rc ? rc : fail(e,Q38_OK,NULL);\n+}\n+size_t qwen38_gpu_checkpoint_bytes(const Qwen38GpuForward *f) { return f ? f->snapshot_bytes : 0; }\n+static size_t checkpoint_transfer(Qwen38GpuForward *f,void *buffer,bool restore) {\n+    size_t n=0; NSArray *histories=(__bridge NSArray *)f->histories;\n+#define TRANSFER(ptr,len) do { size_t z_=(len); if (buffer) { if (restore) memcpy((ptr),(char *)buffer+n,z_); else memcpy((char *)buffer+n,(ptr),z_); } n+=z_; } while(0)\n+    for (size_t j=0;j<f->main_histories;j++) { id<MTLBuffer> b=histories[j]; TRANSFER(b.contents,b.length); }\n+    TRANSFER(contents(f->r),f->r.span.bytes);\n+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {\n+        Qwen38NgramState *s=f->layer[i].estate; TRANSFER(s->previous,(s->store->config.order-1)*sizeof *s->previous);\n+    }\n+#undef TRANSFER\n+    return n;\n+}\n+Qwen38Status qwen38_gpu_checkpoint_save(Qwen38GpuForward *f,Qwen38GpuCheckpoint *out,Qwen38Error *e) {\n+    if (out) *out=(Qwen38GpuCheckpoint){0};\n+    if (!f || !out) return fail(e,Q38_INVALID_ARGUMENT,\"checkpoint arguments\");\n+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);\n+    if (info.busy) return fail(e,Q38_BUSY,\"graph busy\");\n+    if (!info.valid) return fail(e,Q38_BAD_STATE,\"checkpoint requires valid graph\");\n+    if (f->snapshot_serial==UINT64_MAX) return fail(e,Q38_OVERFLOW,\"checkpoint serial\");\n+    if (!f->snapshot) {\n+        size_t n=checkpoint_transfer(f,NULL,false); f->snapshot=malloc(n ? n : 1);\n+        if (!f->snapshot) return fail(e,Q38_OOM,\"host checkpoint\"); f->snapshot_bytes=n;\n+    }\n+    checkpoint_transfer(f,f->snapshot,false); f->saved_start=f->last_start; f->saved_count=f->last_count;\n+    *out=f->saved=(Qwen38GpuCheckpoint){f,info.key.epoch,++f->snapshot_serial,info.next_pos,qwen38_gpu_mtp_info(f).next_pos};\n+    return fail(e,Q38_OK,NULL);\n+}\n+Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *f,Qwen38GpuCheckpoint s,Qwen38Error *e) {\n+    if (!f) return fail(e,Q38_INVALID_ARGUMENT,\"null graph\");\n+    if (s.owner!=f) return fail(e,Q38_OWNER,\"foreign checkpoint\");\n+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);\n+    if (info.busy) return fail(e,Q38_BUSY,\"graph busy\");\n+    if (!f->snapshot || s.epoch!=info.key.epoch || s.serial!=f->snapshot_serial ||\n+        s.position!=f->saved.position || s.mtp_position!=f->saved.mtp_position) return fail(e,Q38_STALE,\"stale checkpoint\");\n+    if (!info.valid || s.position>info.next_pos || info.next_pos-s.position>2 || s.mtp_position!=qwen38_gpu_mtp_info(f).next_pos)\n+        return fail(e,Q38_BAD_STATE,\"checkpoint window or predictor changed\");\n+    TRY(q38g_session_rewind(f->session,f->config,s.epoch,s.position,e));\n+    f->valid=false; uint64_t epoch=qwen38_gpu_session_info(f->session).key.epoch;\n+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {\n+        TRY(qwen38_ngram_state_reset(f->layer[i].estate,epoch,e)); f->layer[i].estate->info.next_pos=s.position;\n+    }\n+    checkpoint_transfer(f,f->snapshot,true); f->next_pos=s.position;\n+    f->last_start=f->saved_start; f->last_count=f->saved_count; f->snapshot_serial++;\n+    f->valid=true; return fail(e,Q38_OK,NULL);\n }\ndiff --git a/src/qwen38_g_internal.h b/src/qwen38_g_internal.h\nindex d794400..fa3db8a 100644\n--- a/src/qwen38_g_internal.h\n+++ b/src/qwen38_g_internal.h\n@@ -6,4 +6,7 @@\n enum { Q38GS_CONV,Q38GS_GDN,Q38GS_KEY,Q38GS_VALUE,Q38GS_INDEX,Q38GS_BLOCK,Q38GS_PLE,Q38GS_COUNT };\n Qwen38GpuF32 q38g_gpu_state(Qwen38GpuForward *,uint32_t layer,uint32_t slot);\n Qwen38StateInfo q38g_gpu_ngram_info(const Qwen38GpuForward *,uint32_t layer);\n+/* Graph-only rewind after complete validation, with no active command. */\n+Qwen38Status q38g_session_rewind(Qwen38GpuSession *,const void *model,uint64_t epoch,\n+    uint64_t position,Qwen38Error *);\n #endif\ndiff --git a/src/qwen38_gpu.m b/src/qwen38_gpu.m\nindex 525aa47..9c436e1 100644\n--- a/src/qwen38_gpu.m\n+++ b/src/qwen38_gpu.m\n@@ -254,6 +254,19 @@ Qwen38StateInfo qwen38_gpu_session_info(const Qwen38GpuSession *g) {\n     return g ? qwen38_gpu_ledger_info(&g->ledger) : (Qwen38StateInfo){0};\n }\n double qwen38_gpu_session_seconds(const Qwen38GpuSession *g) { return g ? g->gpu_seconds : 0; }\n+Qwen38Status q38g_session_rewind(Qwen38GpuSession *g,const void *model,uint64_t epoch,\n+    uint64_t position,Qwen38Error *e) {\n+    if (!g) return report(e,Q38_INVALID_ARGUMENT);\n+    Qwen38GpuLedger *l=&g->ledger;\n+    if (l->model!=model) return report(e,Q38_OWNER);\n+    if (busy(l)) return report(e,Q38_BUSY);\n+    if (l->epoch!=epoch) return report(e,Q38_STALE);\n+    if (l->state==Q38_SESSION_INVALID || position>l->next_pos || l->next_pos-position>2)\n+        return report(e,Q38_BAD_STATE);\n+    Qwen38Status rc=qwen38_gpu_ledger_reset(l,model,e);\n+    if (!rc) { l->next_pos=position; l->state=position ? Q38_SESSION_VALID : Q38_SESSION_IDLE; }\n+    return rc;\n+}\n Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {\n     if (!g) return report(e, Q38_INVALID_ARGUMENT);\n     if (qwen38_gpu_ledger_info(&g->ledger).busy) return report(e, Q38_BUSY);\ndiff --git a/src/qwen38_packed.c b/src/qwen38_packed.c\nindex 0c26f6f..4afacd7 100644\n--- a/src/qwen38_packed.c\n+++ b/src/qwen38_packed.c\n@@ -83,6 +83,22 @@ static float packed_value(const unsigned char *row, size_t column, uint32_t type\n         if (code >= 128) code -= 256; /* No implementation-defined signed cast. */\n         return half_value(q8) * (float)code;\n     }\n+    if (type == 12) {\n+        const unsigned char *b=row+column/256*144,*sc=b+4;\n+        size_t lane=column%256,g=lane/32;\n+        unsigned scale=g<4 ? sc[g]&63u : (sc[g+4]&15u)|((sc[g-4]&192u)>>2);\n+        unsigned minimum=g<4 ? sc[g+4]&63u : (sc[g+4]>>4)|((sc[g]&192u)>>2);\n+        unsigned code=(b[16+(g/2)*32+lane%32]>>((g%2)*4))&15u;\n+        return (half_value(b)*(float)scale)*(float)code-half_value(b+2)*(float)minimum;\n+    }\n+    if (type == 39) {\n+        const unsigned char *b=row+column/32*17;\n+        unsigned lane=(unsigned)(column%32),code=(b[1+lane%16]>>((lane/16)*4))&15u;\n+        static const float values[]={0,.5f,1,1.5f,2,3,4,6,-0.0f,-.5f,-1,-1.5f,-2,-3,-4,-6};\n+        uint32_t bits=b[0] ? (uint32_t)b[0]<<23 : 0x00400000u;\n+        float scale; memcpy(&scale,&bits,4);\n+        return values[code]*scale;\n+    }\n     if (type == 16) {\n         const unsigned char *iq = row + column / 256 * 66;\n         size_t lane = column % 256, slot = lane % 32 / 8;\ndiff --git a/src/qwen38_packed.metal b/src/qwen38_packed.metal\nindex 5743752..dfe3d8f 100644\n--- a/src/qwen38_packed.metal\n+++ b/src/qwen38_packed.metal\n@@ -34,6 +34,30 @@ inline float packed_value(device const uchar *row, uint column, uint type) {\n         int code=int(b[2+column%32]);\n         return half_value(b)*float(code>=128 ? code-256 : code);\n     }\n+    if (type==12) {\n+        device const uchar *b=row+ulong(column/256)*144,*sc=b+4;\n+        uint lane=column%256,g=lane/32;\n+        uint scale=g<4 ? sc[g]&63u : (sc[g+4]&15u)|((sc[g-4]&192u)>>2);\n+        uint minimum=g<4 ? sc[g+4]&63u : (sc[g+4]>>4)|((sc[g]&192u)>>2);\n+        uint code=(b[16+(g/2)*32+lane%32]>>((g%2)*4))&15u;\n+        return (half_value(b)*float(scale))*float(code)-half_value(b+2)*float(minimum);\n+    }\n+    if (type==39) {\n+        device const uchar *b=row+ulong(column/32)*17;\n+        uint lane=column%32,code=(b[1+lane%16]>>((lane/16)*4))&15u;\n+        /* Construct exact FP32 bits: Metal arithmetic flushes subnormal\n+         * operands/results even without fast-math. No rounding is needed\n+         * for E2M1 times this power of two. */\n+        uint sign=(code&8u)<<28, magnitude=code&7u;\n+        if (b[0]==255) return as_type<float>(sign|0x7f800000u|(magnitude ? 0u : 0x400000u));\n+        if (!magnitude) return as_type<float>(sign);\n+        const uint base[]={0,0x3f000000u,0x3f800000u,0x3fc00000u,0x40000000u,0x40400000u,0x40800000u,0x40c00000u};\n+        uint fraction=base[magnitude]&0x7fffffu;\n+        int exponent=int(base[magnitude]>>23)+int(b[0])-127;\n+        uint bits=exponent<=0 ? (0x800000u|fraction)>>uint(1-exponent) :\n+            exponent>=255 ? 0x7f800000u : (uint(exponent)<<23)|fraction;\n+        return as_type<float>(sign|bits);\n+    }\n     if (type==10) {\n         device const uchar *b=row+ulong(column/256)*84;\n         uint lane=column%256, scale=b[lane/16];\ndiff --git a/src/qwen38_weights.c b/src/qwen38_weights.c\nindex d674269..be61e98 100644\n--- a/src/qwen38_weights.c\n+++ b/src/qwen38_weights.c\n@@ -123,9 +123,9 @@ static Qwen38Status catalog(const Gguf *g, const Qwen38Config *c, Qwen38Weights\n             ADD(Q38_PLE_CONV,\"ple_conv1d.weight\",0,2,c->ngram.conv_kernel,x,1,c->ngram.conv_kernel,Q38_CONV);\n         }\n         if (mtp) {\n-            MAT(Q38_ROLE_COUNT,\"nextn.eh_proj.weight\",8,2*d,d);\n-            VEC(Q38_ROLE_COUNT,\"nextn.enorm.weight\",d); VEC(Q38_ROLE_COUNT,\"nextn.hnorm.weight\",x);\n-            HC(\"nextn.hc_head\",Q38_ROLE_COUNT,Q38_ROLE_COUNT,Q38_ROLE_COUNT);\n+            MAT(Q38_MTP_EH,\"nextn.eh_proj.weight\",8,2*d,d);\n+            VEC(Q38_MTP_E_NORM,\"nextn.enorm.weight\",d); VEC(Q38_MTP_H_NORM,\"nextn.hnorm.weight\",x);\n+            HC(\"nextn.hc_head\",Q38_MTP_HEAD_NORM,Q38_MTP_HEAD_DOWN,Q38_MTP_HEAD_UP);\n         }\n     }\n #undef HC\ndiff --git a/tests/test_qwen38_packed.c b/tests/test_qwen38_packed.c\nindex b350e60..a6ad10e 100644\n--- a/tests/test_qwen38_packed.c\n+++ b/tests/test_qwen38_packed.c\n@@ -55,7 +55,7 @@ static void q2_checks(void) {\n     tensor.shape[0] = 768; tensor.shape[1] = SIZE_MAX;\n     expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_OVERFLOW, &err);\n     tensor.type = 12;\n-    expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_UNSUPPORTED, &err);\n+    expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_OVERFLOW, &err);\n     tensor.type = UINT32_MAX;\n     expect(q38_packed_layout_init(&tensor, 640, &bad, &err), Q38_FORMAT, &err);\n     puts(\"PASS: Q2_K layout, decode, bounds, padding and error preflight\");\n@@ -124,7 +124,7 @@ static int matrix_transport(int argc, char **argv) {\n     size_t type=argument(argv[2]), kp=argument(argv[3]), k=argument(argv[4]);\n     size_t n=argument(argv[5]), experts=argument(argv[6]), expert=argument(argv[7]), m=argument(argv[8]);\n     const size_t limit=32u*1024u*1024u;\n-    assert(type==0 || type==1 || type==8 || type==10 || type==16 || type==30);\n+    assert(type==0 || type==1 || type==8 || type==10 || type==12 || type==16 || type==30 || type==39);\n     assert(kp && k && k<=kp && n && experts && expert<experts && m<=128);\n     assert(kp<=limit/4 && n<=limit/4/kp && experts<=limit/4/kp/n && m<=limit/4/k);\n     const GgufFormat *format=gguf_format((uint32_t)type);\n@@ -161,8 +161,8 @@ static int transport(int argc, char **argv) {\n     size_t type = argument(argv[1]), columns = argument(argv[2]), rows = argument(argv[3]);\n     const size_t limit = 32u * 1024u * 1024u;\n     assert(type <= UINT32_MAX && columns && rows && columns <= limit / 4 && rows <= limit / 4 / columns);\n-    /* Registry only called for these known ordinary formats. */\n-    assert(type == 0 || type == 1 || type == 8 || type == 10 || type == 16 || type == 30);\n+    /* Registry only called for these known executable formats. */\n+    assert(type == 0 || type == 1 || type == 8 || type == 10 || type == 12 || type == 16 || type == 30 || type == 39);\n     const GgufFormat *format = gguf_format((uint32_t)type);\n     assert(columns % format->block == 0);\n     size_t bytes = columns / format->block * format->bytes * rows;\ndiff --git a/tests/test_qwen38_packed.py b/tests/test_qwen38_packed.py\nindex 719d7e8..2b65817 100644\n--- a/tests/test_qwen38_packed.py\n+++ b/tests/test_qwen38_packed.py\n@@ -58,6 +58,11 @@ def packed_fixture(kind, columns, count, rng):\n     if kind == 10:\n         raw[:, 80:82] = np.array([0.125], dtype=\"<f2\").view(np.uint8)\n         raw[:, 82:84] = np.array([0.0625], dtype=\"<f2\").view(np.uint8)\n+    elif kind == 12:\n+        raw[:, :2] = np.array([0.125], dtype=\"<f2\").view(np.uint8)\n+        raw[:, 2:4] = np.array([0.0625], dtype=\"<f2\").view(np.uint8)\n+    elif kind == 39:\n+        raw[:, 0] = 124\n     else:\n         raw[:, :2] = np.array([0.125], dtype=\"<f2\").view(np.uint8)\n     return raw.tobytes()\n@@ -153,7 +158,7 @@ class PackedReferenceTests(unittest.TestCase):\n         if NATIVE is None:\n             self.skipTest(\"native harness not requested\")\n         rng = np.random.default_rng(3812)\n-        for kind in (0, 1, 30, 8, 10, 16):\n+        for kind in (0, 1, 30, 8, 10, 16, 12, 39):\n             block = oracle.FORMATS[kind][0]\n             for m, n, logical in [(1,1,1), (2,7,255), (7,33,257),\n                                    (32,7,640), (33,7,640), (128,1,2560)]:\n@@ -201,6 +206,31 @@ class PackedReferenceTests(unittest.TestCase):\n         expected = np.asarray(expected, dtype=\"<f4\").reshape(actual.shape)\n         np.testing.assert_array_equal(actual.view(\"<u4\"), expected.view(\"<u4\"))\n \n+    def test_q4_k_scale_high_bits_and_nibble_order(self):\n+        scales=[0,1,15,63,16,31,48,62]; minima=[63,48,31,16,15,1,62,0]\n+        packed_sc=bytearray(12)\n+        for g in range(4):\n+            packed_sc[g]=scales[g]|((scales[g+4]>>4)<<6)\n+            packed_sc[g+4]=minima[g]|((minima[g+4]>>4)<<6)\n+            packed_sc[g+8]=(scales[g+4]&15)|((minima[g+4]&15)<<4)\n+        qs=bytes((i%16)|((15-i%16)<<4) for i in range(128))\n+        raw=struct.pack('<ee',.125,.0625)+packed_sc+qs\n+        expected=[]\n+        for g in range(8):\n+            expected.extend(.125*scales[g]*(i%16 if g%2==0 else 15-i%16)-.0625*minima[g] for i in range(32))\n+        self.assert_bits(self.decode(raw,12,256),expected)\n+        self.assert_bits(oracle.mathematical_rows(raw,12,256),expected)\n+\n+    def test_mxfp4_all_finite_exponents_codes_and_signed_zero(self):\n+        codes=bytes(i|((15-i)<<4) for i in range(16))\n+        raw=b''.join(bytes([e])+codes for e in range(253))\n+        expected=oracle.mathematical_rows(raw,39,32)\n+        self.assert_bits(self.decode(raw,39,32,253),expected)\n+        self.assertEqual(expected[0,0].view(np.uint32),0)\n+        self.assertEqual(expected[0,23].view(np.uint32),0x80000000)\n+        for exponent in (253,254,255):\n+            self.assertFalse(np.isfinite(self.decode(bytes([exponent])+codes,39,32)).all())\n+\n     def test_q2_known_values(self):\n         raw = bytes([0x23]) * 16 + bytes([0xe4]) * 64 + struct.pack(\"<ee\", 1, 0.5)\n         expected = np.tile(np.repeat([-1, 2, 5, 8], 32), 2)\ndiff --git a/tools/oracle/qwen38_packed.py b/tools/oracle/qwen38_packed.py\nindex bfc0d3d..3fc6896 100644\n--- a/tools/oracle/qwen38_packed.py\n+++ b/tools/oracle/qwen38_packed.py\n@@ -18,7 +18,7 @@ REVISION = \"fc80bd695da76ee14bcb86820bf900a5cdfda806\"\n DS4_SHA256 = \"d137a9a5936d35152d1aa7abd9631462697abd69b429f52e51663292c1d063bd\"\n ADAPTER = ROOT / \"tools/oracle/qwen38_packed_reference.c\"\n FORMATS = {0: (1, 4), 1: (1, 2), 8: (32, 34), 10: (256, 84),\n-           16: (256, 66), 30: (1, 2)}\n+           12: (256, 144), 16: (256, 66), 30: (1, 2), 39: (32, 17)}\n BYTE_LIMIT = 32 * 1024 * 1024\n IQ2_GRID_SHA256 = \"05826b5d3e472a3a78f196be62ac78acf81df0f909626e12ab9fa2a5d490dd54\"\n \n@@ -177,6 +177,28 @@ def mathematical_rows(packed, kind, columns, *, grid=None):\n     \"\"\"\n     import numpy as np\n \n+    if kind in (12,39):\n+        block,size=FORMATS[kind]\n+        if columns<=0 or columns%block or not len(packed) or len(packed)%(columns//block*size) or len(packed)//size*block*4>BYTE_LIMIT:\n+            raise ValueError('invalid MTP packed extent')\n+        raw=np.frombuffer(packed,dtype=np.uint8).reshape(-1,size)\n+        if kind==39:\n+            exponents=raw[:,0].astype(np.int32)\n+            scale=np.exp2(exponents.astype(np.float64)-127)\n+            scale[exponents==255]=np.inf\n+            levels=np.array([0,.5,1,1.5,2,3,4,6,-0.,-.5,-1,-1.5,-2,-3,-4,-6])\n+            codes=np.concatenate((raw[:,1:]&15,raw[:,1:]>>4),axis=1)\n+            with np.errstate(over='ignore',invalid='ignore'):\n+                return (scale[:,None]*levels[codes]).astype('<f4').reshape(-1,columns)\n+        d=raw[:,:2].copy().view('<f2').astype(np.float64)\n+        minimum=raw[:,2:4].copy().view('<f2').astype(np.float64)\n+        sc=raw[:,4:16]; groups=[]\n+        for g in range(8):\n+            scale=sc[:,g]&63 if g<4 else (sc[:,g+4]&15)|((sc[:,g-4]>>6)<<4)\n+            mn=sc[:,g+4]&63 if g<4 else (sc[:,g+4]>>4)|((sc[:,g]>>6)<<4)\n+            codes=(raw[:,16+(g//2)*32:48+(g//2)*32]>>((g%2)*4))&15\n+            groups.append(d*scale[:,None]*codes-minimum*mn[:,None])\n+        return np.concatenate(groups,axis=1).astype('<f4').reshape(-1,columns)\n     if kind in (0, 1, 8, 30):\n         block, size = FORMATS[kind]\n         if (columns <= 0 or columns % block or not len(packed) or\n@@ -233,7 +255,7 @@ def extract_slices(reference, checkpoint, output, kind):\n \n     checkpoint, output = Path(checkpoint).resolve(), Path(output).resolve()\n     if kind not in FORMATS or not output.is_relative_to(ROOT / \"build\"):\n-        raise ValueError(\"choose an ordinary format and an isolated build output directory\")\n+        raise ValueError(\"choose an executable format and an isolated build output directory\")\n     verification = json.loads((ROOT / \"bench/qwen38_q2_20261011_phase0/checkpoint.verification.json\").read_text())\n     if (verification[\"matched\"] is not True or verification[\"sha256\"] !=\n             \"b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9\"):\n@@ -257,15 +279,16 @@ def extract_slices(reference, checkpoint, output, kind):\n         experts = meta[\"qwen4exp.expert_count\"]\n         hidden = meta[\"qwen4exp.embedding_length\"]\n         width = meta[\"qwen4exp.expert_feed_forward_length\"]\n-        logical = width if kind == 10 else hidden\n-        physical, nrows = ((width + 255) // 256 * 256, hidden) if kind == 10 else (hidden, width)\n+        logical = width if kind in (10,39) else hidden\n+        physical, nrows = (((width + 255) // 256 * 256 if kind==10 else width), hidden) if kind in (10,39) else (hidden, width)\n         selections = []\n-        for layer in (sorted({0, (trunk - 1) // 2, trunk - 1}) if kind in (10,16) else []):\n-            for projection in ((\"down\",) if kind == 10 else (\"gate\", \"up\")):\n+        layers=sorted({0,(trunk-1)//2,trunk-1}) if kind in (10,16) else [trunk] if kind in (12,39) else []\n+        for layer in layers:\n+            for projection in ((\"down\",) if kind in (10,39) else (\"gate\", \"up\")):\n                 tensor = tensors[f\"blk.{layer}.ffn_{projection}_exps.weight\"]\n                 if tensor[\"type_id\"] != kind or tensor[\"shape\"] != [physical, nrows, experts]:\n                     raise ValueError(\"routed-expert layout differs from metadata\")\n-                row_bytes = physical // 256 * FORMATS[kind][1]\n+                row_bytes = physical // FORMATS[kind][0] * FORMATS[kind][1]\n                 for expert in sorted({0, (experts - 1) // 2, experts - 1}):\n                     for row in sorted({0, nrows // 2, nrows - 1}):\n                         offset = tensor[\"file_offset\"] + (expert * nrows + row) * row_bytes\n@@ -303,7 +326,7 @@ def extract_slices(reference, checkpoint, output, kind):\n         records = []\n         for tensor, expert, row, offset, size in selections:\n             physical = tensor[\"shape\"][0]\n-            logical = width if kind == 10 else physical\n+            logical = width if kind in (10,39) else physical\n             raw = pread_exact(fd, offset, size)\n             values = decode(reference, raw, kind, physical, 1)\n             mathematical = mathematical_rows(raw, kind, physical, grid=grid)\ndiff --git a/tools/oracle/qwen38_packed_reference.c b/tools/oracle/qwen38_packed_reference.c\nindex 2523930..83e3a93 100644\n--- a/tools/oracle/qwen38_packed_reference.c\n+++ b/tools/oracle/qwen38_packed_reference.c\n@@ -39,7 +39,9 @@ int main(int argc, char **argv) {\n         case 8: block = 32; block_bytes = 34; break;\n         case 10: block = 256; block_bytes = 84; break;\n         case 16: block = 256; block_bytes = 66; break;\n-        default: return reference_error(\"unsupported ordinary-generation format\");\n+        case 12: block = 256; block_bytes = 144; break;\n+        case 39: block = 32; block_bytes = 17; break;\n+        default: return reference_error(\"unsupported packed format\");\n     }\n     /* Bound products before allocating; even hostile dimensions cannot wrap. */\n     const uint64_t limit = 32u * 1024u * 1024u;\ndiff --git a/tools/qwen38_g2.mk b/tools/qwen38_g2.mk\nindex 189460d..3adb465 100644\n--- a/tools/qwen38_g2.mk\n+++ b/tools/qwen38_g2.mk\n@@ -65,3 +65,19 @@ test-qwen38-native-tools: build/process_memory\n \t$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_native_bounded.py -v\n \t$(Q38_ENV) $(PYTHON) -B tests/test_run_observed.py -v\n .PHONY: test-qwen38-native-tools\n+\n+build/qwen38-mtp/test_mtp: tests/test_qwen38_mtp.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc\n+\t@mkdir -p $(@D)\n+\t$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@\n+\n+build/qwen38-mtp/mtp_real: tests/test_qwen38_mtp.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc\n+\t@mkdir -p $(@D)\n+\t$(CC) $(Q38_FLAGS) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@\n+\n+build/qwen38-mtp/cli.gguf: tools/synth/make_qwen38_cli.py tools/synth/make_qwen38_graph.py\n+\t$(Q38_ENV) $(PYTHON) -B $< --reference-root \"$(Q38_REFERENCE_ROOT)\" --mtp --output $@\n+\n+test-qwen38-mtp: build/qwen38-mtp/test_mtp build/qwen38-mtp/cli.gguf $(METALLIB)\n+\t@mkdir -p build/qwen38-mtp/tiny\n+\t$(Q38_LOCK) $(Q38_ENV) MTL_DEBUG_LAYER=1 ./$< build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny 3 1 12 45 19 71 83 120 64 20 49\n+.PHONY: test-qwen38-mtp\ndiff --git a/tools/synth/make_qwen38_cli.py b/tools/synth/make_qwen38_cli.py\nindex a51498c..2f5ba04 100644\n--- a/tools/synth/make_qwen38_cli.py\n+++ b/tools/synth/make_qwen38_cli.py\n@@ -16,6 +16,7 @@ def main():\n     parser = argparse.ArgumentParser(description=__doc__)\n     parser.add_argument('--reference-root', type=Path, required=True)\n     parser.add_argument('--output', type=Path, default=ROOT/'build/qwen38-g2/cli.gguf')\n+    parser.add_argument('--mtp', action='store_true')\n     args = parser.parse_args()\n     item = json.loads((ROOT/'tests/fixtures/qwen38/a/manifest.json').read_text())['tokenizer_config']\n     raw = (args.reference_root/item['relative_to_reference_root']).read_bytes()\n@@ -36,7 +37,7 @@ def main():\n             'tokenizer.ggml.padding_token_id': 256, 'tokenizer.ggml.bos_token_id': 256,\n             'tokenizer.ggml.add_bos_token': False}\n     hf = graph_config(); hf['text_config']['eos_token_id'] = 256\n-    write_graph(args.output, hf, 3811, meta)\n+    write_graph(args.output, hf, 3811, meta, enable_mtp=args.mtp)\n     print(f'{args.output}: graph with byte tokenizer, {args.output.stat().st_size} bytes')\n \n \ndiff --git a/tools/synth/make_qwen38_graph.py b/tools/synth/make_qwen38_graph.py\nindex f58411a..48b35c9 100644\n--- a/tools/synth/make_qwen38_graph.py\n+++ b/tools/synth/make_qwen38_graph.py\n@@ -50,12 +50,14 @@ def scale_for(name, shape):\n     return 1.0 / math.sqrt(shape[0])      # GGUF dim 0 is the input width\n \n \n-def payload(rng, name, shape, fmt, domain):\n+def payload(rng, name, shape, fmt, domain, enable_mtp=False):\n     count = math.prod(shape)\n     type_id, block, size = ref.FORMATS[fmt]\n-    if domain == \"mtp\" or fmt in (\"Q4_K\", \"MXFP4\"):\n+    if domain == \"mtp\" and not enable_mtp:\n         return bytes(count // block * size)  # described, never executed\n     s = scale_for(name, shape)\n+    if name.endswith((\"nextn.enorm.weight\", \"nextn.hnorm.weight\")):\n+        s = None\n     if name.endswith(\"ssm_a\"):\n         values = -np.exp(rng.uniform(-1.0, 0.5, count))  # already -exp(A_log)\n     elif s is None:\n@@ -69,6 +71,16 @@ def payload(rng, name, shape, fmt, domain):\n     if fmt == \"BF16\":\n         return (values.astype(\"<f4\").view(\"<u4\") >> 16).astype(\"<u2\").tobytes()\n     blocks = count // block\n+    if fmt == \"Q4_K\":\n+        d = np.full((blocks, 1), s / 7, \"<f2\")\n+        dmin = np.full((blocks, 1), s * 7.5 / 7, \"<f2\")\n+        scales = np.tile(np.array([1]*8+[17]*4, dtype=np.uint8), (blocks, 1))\n+        codes = rng.integers(0, 256, (blocks, 128), dtype=np.uint8)\n+        return np.concatenate([d.view(np.uint8), dmin.view(np.uint8), scales, codes], 1).tobytes()\n+    if fmt == \"MXFP4\":\n+        exponent = np.full((blocks, 1), round(math.log2(s / 2.5)) + 127, dtype=np.uint8)\n+        codes = rng.integers(0, 256, (blocks, 16), dtype=np.uint8)\n+        return np.concatenate([exponent, codes], 1).tobytes()\n     if fmt == \"Q8_0\":\n         d = np.full((blocks, 1), s / 73.0, \"<f2\")  # std of uniform int8 is ~73\n         q = rng.integers(-127, 128, (blocks, 32), dtype=np.int8)\n@@ -85,7 +97,7 @@ def payload(rng, name, shape, fmt, domain):\n     raise ValueError(f\"no generator for {fmt}\")\n \n \n-def write_graph(path, hf, seed, text_meta=None):\n+def write_graph(path, hf, seed, text_meta=None, enable_mtp=False):\n     meta = ref.reference_metadata(hf)\n     meta.update({\"general.architecture\": \"qwen4exp\", \"general.alignment\": ALIGN,\n                  ref.PREFIX + \"ple.row_count\": 128,\n@@ -112,7 +124,7 @@ def write_graph(path, hf, seed, text_meta=None):\n     rng, offset, records, blobs = np.random.default_rng(seed), 0, [], []\n     for name, (shape, fmt, domain) in tensors.items():\n         offset = (offset + ALIGN - 1) // ALIGN * ALIGN\n-        blob = payload(rng, name, shape, fmt, domain)\n+        blob = payload(rng, name, shape, fmt, domain, enable_mtp)\n         header += string(name) + struct.pack(\"<I\", len(shape)) + struct.pack(\"<\" + \"Q\" * len(shape), *shape)\n         header += struct.pack(\"<IQ\", ref.FORMATS[fmt][0], offset)\n         records.append(dict(name=name, shape=shape, format=fmt, type_id=ref.FORMATS[fmt][0],\n@@ -127,7 +139,7 @@ def write_graph(path, hf, seed, text_meta=None):\n             record[\"file_offset\"] = start + record.pop(\"offset\")\n             f.seek(record[\"file_offset\"])\n             f.write(blob)\n-    manifest = dict(seed=seed, hf_text_config=hf[\"text_config\"], metadata=meta, tensors=records)\n+    manifest = dict(seed=seed, mtp_executable=enable_mtp, hf_text_config=hf[\"text_config\"], metadata=meta, tensors=records)\n     path.with_suffix(\".json\").write_text(json.dumps(manifest, indent=1) + \"\\n\")\n     return records\n \n",
+  "hashes": {
+    "picoforge": "3db6d23ac5894f5ce9269677e8ab9f11e9cd671dc5af0c07fbd56229b38a76d7",
+    "build/qwen38-mtp/mtp_real": "7293b623304036a217fe4080a9b0a8e2714f1c01cd93b490705f960b9830c907",
+    "picoforge.metallib": "dcbb957bf5a0bf88cffa74767afa216d60ecc3a0fb8ed39f12581811b24bdfd2",
+    "tools/eval/qwen38_mtp_gate.py": "82dd94d78b27129ecbf160dff84efb6da1cfdd2fdc5c8dcb6e7bda274e0fa6ad"
+  },
+  "cases": [
+    {
+      "name": "coding",
+      "prompt": "def add(a, b):\n    return",
+      "mode": "--complete",
+      "sequence": [
+        727,
+        884,
+        2784,
+        11,
+        292,
+        1590,
+        198,
+        262,
+        460,
+        264,
+        478,
+        292,
+        271,
+        727
+      ],
+      "generated_ids": [
+        264,
+        478,
+        292,
+        271,
+        727,
+        31192
+      ],
+      "ordinary_rows_bitexact": true,
+      "metrics": {
+        "trunk": {
+          "scaled": 2.3993568713329303e-06,
+          "absolute": 5.435943603515625e-05,
+          "argmax_matches": 14,
+          "margin_decided": 14,
+          "per_token_scaled": [
+            1.853841107278695e-06,
+            2.7933180394566303e-06,
+            1.578172716344333e-06,
+            2.2310496428178766e-06,
+            2.14679299013999e-06,
+            2.0501251451672883e-06,
+            2.662524214957071e-06,
+            1.8788971275857667e-06,
+            1.941111409888566e-06,
+            1.7334652016230856e-06,
+            1.5520459198652824e-06,
+            2.4110307937817395e-06,
+            1.8872754098372169e-06,
+            2.4627114104952647e-06
+          ],
+          "per_token_margin": [
+            0.003276824951171875,
+            0.5077753067016602,
+            0.03145408630371094,
+            6.604905128479004,
+            3.88458251953125,
+            4.765228271484375,
+            4.622684478759766,
+            0.8105239868164062,
+            3.900646209716797,
+            1.0509567260742188,
+            6.067600250244141,
+            1.4893207550048828,
+            3.8622303009033203,
+            1.8093414306640625
+          ],
+          "native_top5": [
+            [
+              1822,
+              369,
+              6093,
+              1423,
+              884
+            ],
+            [
+              2784,
+              3773,
+              2007,
+              2914,
+              7815
+            ],
+            [
+              8142,
+              11,
+              25,
+              13925,
+              1590
+            ],
+            [
+              292,
+              348,
+              220,
+              307,
+              830
+            ],
+            [
+              1590,
+              8,
+              11,
+              28,
+              3863
+            ],
+            [
+              198,
+              1133,
+              271,
+              695,
+              460
+            ],
+            [
+              262,
+              220,
+              6685,
+              256,
+              827
+            ],
+            [
+              1133,
+              460,
+              4071,
+              1067,
+              272
+            ],
+            [
+              264,
+              318,
+              2784,
+              514,
+              220
+            ],
+            [
+              478,
+              33932,
+              10,
+              11,
+              413
+            ],
+            [
+              292,
+              65,
+              220,
+              318,
+              264
+            ],
+            [
+              271,
+              1358,
+              198,
+              6987,
+              26
+            ],
+            [
+              727,
+              1302,
+              2,
+              1334,
+              64
+            ],
+            [
+              31192,
+              1146,
+              29283,
+              26401,
+              15144
+            ]
+          ],
+          "reference_top5": [
+            [
+              1822,
+              369,
+              6093,
+              1423,
+              884
+            ],
+            [
+              2784,
+              3773,
+              2007,
+              2914,
+              7815
+            ],
+            [
+              8142,
+              11,
+              25,
+              13925,
+              1590
+            ],
+            [
+              292,
+              348,
+              220,
+              307,
+              830
+            ],
+            [
+              1590,
+              8,
+              11,
+              28,
+              3863
+            ],
+            [
+              198,
+              1133,
+              271,
+              695,
+              460
+            ],
+            [
+              262,
+              220,
+              6685,
+              256,
+              827
+            ],
+            [
+              1133,
+              460,
+              4071,
+              1067,
+              272
+            ],
+            [
+              264,
+              318,
+              2784,
+              514,
+              220
+            ],
+            [
+              478,
+              33932,
+              10,
+              11,
+              413
+            ],
+            [
+              292,
+              65,
+              220,
+              318,
+              264
+            ],
+            [
+              271,
+              1358,
+              198,
+              6987,
+              26
+            ],
+            [
+              727,
+              1302,
+              2,
+              1334,
+              64
+            ],
+            [
+              31192,
+              1146,
+              29283,
+              26401,
+              15144
+            ]
+          ],
+          "top5_order_matches": 14,
+          "passed": true
+        },
+        "mtp": {
+          "scaled": 1.2578149044787068e-05,
+          "absolute": 0.00026339292526245117,
+          "argmax_matches": 13,
+          "margin_decided": 13,
+          "per_token_scaled": [
+            3.901577706416253e-06,
+            6.4999464515049784e-06,
+            4.962171019813897e-06,
+            1.0004254763151865e-05,
+            6.286087098175382e-06,
+            1.0067683806934562e-05,
+            6.689313891757982e-06,
+            1.4276173022642456e-05,
+            5.059491893797304e-06,
+            4.121556871883158e-06,
+            9.75122396802025e-06,
+            5.56788583137108e-06,
+            1.1655029059872456e-05
+          ],
+          "per_token_margin": [
+            1.3955507278442383,
+            1.4997749328613281,
+            5.45517635345459,
+            3.011577606201172,
+            4.95194149017334,
+            6.0962018966674805,
+            0.12072944641113281,
+            2.8384761810302734,
+            1.4034423828125,
+            6.3871002197265625,
+            1.5095605850219727,
+            3.5676841735839844,
+            2.6435623168945312
+          ],
+          "native_top5": [
+            [
+              1393,
+              2784,
+              1212,
+              1290,
+              1446
+            ],
+            [
+              11,
+              8142,
+              1590,
+              25,
+              16
+            ],
+            [
+              292,
+              514,
+              264,
+              348,
+              307
+            ],
+            [
+              1590,
+              11,
+              8,
+              25,
+              85983
+            ],
+            [
+              198,
+              460,
+              653,
+              695,
+              1133
+            ],
+            [
+              262,
+              256,
+              1302,
+              257,
+              197
+            ],
+            [
+              1133,
+              460,
+              4071,
+              1067,
+              653
+            ],
+            [
+              264,
+              318,
+              292,
+              1879,
+              281
+            ],
+            [
+              478,
+              33932,
+              10,
+              32176,
+              984
+            ],
+            [
+              292,
+              264,
+              318,
+              220,
+              65
+            ],
+            [
+              271,
+              198,
+              1358,
+              11,
+              220
+            ],
+            [
+              727,
+              2,
+              1302,
+              331,
+              698
+            ],
+            [
+              884,
+              31192,
+              29283,
+              1146,
+              2542
+            ]
+          ],
+          "reference_top5": [
+            [
+              1393,
+              2784,
+              1212,
+              1290,
+              1446
+            ],
+            [
+              11,
+              8142,
+              1590,
+              25,
+              16
+            ],
+            [
+              292,
+              514,
+              264,
+              348,
+              307
+            ],
+            [
+              1590,
+              11,
+              8,
+              25,
+              85983
+            ],
+            [
+              198,
+              460,
+              653,
+              695,
+              1133
+            ],
+            [
+              262,
+              256,
+              1302,
+              257,
+              197
+            ],
+            [
+              1133,
+              460,
+              4071,
+              1067,
+              653
+            ],
+            [
+              264,
+              318,
+              292,
+              1879,
+              281
+            ],
+            [
+              478,
+              33932,
+              10,
+              32176,
+              984
+            ],
+            [
+              292,
+              264,
+              318,
+              220,
+              65
+            ],
+            [
+              271,
+              198,
+              1358,
+              11,
+              220
+            ],
+            [
+              727,
+              2,
+              1302,
+              331,
+              698
+            ],
+            [
+              884,
+              31192,
+              29283,
+              1146,
+              2542
+            ]
+          ],
+          "top5_order_matches": 13,
+          "passed": true
+        }
+      },
+      "passed": true,
+      "commands": [
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "--qwen38",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "--complete",
+          "def add(a, b):\n    return",
+          "--context",
+          "64",
+          "--chunk",
+          "4",
+          "--max-new",
+          "6",
+          "--token-ids",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/ids.json",
+          "--logits",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/ordinary.f32"
+        ],
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/mtp_real",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding",
+          "4",
+          "0",
+          "727",
+          "884",
+          "2784",
+          "11",
+          "292",
+          "1590",
+          "198",
+          "262",
+          "460",
+          "264",
+          "478",
+          "292",
+          "271",
+          "727"
+        ]
+      ],
+      "oracle_environment": {
+        "DS4_QWEN4_FT_TOKENS": "727,884,2784,11,292,1590,198,262,460,264,478,292,271,727",
+        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/reference.f32",
+        "DS4_QWEN4_MTP_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/reference-mtp.f32"
+      },
+      "artifacts": {
+        "ids.json": "d7c6be0cc098c84674d44dc506f65dfe4679bfd3012e939684b5393893d267bc",
+        "reference-mtp.f32": "294a3ace4712af6fed6feb175233ee353a49ec4267bfd068f32e6912e8137105",
+        "mtp.f32": "0b22cc13e58c965020c98637f8bf0e6e6ec13b8409a4cfda11358b1686fdc3b7",
+        "release-wait.json": "40824d52dcf167cab3133c2ee6757374cd7ba0b18f6ccf82117807f8e014527c",
+        "reference.f32": "165bc3aa0402629cf06a910833cf01be2db571a88d3011bf89dbcf280b097128",
+        "logits.f32": "bf02112d8c67bed078e363166c3369b0eddaf0feeecf406f9c58dbc8bcc68678",
+        "ordinary.f32": "a44298a5fb64d12f597f4da16f70baa0bf1049aebe725388e24db07aae64f22f"
+      }
+    },
+    {
+      "name": "italiano",
+      "prompt": "La capitale della Francia è",
+      "mode": "--complete",
+      "sequence": [
+        8482,
+        178048,
+        14786,
+        175548,
+        11094,
+        4931,
+        26109,
+        93595,
+        22056,
+        37509
+      ],
+      "generated_ids": [
+        4931,
+        26109,
+        93595,
+        22056,
+        37509,
+        378
+      ],
+      "ordinary_rows_bitexact": true,
+      "metrics": {
+        "trunk": {
+          "scaled": 1.922852695164435e-06,
+          "absolute": 4.482269287109375e-05,
+          "argmax_matches": 10,
+          "margin_decided": 10,
+          "per_token_scaled": [
+            3.2053992563473725e-06,
+            1.991158545834339e-06,
+            2.1708832455572875e-06,
+            1.4832929064244096e-06,
+            1.3603160024301584e-06,
+            1.5543429377910507e-06,
+            1.8204003626600307e-06,
+            1.6808003852789966e-06,
+            1.7959003780302782e-06,
+            1.7341487663696049e-06
+          ],
+          "per_token_margin": [
+            1.6323261260986328,
+            0.3442230224609375,
+            0.22322750091552734,
+            0.07538795471191406,
+            0.7747974395751953,
+            1.3335552215576172,
+            0.7437381744384766,
+            3.008199691772461,
+            0.39356422424316406,
+            0.6437511444091797
+          ],
+          "native_top5": [
+            [
+              198,
+              2972,
+              44366,
+              181278,
+              188438
+            ],
+            [
+              401,
+              1538,
+              190425,
+              909,
+              23476
+            ],
+            [
+              185876,
+              11230,
+              185495,
+              76132,
+              30198
+            ],
+            [
+              11094,
+              11,
+              6185,
+              2397,
+              378
+            ],
+            [
+              4931,
+              33417,
+              1147,
+              198,
+              76502
+            ],
+            [
+              26109,
+              93595,
+              8557,
+              2197,
+              1789
+            ],
+            [
+              93595,
+              179810,
+              22056,
+              49269,
+              2197
+            ],
+            [
+              22056,
+              228926,
+              2920,
+              384,
+              198
+            ],
+            [
+              37509,
+              3814,
+              1044,
+              221785,
+              22735
+            ],
+            [
+              378,
+              444,
+              1538,
+              293,
+              11
+            ]
+          ],
+          "reference_top5": [
+            [
+              198,
+              2972,
+              44366,
+              181278,
+              188438
+            ],
+            [
+              401,
+              1538,
+              190425,
+              909,
+              23476
+            ],
+            [
+              185876,
+              11230,
+              185495,
+              76132,
+              30198
+            ],
+            [
+              11094,
+              11,
+              6185,
+              2397,
+              378
+            ],
+            [
+              4931,
+              33417,
+              1147,
+              198,
+              76502
+            ],
+            [
+              26109,
+              93595,
+              8557,
+              2197,
+              1789
+            ],
+            [
+              93595,
+              179810,
+              22056,
+              49269,
+              2197
+            ],
+            [
+              22056,
+              228926,
+              2920,
+              384,
+              198
+            ],
+            [
+              37509,
+              3814,
+              1044,
+              221785,
+              22735
+            ],
+            [
+              378,
+              444,
+              1538,
+              293,
+              11
+            ]
+          ],
+          "top5_order_matches": 10,
+          "passed": true
+        },
+        "mtp": {
+          "scaled": 9.883921411528868e-06,
+          "absolute": 0.000186920166015625,
+          "argmax_matches": 9,
+          "margin_decided": 9,
+          "per_token_scaled": [
+            5.687050484810632e-06,
+            1.0816948966959298e-05,
+            1.183197842088605e-05,
+            6.260750883157171e-06,
+            9.931122890655294e-06,
+            9.5452824369757e-06,
+            5.849667774170146e-06,
+            5.469661414250707e-06,
+            1.0684042848500104e-05
+          ],
+          "per_token_margin": [
+            1.0362167358398438,
+            0.2959423065185547,
+            2.017549514770508,
+            0.18259334564208984,
+            0.07534122467041016,
+            2.3310070037841797,
+            4.899670600891113,
+            0.0648813247680664,
+            1.4434947967529297
+          ],
+          "native_top5": [
+            [
+              11094,
+              1725,
+              378,
+              264,
+              500
+            ],
+            [
+              2972,
+              178048,
+              11230,
+              175548,
+              2264
+            ],
+            [
+              11,
+              6185,
+              318,
+              4259,
+              378
+            ],
+            [
+              76502,
+              4931,
+              994,
+              3687,
+              632
+            ],
+            [
+              26109,
+              93595,
+              8557,
+              272,
+              2197
+            ],
+            [
+              93595,
+              179810,
+              4016,
+              16315,
+              2197
+            ],
+            [
+              22056,
+              2920,
+              1538,
+              1789,
+              2197
+            ],
+            [
+              3814,
+              1044,
+              37509,
+              17414,
+              221785
+            ],
+            [
+              378,
+              184928,
+              1538,
+              11,
+              14786
+            ]
+          ],
+          "reference_top5": [
+            [
+              11094,
+              1725,
+              378,
+              264,
+              500
+            ],
+            [
+              2972,
+              178048,
+              11230,
+              175548,
+              2264
+            ],
+            [
+              11,
+              6185,
+              318,
+              4259,
+              378
+            ],
+            [
+              76502,
+              4931,
+              994,
+              3687,
+              632
+            ],
+            [
+              26109,
+              93595,
+              8557,
+              272,
+              2197
+            ],
+            [
+              93595,
+              179810,
+              4016,
+              16315,
+              2197
+            ],
+            [
+              22056,
+              2920,
+              1538,
+              1789,
+              2197
+            ],
+            [
+              3814,
+              1044,
+              37509,
+              17414,
+              221785
+            ],
+            [
+              378,
+              184928,
+              1538,
+              11,
+              14786
+            ]
+          ],
+          "top5_order_matches": 9,
+          "passed": true
+        }
+      },
+      "passed": true,
+      "commands": [
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "--qwen38",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "--complete",
+          "La capitale della Francia è",
+          "--context",
+          "64",
+          "--chunk",
+          "4",
+          "--max-new",
+          "6",
+          "--token-ids",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ids.json",
+          "--logits",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ordinary.f32"
+        ],
+        [
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/mtp_real",
+          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano",
+          "4",
+          "0",
+          "8482",
+          "178048",
+          "14786",
+          "175548",
+          "11094",
+          "4931",
+          "26109",
+          "93595",
+          "22056",
+          "37509"
+        ]
+      ],
+      "oracle_environment": {
+        "DS4_QWEN4_FT_TOKENS": "8482,178048,14786,175548,11094,4931,26109,93595,22056,37509",
+        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/reference.f32",
+        "DS4_QWEN4_MTP_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/reference-mtp.f32"
+      },
+      "artifacts": {
+        "ids.json": "151ccd11bc89643a732d8023c7736b24fbfe49c5f1b239e18df336eb6576c263",
+        "reference-mtp.f32": "98cd0d16f58c0b416ad1eca48c9461f01ea2fbe5268b0e01068adeb01439c4a4",
+        "mtp.f32": "159a90497ecde5c9e05f6a735ec22338836e5c46a260c38a031ed9b8e33982eb",
+        "release-wait.json": "159b21efa9a1999d966a02a64e530936575c626e24352bfe41cd4f1cf344a688",
+        "reference.f32": "129eff75e4391e633f091c4f2210cef5c7910501f390af9ba289cfcce3de3c97",
+        "logits.f32": "7201ada0e77a729ad8949565dcfe35031834a1e199e5dae81d690581d6a1624a",
+        "ordinary.f32": "48e6aa4d6b28d46265eeb04d3b20c03bf7f5a3f4f47baf682889a760f9f1377e"
+      }
+    }
+  ]
+}

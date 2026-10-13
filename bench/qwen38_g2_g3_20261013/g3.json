@@ -1,0 +1,661 @@
+{
+  "gate": 0.001,
+  "tokens": [
+    248045,
+    846,
+    198,
+    7734,
+    12654,
+    220,
+    18,
+    1970,
+    25471,
+    10562,
+    56761,
+    2515
+  ],
+  "layers": 48,
+  "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "fp32_reference": {
+    "scaled": 2.24068968139272e-06,
+    "absolute": 5.91278076171875e-05,
+    "argmax_matches": 12,
+    "margin_decided": 12,
+    "per_token_scaled": [
+      1.52208446064579e-06,
+      1.5901668706658015e-06,
+      2.4037704498158223e-06,
+      2.201629014024377e-06,
+      1.837063569235081e-06,
+      1.533188433350053e-06,
+      1.853011744221066e-06,
+      2.2501304531276416e-06,
+      1.2482008225310566e-06,
+      1.95803708957367e-06,
+      1.6427125143881637e-06,
+      2.212326975289967e-06
+    ],
+    "per_token_margin": [
+      0.28656578063964844,
+      12.296346664428711,
+      0.0073604583740234375,
+      0.9246845245361328,
+      3.666790008544922,
+      4.601741790771484,
+      1.3789196014404297,
+      8.349420547485352,
+      3.6648025512695312,
+      3.5181493759155273,
+      6.9058380126953125,
+      5.868039131164551
+    ],
+    "native_top5": [
+      [
+        846,
+        8678,
+        1785,
+        2244,
+        1156
+      ],
+      [
+        198,
+        248046,
+        271,
+        248044,
+        220
+      ],
+      [
+        2523,
+        3710,
+        1,
+        32,
+        96220
+      ],
+      [
+        248046,
+        264,
+        449,
+        728,
+        279
+      ],
+      [
+        248046,
+        1970,
+        220,
+        1957,
+        5148
+      ],
+      [
+        248046,
+        18,
+        17,
+        1970,
+        98874
+      ],
+      [
+        248046,
+        1970,
+        13,
+        5148,
+        18910
+      ],
+      [
+        248046,
+        310,
+        364,
+        421,
+        303
+      ],
+      [
+        248046,
+        264,
+        1510,
+        279,
+        1330
+      ],
+      [
+        248046,
+        17885,
+        3269,
+        87682,
+        9927
+      ],
+      [
+        248046,
+        421,
+        709,
+        2515,
+        1494
+      ],
+      [
+        5347,
+        8,
+        16,
+        11,
+        248046
+      ]
+    ],
+    "reference_top5": [
+      [
+        846,
+        8678,
+        1785,
+        2244,
+        1156
+      ],
+      [
+        198,
+        248046,
+        271,
+        248044,
+        220
+      ],
+      [
+        2523,
+        3710,
+        1,
+        32,
+        96220
+      ],
+      [
+        248046,
+        264,
+        449,
+        728,
+        279
+      ],
+      [
+        248046,
+        1970,
+        220,
+        1957,
+        5148
+      ],
+      [
+        248046,
+        18,
+        17,
+        1970,
+        98874
+      ],
+      [
+        248046,
+        1970,
+        13,
+        5148,
+        18910
+      ],
+      [
+        248046,
+        310,
+        364,
+        421,
+        303
+      ],
+      [
+        248046,
+        264,
+        1510,
+        279,
+        1330
+      ],
+      [
+        248046,
+        17885,
+        3269,
+        87682,
+        9927
+      ],
+      [
+        248046,
+        421,
+        709,
+        2515,
+        1494
+      ],
+      [
+        5347,
+        8,
+        16,
+        11,
+        248046
+      ]
+    ],
+    "top5_order_matches": 12
+  },
+  "hidden_by_layer": [
+    2.066666528888898e-06,
+    1.4238552132892394e-06,
+    7.540368390410113e-07,
+    8.343688651028994e-07,
+    2.015346376191782e-06,
+    2.008733697048048e-06,
+    1.902913360354703e-06,
+    1.9158650268298934e-06,
+    1.9182008427015965e-06,
+    1.9011289378915434e-06,
+    1.8931382612116677e-06,
+    1.8543684314232422e-06,
+    1.7876053167672374e-06,
+    1.7819075795814774e-06,
+    1.7510438264089863e-06,
+    1.7713283581049667e-06,
+    1.748718888542254e-06,
+    1.748898718476975e-06,
+    1.746904717760757e-06,
+    1.744023811738443e-06,
+    1.7359923644111843e-06,
+    1.6775588700142392e-06,
+    1.6671890525698052e-06,
+    1.664880619735162e-06,
+    1.7646281608626208e-06,
+    1.8138924959267444e-06,
+    1.8864450226514885e-06,
+    1.899483751974276e-06,
+    1.882209056750799e-06,
+    1.8776543382316815e-06,
+    1.888322419235841e-06,
+    1.8955663020123648e-06,
+    1.925095064402772e-06,
+    1.937846919007494e-06,
+    1.94186546730151e-06,
+    1.91370711860774e-06,
+    1.9036353152524783e-06,
+    1.8988452236067477e-06,
+    1.8999418427801925e-06,
+    1.9130904681989203e-06,
+    1.9199612935803213e-06,
+    1.8795850939050435e-06,
+    1.840964833889743e-06,
+    1.8045006566448996e-06,
+    1.8686993820082269e-06,
+    1.8827915514079029e-06,
+    2.560192690342646e-06,
+    1.108566390119589e-06
+  ],
+  "hidden_max": 2.560192690342646e-06,
+  "stock_metal": {
+    "scaled": 0.032488768391496906,
+    "absolute": 0.8573229312896729,
+    "argmax_matches": 12,
+    "margin_decided": 12,
+    "per_token_scaled": [
+      7.207476292775028e-06,
+      4.431675116454122e-05,
+      9.938947065230637e-05,
+      6.393441398886415e-05,
+      8.066100231399197e-05,
+      8.473261043144353e-05,
+      9.541993858884414e-05,
+      6.485394036137617e-05,
+      6.896704452386115e-05,
+      9.670180158658672e-05,
+      9.044081037452441e-05,
+      0.041308220571080814
+    ],
+    "per_token_margin": [
+      0.2865924835205078,
+      12.296646118164062,
+      0.007418632507324219,
+      0.9236354827880859,
+      3.666452407836914,
+      4.6017913818359375,
+      1.3789043426513672,
+      8.349365234375,
+      3.6642513275146484,
+      3.5183582305908203,
+      6.905426025390625,
+      5.832339286804199
+    ],
+    "native_top5": [
+      [
+        846,
+        8678,
+        1785,
+        2244,
+        1156
+      ],
+      [
+        198,
+        248046,
+        271,
+        248044,
+        220
+      ],
+      [
+        2523,
+        3710,
+        1,
+        32,
+        96220
+      ],
+      [
+        248046,
+        264,
+        449,
+        728,
+        279
+      ],
+      [
+        248046,
+        1970,
+        220,
+        1957,
+        5148
+      ],
+      [
+        248046,
+        18,
+        17,
+        1970,
+        98874
+      ],
+      [
+        248046,
+        1970,
+        13,
+        5148,
+        18910
+      ],
+      [
+        248046,
+        310,
+        364,
+        421,
+        303
+      ],
+      [
+        248046,
+        264,
+        1510,
+        279,
+        1330
+      ],
+      [
+        248046,
+        17885,
+        3269,
+        87682,
+        9927
+      ],
+      [
+        248046,
+        421,
+        709,
+        2515,
+        1494
+      ],
+      [
+        5347,
+        8,
+        16,
+        11,
+        248046
+      ]
+    ],
+    "reference_top5": [
+      [
+        846,
+        8678,
+        1785,
+        2244,
+        1156
+      ],
+      [
+        198,
+        248046,
+        271,
+        248044,
+        220
+      ],
+      [
+        2523,
+        3710,
+        1,
+        32,
+        96220
+      ],
+      [
+        248046,
+        264,
+        449,
+        728,
+        279
+      ],
+      [
+        248046,
+        1970,
+        220,
+        1957,
+        5148
+      ],
+      [
+        248046,
+        18,
+        17,
+        1970,
+        98874
+      ],
+      [
+        248046,
+        1970,
+        13,
+        5148,
+        18910
+      ],
+      [
+        248046,
+        310,
+        364,
+        421,
+        303
+      ],
+      [
+        248046,
+        264,
+        1510,
+        279,
+        1330
+      ],
+      [
+        248046,
+        17885,
+        3269,
+        87682,
+        9927
+      ],
+      [
+        248046,
+        421,
+        709,
+        2515,
+        1494
+      ],
+      [
+        5347,
+        8,
+        16,
+        11,
+        248046
+      ]
+    ],
+    "top5_order_matches": 12
+  },
+  "stock_metal_pass": false,
+  "pass_fp32": true,
+  "router_near_tie": {
+    "layer": 7,
+    "position": 11,
+    "logits_error_abs": 0.0007371902465820312,
+    "native_top12": [
+      294,
+      505,
+      304,
+      312,
+      244,
+      252,
+      37,
+      462,
+      377,
+      107,
+      227,
+      495
+    ],
+    "reference_top12": [
+      294,
+      505,
+      304,
+      312,
+      244,
+      252,
+      37,
+      462,
+      377,
+      227,
+      107,
+      495
+    ],
+    "native_margin_10_11": 0.00021409988403320312,
+    "reference_margin_10_11": 0.00011157989501953125,
+    "header_sha256": "ec931bcfabe3d85d69a0f7a07cd697b7205afd620b220d4b3099c7cced7a6e75",
+    "router_sha256": "7c00e53df09bb569ccd5b6b24474ffc5b45cbcfa2944ead1833b6065ecfe70c7"
+  },
+  "memory": {
+    "metal_allocated_bytes": 46294941696,
+    "metal_recommended_bytes": 55662788608,
+    "graph_buffer_bytes": 1497537024,
+    "sampled_peak_footprint_bytes": 1665224592,
+    "lifetime_peak_footprint_bytes": 1693454224
+  },
+  "note": "Stock Metal uses FP16 K/V; its failure is retained, not relabeled as parity.",
+  "commands": [
+    {
+      "name": "native",
+      "argv": [
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g2/forward_real",
+        "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/native",
+        "48",
+        "4",
+        "248045",
+        "846",
+        "198",
+        "7734",
+        "12654",
+        "220",
+        "18",
+        "1970",
+        "25471",
+        "10562",
+        "56761",
+        "2515"
+      ],
+      "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu",
+      "env": {}
+    },
+    {
+      "name": "oracle-build",
+      "argv": [
+        "clang",
+        "-O2",
+        "-std=c11",
+        "-I/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/tools/oracle/qwen38_dwarfstar_logits.c",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_image.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_distributed.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tp.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_ssd.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_metal.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_layer_pack.o",
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_engram.o",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-lm",
+        "-pthread",
+        "-o",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/dwarfstar_logits"
+      ],
+      "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu",
+      "env": {}
+    },
+    {
+      "name": "stock-metal",
+      "argv": [
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/dwarfstar_logits",
+        "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/stock-metal.f32",
+        "248045",
+        "846",
+        "198",
+        "7734",
+        "12654",
+        "220",
+        "18",
+        "1970",
+        "25471",
+        "10562",
+        "56761",
+        "2515"
+      ],
+      "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+      "env": {
+        "DS4_METAL_GRAPH_DUMP_PREFIX": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/stock-trace"
+      }
+    },
+    {
+      "name": "near-tie-replay",
+      "argv": [
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g2/test_parts",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g1/graph.gguf",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge.metallib",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/near-tie-scores.f32"
+      ],
+      "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu",
+      "env": {
+        "MTL_DEBUG_LAYER": "1"
+      }
+    },
+    {
+      "name": "fp32-reference",
+      "argv": [
+        "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4",
+        "--cpu",
+        "--first-token-test",
+        "-m",
+        "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+        "-p",
+        "x"
+      ],
+      "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+      "env": {
+        "DS4_QWEN4_FT_TOKENS": "248045,846,198,7734,12654,220,18,1970,25471,10562,56761,2515",
+        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/fp32-logits.f32",
+        "DS4_QWEN4_FT_HIDDEN": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/fp32-hidden.f32"
+      }
+    },
+    {
+      "name": "chat",
+      "argv": [
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge",
+        "--qwen38",
+        "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+        "--chat",
+        "Rispondi in italiano: quanto fa 2 + 2?",
+        "--max-new",
+        "16",
+        "--token-ids",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/chat-ids.json",
+        "--logits",
+        "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/chat-logits.f32"
+      ],
+      "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu",
+      "observer": "tools/eval/run_observed.py"
+    }
+  ],
+  "analysis_note": "Top-5 rankings added from the retained logits using tools/qwen38_g3.py:logits_report; no model rerun."
+}

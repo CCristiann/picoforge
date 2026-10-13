@@ -1,0 +1,8 @@
+{
+  "case": "merge-ranges",
+  "format_followed": false,
+  "tests_passed": true,
+  "returncode": 0,
+  "stdout": "PASS: interval oracle, generator and no mutation\n",
+  "stderr": ""
+}

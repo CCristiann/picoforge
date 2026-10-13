@@ -1,0 +1,6 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_recurrent.m src/qwen38_recurrent_gpu.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c -framework Metal -framework Foundation -lm -o build/qwen38-c/test_gpu
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 env MTL_DEBUG_LAYER=1 ./build/qwen38-c/test_gpu "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/picoforge.metallib"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+2026-10-12 19:09:02.030 test_gpu[11967:1120529] Metal API Validation Enabled
+Assertion failed: (q38c_gpu_encode(gpu,begin(0),Q38C_ACT,&spec,views,2,NULL)==Q38_INVALID_ARGUMENT), function shared_aliases, file test_qwen38_recurrent.m, line 356.
+make: *** [test-qwen38-c-gpu] Abort trap: 6

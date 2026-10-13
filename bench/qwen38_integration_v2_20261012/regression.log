@@ -1,0 +1,854 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Isrc -o tests/test_ops tests/test_ops.c src/ops.o -lm
+op             max |Δ|    relative   verdict
+rmsnorm      1.360e-09   1.299e-09   PASS
+matmul       4.751e-10   5.720e-10   PASS
+softmax      1.471e-10   2.384e-10   PASS
+rope         4.846e-10   5.529e-10   PASS
+silu         3.441e-09   9.476e-10   PASS
+
+all primitives agree with the oracle
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Isrc -o build/test_expert_cost tests/test_expert_cost.c src/expert_cost.o src/config.o src/json.o src/util.o -lm
+PASS: expert unions, dense layers, accepted-only history, eviction and cost calibration
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -Isrc -o build/test_attention tests/test_attention.m src/metal.m.o src/util.o -lm -framework Metal -framework Foundation
+attention depth=32 head_dim=32 rows=1 max_abs_error=4.24e-08 PASS
+attention depth=32 head_dim=32 rows=3 max_abs_error=6.24e-08 PASS
+attention depth=32 head_dim=128 rows=1 max_abs_error=6.93e-08 PASS
+attention depth=32 head_dim=128 rows=3 max_abs_error=9.6e-08 PASS
+attention depth=512 head_dim=32 rows=1 max_abs_error=5.28e-08 PASS
+attention depth=512 head_dim=32 rows=3 max_abs_error=5.34e-08 PASS
+attention depth=512 head_dim=128 rows=1 max_abs_error=5.57e-08 PASS
+attention depth=512 head_dim=128 rows=3 max_abs_error=4.85e-08 PASS
+attention depth=2048 head_dim=32 rows=1 max_abs_error=3.97e-08 PASS
+attention depth=2048 head_dim=32 rows=3 max_abs_error=3.18e-08 PASS
+attention depth=2048 head_dim=128 rows=1 max_abs_error=3.88e-08 PASS
+attention depth=2048 head_dim=128 rows=3 max_abs_error=6.74e-08 PASS
+attention depth=2049 head_dim=32 rows=1 max_abs_error=3.45e-08 PASS
+attention depth=2049 head_dim=32 rows=3 max_abs_error=4.05e-08 PASS
+attention depth=2049 head_dim=128 rows=1 max_abs_error=7.66e-08 PASS
+attention depth=2049 head_dim=128 rows=3 max_abs_error=8.3e-08 PASS
+attention depth=4096 head_dim=32 rows=1 max_abs_error=4.11e-08 PASS
+attention depth=4096 head_dim=32 rows=3 max_abs_error=5.02e-08 PASS
+attention depth=4096 head_dim=128 rows=1 max_abs_error=6.83e-08 PASS
+attention depth=4096 head_dim=128 rows=3 max_abs_error=7.31e-08 PASS
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 90.20it/s]
+tiny Qwen3-MoE -> build/tiny-qwen3-moe  (39.5 M parameters, seed 20260914)
+PASS: context boundary parity, metrics and invalid arguments
+
+4017/4017 strings normalise identically to Python's unicodedata
+vocabulary            : C 151643 tokens, Python 151643
+  all 151643 token byte-strings identical
+merge rules           : C 151387, Python 151387
+  all 151387 rules map to the same (left_id, right_id)
+
+tokenizer tables match Python exactly
+
+30/30 texts tokenise identically to HuggingFace
+(the C engine also decoded every one of them back to the original bytes)
+
+=== 1 tokens: 'Hello' ===
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.303 s  (3.3 tok/s)
+
+--- 1 tokens, CPU batch ---
+  max |Δlogit|          : 6.837e-05   (logit scale 10.4)
+  relative error        : 6.593e-06   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 6.390e-11 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.302 s  (3.3 tok/s)
+
+--- 1 tokens, CPU incremental ---
+  max |Δlogit|          : 6.837e-05   (logit scale 10.4)
+  relative error        : 6.593e-06   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 6.390e-11 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.129 s  (7.8 tok/s)
+
+--- 1 tokens, GPU batch ---
+  max |Δlogit|          : 3.853e-05   (logit scale 10.4)
+  relative error        : 3.715e-06   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 1.835e-11 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.132 s  (7.6 tok/s)
+
+--- 1 tokens, GPU incremental ---
+  max |Δlogit|          : 3.853e-05   (logit scale 10.4)
+  relative error        : 3.715e-06   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 1.835e-11 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : ' Answer'
+
+=== 5 tokens: 'The capital of France is' ===
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 1.411 s  (3.5 tok/s)
+
+--- 5 tokens, CPU batch ---
+  max |Δlogit|          : 1.722e-04   (logit scale 19.0)
+  relative error        : 9.082e-06   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 4.010e-10 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 1.414 s  (3.5 tok/s)
+
+--- 5 tokens, CPU incremental ---
+  max |Δlogit|          : 1.722e-04   (logit scale 19.0)
+  relative error        : 9.082e-06   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 4.010e-10 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.130 s  (38.5 tok/s)
+
+--- 5 tokens, GPU batch ---
+  max |Δlogit|          : 8.787e-05   (logit scale 19.0)
+  relative error        : 4.634e-06   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 1.164e-10 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.160 s  (31.2 tok/s)
+
+--- 5 tokens, GPU incremental ---
+  max |Δlogit|          : 8.787e-05   (logit scale 19.0)
+  relative error        : 4.634e-06   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 1.164e-10 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : ' Paris'
+
+=== 9 tokens: 'Roses are red and violets are' ===
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 2.499 s  (3.6 tok/s)
+
+--- 9 tokens, CPU batch ---
+  max |Δlogit|          : 2.972e-04   (logit scale 27.4)
+  relative error        : 1.084e-05   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 1.361e-09 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 2.500 s  (3.6 tok/s)
+
+--- 9 tokens, CPU incremental ---
+  max |Δlogit|          : 2.972e-04   (logit scale 27.4)
+  relative error        : 1.084e-05   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 1.361e-09 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.140 s  (64.5 tok/s)
+
+--- 9 tokens, GPU batch ---
+  max |Δlogit|          : 1.865e-04   (logit scale 27.4)
+  relative error        : 6.804e-06   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 4.009e-10 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  model.layers.27.mlp.down_proj.weight         -0.0143432617 0.0114746094 -0.0617675781 -0.00958251953
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.205 s  (43.8 tok/s)
+
+--- 9 tokens, GPU incremental ---
+  max |Δlogit|          : 1.865e-04   (logit scale 27.4)
+  relative error        : 6.804e-06   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 4.009e-10 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : ' blue'
+
+C engine matches the oracle — chain of oracles intact
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3475.48it/s]
+
+=== 'The capital of France is' ===
+  C  : ' Paris. The capital of Italy is Rome. The capital of Spain is Madrid.'
+  HF : ' Paris. The capital of Italy is Rome. The capital of Spain is Madrid.'
+  identical: 16/16 tokens
+
+=== 'def fibonacci(n):' ===
+  C  : '\n    if n == 0:\n        return 0\n    elif n'
+  HF : '\n    if n == 0:\n        return 0\n    elif n'
+  identical: 16/16 tokens
+
+=== 'Water boils at' ===
+  C  : ' 100°C at 1 atm pressure. What is the temperature in'
+  HF : ' 100°C at 1 atm pressure. What is the temperature in'
+  identical: 16/16 tokens
+
+3/3 prompts generate identically to transformers, greedy, 16 tokens
+layers.0.self_attn.q_proj        q8_row     range True  bounds True  exact True  clipped  0.00%  PASS
+layers.0.self_attn.q_proj        q8_g32     range True  bounds True  exact True  clipped  0.00%  PASS
+layers.0.self_attn.q_proj        q4_row     range True  bounds True  exact True  clipped  0.04%  PASS
+layers.0.self_attn.q_proj        q4_rowcol  range True  bounds True  exact True  clipped  0.04%  PASS
+layers.0.self_attn.q_proj        q4_g128    range True  bounds True  exact True  clipped  0.20%  PASS
+layers.0.self_attn.q_proj        q4_g32     range True  bounds True  exact True  clipped  0.50%  PASS
+layers.0.self_attn.q_proj        q4_g32_mse range True  bounds True  exact True  clipped  1.40%  PASS
+layers.27.mlp.down_proj          q8_row     range True  bounds True  exact True  clipped  0.00%  PASS
+layers.27.mlp.down_proj          q8_g32     range True  bounds True  exact True  clipped  0.00%  PASS
+layers.27.mlp.down_proj          q4_row     range True  bounds True  exact True  clipped  0.01%  PASS
+layers.27.mlp.down_proj          q4_rowcol  range True  bounds True  exact True  clipped  0.02%  PASS
+layers.27.mlp.down_proj          q4_g128    range True  bounds True  exact True  clipped  0.18%  PASS
+layers.27.mlp.down_proj          q4_g32     range True  bounds True  exact True  clipped  0.48%  PASS
+layers.27.mlp.down_proj          q4_g32_mse range True  bounds True  exact True  clipped  1.38%  PASS
+
+quantisers keep their promises
+=== quantised kernels vs the CPU reference ===
+kernel           case                           err/sum|terms|   max |diff|
+matmul_q8_row    decode  gate_proj                    1.50e-07     1.53e-04
+matmul_q8_row    M=32: speculative verify             1.98e-07     2.44e-04
+matmul_q8_row    prefill q_proj, 128 tokens           2.73e-07     3.36e-04
+matmul_q8_row    awkward M and N                      1.43e-07     7.63e-05
+matmul_q4_row    decode  gate_proj                    7.86e-08     4.77e-06
+matmul_q4_row    M=32: speculative verify             1.35e-07     9.54e-06
+matmul_q4_row    prefill q_proj, 128 tokens           1.45e-07     9.54e-06
+matmul_q4_row    awkward M and N                      6.35e-08     1.91e-06
+matmul_q8_g32    decode  gate_proj                    1.50e-07     1.14e-04
+matmul_q8_g32    M=32: speculative verify             2.98e-07     2.29e-04
+matmul_q8_g32    prefill q_proj, 128 tokens           2.95e-07     2.29e-04
+matmul_q8_g32    awkward M and N                      1.57e-07     5.72e-05
+matmul_q4_g32    decode  gate_proj                    1.10e-07     5.25e-06
+matmul_q4_g32    M=32: speculative verify             1.72e-07     9.54e-06
+matmul_q4_g32    prefill q_proj, 128 tokens           2.12e-07     1.00e-05
+matmul_q4_g32    awkward M and N                      9.71e-08     2.38e-06
+matmul_q4_g64    decode  gate_proj                    1.28e-07     6.20e-06
+matmul_q4_g64    M=32: speculative verify             1.72e-07     9.54e-06
+matmul_q4_g64    prefill q_proj, 128 tokens           2.25e-07     9.54e-06
+matmul_q4_g64    awkward M and N                      8.58e-08     2.15e-06
+budget: 1.91e-06 of the summands (16 fp32 epsilons)
+
+every quantised kernel agrees with the CPU reference
+
+##### Qwen3-0.6B-q8_row-embed #####
+--- 1 tokens: 'Hello'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.533 s  (1.9 tok/s)
+  CPU batch                                    rel 3.29e-06 (<1e-04)  KL 4.07e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.533 s  (1.9 tok/s)
+  CPU incremental                              rel 3.29e-06 (<1e-04)  KL 4.07e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.055 s  (18.3 tok/s)
+  GPU batch                                    rel 4.98e-06 (<1e-04)  KL 6.99e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.056 s  (18.0 tok/s)
+  GPU incremental                              rel 4.98e-06 (<1e-04)  KL 6.99e-11 (<1e-07)  argmax 1/1  PASS
+  oracle's next token: 'ED'
+--- 5 tokens: 'The capital of France is'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 2.566 s  (1.9 tok/s)
+  CPU batch                                    rel 9.08e-06 (<1e-04)  KL 4.66e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 2.582 s  (1.9 tok/s)
+  CPU incremental                              rel 9.08e-06 (<1e-04)  KL 4.66e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.054 s  (92.2 tok/s)
+  GPU batch                                    rel 5.54e-06 (<1e-04)  KL 1.95e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.090 s  (55.8 tok/s)
+  GPU incremental                              rel 5.54e-06 (<1e-04)  KL 1.95e-10 (<1e-07)  argmax 5/5  PASS
+  oracle's next token: ' Paris'
+--- 9 tokens: 'Roses are red and violets are'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 4.608 s  (2.0 tok/s)
+  CPU batch                                    rel 6.16e-06 (<1e-04)  KL 8.24e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 4.601 s  (2.0 tok/s)
+  CPU incremental                              rel 6.16e-06 (<1e-04)  KL 8.24e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.060 s  (150.5 tok/s)
+  GPU batch                                    rel 7.99e-06 (<1e-04)  KL 9.75e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.129 s  (69.9 tok/s)
+  GPU incremental                              rel 7.99e-06 (<1e-04)  KL 9.75e-10 (<1e-07)  argmax 9/9  PASS
+  oracle's next token: ' blue'
+
+##### Qwen3-0.6B-q4_g32 #####
+--- 1 tokens: 'Hello'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.466 s  (2.1 tok/s)
+  CPU batch                                    rel 4.32e-06 (<1e-04)  KL 1.89e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.469 s  (2.1 tok/s)
+  CPU incremental                              rel 4.32e-06 (<1e-04)  KL 1.89e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.054 s  (18.5 tok/s)
+  GPU batch                                    rel 4.41e-03 (<1e-01)  KL 1.57e-05 (<5e-03)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.055 s  (18.0 tok/s)
+  GPU incremental                              rel 4.41e-03 (<1e-01)  KL 1.57e-05 (<5e-03)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.464 s  (2.2 tok/s)
+  CPU, Q4 inputs narrowed to bf16              rel 4.38e-03 (<1e-01)  KL 1.57e-05 (<5e-03)  argmax 1/1  PASS
+  oracle's next token: ':'
+--- 5 tokens: 'The capital of France is'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 2.241 s  (2.2 tok/s)
+  CPU batch                                    rel 5.71e-06 (<1e-04)  KL 1.25e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 2.249 s  (2.2 tok/s)
+  CPU incremental                              rel 5.71e-06 (<1e-04)  KL 1.25e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.057 s  (87.8 tok/s)
+  GPU batch                                    rel 5.44e-03 (<1e-01)  KL 2.65e-04 (<5e-03)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.092 s  (54.3 tok/s)
+  GPU incremental                              rel 5.44e-03 (<1e-01)  KL 2.65e-04 (<5e-03)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 2.242 s  (2.2 tok/s)
+  CPU, Q4 inputs narrowed to bf16              rel 3.84e-03 (<1e-01)  KL 1.43e-04 (<5e-03)  argmax 5/5  PASS
+  oracle's next token: ' Paris'
+--- 9 tokens: 'Roses are red and violets are'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 4.019 s  (2.2 tok/s)
+  CPU batch                                    rel 6.18e-06 (<1e-04)  KL 5.62e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 4.025 s  (2.2 tok/s)
+  CPU incremental                              rel 6.18e-06 (<1e-04)  KL 5.62e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.059 s  (153.6 tok/s)
+  GPU batch                                    rel 6.27e-03 (<1e-01)  KL 2.06e-04 (<5e-03)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.131 s  (68.8 tok/s)
+  GPU incremental                              rel 6.27e-03 (<1e-01)  KL 2.06e-04 (<5e-03)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 4.024 s  (2.2 tok/s)
+  CPU, Q4 inputs narrowed to bf16              rel 7.22e-03 (<1e-01)  KL 2.58e-04 (<5e-03)  argmax 8/9 [1 near-tie]  PASS
+  oracle's next token: ' green'
+
+##### Qwen3-0.6B-q4_g32-embed #####
+--- 1 tokens: 'Hello'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.520 s  (1.9 tok/s)
+  CPU batch                                    rel 4.76e-06 (<1e-04)  KL 1.73e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.521 s  (1.9 tok/s)
+  CPU incremental                              rel 4.76e-06 (<1e-04)  KL 1.73e-11 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.039 s  (25.6 tok/s)
+  GPU batch                                    rel 7.77e-03 (<1e-01)  KL 3.71e-05 (<5e-03)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.041 s  (24.6 tok/s)
+  GPU incremental                              rel 7.77e-03 (<1e-01)  KL 3.71e-05 (<5e-03)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.521 s  (1.9 tok/s)
+  CPU, Q4 inputs narrowed to bf16              rel 7.72e-03 (<1e-01)  KL 3.66e-05 (<5e-03)  argmax 1/1  PASS
+  oracle's next token: ':'
+--- 5 tokens: 'The capital of France is'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 2.561 s  (2.0 tok/s)
+  CPU batch                                    rel 6.50e-06 (<1e-04)  KL 1.22e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 2.552 s  (2.0 tok/s)
+  CPU incremental                              rel 6.50e-06 (<1e-04)  KL 1.22e-10 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.043 s  (117.2 tok/s)
+  GPU batch                                    rel 4.66e-03 (<1e-01)  KL 7.26e-05 (<5e-03)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.079 s  (63.4 tok/s)
+  GPU incremental                              rel 4.66e-03 (<1e-01)  KL 7.26e-05 (<5e-03)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 2.559 s  (2.0 tok/s)
+  CPU, Q4 inputs narrowed to bf16              rel 6.45e-03 (<1e-01)  KL 3.90e-04 (<5e-03)  argmax 5/5  PASS
+  oracle's next token: ' Paris'
+--- 9 tokens: 'Roses are red and violets are'
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 4.588 s  (2.0 tok/s)
+  CPU batch                                    rel 5.13e-06 (<1e-04)  KL 4.66e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 4.594 s  (2.0 tok/s)
+  CPU incremental                              rel 5.13e-06 (<1e-04)  KL 4.66e-10 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.045 s  (198.0 tok/s)
+  GPU batch                                    rel 7.29e-03 (<1e-01)  KL 3.89e-04 (<5e-03)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.119 s  (75.5 tok/s)
+  GPU incremental                              rel 7.29e-03 (<1e-01)  KL 3.89e-04 (<5e-03)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        0.135742188 0.70703125 0.58984375 0.7265625
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 4.588 s  (2.0 tok/s)
+  CPU, Q4 inputs narrowed to bf16              rel 7.93e-03 (<1e-01)  KL 2.26e-04 (<5e-03)  argmax 9/9  PASS
+  oracle's next token: ' green'
+
+budgets: relative 1e-04, KL 1e-07 (test_forward.py's); Q4 on bf16 activations 1e-01, 5e-03
+
+quantised engine, CPU and GPU, matches the oracle on dequantised weights
+
+=== 'def fibonacci(n):' (128 tokens) ===
+  draft  0 : 128 tokens in 127 passes (1.00 per pass), 0/0 drafts accepted, decode 1.251 s (101.5 tok/s; drafting 0.000 s, verifying 1.218 s)
+  draft    2 : identical   128 tokens in 91 passes (1.40 per pass), 36/94 drafts accepted, decode 0.909 s (139.8 tok/s; drafting 0.000 s, verifying 0.867 s)
+  draft    4 : identical   128 tokens in 89 passes (1.43 per pass), 38/168 drafts accepted, decode 0.895 s (141.9 tok/s; drafting 0.000 s, verifying 0.851 s)
+  draft    8 : identical   128 tokens in 89 passes (1.43 per pass), 38/264 drafts accepted, decode 0.929 s (136.7 tok/s; drafting 0.000 s, verifying 0.885 s)
+  draft   16 : identical   128 tokens in 89 passes (1.43 per pass), 38/394 drafts accepted, decode 0.934 s (136.0 tok/s; drafting 0.000 s, verifying 0.890 s)
+  draft auto : identical   128 tokens in 90 passes (1.41 per pass), 37/109 drafts accepted, decode 0.904 s (140.5 tok/s; drafting 0.000 s, verifying 0.862 s)
+
+=== 'The capital of France is' (128 tokens) ===
+  draft  0 : 128 tokens in 127 passes (1.00 per pass), 0/0 drafts accepted, decode 1.241 s (102.3 tok/s; drafting 0.000 s, verifying 1.210 s)
+  draft    2 : identical   128 tokens in 91 passes (1.40 per pass), 37/102 drafts accepted, decode 0.914 s (139.0 tok/s; drafting 0.000 s, verifying 0.874 s)
+  draft    4 : identical   128 tokens in 75 passes (1.69 per pass), 53/136 drafts accepted, decode 0.766 s (165.8 tok/s; drafting 0.000 s, verifying 0.726 s)
+  draft    8 : identical   128 tokens in 74 passes (1.72 per pass), 54/243 drafts accepted, decode 0.764 s (166.2 tok/s; drafting 0.000 s, verifying 0.724 s)
+  draft   16 : identical   128 tokens in 74 passes (1.72 per pass), 54/245 drafts accepted, decode 0.765 s (166.0 tok/s; drafting 0.000 s, verifying 0.724 s)
+  draft auto : identical   128 tokens in 77 passes (1.65 per pass), 51/132 drafts accepted, decode 0.782 s (162.3 tok/s; drafting 0.000 s, verifying 0.742 s)
+
+=== ' papaya.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n' (49 tokens) ===
+  draft  0 : 49 tokens in 49 passes (0.98 per pass), 0/0 drafts accepted, decode 0.490 s (97.9 tok/s; drafting 0.000 s, verifying 0.478 s)
+  draft    2 : identical   49 tokens in 29 passes (1.66 per pass), 20/54 drafts accepted, decode 0.301 s (159.6 tok/s; drafting 0.000 s, verifying 0.282 s)
+  draft    4 : identical   49 tokens in 29 passes (1.66 per pass), 20/100 drafts accepted, decode 0.303 s (158.4 tok/s; drafting 0.000 s, verifying 0.284 s)
+  draft    8 : identical   49 tokens in 29 passes (1.66 per pass), 20/158 drafts accepted, decode 0.323 s (148.8 tok/s; drafting 0.000 s, verifying 0.304 s)
+  draft   16 : identical   49 tokens in 29 passes (1.66 per pass), 20/270 drafts accepted, decode 0.328 s (146.2 tok/s; drafting 0.000 s, verifying 0.309 s)
+  draft auto : identical   49 tokens in 29 passes (1.66 per pass), 20/71 drafts accepted, decode 0.303 s (158.3 tok/s; drafting 0.000 s, verifying 0.284 s)
+
+=== 'height)\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n' (104 tokens) ===
+  draft  0 : 104 tokens in 104 passes (0.99 per pass), 0/0 drafts accepted, decode 1.067 s (96.5 tok/s; drafting 0.000 s, verifying 1.041 s)
+  draft    2 : identical   104 tokens in 70 passes (1.47 per pass), 34/76 drafts accepted, decode 0.730 s (141.1 tok/s; drafting 0.000 s, verifying 0.698 s)
+  draft    4 : identical   104 tokens in 64 passes (1.61 per pass), 40/127 drafts accepted, decode 0.672 s (153.2 tok/s; drafting 0.000 s, verifying 0.640 s)
+  draft    8 : identical   104 tokens in 59 passes (1.75 per pass), 45/206 drafts accepted, decode 0.658 s (156.6 tok/s; drafting 0.000 s, verifying 0.625 s)
+  draft   16 : identical   104 tokens in 58 passes (1.78 per pass), 46/375 drafts accepted, decode 0.657 s (156.7 tok/s; drafting 0.000 s, verifying 0.624 s)
+  draft auto : identical   104 tokens in 70 passes (1.47 per pass), 34/86 drafts accepted, decode 0.733 s (140.6 tok/s; drafting 0.000 s, verifying 0.701 s)
+
+=== 'the sea.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n' (86 tokens) ===
+  draft  0 : 86 tokens in 86 passes (0.99 per pass), 0/0 drafts accepted, decode 0.842 s (101.0 tok/s; drafting 0.000 s, verifying 0.820 s)
+  draft    2 : identical   86 tokens in 85 passes (1.00 per pass), 1/68 drafts accepted, decode 0.847 s (100.3 tok/s; drafting 0.000 s, verifying 0.817 s)
+  draft    4 : identical   86 tokens in 85 passes (1.00 per pass), 1/132 drafts accepted, decode 0.839 s (101.3 tok/s; drafting 0.000 s, verifying 0.810 s)
+  draft    8 : identical   86 tokens in 85 passes (1.00 per pass), 1/234 drafts accepted, decode 0.881 s (96.5 tok/s; drafting 0.000 s, verifying 0.851 s)
+  draft   16 : identical   86 tokens in 85 passes (1.00 per pass), 1/384 drafts accepted, decode 0.886 s (95.9 tok/s; drafting 0.000 s, verifying 0.856 s)
+  draft auto : identical   86 tokens in 85 passes (1.00 per pass), 1/68 drafts accepted, decode 0.847 s (100.4 tok/s; drafting 0.000 s, verifying 0.817 s)
+
+##### target Qwen3-0.6B, drafted by Qwen3-0.6B-q4_g32 #####
+  'def fibonacci(n):'                draft 3: identical  128 tokens in 32 passes (3.97 per pass), 96/96 drafts accepted, decode 1.317 s (96.5 tok/s; drafting 0.976 s, verifying 0.308 s)
+  'def fibonacci(n):'                draft 8: identical  128 tokens in 15 passes (8.47 per pass), 112/120 drafts accepted, decode 1.426 s (89.1 tok/s; drafting 1.228 s, verifying 0.165 s)
+  'def fibonacci(n):'                draft auto: identical  128 tokens in 112 passes (1.13 per pass), 15/15 drafts accepted, decode 1.298 s (97.9 tok/s; drafting 0.186 s, verifying 1.080 s)
+  'The capital of France is'         draft 3: identical  128 tokens in 36 passes (3.53 per pass), 92/106 drafts accepted, decode 1.457 s (87.1 tok/s; drafting 1.077 s, verifying 0.346 s)
+  'The capital of France is'         draft 8: identical  128 tokens in 19 passes (6.68 per pass), 108/152 drafts accepted, decode 1.796 s (70.7 tok/s; drafting 1.552 s, verifying 0.208 s)
+  'The capital of France is'         draft auto: identical  128 tokens in 113 passes (1.12 per pass), 14/16 drafts accepted, decode 1.308 s (97.1 tok/s; drafting 0.198 s, verifying 1.078 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 3: identical  49 tokens in 13 passes (3.69 per pass), 36/39 drafts accepted, decode 0.542 s (88.5 tok/s; drafting 0.403 s, verifying 0.128 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 8: identical  49 tokens in 6 passes (8.00 per pass), 43/48 drafts accepted, decode 0.578 s (83.1 tok/s; drafting 0.498 s, verifying 0.067 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft auto: identical  49 tokens in 42 passes (1.14 per pass), 7/7 drafts accepted, decode 0.508 s (94.4 tok/s; drafting 0.085 s, verifying 0.411 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 3: identical  104 tokens in 29 passes (3.55 per pass), 75/87 drafts accepted, decode 1.231 s (83.6 tok/s; drafting 0.915 s, verifying 0.289 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 8: identical  104 tokens in 16 passes (6.44 per pass), 88/128 drafts accepted, decode 1.572 s (65.5 tok/s; drafting 1.361 s, verifying 0.183 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft auto: identical  104 tokens in 91 passes (1.13 per pass), 13/13 drafts accepted, decode 1.096 s (94.0 tok/s; drafting 0.164 s, verifying 0.905 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 3: identical  86 tokens in 31 passes (2.74 per pass), 55/93 drafts accepted, decode 1.268 s (67.0 tok/s; drafting 0.942 s, verifying 0.300 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 8: identical  86 tokens in 23 passes (3.70 per pass), 63/184 drafts accepted, decode 2.152 s (39.5 tok/s; drafting 1.873 s, verifying 0.252 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft auto: identical  86 tokens in 76 passes (1.12 per pass), 10/11 drafts accepted, decode 0.891 s (95.4 tok/s; drafting 0.134 s, verifying 0.736 s)
+
+##### target tiny-qwen3-moe, drafted by Qwen3-0.6B #####
+  'def fibonacci(n):'                draft 3: identical  128 tokens in 127 passes (1.00 per pass), 0/378 drafts accepted, decode 3.790 s (33.5 tok/s; drafting 3.649 s, verifying 0.078 s)
+  'def fibonacci(n):'                draft 8: identical  128 tokens in 127 passes (1.00 per pass), 0/988 drafts accepted, decode 9.681 s (13.1 tok/s; drafting 9.529 s, verifying 0.088 s)
+  'def fibonacci(n):'                draft auto: identical  128 tokens in 127 passes (1.00 per pass), 0/17 drafts accepted, decode 0.264 s (480.7 tok/s; drafting 0.157 s, verifying 0.072 s)
+  'The capital of France is'         draft 3: identical  128 tokens in 127 passes (1.00 per pass), 0/378 drafts accepted, decode 3.819 s (33.3 tok/s; drafting 3.678 s, verifying 0.078 s)
+  'The capital of France is'         draft 8: identical  128 tokens in 127 passes (1.00 per pass), 0/988 drafts accepted, decode 9.886 s (12.8 tok/s; drafting 9.733 s, verifying 0.089 s)
+  'The capital of France is'         draft auto: identical  128 tokens in 127 passes (1.00 per pass), 0/17 drafts accepted, decode 0.266 s (477.9 tok/s; drafting 0.158 s, verifying 0.072 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 3: identical  128 tokens in 127 passes (1.00 per pass), 0/378 drafts accepted, decode 4.054 s (31.3 tok/s; drafting 3.906 s, verifying 0.085 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 8: identical  128 tokens in 127 passes (1.00 per pass), 0/988 drafts accepted, decode 10.386 s (12.2 tok/s; drafting 10.227 s, verifying 0.095 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft auto: identical  128 tokens in 127 passes (1.00 per pass), 0/17 drafts accepted, decode 0.281 s (451.8 tok/s; drafting 0.167 s, verifying 0.079 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 3: identical  128 tokens in 127 passes (1.00 per pass), 0/378 drafts accepted, decode 4.017 s (31.6 tok/s; drafting 3.871 s, verifying 0.083 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 8: identical  128 tokens in 127 passes (1.00 per pass), 0/988 drafts accepted, decode 10.230 s (12.4 tok/s; drafting 10.072 s, verifying 0.094 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft auto: identical  128 tokens in 127 passes (1.00 per pass), 0/17 drafts accepted, decode 0.280 s (453.9 tok/s; drafting 0.167 s, verifying 0.077 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 3: identical  128 tokens in 127 passes (1.00 per pass), 0/378 drafts accepted, decode 3.908 s (32.5 tok/s; drafting 3.763 s, verifying 0.081 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft 8: identical  128 tokens in 127 passes (1.00 per pass), 0/988 drafts accepted, decode 10.018 s (12.7 tok/s; drafting 9.865 s, verifying 0.091 s)
+  '>assistant\n<think>\n\n</think>\n\n' draft auto: identical  128 tokens in 127 passes (1.00 per pass), 0/17 drafts accepted, decode 0.270 s (470.5 tok/s; drafting 0.161 s, verifying 0.073 s)
+
+PASS: 55 speculative runs (prompt lookup and two draft models), every sequence identical to plain greedy
+PASS: tiny-qwen3-moe drafting, greedy parity and 41 audited passes
+PASS: Qwen3-0.6B drafting, greedy parity and 47 audited passes
+PASS: prompt lookup drafting, greedy parity and 47 audited passes
+PASS: full 32-row verify trace and history window
+PASS: expert mode at context boundaries and draft limits 1 and 31
+PASS: invalid expert mode arguments and diagnostic overwrite protection
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 8152.19it/s]
+
+--- 1 tokens: 'Hello' ---
+max |Δlogit|          : 2.456e-06   (logit scale 10.5)
+relative error        : 2.335e-07   (budget 1e-04)
+argmax agreement      : 1/1 positions
+max |Δprobability|    : 1.279e-08
+max KL(ref || ours)   : 1.828e-13 nats   (budget 1e-08)
+verdict               : PASS
+
+--- 5 tokens: 'The capital of France is' ---
+max |Δlogit|          : 9.069e-06   (logit scale 10.8)
+relative error        : 8.404e-07   (budget 1e-04)
+argmax agreement      : 5/5 positions
+max |Δprobability|    : 8.271e-08
+max KL(ref || ours)   : 1.990e-12 nats   (budget 1e-08)
+verdict               : PASS
+
+--- 40 tokens: 'Machine learning systems are usually evaluat' ---
+max |Δlogit|          : 2.308e-05   (logit scale 12.4)
+relative error        : 1.855e-06   (budget 1e-04)
+argmax agreement      : 40/40 positions
+max |Δprobability|    : 1.876e-07
+max KL(ref || ours)   : 1.167e-11 nats   (budget 1e-08)
+verdict               : PASS
+
+oracle VERIFIED on tiny-qwen3-moe — the C engine may be built on it.
+
+=== 1 tokens: 'Hello' ===
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.006 s  (169.5 tok/s)
+
+--- 1 tokens, CPU batch ---
+  max |Δlogit|          : 8.578e-06   (logit scale 10.5)
+  relative error        : 8.157e-07   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 2.261e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.006 s  (170.0 tok/s)
+
+--- 1 tokens, CPU incremental ---
+  max |Δlogit|          : 8.578e-06   (logit scale 10.5)
+  relative error        : 8.157e-07   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 2.261e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.013 s  (75.6 tok/s)
+
+--- 1 tokens, GPU batch ---
+  max |Δlogit|          : 1.083e-05   (logit scale 10.5)
+  relative error        : 1.030e-06   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 2.156e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.013 s  (74.9 tok/s)
+
+--- 1 tokens, GPU incremental ---
+  max |Δlogit|          : 1.083e-05   (logit scale 10.5)
+  relative error        : 1.030e-06   (budget 1e-04)
+  argmax agreement      : 1/1
+  max KL(oracle || C)   : 2.156e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : 'และความ'
+
+=== 5 tokens: 'The capital of France is' ===
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.024 s  (212.3 tok/s)
+
+--- 5 tokens, CPU batch ---
+  max |Δlogit|          : 9.312e-06   (logit scale 10.8)
+  relative error        : 8.629e-07   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 2.389e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.023 s  (213.0 tok/s)
+
+--- 5 tokens, CPU incremental ---
+  max |Δlogit|          : 9.312e-06   (logit scale 10.8)
+  relative error        : 8.629e-07   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 2.389e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.014 s  (370.3 tok/s)
+
+--- 5 tokens, GPU batch ---
+  max |Δlogit|          : 8.015e-06   (logit scale 10.8)
+  relative error        : 7.426e-07   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 1.862e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.018 s  (274.0 tok/s)
+
+--- 5 tokens, GPU incremental ---
+  max |Δlogit|          : 8.015e-06   (logit scale 10.8)
+  relative error        : 7.426e-07   (budget 1e-04)
+  argmax agreement      : 5/5
+  max KL(oracle || C)   : 1.862e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : '"nil'
+
+=== 9 tokens: 'Roses are red and violets are' ===
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.040 s  (222.8 tok/s)
+
+--- 9 tokens, CPU batch ---
+  max |Δlogit|          : 1.310e-05   (logit scale 10.9)
+  relative error        : 1.202e-06   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 4.254e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.041 s  (218.4 tok/s)
+
+--- 9 tokens, CPU incremental ---
+  max |Δlogit|          : 1.310e-05   (logit scale 10.9)
+  relative error        : 1.202e-06   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 4.254e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.015 s  (599.3 tok/s)
+
+--- 9 tokens, GPU batch ---
+  max |Δlogit|          : 1.203e-05   (logit scale 10.9)
+  relative error        : 1.104e-06   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 3.995e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.022 s  (409.2 tok/s)
+
+--- 9 tokens, GPU incremental ---
+  max |Δlogit|          : 1.203e-05   (logit scale 10.9)
+  relative error        : 1.104e-06   (budget 1e-04)
+  argmax agreement      : 9/9
+  max KL(oracle || C)   : 3.995e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : ' DY'
+
+=== 40 tokens: 'Machine learning systems are usually evaluated on benchmarks, but the numbers that matter in production are latency, memory footprint, and the cost of a single request; everything else is a proxy for one of those.' ===
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.179 s  (223.9 tok/s)
+
+--- 40 tokens, CPU batch ---
+  max |Δlogit|          : 1.985e-05   (logit scale 12.4)
+  relative error        : 1.596e-06   (budget 1e-04)
+  argmax agreement      : 40/40
+  max KL(oracle || C)   : 9.791e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.179 s  (223.4 tok/s)
+
+--- 40 tokens, CPU incremental ---
+  max |Δlogit|          : 1.985e-05   (logit scale 12.4)
+  relative error        : 1.596e-06   (budget 1e-04)
+  argmax agreement      : 40/40
+  max KL(oracle || C)   : 9.791e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.018 s  (2270.8 tok/s)
+
+--- 40 tokens, GPU batch ---
+  max |Δlogit|          : 1.752e-05   (logit scale 12.4)
+  relative error        : 1.408e-06   (budget 1e-04)
+  argmax agreement      : 40/40
+  max KL(oracle || C)   : 8.146e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.041 s  (972.3 tok/s)
+
+--- 40 tokens, GPU incremental ---
+  max |Δlogit|          : 1.752e-05   (logit scale 12.4)
+  relative error        : 1.408e-06   (budget 1e-04)
+  argmax agreement      : 40/40
+  max KL(oracle || C)   : 8.146e-12 nats   (budget 1e-07)
+  verdict               : PASS
+  oracle's next token   : ' backup'
+
+C engine matches the oracle — chain of oracles intact
+q8_row: 143 tensors, 78.5 MB -> build/tiny-qwen3-moe-q8_row
+
+##### tiny-qwen3-moe-q8_row #####
+--- 1 tokens: 'Hello'
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.006 s  (171.2 tok/s)
+  CPU batch                                    rel 7.62e-07 (<1e-04)  KL 1.48e-12 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.006 s  (171.2 tok/s)
+  CPU incremental                              rel 7.62e-07 (<1e-04)  KL 1.48e-12 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.013 s  (79.7 tok/s)
+  GPU batch                                    rel 7.78e-07 (<1e-04)  KL 2.06e-12 (<1e-07)  argmax 1/1  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.013 s  (79.8 tok/s)
+  GPU incremental                              rel 7.78e-07 (<1e-04)  KL 2.06e-12 (<1e-07)  argmax 1/1  PASS
+  oracle's next token: 'และความ'
+--- 5 tokens: 'The capital of France is'
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.024 s  (208.7 tok/s)
+  CPU batch                                    rel 9.94e-07 (<1e-04)  KL 2.77e-12 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.024 s  (206.5 tok/s)
+  CPU incremental                              rel 9.94e-07 (<1e-04)  KL 2.77e-12 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.013 s  (382.7 tok/s)
+  GPU batch                                    rel 1.23e-06 (<1e-04)  KL 4.23e-12 (<1e-07)  argmax 5/5  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.018 s  (283.2 tok/s)
+  GPU incremental                              rel 1.23e-06 (<1e-04)  KL 4.23e-12 (<1e-07)  argmax 5/5  PASS
+  oracle's next token: '"nil'
+--- 9 tokens: 'Roses are red and violets are'
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), batch (all at once)
+  prefill               : 0.042 s  (212.8 tok/s)
+  CPU batch                                    rel 1.31e-06 (<1e-04)  KL 5.58e-12 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : CPU (scalar, 1 thread), incremental (1 token per call)
+  prefill               : 0.043 s  (210.0 tok/s)
+  CPU incremental                              rel 1.31e-06 (<1e-04)  KL 5.58e-12 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, batch (all at once)
+  prefill               : 0.014 s  (657.6 tok/s)
+  GPU batch                                    rel 1.74e-06 (<1e-04)  KL 9.00e-12 (<1e-07)  argmax 9/9  PASS
+  model.layers.0.input_layernorm.weight        1.2578125 0.5859375 0.90625 0.921875
+  mode                  : GPU, incremental (1 token per call)
+  prefill               : 0.021 s  (424.9 tok/s)
+  GPU incremental                              rel 1.74e-06 (<1e-04)  KL 9.00e-12 (<1e-07)  argmax 9/9  PASS
+  oracle's next token: ' DY'
+
+budgets: relative 1e-04, KL 1e-07 (test_forward.py's); Q4 on bf16 activations 1e-01, 5e-03
+
+quantised engine, CPU and GPU, matches the oracle on dequantised weights
+80 tensors in 3 shards -> build/tiny-qwen3-moe-sharded
+  C engine, CPU logits: 3 shards == 1 file, bit for bit          PASS
+  GPU refuses a sharded checkpoint                               PASS
+  quantize.py: 3 shards in == 1 file in, byte for byte           PASS
+  oracle: lazy sharded weights (40 MB cache) == eager load       PASS
+
+PASS: sharded checkpoints read as the same model
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 7992.53it/s]
+  tokens: engine 47, transformers 47
+  layer 0 (MoE): 47/47 tokens route identically  PASS
+  layer 2 (MoE): 47/47 tokens route identically  PASS
+  layer 1 (dense): marked dense  PASS
+  tokens: engine 4096, transformers 4096
+  layer 0 (MoE): 4096/4096 tokens route identically  PASS
+  layer 2 (MoE): 4096/4096 tokens route identically  PASS
+  layer 1 (dense): marked dense  PASS
+  oversized context refused: PASS
+
+PASS: routing matches transformers through 4,096 tokens
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -o build/process_memory tools/probe/process_memory.c
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -o build/memory_budget tools/probe/memory_budget.m -framework Metal -framework Foundation
+......
+----------------------------------------------------------------------
+Ran 6 tests in 0.030s
+
+OK
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.695s
+
+OK
+....
+----------------------------------------------------------------------
+Ran 4 tests in 0.623s
+
+OK
+...attempt 1: resume at 3 bytes
+attempt 2: resume at 6 bytes
+..
+----------------------------------------------------------------------
+Ran 5 tests in 0.004s
+
+OK
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fsanitize=address,undefined -Isrc -o build/test_gguf_reader tests/test_gguf_reader.c src/gguf_reader.c src/util.c -lm
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fsanitize=address,undefined -Isrc -o build/test_gguf_inspect tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/util.c -lm
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fsanitize=address,undefined -Isrc -o build/test_gguf_plan tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/util.c -lm
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 8.950s
+
+OK
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -fobjc-arc -Isrc -o build/test_gpu_weights tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/util.c -lm -framework Metal -framework Foundation
+2026-10-12 20:39:25.437 test_gpu_weights[38943:1710632] Metal API Validation Enabled
+{"weights":3,"views":3,"byte_probes":9,"mapped_virtual_bytes":81920,"metal_allocated_bytes":540672,"byte_exact":true,"survived_owner_close":true}
+PASS: no-copy GPU bytes, disk-only exclusion, deferred unmap and complete release
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.069s
+
+OK

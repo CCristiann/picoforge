@@ -1,0 +1,9 @@
+{
+  "machine": "arm64",
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "hardware": "Mac17,9",
+  "cpu": "Apple M5 Pro",
+  "ram_bytes": 68719476736,
+  "cache_purge_performed": false,
+  "wired_limit_modified": false
+}

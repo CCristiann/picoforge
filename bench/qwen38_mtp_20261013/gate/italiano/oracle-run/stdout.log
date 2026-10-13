@@ -1,0 +1,10 @@
+last-position logits: min=-17.2319 max=18.8354 rms=2.32434
+top logits after Qwen3.8 CPU pass over 10 tokens:
+     378    18.8354  Ġe
+     444    18.1916  Ġal
+    1538    18.1843  Ġdel
+     293    17.9597  Ġd
+      11    16.8306  ,
+     303    16.2812  Ġin
+    1523    16.0072  Ġed
+    2899    15.5031  Ġda

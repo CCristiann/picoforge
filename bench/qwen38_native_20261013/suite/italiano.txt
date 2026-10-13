@@ -1,0 +1,1 @@
+Scrivi in italiano una guida pratica di circa 250 parole per verificare un backup. Distingui una copia riuscita da un ripristino riuscito, proponi una prova periodica e spiega come controllare che i dati recuperati siano integri. Usa esempi concreti.

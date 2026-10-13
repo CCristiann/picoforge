@@ -1,0 +1,7 @@
+test_release_and_pressure_must_remain_normal (__main__.ReleaseWait.test_release_and_pressure_must_remain_normal) ... ok
+test_timeout_and_missing_probe_prevent_admission (__main__.ReleaseWait.test_timeout_and_missing_probe_prevent_admission) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.002s
+
+OK

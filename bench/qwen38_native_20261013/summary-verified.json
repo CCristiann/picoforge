@@ -1,0 +1,2175 @@
+{
+  "schema": 1,
+  "pilot": true,
+  "groups": [
+    {
+      "group": "chunk-replay",
+      "case": "ragionamento",
+      "warmups": 0,
+      "repetitions": 2,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 51.960699000000204,
+      "first_stdout_s": 14.625528999999915,
+      "load_s": 0.300348,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 837767176,
+        "sampled_peak_footprint_bytes": 814403616,
+        "samples": 99,
+        "peak_system_wired_bytes": 50887933952,
+        "pressure_levels": [
+          1,
+          2,
+          4
+        ],
+        "swap_used_delta_bytes": -2373844992,
+        "peak_swap_growth_bytes": 32047104,
+        "swapins_delta_pages": 67783,
+        "swapouts_delta_pages": 47650
+      },
+      "raw_path": "chunk-replay/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 14.173198,
+        "p10": 14.038283,
+        "p90": 14.308113,
+        "n": 2
+      },
+      "decode_s": {
+        "median": 11.635719,
+        "p10": 11.62415,
+        "p90": 11.647288,
+        "n": 2
+      },
+      "ttft_request_s": {
+        "median": 14.1746155,
+        "p10": 14.040988,
+        "p90": 14.308243,
+        "n": 2
+      },
+      "request_s": {
+        "median": 25.8103345,
+        "p10": 25.665138,
+        "p90": 25.955531,
+        "n": 2
+      },
+      "reset_s": {
+        "median": 0.00129,
+        "p10": 0.0,
+        "p90": 0.00258,
+        "n": 2
+      },
+      "decode_tps": {
+        "median": 1.1172504983453622,
+        "p10": 1.1161396541409467,
+        "p90": 1.1183613425497778,
+        "n": 2
+      },
+      "prefill_tps": {
+        "median": 4.304288123315703,
+        "p10": 4.2633155049865765,
+        "p90": 4.34526074164483,
+        "n": 2
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.053595500000000004,
+          "p10": 0.001046,
+          "p90": 0.106145,
+          "n": 2
+        },
+        "encode_s": {
+          "median": 0.017306,
+          "p10": 0.008165,
+          "p90": 0.026447,
+          "n": 2
+        },
+        "wait_s": {
+          "median": 14.1020365,
+          "p10": 14.010536,
+          "p90": 14.193537,
+          "n": 2
+        },
+        "gpu_s": {
+          "median": 11.3431395,
+          "p10": 8.682537417,
+          "p90": 14.003741583,
+          "n": 2
+        },
+        "ngram_calls": {
+          "median": 948.0,
+          "p10": 928,
+          "p90": 968,
+          "n": 2
+        },
+        "ngram_bytes": {
+          "median": 303360.0,
+          "p10": 296960,
+          "p90": 309760,
+          "n": 2
+        },
+        "ngram_rows": {
+          "median": 948.0,
+          "p10": 928,
+          "p90": 968,
+          "n": 2
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.015388,
+          "p10": 0.000275,
+          "p90": 0.030501,
+          "n": 2
+        },
+        "encode_s": {
+          "median": 0.0349275,
+          "p10": 0.034699,
+          "p90": 0.035156,
+          "n": 2
+        },
+        "wait_s": {
+          "median": 11.5821375,
+          "p10": 11.578877,
+          "p90": 11.585398,
+          "n": 2
+        },
+        "gpu_s": {
+          "median": 11.5739811875,
+          "p10": 11.569500125,
+          "p90": 11.57846225,
+          "n": 2
+        },
+        "ngram_calls": {
+          "median": 208.0,
+          "p10": 208,
+          "p90": 208,
+          "n": 2
+        },
+        "ngram_bytes": {
+          "median": 66560.0,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 2
+        },
+        "ngram_rows": {
+          "median": 208.0,
+          "p10": 208,
+          "p90": 208,
+          "n": 2
+        }
+      }
+    },
+    {
+      "group": "extended",
+      "case": "italiano",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 65,
+      "context": 8192,
+      "chunk": 1024,
+      "generated_tokens": [
+        373
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 1648.3335819999993,
+      "first_stdout_s": 12.333746999996947,
+      "load_s": 0.193969,
+      "memory": {
+        "metal_allocated_bytes": 46294941696,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 1497537024,
+        "lifetime_peak_footprint_bytes": 1751781360,
+        "sampled_peak_footprint_bytes": 1725583344,
+        "samples": 1183,
+        "peak_system_wired_bytes": 52919926784,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended/italiano.runs.jsonl",
+      "prefill_s": {
+        "median": 12.136002,
+        "p10": 12.136002,
+        "p90": 12.136002,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 1635.53577,
+        "p10": 1635.53577,
+        "p90": 1635.53577,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 12.136126,
+        "p10": 12.136126,
+        "p90": 12.136126,
+        "n": 1
+      },
+      "request_s": {
+        "median": 1647.671896,
+        "p10": 1647.671896,
+        "p90": 1647.671896,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 0.2274484036506276,
+        "p10": 0.2274484036506276,
+        "p90": 0.2274484036506276,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 5.3559648391620245,
+        "p10": 5.3559648391620245,
+        "p90": 5.3559648391620245,
+        "n": 1
+      },
+      "answer": "Verificare un backup è un passaggio critico che spesso viene trascurato, ma è essenziale per garantire la sicurezza dei propri dati. È fondamentale distinguere tra una **copia riuscita** e un **ripristino riuscito**. Una copia riuscita significa semplicemente che il software ha trasferito i file nel luogo di destinazione senza errori di lettura o scrittura; tuttavia, ciò non garantisce che i dati siano accessibili o corretti. Un ripristino riuscito, invece, implica che i dati siano stati estratti dal backup e reintegrati nel sistema operativo, risultando immediatamente utilizzabili e coerenti.\n\nPer assicurarsi della validità delle proprie procedure, si raccomanda di istituire una **prova periodica di ripristino**. Ad esempio, ogni mese, scegliete un file critico, come un documento di lavoro o una cartella di foto, e provate a ripristinarlo su una macchina virtuale isolata o su un disco rigido esterno temporaneo. Questo test simula un disastro reale senza rischiare i dati in produzione.\n\nInfine, controllare l’**integrità dei dati recuperati** è cruciale. Non limitatevi a verificare che il file esista: apritelo. Se state ripristinando un database, eseguite una query di controllo per verificare che le tabelle siano complete. Se ripristinate un’immagine di sistema, avviate la macchina virtuale e controllate che i servizi principali funzionino. Utilizzare checksum (come MD5 o SHA-256) può aiutare a confrontare le firme digitali dei file originali con quelle ripristinate, assicurando bit-per-bit che non vi siano corruzioni. Solo combinando la verifica automatica della copia con test manuali di ripristino e controllo di integrità si può avere la certezza che il proprio sistema di backup sia realmente affidabile.\n",
+      "quality": {
+        "case": "italiano",
+        "grading": "manual",
+        "answer_sha256": "a9c1d6bcc09987a065ba329539e0d98cda01e68b8a3d1aa34e7d345e33621166",
+        "word_count_whitespace": 256,
+        "criteria": {
+          "italian": true,
+          "copy_vs_restore": true,
+          "periodic_restore_test": true,
+          "integrity_checks_and_examples": true,
+          "approximately_250_words": true
+        },
+        "limitations": [
+          "Valutazione qualitativa manuale di una sola risposta; nessuna misura di qualità generale.",
+          "La frase finale sulla certezza assoluta è troppo forte: la prova vale per i dati e le condizioni testati."
+        ]
+      }
+    },
+    {
+      "group": "extended",
+      "case": "lower-bound",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 126,
+      "context": 8192,
+      "chunk": 1024,
+      "generated_tokens": [
+        123
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 155.37353399999847,
+      "first_stdout_s": 27.948021000000153,
+      "load_s": 0.145449,
+      "memory": {
+        "metal_allocated_bytes": 46294941696,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 1497537024,
+        "lifetime_peak_footprint_bytes": 1736101800,
+        "sampled_peak_footprint_bytes": 1681805224,
+        "samples": 298,
+        "peak_system_wired_bytes": 50714853376,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended/lower-bound.runs.jsonl",
+      "prefill_s": {
+        "median": 27.798697,
+        "p10": 27.798697,
+        "p90": 27.798697,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 127.361443,
+        "p10": 127.361443,
+        "p90": 127.361443,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 27.798819,
+        "p10": 27.798819,
+        "p90": 27.798819,
+        "n": 1
+      },
+      "request_s": {
+        "median": 155.160262,
+        "p10": 155.160262,
+        "p90": 155.160262,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 0.9579037197309394,
+        "p10": 0.9579037197309394,
+        "p90": 0.9579037197309394,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 4.532586545333402,
+        "p10": 4.532586545333402,
+        "p90": 4.532586545333402,
+        "n": 1
+      },
+      "answer": "```c\n#include <limits.h>\n#include <stddef.h>\n\nsize_t lower_bound_int(const int *a, size_t n, int x) {\n    size_t lo = 0;\n    size_t hi = n;\n    while (lo < hi) {\n        size_t mid = lo + (hi - lo) / 2;\n        if (a[mid] < x) {\n            lo = mid + 1;\n        } else {\n            hi = mid;\n        }\n    }\n    return lo;\n}\n```\n",
+      "quality": {
+        "case": "lower-bound",
+        "format_followed": false,
+        "tests_passed": true,
+        "returncode": 0,
+        "stdout": "PASS: lower_bound linear oracle and sanitizers\n",
+        "stderr": ""
+      }
+    },
+    {
+      "group": "extended",
+      "case": "ragionamento",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 1024,
+      "generated_tokens": [
+        14
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 22.864025999999285,
+      "first_stdout_s": 10.51959799999895,
+      "load_s": 0.18422,
+      "memory": {
+        "metal_allocated_bytes": 46294941696,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 1497537024,
+        "lifetime_peak_footprint_bytes": 1736167312,
+        "sampled_peak_footprint_bytes": 1679544208,
+        "samples": 44,
+        "peak_system_wired_bytes": 50634752000,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 10.331654,
+        "p10": 10.331654,
+        "p90": 10.331654,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 12.299655,
+        "p10": 12.299655,
+        "p90": 12.299655,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 10.331795,
+        "p10": 10.331795,
+        "p90": 10.331795,
+        "n": 1
+      },
+      "request_s": {
+        "median": 22.63145,
+        "p10": 22.63145,
+        "p90": 22.63145,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.05694021498977,
+        "p10": 1.05694021498977,
+        "p90": 1.05694021498977,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 5.904185331796826,
+        "p10": 5.904185331796826,
+        "p90": 5.904185331796826,
+        "n": 1
+      },
+      "answer": "{\n  \"n\": 1002\n}\n",
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": false
+      }
+    },
+    {
+      "group": "extended-cooperative",
+      "case": "context-1024",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 892,
+      "context": 1024,
+      "chunk": 128,
+      "generated_tokens": [
+        28
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 153.25596599999972,
+      "first_stdout_s": 128.57866999999987,
+      "load_s": 0.172547,
+      "memory": {
+        "metal_allocated_bytes": 45103611904,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 306226176,
+        "lifetime_peak_footprint_bytes": 457379464,
+        "sampled_peak_footprint_bytes": 434622112,
+        "samples": 303,
+        "peak_system_wired_bytes": 49824301056,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended-cooperative/context-1024.runs.jsonl",
+      "prefill_s": {
+        "median": 128.402288,
+        "p10": 128.402288,
+        "p90": 128.402288,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 24.638988,
+        "p10": 24.638988,
+        "p90": 24.638988,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 128.402424,
+        "p10": 128.402424,
+        "p90": 128.402424,
+        "n": 1
+      },
+      "request_s": {
+        "median": 153.041412,
+        "p10": 153.041412,
+        "p90": 153.041412,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.0958242278457215,
+        "p10": 1.0958242278457215,
+        "p90": 1.0958242278457215,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 6.946916709147738,
+        "p10": 6.946916709147738,
+        "p90": 6.946916709147738,
+        "n": 1
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.291455,
+          "p10": 0.291455,
+          "p90": 0.291455,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.074455,
+          "p10": 0.074455,
+          "p90": 0.074455,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 128.036059,
+          "p10": 128.036059,
+          "p90": 128.036059,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 127.733157208,
+          "p10": 127.733157208,
+          "p90": 127.733157208,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 6431,
+          "p10": 6431,
+          "p90": 6431,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 2058240,
+          "p10": 2058240,
+          "p90": 2058240,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 6432,
+          "p10": 6432,
+          "p90": 6432,
+          "n": 1
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.07627,
+          "p10": 0.07627,
+          "p90": 0.07627,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.071793,
+          "p10": 0.071793,
+          "p90": 0.071793,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 24.484209,
+          "p10": 24.484209,
+          "p90": 24.484209,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 24.464966083,
+          "p10": 24.464966083,
+          "p90": 24.464966083,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 138240,
+          "p10": 138240,
+          "p90": 138240,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        }
+      },
+      "answer": "{\n  \"Iris\": \"BARI29\",\n  \"Loto\": \"VERDE82\"\n}\n",
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": true
+      }
+    },
+    {
+      "group": "extended-cooperative",
+      "case": "context-2048",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 1917,
+      "context": 2048,
+      "chunk": 128,
+      "generated_tokens": [
+        28
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 313.8810020000001,
+      "first_stdout_s": 288.81173400000034,
+      "load_s": 0.185709,
+      "memory": {
+        "metal_allocated_bytes": 45161824256,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 364434432,
+        "lifetime_peak_footprint_bytes": 528076472,
+        "sampled_peak_footprint_bytes": 497618616,
+        "samples": 620,
+        "peak_system_wired_bytes": 49979916288,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended-cooperative/context-2048.runs.jsonl",
+      "prefill_s": {
+        "median": 288.622295,
+        "p10": 288.622295,
+        "p90": 288.622295,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 25.0269,
+        "p10": 25.0269,
+        "p90": 25.0269,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 288.62243,
+        "p10": 288.62243,
+        "p90": 288.62243,
+        "n": 1
+      },
+      "request_s": {
+        "median": 313.64933,
+        "p10": 313.64933,
+        "p90": 313.64933,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.0788391690540977,
+        "p10": 1.0788391690540977,
+        "p90": 1.0788391690540977,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 6.641898540790136,
+        "p10": 6.641898540790136,
+        "p90": 6.641898540790136,
+        "n": 1
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.161047,
+          "p10": 0.161047,
+          "p90": 0.161047,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.147822,
+          "p10": 0.147822,
+          "p90": 0.147822,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 288.313024,
+          "p10": 288.313024,
+          "p90": 288.313024,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 287.961798208,
+          "p10": 287.961798208,
+          "p90": 287.961798208,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 12820,
+          "p10": 12820,
+          "p90": 12820,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 4103680,
+          "p10": 4103680,
+          "p90": 4103680,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 12824,
+          "p10": 12824,
+          "p90": 12824,
+          "n": 1
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000501,
+          "p10": 0.000501,
+          "p90": 0.000501,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.071468,
+          "p10": 0.071468,
+          "p90": 0.071468,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 24.948356,
+          "p10": 24.948356,
+          "p90": 24.948356,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 24.930851708,
+          "p10": 24.930851708,
+          "p90": 24.930851708,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 138240,
+          "p10": 138240,
+          "p90": 138240,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        }
+      },
+      "answer": "{\n  \"Iris\": \"BARI29\",\n  \"Loto\": \"VERDE82\"\n}\n",
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": true
+      }
+    },
+    {
+      "group": "extended-cooperative",
+      "case": "context-4096",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 3967,
+      "context": 4096,
+      "chunk": 128,
+      "generated_tokens": [
+        28
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 663.6028330000004,
+      "first_stdout_s": 637.1734770000003,
+      "load_s": 0.179087,
+      "memory": {
+        "metal_allocated_bytes": 45278265344,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 480850944,
+        "lifetime_peak_footprint_bytes": 645369624,
+        "sampled_peak_footprint_bytes": 623349528,
+        "samples": 1309,
+        "peak_system_wired_bytes": 52740325376,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended-cooperative/context-4096.runs.jsonl",
+      "prefill_s": {
+        "median": 636.990371,
+        "p10": 636.990371,
+        "p90": 636.990371,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 26.377727,
+        "p10": 26.377727,
+        "p90": 26.377727,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 636.990506,
+        "p10": 636.990506,
+        "p90": 636.990506,
+        "n": 1
+      },
+      "request_s": {
+        "median": 663.368233,
+        "p10": 663.368233,
+        "p90": 663.368233,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.0235908499621669,
+        "p10": 1.0235908499621669,
+        "p90": 1.0235908499621669,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 6.227723652670411,
+        "p10": 6.227723652670411,
+        "p90": 6.227723652670411,
+        "n": 1
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.208959,
+          "p10": 0.208959,
+          "p90": 0.208959,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.305826,
+          "p10": 0.305826,
+          "p90": 0.305826,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 636.474961,
+          "p10": 636.474961,
+          "p90": 636.474961,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 636.078475292,
+          "p10": 636.078475292,
+          "p90": 636.078475292,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 25581,
+          "p10": 25581,
+          "p90": 25581,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 8189440,
+          "p10": 8189440,
+          "p90": 8189440,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 25592,
+          "p10": 25592,
+          "p90": 25592,
+          "n": 1
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000504,
+          "p10": 0.000504,
+          "p90": 0.000504,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.069015,
+          "p10": 0.069015,
+          "p90": 0.069015,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 26.301554,
+          "p10": 26.301554,
+          "p90": 26.301554,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 26.287224042,
+          "p10": 26.287224042,
+          "p90": 26.287224042,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 138240,
+          "p10": 138240,
+          "p90": 138240,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        }
+      },
+      "answer": "{\n  \"Iris\": \"BARI29\",\n  \"Loto\": \"VERDE82\"\n}\n",
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": true
+      }
+    },
+    {
+      "group": "extended-cooperative",
+      "case": "context-8192",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 8042,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        28
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 2072.1513400000003,
+      "first_stdout_s": 2046.778921,
+      "load_s": 0.189166,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 899174360,
+        "sampled_peak_footprint_bytes": 873730008,
+        "samples": 2761,
+        "peak_system_wired_bytes": 52894547968,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended-cooperative/context-8192.runs.jsonl",
+      "prefill_s": {
+        "median": 2046.586064,
+        "p10": 2046.586064,
+        "p90": 2046.586064,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 25.296222,
+        "p10": 25.296222,
+        "p90": 25.296222,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 2046.586215,
+        "p10": 2046.586215,
+        "p90": 2046.586215,
+        "n": 1
+      },
+      "request_s": {
+        "median": 2071.882437,
+        "p10": 2071.882437,
+        "p90": 2071.882437,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.0673530616548195,
+        "p10": 1.0673530616548195,
+        "p90": 1.0673530616548195,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 3.929470712940416,
+        "p10": 3.929470712940416,
+        "p90": 3.929470712940416,
+        "n": 1
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.871161,
+          "p10": 0.871161,
+          "p90": 0.871161,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.651278,
+          "p10": 0.651278,
+          "p90": 0.651278,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 2045.062451,
+          "p10": 2045.062451,
+          "p90": 2045.062451,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 1373.367791833,
+          "p10": 1373.367791833,
+          "p90": 1373.367791833,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 51293,
+          "p10": 51293,
+          "p90": 51293,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 16419840,
+          "p10": 16419840,
+          "p90": 16419840,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 51312,
+          "p10": 51312,
+          "p90": 51312,
+          "n": 1
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.108281,
+          "p10": 0.108281,
+          "p90": 0.108281,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.070676,
+          "p10": 0.070676,
+          "p90": 0.070676,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 25.110557,
+          "p10": 25.110557,
+          "p90": 25.110557,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 25.098222042,
+          "p10": 25.098222042,
+          "p90": 25.098222042,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 138240,
+          "p10": 138240,
+          "p90": 138240,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 432,
+          "p10": 432,
+          "p90": 432,
+          "n": 1
+        }
+      },
+      "answer": "{\n  \"Iris\": \"BARI29\",\n  \"Loto\": \"VERDE82\"\n}\n",
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": true
+      }
+    },
+    {
+      "group": "extended-cooperative",
+      "case": "merge-ranges",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 96,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        254
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 241.0941170000001,
+      "first_stdout_s": 13.924608999999691,
+      "load_s": 0.193478,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 852234200,
+        "sampled_peak_footprint_bytes": 852234200,
+        "samples": 435,
+        "peak_system_wired_bytes": 49867898880,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended-cooperative/merge-ranges.runs.jsonl",
+      "prefill_s": {
+        "median": 13.727555,
+        "p10": 13.727555,
+        "p90": 13.727555,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 227.099755,
+        "p10": 227.099755,
+        "p90": 227.099755,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 13.727686,
+        "p10": 13.727686,
+        "p90": 13.727686,
+        "n": 1
+      },
+      "request_s": {
+        "median": 240.827441,
+        "p10": 240.827441,
+        "p90": 240.827441,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.114047877330383,
+        "p10": 1.114047877330383,
+        "p90": 1.114047877330383,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 6.993233682181568,
+        "p10": 6.993233682181568,
+        "p90": 6.993233682181568,
+        "n": 1
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.110076,
+          "p10": 0.110076,
+          "p90": 0.110076,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.009638,
+          "p10": 0.009638,
+          "p90": 0.009638,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 13.607566,
+          "p10": 13.607566,
+          "p90": 13.607566,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 13.32123225,
+          "p10": 13.32123225,
+          "p90": 13.32123225,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 1528,
+          "p10": 1528,
+          "p90": 1528,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 488960,
+          "p10": 488960,
+          "p90": 488960,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 1528,
+          "p10": 1528,
+          "p90": 1528,
+          "n": 1
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.597632,
+          "p10": 0.597632,
+          "p90": 0.597632,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.712705,
+          "p10": 0.712705,
+          "p90": 0.712705,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 225.722101,
+          "p10": 225.722101,
+          "p90": 225.722101,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 225.548331583,
+          "p10": 225.548331583,
+          "p90": 225.548331583,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 4048,
+          "p10": 4048,
+          "p90": 4048,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 1295360,
+          "p10": 1295360,
+          "p90": 1295360,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 4048,
+          "p10": 4048,
+          "p90": 4048,
+          "n": 1
+        }
+      },
+      "answer": "```python\ndef merge_ranges(ranges):\n    \"\"\"\n    Merge overlapping and touching half-open intervals.\n    \n    Args:\n        ranges: An iterable of (start, end) integer pairs with start <= end.\n        \n    Returns:\n        A sorted list of merged (start, end) tuples.\n    \"\"\"\n    # Filter out empty intervals (where start >= end) and collect valid intervals\n    valid = []\n    for start, end in ranges:\n        if start < end:\n            valid.append((start, end))\n    \n    if not valid:\n        return []\n    \n    # Sort by start time\n    valid.sort()\n    \n    # Merge overlapping and touching intervals\n    merged = [valid[0]]\n    for current_start, current_end in valid[1:]:\n        last_start, last_end = merged[-1]\n        # If current interval overlaps or touches the last merged interval\n        if current_start <= last_end:\n            # Extend the last merged interval\n            merged[-1] = (last_start, max(last_end, current_end))\n        else:\n            merged.append((current_start, current_end))\n    \n    return merged\n```\n",
+      "quality": {
+        "case": "merge-ranges",
+        "format_followed": false,
+        "tests_passed": true,
+        "returncode": 0,
+        "stdout": "PASS: interval oracle, generator and no mutation\n",
+        "stderr": ""
+      }
+    },
+    {
+      "group": "extended-cooperative",
+      "case": "two-file-fix",
+      "warmups": 0,
+      "repetitions": 1,
+      "prompt_tokens": 173,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        173
+      ],
+      "stop_reasons": [
+        "stop"
+      ],
+      "reset_replay_identical": null,
+      "process_s": 179.64547600000014,
+      "first_stdout_s": 24.93293100000028,
+      "load_s": 0.177686,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 866127760,
+        "sampled_peak_footprint_bytes": 853184448,
+        "samples": 328,
+        "peak_system_wired_bytes": 50247188480,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "extended-cooperative/two-file-fix.runs.jsonl",
+      "prefill_s": {
+        "median": 24.751642,
+        "p10": 24.751642,
+        "p90": 24.751642,
+        "n": 1
+      },
+      "decode_s": {
+        "median": 154.658352,
+        "p10": 154.658352,
+        "p90": 154.658352,
+        "n": 1
+      },
+      "ttft_request_s": {
+        "median": 24.751772,
+        "p10": 24.751772,
+        "p90": 24.751772,
+        "n": 1
+      },
+      "request_s": {
+        "median": 179.410124,
+        "p10": 179.410124,
+        "p90": 179.410124,
+        "n": 1
+      },
+      "reset_s": {
+        "median": 0.0,
+        "p10": 0.0,
+        "p90": 0.0,
+        "n": 1
+      },
+      "decode_tps": {
+        "median": 1.1121287520249794,
+        "p10": 1.1121287520249794,
+        "p90": 1.1121287520249794,
+        "n": 1
+      },
+      "prefill_tps": {
+        "median": 6.989435286757945,
+        "p10": 6.989435286757945,
+        "p90": 6.989435286757945,
+        "n": 1
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.200041,
+          "p10": 0.200041,
+          "p90": 0.200041,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.017224,
+          "p10": 0.017224,
+          "p90": 0.017224,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 24.534113,
+          "p10": 24.534113,
+          "p90": 24.534113,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 24.237326792,
+          "p10": 24.237326792,
+          "p90": 24.237326792,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 2552,
+          "p10": 2552,
+          "p90": 2552,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 816640,
+          "p10": 816640,
+          "p90": 816640,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 2552,
+          "p10": 2552,
+          "p90": 2552,
+          "n": 1
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.286403,
+          "p10": 0.286403,
+          "p90": 0.286403,
+          "n": 1
+        },
+        "encode_s": {
+          "median": 0.454553,
+          "p10": 0.454553,
+          "p90": 0.454553,
+          "n": 1
+        },
+        "wait_s": {
+          "median": 153.87478,
+          "p10": 153.87478,
+          "p90": 153.87478,
+          "n": 1
+        },
+        "gpu_s": {
+          "median": 153.764715875,
+          "p10": 153.764715875,
+          "p90": 153.764715875,
+          "n": 1
+        },
+        "ngram_calls": {
+          "median": 2752,
+          "p10": 2752,
+          "p90": 2752,
+          "n": 1
+        },
+        "ngram_bytes": {
+          "median": 880640,
+          "p10": 880640,
+          "p90": 880640,
+          "n": 1
+        },
+        "ngram_rows": {
+          "median": 2752,
+          "p10": 2752,
+          "p90": 2752,
+          "n": 1
+        }
+      },
+      "answer": "{\n  \"slices.py\": \"def windows(xs, k):\\n    if not isinstance(k, int):\\n        raise ValueError(\\\"k must be an integer\\\")\\n    if k <= 0:\\n        raise ValueError(\\\"k must be positive\\\")\\n    if k > len(xs):\\n        return []\\n    return [xs[i:i+k] for i in range(len(xs) - k + 1)]\",\n  \"summaries.py\": \"from slices import windows\\n\\ndef rolling_means(xs, k):\\n    if not isinstance(k, int):\\n        raise ValueError(\\\"k must be an integer\\\")\\n    if k <= 0:\\n        raise ValueError(\\\"k must be positive\\\")\\n    return [sum(chunk) / k for chunk in windows(xs, k)]\"\n}\n",
+      "quality": {
+        "case": "two-file-fix",
+        "format_followed": true,
+        "tests_passed": true,
+        "returncode": 0,
+        "stdout": "PASS: both files, boundaries, validation, true division\n",
+        "stderr": ""
+      }
+    },
+    {
+      "group": "native-paired/cooperative",
+      "case": "ragionamento",
+      "warmups": 1,
+      "repetitions": 3,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 82.22488999999996,
+      "first_stdout_s": 9.591906000000108,
+      "load_s": 0.156729,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 860196872,
+        "sampled_peak_footprint_bytes": 839356424,
+        "samples": 154,
+        "peak_system_wired_bytes": 49877925888,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "native-paired/cooperative/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 8.647221,
+        "p10": 8.638855,
+        "p90": 8.684329,
+        "n": 3
+      },
+      "decode_s": {
+        "median": 11.653333,
+        "p10": 11.650646,
+        "p90": 11.657944,
+        "n": 3
+      },
+      "ttft_request_s": {
+        "median": 8.649895,
+        "p10": 8.641743,
+        "p90": 8.687034,
+        "n": 3
+      },
+      "request_s": {
+        "median": 20.303228,
+        "p10": 20.299687,
+        "p90": 20.33768,
+        "n": 3
+      },
+      "reset_s": {
+        "median": 0.002583,
+        "p10": 0.002548,
+        "p90": 0.002751,
+        "n": 3
+      },
+      "decode_tps": {
+        "median": 1.1155606726418956,
+        "p10": 1.1151194413011418,
+        "p90": 1.1158179555022099,
+        "n": 3
+      },
+      "prefill_tps": {
+        "median": 7.054289464788745,
+        "p10": 7.024146597854595,
+        "p90": 7.061120947162558,
+        "n": 3
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.000607,
+          "p10": 0.00057,
+          "p90": 0.000693,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.006048,
+          "p10": 0.005853,
+          "p90": 0.006212,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 8.640672,
+          "p10": 8.631828,
+          "p90": 8.677509,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 8.63984425,
+          "p10": 8.630909958,
+          "p90": 8.676764417,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 296960,
+          "p10": 296960,
+          "p90": 296960,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000254,
+          "p10": 0.000252,
+          "p90": 0.000268,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.034021,
+          "p10": 0.033359,
+          "p90": 0.034444,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 11.615159,
+          "p10": 11.613895,
+          "p90": 11.620468,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 11.605602208,
+          "p10": 11.603646458,
+          "p90": 11.608121,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 66560,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        }
+      },
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": false,
+        "expected": {
+          "n": 1633
+        },
+        "actual": {
+          "n": 1002
+        },
+        "scope": "Stesse otto sequenze; verifica aritmetica indipendente dal runtime."
+      }
+    },
+    {
+      "group": "native-paired/scalar",
+      "case": "ragionamento",
+      "warmups": 1,
+      "repetitions": 3,
+      "prompt_tokens": 61,
+      "context": 8192,
+      "chunk": 128,
+      "generated_tokens": [
+        14,
+        14,
+        14
+      ],
+      "stop_reasons": [
+        "stop",
+        "stop",
+        "stop"
+      ],
+      "reset_replay_identical": true,
+      "process_s": 93.98826999999983,
+      "first_stdout_s": 15.075378999999884,
+      "load_s": 0.148954,
+      "memory": {
+        "metal_allocated_bytes": 45511098368,
+        "metal_recommended_bytes": 55662788608,
+        "graph_buffer_bytes": 713683968,
+        "lifetime_peak_footprint_bytes": 938168352,
+        "sampled_peak_footprint_bytes": 891162656,
+        "samples": 182,
+        "peak_system_wired_bytes": 49973346304,
+        "pressure_levels": [
+          1
+        ],
+        "swap_used_delta_bytes": 0,
+        "peak_swap_growth_bytes": 0,
+        "swapins_delta_pages": 0,
+        "swapouts_delta_pages": 0
+      },
+      "raw_path": "native-paired/scalar/ragionamento.runs.jsonl",
+      "prefill_s": {
+        "median": 9.889159,
+        "p10": 9.886936,
+        "p90": 9.890221,
+        "n": 3
+      },
+      "decode_s": {
+        "median": 12.28828,
+        "p10": 12.269368,
+        "p90": 12.30098,
+        "n": 3
+      },
+      "ttft_request_s": {
+        "median": 9.891976,
+        "p10": 9.889809,
+        "p90": 9.893086,
+        "n": 3
+      },
+      "request_s": {
+        "median": 22.181366,
+        "p10": 22.159177,
+        "p90": 22.192956,
+        "n": 3
+      },
+      "reset_s": {
+        "median": 0.002733,
+        "p10": 0.002682,
+        "p90": 0.00274,
+        "n": 3
+      },
+      "decode_tps": {
+        "median": 1.057918602115186,
+        "p10": 1.056826366679728,
+        "p90": 1.0595492775177988,
+        "n": 3
+      },
+      "prefill_tps": {
+        "median": 6.168370839218988,
+        "p10": 6.167708486999431,
+        "p90": 6.169757749013446,
+        "n": 3
+      },
+      "prefill_profile": {
+        "prepare_s": {
+          "median": 0.000652,
+          "p10": 0.000643,
+          "p90": 0.0007,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.006322,
+          "p10": 0.006134,
+          "p90": 0.006377,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 9.882016,
+          "p10": 9.879791,
+          "p90": 9.883324,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 9.881182792,
+          "p10": 9.878875875,
+          "p90": 9.882829708,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 296960,
+          "p10": 296960,
+          "p90": 296960,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 928,
+          "p10": 928,
+          "p90": 928,
+          "n": 3
+        }
+      },
+      "decode_profile": {
+        "prepare_s": {
+          "median": 0.000259,
+          "p10": 0.000254,
+          "p90": 0.000263,
+          "n": 3
+        },
+        "encode_s": {
+          "median": 0.034528,
+          "p10": 0.034031,
+          "p90": 0.035271,
+          "n": 3
+        },
+        "wait_s": {
+          "median": 12.250305,
+          "p10": 12.230564,
+          "p90": 12.263411,
+          "n": 3
+        },
+        "gpu_s": {
+          "median": 12.238496958,
+          "p10": 12.218804083,
+          "p90": 12.251436625,
+          "n": 3
+        },
+        "ngram_calls": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        },
+        "ngram_bytes": {
+          "median": 66560,
+          "p10": 66560,
+          "p90": 66560,
+          "n": 3
+        },
+        "ngram_rows": {
+          "median": 208,
+          "p10": 208,
+          "p90": 208,
+          "n": 3
+        }
+      },
+      "quality": {
+        "grading": "JSON esatto",
+        "tests_passed": false,
+        "expected": {
+          "n": 1633
+        },
+        "actual": {
+          "n": 1002
+        },
+        "scope": "Stesse otto sequenze; verifica aritmetica indipendente dal runtime."
+      }
+    }
+  ],
+  "incomplete": [
+    {
+      "group": "bounded-attempts/lazy-guard/ragionamento",
+      "case": "oracle",
+      "process_s": 10.680162999999993,
+      "returncode": -15,
+      "reason": "memory guard",
+      "raw_path": "bounded-attempts/lazy-guard/ragionamento/oracle/process.json"
+    },
+    {
+      "group": "bounded-attempts/stock-guard/lower-bound",
+      "case": "oracle",
+      "process_s": 11.194647999999688,
+      "returncode": -15,
+      "reason": "memory guard",
+      "raw_path": "bounded-attempts/stock-guard/lower-bound/oracle/process.json"
+    },
+    {
+      "group": "extended",
+      "case": "context-1024",
+      "process_s": 618.5539419999986,
+      "returncode": -15,
+      "reason": "Processo fallito: consultare i dati grezzi.",
+      "raw_path": "extended/context-1024/process.json"
+    }
+  ],
+  "bounded": {
+    "complete": true,
+    "executable_sha256": "917e86ca9d49d79cd90f8d6fd1fa429052c31e0a8f9356f50c26fed111c0d556",
+    "metallib_sha256": "3ee6cd05f2d4082cada2045e1497a143a5e7f5b7f44e34b1c5cb003e53272bb2",
+    "gate": 0.001,
+    "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "source_sha256": "30e870beb57086749a270b175694c9e9a9562e465d762d9944011dfd036f5b94",
+    "cases": [
+      {
+        "case": "lower-bound",
+        "prompt_ids": [
+          248045,
+          846,
+          198,
+          63299,
+          31732,
+          184402,
+          184026,
+          351,
+          16,
+          16,
+          2920,
+          33959,
+          212087,
+          1331,
+          516,
+          4570,
+          18857,
+          3906,
+          2654,
+          514,
+          348,
+          64,
+          11,
+          1331
+        ],
+        "generated_ids": [
+          248046
+        ],
+        "metrics": {
+          "scaled": 2.0331038236799155e-06,
+          "absolute": 4.1604042053222656e-05,
+          "argmax_matches": 1,
+          "margin_decided": 1,
+          "per_token_scaled": [
+            2.0331038236799155e-06
+          ],
+          "per_token_margin": [
+            0.7344989776611328
+          ],
+          "native_top5": [
+            [
+              248046,
+              516,
+              1054,
+              307,
+              62
+            ]
+          ],
+          "reference_top5": [
+            [
+              248046,
+              516,
+              1054,
+              307,
+              62
+            ]
+          ],
+          "top5_order_matches": 1
+        },
+        "passed": true,
+        "commands": [
+          [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "--qwen38",
+            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "--tokens",
+            "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
+            "--context",
+            "64",
+            "--chunk",
+            "7",
+            "--max-new",
+            "4",
+            "--logits",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/native.f32",
+            "--token-ids",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/ids.json"
+          ],
+          [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          ]
+        ],
+        "oracle_environment": {
+          "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
+          "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/reference.f32"
+        },
+        "artifacts": {
+          "ids.json": "dd7ea69f79cf9878e45bbf5c9c0bb611299a0a4777ff5d6565b1d3d021b540eb",
+          "native.f32": "360aca7e01331a80349663aee0db51920416fc6ed17c0e05fe19ad9dff7ae058",
+          "release-wait.json": "681d41f27209cce7622573afdd20bd6e1783e53bc13d6f5a9fae9ab0d4a21beb",
+          "reference.f32": "8d2279bbd257f02dbdf3a573ba2056dc6ed3c26c52f69e2015e799ba59356df5"
+        }
+      },
+      {
+        "case": "ragionamento",
+        "prompt_ids": [
+          248045,
+          846,
+          198,
+          89263,
+          6378,
+          3687,
+          22056,
+          176816,
+          218415,
+          307,
+          176832,
+          1789,
+          220,
+          16,
+          15,
+          15,
+          15,
+          2920,
+          198056,
+          60603,
+          220,
+          17,
+          57844,
+          220
+        ],
+        "generated_ids": [
+          248046
+        ],
+        "metrics": {
+          "scaled": 5.144676702056359e-05,
+          "absolute": 0.0011165142059326172,
+          "argmax_matches": 1,
+          "margin_decided": 1,
+          "per_token_scaled": [
+            5.144676702056359e-05
+          ],
+          "per_token_margin": [
+            2.6932315826416016
+          ],
+          "native_top5": [
+            [
+              248046,
+              18,
+              22,
+              20,
+              16
+            ]
+          ],
+          "reference_top5": [
+            [
+              248046,
+              18,
+              22,
+              20,
+              16
+            ]
+          ],
+          "top5_order_matches": 1
+        },
+        "passed": true,
+        "commands": [
+          [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "--qwen38",
+            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "--tokens",
+            "248045,846,198,89263,6378,3687,22056,176816,218415,307,176832,1789,220,16,15,15,15,2920,198056,60603,220,17,57844,220",
+            "--context",
+            "64",
+            "--chunk",
+            "7",
+            "--max-new",
+            "4",
+            "--logits",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/native.f32",
+            "--token-ids",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/ids.json"
+          ],
+          [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          ]
+        ],
+        "oracle_environment": {
+          "DS4_QWEN4_FT_TOKENS": "248045,846,198,89263,6378,3687,22056,176816,218415,307,176832,1789,220,16,15,15,15,2920,198056,60603,220,17,57844,220",
+          "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/reference.f32"
+        },
+        "artifacts": {
+          "ids.json": "e0c182523995fc773e263d6f94876f7b7d8356e78f34427c675f053e287df8b4",
+          "native.f32": "7f4903cbf66b41c4b7ebed647cf91312b08b84bc7246a5788838ac0ad5531bda",
+          "release-wait.json": "43484aa4ad800136c9417d1eaa92e361c508d3614c813bc557e44c6374f4de00",
+          "reference.f32": "987ad2348220ef30080d7353f2f6138c8fa8924e362d4054b8c8fe337f85e45f"
+        }
+      },
+      {
+        "case": "italiano",
+        "prompt_ids": [
+          248045,
+          846,
+          198,
+          63299,
+          31732,
+          303,
+          57786,
+          4931,
+          175079,
+          180436,
+          1789,
+          51711,
+          220,
+          17,
+          20,
+          15,
+          46652,
+          791,
+          200001,
+          632,
+          15264,
+          13,
+          414,
+          10760
+        ],
+        "generated_ids": [
+          248046
+        ],
+        "metrics": {
+          "scaled": 1.9391586049575472e-06,
+          "absolute": 3.147125244140625e-05,
+          "argmax_matches": 1,
+          "margin_decided": 1,
+          "per_token_scaled": [
+            1.9391586049575472e-06
+          ],
+          "per_token_margin": [
+            0.8581228256225586
+          ],
+          "native_top5": [
+            [
+              248046,
+              1896,
+              356,
+              4144,
+              8536
+            ]
+          ],
+          "reference_top5": [
+            [
+              248046,
+              1896,
+              356,
+              4144,
+              8536
+            ]
+          ],
+          "top5_order_matches": 1
+        },
+        "passed": true,
+        "commands": [
+          [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "--qwen38",
+            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "--tokens",
+            "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
+            "--context",
+            "64",
+            "--chunk",
+            "7",
+            "--max-new",
+            "4",
+            "--logits",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/native.f32",
+            "--token-ids",
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/ids.json"
+          ],
+          [
+            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          ]
+        ],
+        "oracle_environment": {
+          "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
+          "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/reference.f32"
+        },
+        "artifacts": {
+          "ids.json": "87c82d5a777467445b5a0908845822dbf92220d57fd7cd6db8b2f1641da41bdc",
+          "native.f32": "7ebdc9d1cea988510a7271cc0d21d5c7fb62874f195ebd23ecf91bbe2463857e",
+          "release-wait.json": "8a107803268dd1142c0a8d02f6e4d711d8fbc974a872884c78123637976c3a32",
+          "reference.f32": "94946620b27219948b98e7181b16e0e9912c157bbfdfd5389bdec3e67ee7f561"
+        }
+      }
+    ]
+  },
+  "notes": [
+    "Native FP32 only; DwarfStar 30 token/s belongs to another runtime.",
+    "Warmups retained but excluded. One measured request is not a repeatability benchmark.",
+    "OS file/shader caches are uncontrolled; no cold-cache claim.",
+    "GPU time overlaps wait time. prepare_s includes n-gram I/O, dedup, decode and staging.",
+    "N-gram bytes are logical pread bytes, not physical SSD traffic.",
+    "Footprint, Metal allocations and system wired memory overlap and must not be summed.",
+    "Exact reset/replay within this runtime does not establish independent numerical parity."
+  ],
+  "evidence_root": "."
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge",
+    "branch": "main",
+    "head": "7c0b2379b93c478a46b0d6e75c3bde91a57b1bce",
+    "status": ""
+  },
+  {
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate",
+    "branch": "coord/qwen38-integrate",
+    "head": "6a6b886e985185d7c9104eda888e6a406553aedf",
+    "status": ""
+  },
+  {
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge-c-v2",
+    "branch": "impl/qwen38-c-v2",
+    "head": "8a65af3beeb48eb046d0cbc95b522b3dba396959",
+    "status": ""
+  },
+  {
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge-d-v2",
+    "branch": "impl/qwen38-d-v2",
+    "head": "fcacfbcdef24f6502beb815caca1cf5a87378d0a",
+    "status": ""
+  },
+  {
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge-e-v2",
+    "branch": "impl/qwen38-e-v2",
+    "head": "4257c9c156d29dcf35acbcf5b7239122a917d963",
+    "status": ""
+  },
+  {
+    "path": "/Users/cristiancirje/Desktop/Dev/picoforge-f-v2",
+    "branch": "impl/qwen38-f-v2",
+    "head": "aa96e33fff92cd2f02064fde4adba187cd831d90",
+    "status": ""
+  }
+]

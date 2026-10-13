@@ -1,0 +1,15 @@
+{
+  "picoforge": "c95ddf5891e9ea5a1c7ada292470b89282b4ff6398d9e8868100af4379f814c7",
+  "picoforge.metallib": "15035f12ebba18503cfbd2528d2f2346ed9a812faa33dee9eb3872a69c6c4cc4",
+  "build/qwen38-b/reference/reference": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
+  "build/qwen38-b/test_packed": "b25eca66154ea011009fb543482c68b52706eb0df458cc990de3c62c12fd5b1e",
+  "build/qwen38-b/test_packed_gpu": "c4f31780f78368fc4ad380bdf854dc52902a7dadf86fec4309da0f5e2df6d698",
+  "build/qwen38-c/test_cpu": "66753581c2d86347a025c6f4858ba4f00c25fa78600cf8d66782782e8646266d",
+  "build/qwen38-c/libcpu.dylib": "20d39cc49bcf17924deaaa0a44da4fed6cd0a0caad66a496ecf920c965c3455f",
+  "build/qwen38-c/test_gpu": "f0a1d7c52bbf4598be7e5fa50e0365e30332fc220265127b4f138a711b6aada3",
+  "build/qwen38-d/test_attention": "71f3fe32725fe201d54a00ff37c7e1440d8be5a9e93371ef76b52396281cb38f",
+  "build/qwen38-d/test_attention_gpu": "04a1a7b31e3ef9693d32a7101e2a44e30816b689a181faf0d84ab30f5f8f9052",
+  "build/qwen38-e/test_ngram": "708f89ccf4fc8aba4868e1504daf31bc69628714c7a30cc99fd56229d6e1552d",
+  "build/qwen38-f/test_moe": "afd143bf6a736294e58fa178e11032ac7718458ea2914de6e34decfeeb324b1c",
+  "build/qwen38-f/test_moe_gpu": "a715aeaea477bcaf55d98cc5391a4cd2a85b4a311555ed6a9b49f2e4013c378f"
+}

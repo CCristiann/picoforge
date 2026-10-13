@@ -1,0 +1,53 @@
+{
+  "schema": "qwen38-c-analytic-v1",
+  "precision": "Inputs rounded to FP32; scalar mathematical expectations below.",
+  "layout": "Each q/k/v entry is a token with Hk=Hv=Dk=Dv=1. State is [Hv,Dv,Dk].",
+  "normalization": "Disabled: q/k are explicitly prepared; query scale is 1 for Dk=1.",
+  "cases": [
+    {
+      "name": "decay_then_predict_then_write_then_read",
+      "q": [0.5], "k": [1], "v": [4], "log_decay": [-0.6931471805599453],
+      "beta": [0.25], "state_initial": 2, "output": [0.875], "state_final": 1.75
+    },
+    {
+      "name": "beta_zero_still_decays",
+      "q": [0.5], "k": [1], "v": [4], "log_decay": [-0.6931471805599453],
+      "beta": [0], "state_initial": 2, "output": [0.5], "state_final": 1
+    },
+    {
+      "name": "beta_one_overwrites_unit_key",
+      "q": [0.5], "k": [1], "v": [4], "log_decay": [0],
+      "beta": [1], "state_initial": 2, "output": [2], "state_final": 4
+    },
+    {
+      "name": "finite_decay_underflow",
+      "q": [0.5], "k": [1], "v": [4], "log_decay": [-1000],
+      "beta": [0.25], "state_initial": 2, "output": [0.5], "state_final": 1
+    },
+    {
+      "name": "zero_key_cannot_write",
+      "q": [0.5], "k": [0], "v": [4], "log_decay": [-0.6931471805599453],
+      "beta": [0.25], "state_initial": 2, "output": [0.5], "state_final": 1
+    },
+    {
+      "name": "zero_query_still_updates_state",
+      "q": [0], "k": [1], "v": [4], "log_decay": [-0.6931471805599453],
+      "beta": [0.25], "state_initial": 2, "output": [0], "state_final": 1.75
+    },
+    {
+      "name": "value_equals_decayed_prediction",
+      "q": [0.5], "k": [1], "v": [1], "log_decay": [-0.6931471805599453],
+      "beta": [0.25], "state_initial": 2, "output": [0.5], "state_final": 1
+    },
+    {
+      "name": "identity_transition",
+      "q": [0.5], "k": [1], "v": [4], "log_decay": [0],
+      "beta": [0], "state_initial": 2, "output": [1], "state_final": 2
+    },
+    {
+      "name": "second_token_reads_updated_state",
+      "q": [0.5, 0.5], "k": [1, 1], "v": [4, 1], "log_decay": [-0.6931471805599453, 0],
+      "beta": [0.25, 0.5], "state_initial": 2, "output": [0.875, 0.6875], "state_final": 1.375
+    }
+  ]
+}

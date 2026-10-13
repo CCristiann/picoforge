@@ -4,6 +4,7 @@ Output directories are exclusive. Counter samples are system-wide where named
 system_*; process disk bytes are not attributed to n-grams. No shell is used.
 """
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -26,7 +27,7 @@ def sample(probe, pid=None):
     return json.loads(result.stdout) if result.returncode == 0 else None
 
 
-def run(output, cwd, command, timeout=1200, interval=1.0):
+def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
     probe = ROOT / "build/process_memory"
     before = sample(probe)
     if before is None:
@@ -35,20 +36,28 @@ def run(output, cwd, command, timeout=1200, interval=1.0):
     executable = Path(command[0]).resolve(strict=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("DS4_")}
     env["DS4_METAL_MEMORY_REPORT"] = "1"
+    env.update(env_overrides or {})
     thermal = subprocess.run(["pmset", "-g", "therm"], capture_output=True, text=True, check=True).stdout
     with executable.open("rb") as binary:
         binary_hash = hashlib.file_digest(binary, "sha256").hexdigest()
     metadata = dict(command=command, cwd=str(cwd), pilot=True, complete=False,
+                    recorded_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     executable_sha256=binary_hash,
-                    environment={"DS4_METAL_MEMORY_REPORT": "1"},
+                    environment={"DS4_METAL_MEMORY_REPORT": "1", **(env_overrides or {})},
                     removed_environment_names=sorted(k for k in os.environ if k.startswith("DS4_")),
                     thermal_before=thermal, sample_interval_s=interval, system_before=before,
                     guard="stop after 3 samples: critical pressure or swap growth > 2 GiB")
     meta_path = output / "process.json"
     meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
     start = now()
+    # Preserve a caller-owned GPU lock even if the observer dies. The child
+    # may run in another checkout, so it must inherit, never reacquire it.
+    lock_fd = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    pass_fds = (int(lock_fd),) if lock_fd is not None else ()
+    for fd in pass_fds:
+        os.fstat(fd)
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, start_new_session=True)
+                               stderr=subprocess.PIPE, start_new_session=True, pass_fds=pass_fds)
     selector = selectors.DefaultSelector()
     logs = {name: (output / f"{name}.log").open("wb") for name in ("stdout", "stderr")}
     for name in logs:

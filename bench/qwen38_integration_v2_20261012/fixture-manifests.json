@@ -1,0 +1,2462 @@
+{
+  "build/qwen38-c/controls-1/manifest.json": {
+    "layer": 1,
+    "hidden": 2560,
+    "streams": 4,
+    "rank": 320,
+    "hk": 16,
+    "hv": 48,
+    "dk": 128,
+    "dv": 128,
+    "kernel": 4,
+    "eps": 9.99999997e-07,
+    "weights": [
+      {
+        "slot": 0,
+        "role": 6,
+        "name": "blk.1.hc_attn_norm.weight",
+        "type": 0,
+        "columns": 10240,
+        "rows": 1,
+        "offset": 2833200992,
+        "bytes": 40960,
+        "path": "weight-0.bin",
+        "sha256": "b8d4c4e264c0942fa60ae4bf8de0399654d41f3f70437ec34b02a598c98997d4"
+      },
+      {
+        "slot": 1,
+        "role": 7,
+        "name": "blk.1.hc_attn_down.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 320,
+        "offset": 2833241952,
+        "bytes": 6553600
+      },
+      {
+        "slot": 2,
+        "role": 8,
+        "name": "blk.1.hc_attn_up.weight",
+        "type": 1,
+        "columns": 320,
+        "rows": 10240,
+        "offset": 2839795552,
+        "bytes": 6553600
+      },
+      {
+        "slot": 3,
+        "role": 9,
+        "name": "blk.1.hc_attn_inject.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 4,
+        "offset": 2846349152,
+        "bytes": 81920
+      },
+      {
+        "slot": 4,
+        "role": 14,
+        "name": "blk.1.attn_qkv.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 10240,
+        "offset": 2859661152,
+        "bytes": 27852800
+      },
+      {
+        "slot": 5,
+        "role": 15,
+        "name": "blk.1.attn_gate.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 6144,
+        "offset": 2887513952,
+        "bytes": 16711680
+      },
+      {
+        "slot": 6,
+        "role": 16,
+        "name": "blk.1.ssm_alpha.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 2920937312,
+        "bytes": 491520,
+        "path": "weight-6.bin",
+        "sha256": "2c0992e56939f0a1416d80ed9fe6ab797d568b7ba395e7cd80365ee18f247c6d"
+      },
+      {
+        "slot": 7,
+        "role": 17,
+        "name": "blk.1.ssm_beta.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 2921428832,
+        "bytes": 491520,
+        "path": "weight-7.bin",
+        "sha256": "76fe48c3c840d74cd13f8562823d3edc4c632953f99b7cb9f6c7d7e1e235865c"
+      },
+      {
+        "slot": 8,
+        "role": 18,
+        "name": "blk.1.ssm_a",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 2921920352,
+        "bytes": 192,
+        "path": "weight-8.bin",
+        "sha256": "365f31be74148df7281ad2296255ca82f9c97fc17af0a4e564028e4807ef68d6"
+      },
+      {
+        "slot": 9,
+        "role": 19,
+        "name": "blk.1.ssm_dt.bias",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 2921920544,
+        "bytes": 192,
+        "path": "weight-9.bin",
+        "sha256": "9d08f90b9e49085df92c3e216805f5f743e95a341896dc761fab36df355e2b5c"
+      },
+      {
+        "slot": 10,
+        "role": 20,
+        "name": "blk.1.ssm_conv1d.weight",
+        "type": 0,
+        "columns": 4,
+        "rows": 10240,
+        "offset": 2921921248,
+        "bytes": 163840,
+        "path": "weight-10.bin",
+        "sha256": "d477ef4db5392ffd2aba61032fa3dbd71c9ad59e27c8edff31c876f81a0c57d5"
+      },
+      {
+        "slot": 11,
+        "role": 21,
+        "name": "blk.1.ssm_norm.weight",
+        "type": 0,
+        "columns": 128,
+        "rows": 1,
+        "offset": 2921920736,
+        "bytes": 512,
+        "path": "weight-11.bin",
+        "sha256": "9f23158f98b697f85734f0c28a16ced888c5b71719b382636c1944eab4727dbe"
+      },
+      {
+        "slot": 12,
+        "role": 22,
+        "name": "blk.1.ssm_out.weight",
+        "type": 8,
+        "columns": 6144,
+        "rows": 2560,
+        "offset": 2904225632,
+        "bytes": 16711680
+      }
+    ],
+    "schema": "qwen38-c-composition-v1",
+    "scope": "checkpoint_slice_controls",
+    "selected_slots": [
+      0,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "tokens": 5,
+    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "input_sha256": "90d68c5258a6f3f8a3df683969f6a28350a4a981199402ed2e7cd7a648e0586f",
+    "packed_bytes": 1188736,
+    "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "reference_sha256": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
+    "model_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "source_stat": {
+      "device": 16777231,
+      "inode": 30631842,
+      "bytes": 147207127040,
+      "mtime_ns": 1791785892435960350
+    },
+    "interpretation": "Same Q2 checkpoint weights; synthetic activations; no BF16 quality or complete model claim."
+  },
+  "build/qwen38-c/controls-0/manifest.json": {
+    "layer": 0,
+    "hidden": 2560,
+    "streams": 4,
+    "rank": 320,
+    "hk": 16,
+    "hv": 48,
+    "dk": 128,
+    "dv": 128,
+    "kernel": 4,
+    "eps": 9.99999997e-07,
+    "weights": [
+      {
+        "slot": 0,
+        "role": 6,
+        "name": "blk.0.hc_attn_norm.weight",
+        "type": 0,
+        "columns": 10240,
+        "rows": 1,
+        "offset": 1971002336,
+        "bytes": 40960,
+        "path": "weight-0.bin",
+        "sha256": "daf6d75a1e92b4380d853d4a32534e3b4627be366bdb1551cc85d705f26876b5"
+      },
+      {
+        "slot": 1,
+        "role": 7,
+        "name": "blk.0.hc_attn_down.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 320,
+        "offset": 1971043296,
+        "bytes": 6553600
+      },
+      {
+        "slot": 2,
+        "role": 8,
+        "name": "blk.0.hc_attn_up.weight",
+        "type": 1,
+        "columns": 320,
+        "rows": 10240,
+        "offset": 1977596896,
+        "bytes": 6553600
+      },
+      {
+        "slot": 3,
+        "role": 9,
+        "name": "blk.0.hc_attn_inject.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 4,
+        "offset": 1984150496,
+        "bytes": 81920
+      },
+      {
+        "slot": 4,
+        "role": 14,
+        "name": "blk.0.attn_qkv.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 10240,
+        "offset": 1997462496,
+        "bytes": 27852800
+      },
+      {
+        "slot": 5,
+        "role": 15,
+        "name": "blk.0.attn_gate.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 6144,
+        "offset": 2025315296,
+        "bytes": 16711680
+      },
+      {
+        "slot": 6,
+        "role": 16,
+        "name": "blk.0.ssm_alpha.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 2058738656,
+        "bytes": 491520,
+        "path": "weight-6.bin",
+        "sha256": "3177daafc8955dbf7cd57c31bc376cd8e3af530bae8a339e870cb990cc888bdb"
+      },
+      {
+        "slot": 7,
+        "role": 17,
+        "name": "blk.0.ssm_beta.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 2059230176,
+        "bytes": 491520,
+        "path": "weight-7.bin",
+        "sha256": "9d8237ffbd8a955f0c77cebca4250a18027e1292257f72b9444716371d2756ff"
+      },
+      {
+        "slot": 8,
+        "role": 18,
+        "name": "blk.0.ssm_a",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 2059721696,
+        "bytes": 192,
+        "path": "weight-8.bin",
+        "sha256": "b468aa1d560674dd157c4fde8e3831a3566e5315cec96973dd0e4e73076c3294"
+      },
+      {
+        "slot": 9,
+        "role": 19,
+        "name": "blk.0.ssm_dt.bias",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 2059721888,
+        "bytes": 192,
+        "path": "weight-9.bin",
+        "sha256": "61f670e1bfb6524a4ea2aa4bb8f9dbaeaba94c752f7485380ca626b336b8f0c6"
+      },
+      {
+        "slot": 10,
+        "role": 20,
+        "name": "blk.0.ssm_conv1d.weight",
+        "type": 0,
+        "columns": 4,
+        "rows": 10240,
+        "offset": 2059722592,
+        "bytes": 163840,
+        "path": "weight-10.bin",
+        "sha256": "86971b2b293c0f8d662169eac001156cb7d5d81bbb28fe75d78e358f1c39b476"
+      },
+      {
+        "slot": 11,
+        "role": 21,
+        "name": "blk.0.ssm_norm.weight",
+        "type": 0,
+        "columns": 128,
+        "rows": 1,
+        "offset": 2059722080,
+        "bytes": 512,
+        "path": "weight-11.bin",
+        "sha256": "d27dd7b8d5dae1f3cc9880dd0367825008d8d7873ea0030aa92175634ae08e17"
+      },
+      {
+        "slot": 12,
+        "role": 22,
+        "name": "blk.0.ssm_out.weight",
+        "type": 8,
+        "columns": 6144,
+        "rows": 2560,
+        "offset": 2042026976,
+        "bytes": 16711680
+      }
+    ],
+    "schema": "qwen38-c-composition-v1",
+    "scope": "checkpoint_slice_controls",
+    "selected_slots": [
+      0,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "tokens": 5,
+    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "input_sha256": "90d68c5258a6f3f8a3df683969f6a28350a4a981199402ed2e7cd7a648e0586f",
+    "packed_bytes": 1188736,
+    "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "reference_sha256": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
+    "model_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "source_stat": {
+      "device": 16777231,
+      "inode": 30631842,
+      "bytes": 147207127040,
+      "mtime_ns": 1791785892435960350
+    },
+    "interpretation": "Same Q2 checkpoint weights; synthetic activations; no BF16 quality or complete model claim."
+  },
+  "build/qwen38-c/controls-46/manifest.json": {
+    "layer": 46,
+    "hidden": 2560,
+    "streams": 4,
+    "rank": 320,
+    "hk": 16,
+    "hv": 48,
+    "dk": 128,
+    "dv": 128,
+    "kernel": 4,
+    "eps": 9.99999997e-07,
+    "weights": [
+      {
+        "slot": 0,
+        "role": 6,
+        "name": "blk.46.hc_attn_norm.weight",
+        "type": 0,
+        "columns": 10240,
+        "rows": 1,
+        "offset": 41581886048,
+        "bytes": 40960,
+        "path": "weight-0.bin",
+        "sha256": "bea61146de844308d9f93de484284371aa712cef21ae0a5328be9f6232214ee5"
+      },
+      {
+        "slot": 1,
+        "role": 7,
+        "name": "blk.46.hc_attn_down.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 320,
+        "offset": 41581927008,
+        "bytes": 6553600
+      },
+      {
+        "slot": 2,
+        "role": 8,
+        "name": "blk.46.hc_attn_up.weight",
+        "type": 1,
+        "columns": 320,
+        "rows": 10240,
+        "offset": 41588480608,
+        "bytes": 6553600
+      },
+      {
+        "slot": 3,
+        "role": 9,
+        "name": "blk.46.hc_attn_inject.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 4,
+        "offset": 41595034208,
+        "bytes": 81920
+      },
+      {
+        "slot": 4,
+        "role": 14,
+        "name": "blk.46.attn_qkv.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 10240,
+        "offset": 41608346208,
+        "bytes": 27852800
+      },
+      {
+        "slot": 5,
+        "role": 15,
+        "name": "blk.46.attn_gate.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 6144,
+        "offset": 41636199008,
+        "bytes": 16711680
+      },
+      {
+        "slot": 6,
+        "role": 16,
+        "name": "blk.46.ssm_alpha.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 41669622368,
+        "bytes": 491520,
+        "path": "weight-6.bin",
+        "sha256": "b6a71c40f9d284d6e01d167487b201de4b48085223593ef4d6314a422469eb7b"
+      },
+      {
+        "slot": 7,
+        "role": 17,
+        "name": "blk.46.ssm_beta.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 41670113888,
+        "bytes": 491520,
+        "path": "weight-7.bin",
+        "sha256": "180fcc3bf4c3464702d6bdac9f937b8be7f51cde73c69fd2a7d356d0ed110e07"
+      },
+      {
+        "slot": 8,
+        "role": 18,
+        "name": "blk.46.ssm_a",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 41670605408,
+        "bytes": 192,
+        "path": "weight-8.bin",
+        "sha256": "850ce06862054629ae829ad2021c4c69494295fcba1eef32e0b5130d9ca49641"
+      },
+      {
+        "slot": 9,
+        "role": 19,
+        "name": "blk.46.ssm_dt.bias",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 41670605600,
+        "bytes": 192,
+        "path": "weight-9.bin",
+        "sha256": "f688c3ca1e295db7249c64a0da22a1f806566f0e3820c8ddff29764552651d3c"
+      },
+      {
+        "slot": 10,
+        "role": 20,
+        "name": "blk.46.ssm_conv1d.weight",
+        "type": 0,
+        "columns": 4,
+        "rows": 10240,
+        "offset": 41670606304,
+        "bytes": 163840,
+        "path": "weight-10.bin",
+        "sha256": "5a517bdff61bb4a5f699565236b4a003bcfb426c8f8ca93679579f9c23edf455"
+      },
+      {
+        "slot": 11,
+        "role": 21,
+        "name": "blk.46.ssm_norm.weight",
+        "type": 0,
+        "columns": 128,
+        "rows": 1,
+        "offset": 41670605792,
+        "bytes": 512,
+        "path": "weight-11.bin",
+        "sha256": "960a242739b3f442396a29af174c8c53305468fb7eb288a740f5ce14911d3943"
+      },
+      {
+        "slot": 12,
+        "role": 22,
+        "name": "blk.46.ssm_out.weight",
+        "type": 8,
+        "columns": 6144,
+        "rows": 2560,
+        "offset": 41652910688,
+        "bytes": 16711680
+      }
+    ],
+    "schema": "qwen38-c-composition-v1",
+    "scope": "checkpoint_slice_controls",
+    "selected_slots": [
+      0,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "tokens": 5,
+    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "input_sha256": "90d68c5258a6f3f8a3df683969f6a28350a4a981199402ed2e7cd7a648e0586f",
+    "packed_bytes": 1188736,
+    "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "reference_sha256": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
+    "model_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "source_stat": {
+      "device": 16777231,
+      "inode": 30631842,
+      "bytes": 147207127040,
+      "mtime_ns": 1791785892435960350
+    },
+    "interpretation": "Same Q2 checkpoint weights; synthetic activations; no BF16 quality or complete model claim."
+  },
+  "build/qwen38-c/composed-synthetic/manifest.json": {
+    "layer": 0,
+    "hidden": 256,
+    "streams": 2,
+    "rank": 32,
+    "hk": 2,
+    "hv": 4,
+    "dk": 8,
+    "dv": 8,
+    "kernel": 4,
+    "eps": 9.99999997e-07,
+    "weights": [
+      {
+        "slot": 0,
+        "role": 6,
+        "name": "blk.0.hc_attn_norm.weight",
+        "type": 0,
+        "columns": 512,
+        "rows": 1,
+        "offset": 524288,
+        "bytes": 2048,
+        "path": "weight-0.bin",
+        "sha256": "a35209d0ae9e78d546ec1e2354e792083881a483bb764056af845eb9e01c95c2"
+      },
+      {
+        "slot": 1,
+        "role": 7,
+        "name": "blk.0.hc_attn_down.weight",
+        "type": 1,
+        "columns": 512,
+        "rows": 32,
+        "offset": 540672,
+        "bytes": 32768,
+        "path": "weight-1.bin",
+        "sha256": "da71fe67e9924ef94ac243b2940232d2fb2674242174e7472831ebe1d05d1f00"
+      },
+      {
+        "slot": 2,
+        "role": 8,
+        "name": "blk.0.hc_attn_up.weight",
+        "type": 1,
+        "columns": 32,
+        "rows": 512,
+        "offset": 573440,
+        "bytes": 32768,
+        "path": "weight-2.bin",
+        "sha256": "7b95ceff91e83b0bd80dbde357d43f466fdfc55ef27653d09e6b42a35f5c786d"
+      },
+      {
+        "slot": 3,
+        "role": 9,
+        "name": "blk.0.hc_attn_inject.weight",
+        "type": 1,
+        "columns": 512,
+        "rows": 2,
+        "offset": 606208,
+        "bytes": 2048,
+        "path": "weight-3.bin",
+        "sha256": "2fdd8b8832401b6e7080e70b7af087a82ac1501397b18c4de2ca9b00e3284adb"
+      },
+      {
+        "slot": 4,
+        "role": 14,
+        "name": "blk.0.attn_qkv.weight",
+        "type": 8,
+        "columns": 256,
+        "rows": 64,
+        "offset": 966656,
+        "bytes": 17408,
+        "path": "weight-4.bin",
+        "sha256": "742dcd8fa4c31468e56db5b2114091d0754ccf2caca3aee07ca2c413b07e5372"
+      },
+      {
+        "slot": 5,
+        "role": 15,
+        "name": "blk.0.attn_gate.weight",
+        "type": 8,
+        "columns": 256,
+        "rows": 32,
+        "offset": 999424,
+        "bytes": 8704,
+        "path": "weight-5.bin",
+        "sha256": "a4e4487bd3d853b2b90e9e08768bac5f27128e08d8f24359f4df449eb27aa9ea"
+      },
+      {
+        "slot": 6,
+        "role": 16,
+        "name": "blk.0.ssm_alpha.weight",
+        "type": 0,
+        "columns": 256,
+        "rows": 4,
+        "offset": 1097728,
+        "bytes": 4096,
+        "path": "weight-6.bin",
+        "sha256": "78028f8ceda82af2e5e6693fa8c4e4af27b2118f8220b48046bf2639acca2f11"
+      },
+      {
+        "slot": 7,
+        "role": 17,
+        "name": "blk.0.ssm_beta.weight",
+        "type": 0,
+        "columns": 256,
+        "rows": 4,
+        "offset": 1114112,
+        "bytes": 4096,
+        "path": "weight-7.bin",
+        "sha256": "61f936172fb4af52a93c89a91984767b089c42cedc7b9238e84c8d2db96b1f48"
+      },
+      {
+        "slot": 8,
+        "role": 18,
+        "name": "blk.0.ssm_a",
+        "type": 0,
+        "columns": 4,
+        "rows": 1,
+        "offset": 1032192,
+        "bytes": 16,
+        "path": "weight-8.bin",
+        "sha256": "7191308404fd90fcd030722635ceb037433eea2df25f4651ccc32629272d823e"
+      },
+      {
+        "slot": 9,
+        "role": 19,
+        "name": "blk.0.ssm_dt.bias",
+        "type": 0,
+        "columns": 4,
+        "rows": 1,
+        "offset": 1048576,
+        "bytes": 16,
+        "path": "weight-9.bin",
+        "sha256": "2e81991fcbc258a9dcc47da78b33fe323e869f7c1535b0d3e05157e9fd42a58c"
+      },
+      {
+        "slot": 10,
+        "role": 20,
+        "name": "blk.0.ssm_conv1d.weight",
+        "type": 0,
+        "columns": 4,
+        "rows": 64,
+        "offset": 1081344,
+        "bytes": 1024,
+        "path": "weight-10.bin",
+        "sha256": "bc741d2440fc1667dc0d518485ca1142af2c898b3107515113e54290e49697f3"
+      },
+      {
+        "slot": 11,
+        "role": 21,
+        "name": "blk.0.ssm_norm.weight",
+        "type": 0,
+        "columns": 8,
+        "rows": 1,
+        "offset": 1064960,
+        "bytes": 32,
+        "path": "weight-11.bin",
+        "sha256": "95b714dabffc97c393ae32339449d77b21413c9cb0e95c9d5ad65a08012a8f50"
+      },
+      {
+        "slot": 12,
+        "role": 22,
+        "name": "blk.0.ssm_out.weight",
+        "type": 8,
+        "columns": 32,
+        "rows": 256,
+        "offset": 1015808,
+        "bytes": 8704,
+        "path": "weight-12.bin",
+        "sha256": "c7b0e77cb5f0447723dd1be154c28de4ff5769269211bdd90feefc22becf666c"
+      }
+    ],
+    "schema": "qwen38-c-composition-v1",
+    "scope": "synthetic",
+    "selected_slots": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "tokens": 65,
+    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-c/composed-synthetic/schema.gguf",
+    "input_sha256": "4e056bdbd3a1df3dcaccb3dafeeaa2a93a81bf5d7d9f5da0e62985cb6dc452ab",
+    "packed_bytes": 113728,
+    "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "reference_sha256": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
+    "model_revision": null,
+    "source_stat": {
+      "device": 16777231,
+      "inode": 31260011,
+      "bytes": 3164160,
+      "mtime_ns": 1791829597854248524
+    },
+    "interpretation": "Same Q2 checkpoint weights; synthetic activations; no BF16 quality or complete model claim."
+  },
+  "build/qwen38-c/composed-real-0/manifest.json": {
+    "layer": 0,
+    "hidden": 2560,
+    "streams": 4,
+    "rank": 320,
+    "hk": 16,
+    "hv": 48,
+    "dk": 128,
+    "dv": 128,
+    "kernel": 4,
+    "eps": 9.99999997e-07,
+    "weights": [
+      {
+        "slot": 0,
+        "role": 6,
+        "name": "blk.0.hc_attn_norm.weight",
+        "type": 0,
+        "columns": 10240,
+        "rows": 1,
+        "offset": 1971002336,
+        "bytes": 40960,
+        "path": "weight-0.bin",
+        "sha256": "daf6d75a1e92b4380d853d4a32534e3b4627be366bdb1551cc85d705f26876b5"
+      },
+      {
+        "slot": 1,
+        "role": 7,
+        "name": "blk.0.hc_attn_down.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 320,
+        "offset": 1971043296,
+        "bytes": 6553600,
+        "path": "weight-1.bin",
+        "sha256": "d576461fa92f7f9e97258ab61f6321fdba81b5e066e882919d1e8b17da46c88e"
+      },
+      {
+        "slot": 2,
+        "role": 8,
+        "name": "blk.0.hc_attn_up.weight",
+        "type": 1,
+        "columns": 320,
+        "rows": 10240,
+        "offset": 1977596896,
+        "bytes": 6553600,
+        "path": "weight-2.bin",
+        "sha256": "5ddfa749724be270a5c5a643a7e62a20964040c0ed5a36422868efa02b815d74"
+      },
+      {
+        "slot": 3,
+        "role": 9,
+        "name": "blk.0.hc_attn_inject.weight",
+        "type": 1,
+        "columns": 10240,
+        "rows": 4,
+        "offset": 1984150496,
+        "bytes": 81920,
+        "path": "weight-3.bin",
+        "sha256": "b0efc44d4340396fd7d8b3aaf5e6dc04e289583c57685ad4ca95fb1f2195188a"
+      },
+      {
+        "slot": 4,
+        "role": 14,
+        "name": "blk.0.attn_qkv.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 10240,
+        "offset": 1997462496,
+        "bytes": 27852800,
+        "path": "weight-4.bin",
+        "sha256": "9104b7bd3862f26f9b9082bc4ef04703a7f2f37e8ff2cc70f8e8ab401154c20b"
+      },
+      {
+        "slot": 5,
+        "role": 15,
+        "name": "blk.0.attn_gate.weight",
+        "type": 8,
+        "columns": 2560,
+        "rows": 6144,
+        "offset": 2025315296,
+        "bytes": 16711680,
+        "path": "weight-5.bin",
+        "sha256": "07d0602265cac070edf0fea0c188a3a06ed5f6bdecd4860d78b0a9fcaf7eff95"
+      },
+      {
+        "slot": 6,
+        "role": 16,
+        "name": "blk.0.ssm_alpha.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 2058738656,
+        "bytes": 491520,
+        "path": "weight-6.bin",
+        "sha256": "3177daafc8955dbf7cd57c31bc376cd8e3af530bae8a339e870cb990cc888bdb"
+      },
+      {
+        "slot": 7,
+        "role": 17,
+        "name": "blk.0.ssm_beta.weight",
+        "type": 0,
+        "columns": 2560,
+        "rows": 48,
+        "offset": 2059230176,
+        "bytes": 491520,
+        "path": "weight-7.bin",
+        "sha256": "9d8237ffbd8a955f0c77cebca4250a18027e1292257f72b9444716371d2756ff"
+      },
+      {
+        "slot": 8,
+        "role": 18,
+        "name": "blk.0.ssm_a",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 2059721696,
+        "bytes": 192,
+        "path": "weight-8.bin",
+        "sha256": "b468aa1d560674dd157c4fde8e3831a3566e5315cec96973dd0e4e73076c3294"
+      },
+      {
+        "slot": 9,
+        "role": 19,
+        "name": "blk.0.ssm_dt.bias",
+        "type": 0,
+        "columns": 48,
+        "rows": 1,
+        "offset": 2059721888,
+        "bytes": 192,
+        "path": "weight-9.bin",
+        "sha256": "61f670e1bfb6524a4ea2aa4bb8f9dbaeaba94c752f7485380ca626b336b8f0c6"
+      },
+      {
+        "slot": 10,
+        "role": 20,
+        "name": "blk.0.ssm_conv1d.weight",
+        "type": 0,
+        "columns": 4,
+        "rows": 10240,
+        "offset": 2059722592,
+        "bytes": 163840,
+        "path": "weight-10.bin",
+        "sha256": "86971b2b293c0f8d662169eac001156cb7d5d81bbb28fe75d78e358f1c39b476"
+      },
+      {
+        "slot": 11,
+        "role": 21,
+        "name": "blk.0.ssm_norm.weight",
+        "type": 0,
+        "columns": 128,
+        "rows": 1,
+        "offset": 2059722080,
+        "bytes": 512,
+        "path": "weight-11.bin",
+        "sha256": "d27dd7b8d5dae1f3cc9880dd0367825008d8d7873ea0030aa92175634ae08e17"
+      },
+      {
+        "slot": 12,
+        "role": 22,
+        "name": "blk.0.ssm_out.weight",
+        "type": 8,
+        "columns": 6144,
+        "rows": 2560,
+        "offset": 2042026976,
+        "bytes": 16711680,
+        "path": "weight-12.bin",
+        "sha256": "4956d0c522fded08de8a2255685d6983ea7b4af8b7e611712203d1294b23357f"
+      }
+    ],
+    "schema": "qwen38-c-composition-v1",
+    "scope": "checkpoint_slice",
+    "selected_slots": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "tokens": 9,
+    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "input_sha256": "0895079715f9e4abdf40ff572a3016cb9b435279f9684c09d438dbdc6bc57e5a",
+    "packed_bytes": 75654016,
+    "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+    "reference_sha256": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
+    "model_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "source_stat": {
+      "device": 16777231,
+      "inode": 30631842,
+      "bytes": 147207127040,
+      "mtime_ns": 1791785892435960350
+    },
+    "interpretation": "Same Q2 checkpoint weights; synthetic activations; no BF16 quality or complete model claim."
+  },
+  "build/qwen38-f/slice-0/manifest.json": {
+    "schema": 1,
+    "complete": true,
+    "layer": 0,
+    "config": [
+      2560,
+      512,
+      10,
+      640,
+      640,
+      768,
+      1
+    ],
+    "checkpoint_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+    "checksum_origin": "previously authenticated artifact; not rehashed",
+    "tensors": [
+      {
+        "name": "blk.0.ffn_gate_inp.weight",
+        "type": 0,
+        "offset": 2059886432,
+        "bytes": 5242880,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 512,
+        "experts": 1,
+        "expert_bytes": 5242880,
+        "segments": [
+          {
+            "file": "w0-e0.bin",
+            "sha256": "c367d894cf8ce1f3681d71f4b6fbb4c419cbae8c41fb2593232b40bd49bd7455",
+            "bytes": 5242880,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2059886432
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_gate_exps.weight",
+        "type": 16,
+        "offset": 2065129312,
+        "bytes": 216268800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 512,
+        "expert_bytes": 422400,
+        "segments": [
+          {
+            "file": "w1-e0.bin",
+            "sha256": "2060d4367f35991af58d1b3843d62ace0216c31090e170ad61fed1fafacb97b9",
+            "bytes": 422400,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2065129312
+          },
+          {
+            "file": "w1-e27.bin",
+            "sha256": "f4e0b526bcf6321206835a257697185079271fa9f6be7b91e2e38c08a113a4bf",
+            "bytes": 422400,
+            "expert": 27,
+            "offset_in_tensor": 11404800,
+            "file_offset": 2076534112
+          },
+          {
+            "file": "w1-e37.bin",
+            "sha256": "73d1707abef3d6142378efde1fb980651cf892599258d6f02c077cafe18d199f",
+            "bytes": 422400,
+            "expert": 37,
+            "offset_in_tensor": 15628800,
+            "file_offset": 2080758112
+          },
+          {
+            "file": "w1-e93.bin",
+            "sha256": "cfe5bdacadf30ed54c244a1637dfdc5cffac1f0fbc92c823e1db48d0055cf27e",
+            "bytes": 422400,
+            "expert": 93,
+            "offset_in_tensor": 39283200,
+            "file_offset": 2104412512
+          },
+          {
+            "file": "w1-e134.bin",
+            "sha256": "ee1ff228a1f23ab900a9d5f92f33a30dd24268707728838b7253d2fe1ab4a905",
+            "bytes": 422400,
+            "expert": 134,
+            "offset_in_tensor": 56601600,
+            "file_offset": 2121730912
+          },
+          {
+            "file": "w1-e307.bin",
+            "sha256": "4a983a4be1759d578ce418ef5dd87cc6319896a1a9a4c3bc3f95183ba17c5b3c",
+            "bytes": 422400,
+            "expert": 307,
+            "offset_in_tensor": 129676800,
+            "file_offset": 2194806112
+          },
+          {
+            "file": "w1-e328.bin",
+            "sha256": "6bf952e2edc07edf7a02fbcc09fdf6880bac3a338b0fc4c7c839c0ebde650403",
+            "bytes": 422400,
+            "expert": 328,
+            "offset_in_tensor": 138547200,
+            "file_offset": 2203676512
+          },
+          {
+            "file": "w1-e346.bin",
+            "sha256": "45e4dbdb748220b7a4cab1de696d7e148c147c47b970ce8dd57d72fac92fe262",
+            "bytes": 422400,
+            "expert": 346,
+            "offset_in_tensor": 146150400,
+            "file_offset": 2211279712
+          },
+          {
+            "file": "w1-e481.bin",
+            "sha256": "49fb0b1200c4da5b32c1cfae3e6515574f1827d1e711aa0d6d5008836ab34344",
+            "bytes": 422400,
+            "expert": 481,
+            "offset_in_tensor": 203174400,
+            "file_offset": 2268303712
+          },
+          {
+            "file": "w1-e485.bin",
+            "sha256": "73fba619d12c7f580e33dd5fff6531d52aa291664aaae1485deb15c7c670a3ca",
+            "bytes": 422400,
+            "expert": 485,
+            "offset_in_tensor": 204864000,
+            "file_offset": 2269993312
+          },
+          {
+            "file": "w1-e500.bin",
+            "sha256": "e9001c16f96365f779ff2df49647ab5b2eee534c2753e3a03ad19ccdf2b43a3e",
+            "bytes": 422400,
+            "expert": 500,
+            "offset_in_tensor": 211200000,
+            "file_offset": 2276329312
+          },
+          {
+            "file": "w1-e511.bin",
+            "sha256": "eec94d0e8c86cbb5e4f30c8b7d11ec84133ef1413e664010ced37a45157e7e4e",
+            "bytes": 422400,
+            "expert": 511,
+            "offset_in_tensor": 215846400,
+            "file_offset": 2280975712
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_up_exps.weight",
+        "type": 16,
+        "offset": 2281398112,
+        "bytes": 216268800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 512,
+        "expert_bytes": 422400,
+        "segments": [
+          {
+            "file": "w2-e0.bin",
+            "sha256": "8e1df7a081fda3eaac155f736a984f4f41812abe135aefff9c5cd29f0e836942",
+            "bytes": 422400,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2281398112
+          },
+          {
+            "file": "w2-e27.bin",
+            "sha256": "9d615dab33f85525ee40a2a88a920ddaa3703c13cd47fcc01ce75a9a322f35f7",
+            "bytes": 422400,
+            "expert": 27,
+            "offset_in_tensor": 11404800,
+            "file_offset": 2292802912
+          },
+          {
+            "file": "w2-e37.bin",
+            "sha256": "4599878756388c0d05dcac619c3439378e240671dbce07daf5b7b3f1d29da36d",
+            "bytes": 422400,
+            "expert": 37,
+            "offset_in_tensor": 15628800,
+            "file_offset": 2297026912
+          },
+          {
+            "file": "w2-e93.bin",
+            "sha256": "f2a408c278d7af0dfeac57f20838cd5d9b48ace8c6c21e281993e453fb5963ff",
+            "bytes": 422400,
+            "expert": 93,
+            "offset_in_tensor": 39283200,
+            "file_offset": 2320681312
+          },
+          {
+            "file": "w2-e134.bin",
+            "sha256": "d8d82d00ba3f01590c09ae206c0ab9595ad8108881dc39b3aa1ad5684fed7d6e",
+            "bytes": 422400,
+            "expert": 134,
+            "offset_in_tensor": 56601600,
+            "file_offset": 2337999712
+          },
+          {
+            "file": "w2-e307.bin",
+            "sha256": "165f7cdc708155ea6a1e4bc00934689eeb0989a6fd13298437771c339c35edf0",
+            "bytes": 422400,
+            "expert": 307,
+            "offset_in_tensor": 129676800,
+            "file_offset": 2411074912
+          },
+          {
+            "file": "w2-e328.bin",
+            "sha256": "9106a7e586f8d32e9ed1552b99ae276e36b72db0f1a77d415b19bebd552bd6d5",
+            "bytes": 422400,
+            "expert": 328,
+            "offset_in_tensor": 138547200,
+            "file_offset": 2419945312
+          },
+          {
+            "file": "w2-e346.bin",
+            "sha256": "a9a60c288a280ba18ad8d328092b635e82487d1999c00b31c71ac92bd6e43101",
+            "bytes": 422400,
+            "expert": 346,
+            "offset_in_tensor": 146150400,
+            "file_offset": 2427548512
+          },
+          {
+            "file": "w2-e481.bin",
+            "sha256": "3a2ef14848c10ad45dcbff0b14b9acfdd4e7cc0929bd00f32b8bee283b8fe40c",
+            "bytes": 422400,
+            "expert": 481,
+            "offset_in_tensor": 203174400,
+            "file_offset": 2484572512
+          },
+          {
+            "file": "w2-e485.bin",
+            "sha256": "01afecf492837547dc035bcbf651b5181bb7a7f1b33e7a5d2294c1e22d4df705",
+            "bytes": 422400,
+            "expert": 485,
+            "offset_in_tensor": 204864000,
+            "file_offset": 2486262112
+          },
+          {
+            "file": "w2-e500.bin",
+            "sha256": "bae700a6043a4722449de8e59d9684e9bd761996797383c3639328a0d55c28b2",
+            "bytes": 422400,
+            "expert": 500,
+            "offset_in_tensor": 211200000,
+            "file_offset": 2492598112
+          },
+          {
+            "file": "w2-e511.bin",
+            "sha256": "4f3e33d75906b3d324e0c0b459563e427c85f13ff0c30dbf9b9f6be51efacf8e",
+            "bytes": 422400,
+            "expert": 511,
+            "offset_in_tensor": 215846400,
+            "file_offset": 2497244512
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_down_exps.weight",
+        "type": 10,
+        "offset": 2497666912,
+        "bytes": 330301440,
+        "physical": 768,
+        "logical": 640,
+        "rows": 2560,
+        "experts": 512,
+        "expert_bytes": 645120,
+        "segments": [
+          {
+            "file": "w3-e0.bin",
+            "sha256": "75eac2ef4d716f4ee41bd87fb23197e9680d0575e71fa12e3c1af6c3141d77b2",
+            "bytes": 645120,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2497666912
+          },
+          {
+            "file": "w3-e27.bin",
+            "sha256": "fec9ef9e549ad505008054329d35b35cb7091960c407abe16515f82cf5ef1490",
+            "bytes": 645120,
+            "expert": 27,
+            "offset_in_tensor": 17418240,
+            "file_offset": 2515085152
+          },
+          {
+            "file": "w3-e37.bin",
+            "sha256": "c4eaf3cc9bd82bfa97fbc044300fb0f24a98e1fb019d56f8858624da67669338",
+            "bytes": 645120,
+            "expert": 37,
+            "offset_in_tensor": 23869440,
+            "file_offset": 2521536352
+          },
+          {
+            "file": "w3-e93.bin",
+            "sha256": "8b5155bc2404c3243147dfb64b18f469cddfa43a55de92322b3e9e4a54f7ed98",
+            "bytes": 645120,
+            "expert": 93,
+            "offset_in_tensor": 59996160,
+            "file_offset": 2557663072
+          },
+          {
+            "file": "w3-e134.bin",
+            "sha256": "7f00e354f68634510f7ba5e102826d1fc7eae41b2aa412d7b070058de4abe442",
+            "bytes": 645120,
+            "expert": 134,
+            "offset_in_tensor": 86446080,
+            "file_offset": 2584112992
+          },
+          {
+            "file": "w3-e307.bin",
+            "sha256": "ce451fc1d2c873bc10c8b15b001ee015446049c4747e73b9d680dcdfa6cfad71",
+            "bytes": 645120,
+            "expert": 307,
+            "offset_in_tensor": 198051840,
+            "file_offset": 2695718752
+          },
+          {
+            "file": "w3-e328.bin",
+            "sha256": "2d79eae4a9a8555ea1cd2d7700d0e3728414d0da9ab4597f25d9473c1eba6db0",
+            "bytes": 645120,
+            "expert": 328,
+            "offset_in_tensor": 211599360,
+            "file_offset": 2709266272
+          },
+          {
+            "file": "w3-e346.bin",
+            "sha256": "506d5b36ac86a8c47e5d644af4e03949fd2d580570270bfe9ac200e966cafa70",
+            "bytes": 645120,
+            "expert": 346,
+            "offset_in_tensor": 223211520,
+            "file_offset": 2720878432
+          },
+          {
+            "file": "w3-e481.bin",
+            "sha256": "bcbd77b676be46bea1ffa4a734ded53990820e76027a7d7b865e1b0b6749479b",
+            "bytes": 645120,
+            "expert": 481,
+            "offset_in_tensor": 310302720,
+            "file_offset": 2807969632
+          },
+          {
+            "file": "w3-e485.bin",
+            "sha256": "8f0d04ed2507b9bc2f3106bdd19d32e170d672dc1fe8d54dfd831e96e85c1fe7",
+            "bytes": 645120,
+            "expert": 485,
+            "offset_in_tensor": 312883200,
+            "file_offset": 2810550112
+          },
+          {
+            "file": "w3-e500.bin",
+            "sha256": "377cb782df787420ceb6abf5bd68742ccd7edb21e6ff7a4ba7ff0532c7251df7",
+            "bytes": 645120,
+            "expert": 500,
+            "offset_in_tensor": 322560000,
+            "file_offset": 2820226912
+          },
+          {
+            "file": "w3-e511.bin",
+            "sha256": "4993282a5d4da609a7f3ba0e67282f394e9bf499d21ed82b184d8d804041bba0",
+            "bytes": 645120,
+            "expert": 511,
+            "offset_in_tensor": 329656320,
+            "file_offset": 2827323232
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_gate_shexp.weight",
+        "type": 8,
+        "offset": 2827968352,
+        "bytes": 1740800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w4-e0.bin",
+            "sha256": "1b44f0a2222556bd8750e10afd358842d4a0196d3caf48c11f0dc2c42e33f125",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2827968352
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_up_shexp.weight",
+        "type": 8,
+        "offset": 2829709152,
+        "bytes": 1740800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w5-e0.bin",
+            "sha256": "880dc8d2ce8a2328b04f5d327394ba27179f05b6b865fc66722483dcaf715e90",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2829709152
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_down_shexp.weight",
+        "type": 8,
+        "offset": 2831449952,
+        "bytes": 1740800,
+        "physical": 640,
+        "logical": 640,
+        "rows": 2560,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w6-e0.bin",
+            "sha256": "fbceb852995394a22008c15d36f6ae0adaad88e26bf5a892120e271edd14d296",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2831449952
+          }
+        ]
+      },
+      {
+        "name": "blk.0.ffn_gate_inp_shexp.weight",
+        "type": 0,
+        "offset": 2833190752,
+        "bytes": 10240,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 1,
+        "experts": 1,
+        "expert_bytes": 10240,
+        "segments": [
+          {
+            "file": "w7-e0.bin",
+            "sha256": "ba7149360e4a67d47eeaaf89846e7f6313568a91aa169b8e7bde36f2934d04ab",
+            "bytes": 10240,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 2833190752
+          }
+        ]
+      }
+    ],
+    "input_origin": "synthetic seeded FP32; not prompt activations",
+    "bytes_read": 28354560,
+    "input": {
+      "file": "input.f32",
+      "sha256": "e2ffde4cca0a5e6274cd8f698847233bf542bbd1e63c524edf47ea7762584aba",
+      "bytes": 10240
+    },
+    "selected": [
+      [
+        27,
+        93,
+        328,
+        134,
+        346,
+        481,
+        37,
+        307,
+        485,
+        500
+      ]
+    ],
+    "loaded_experts": [
+      0,
+      27,
+      37,
+      93,
+      134,
+      307,
+      328,
+      346,
+      481,
+      485,
+      500,
+      511
+    ],
+    "probe_only": [
+      0,
+      511
+    ],
+    "probabilities": {
+      "file": "probabilities.f32",
+      "sha256": "3dc201982edc676c9fa945884868e61866a3a202ec021a5e509d32fc0a700f48",
+      "bytes": 2048
+    },
+    "probability_margin_k": 1.3077398762106895e-05,
+    "file_size": 147207127040,
+    "upstream_revision": "812a950d7037ba93bb624b154030e9068afdce4d",
+    "upstream_hashes": {
+      "modeling_qwen4_exp.py": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+      "configuration_qwen4_exp.py": "ac0950ab34516d26fe4f6b28cffe0649d763449effe44e42b5913463806f7e0b",
+      "LICENSE": "77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049"
+    }
+  },
+  "build/qwen38-f/slice-47/manifest.json": {
+    "schema": 1,
+    "complete": true,
+    "layer": 47,
+    "config": [
+      2560,
+      512,
+      10,
+      640,
+      640,
+      768,
+      1
+    ],
+    "checkpoint_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+    "checksum_origin": "previously authenticated artifact; not rehashed",
+    "tensors": [
+      {
+        "name": "blk.47.ffn_gate_inp.weight",
+        "type": 0,
+        "offset": 42525209056,
+        "bytes": 5242880,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 512,
+        "experts": 1,
+        "expert_bytes": 5242880,
+        "segments": [
+          {
+            "file": "w0-e0.bin",
+            "sha256": "418104d20e8c36a0ad9f0ac27f922b663e3bedc4c998fe4471547734e8e0d454",
+            "bytes": 5242880,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 42525209056
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_gate_exps.weight",
+        "type": 16,
+        "offset": 42530451936,
+        "bytes": 216268800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 512,
+        "expert_bytes": 422400,
+        "segments": [
+          {
+            "file": "w1-e0.bin",
+            "sha256": "b4eaf2503e5394f254a34195de6e28c0e9081378a9dd9be2dc5da9998d15ca23",
+            "bytes": 422400,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 42530451936
+          },
+          {
+            "file": "w1-e48.bin",
+            "sha256": "14cfc136c2d6a6d3b7c528201d74c5aba25b4d3f571b42023a83f36d065ad778",
+            "bytes": 422400,
+            "expert": 48,
+            "offset_in_tensor": 20275200,
+            "file_offset": 42550727136
+          },
+          {
+            "file": "w1-e52.bin",
+            "sha256": "0cfb9590d58e0d3911941f8c93c5b74b1f468178edbdcae42113e19ad3086c47",
+            "bytes": 422400,
+            "expert": 52,
+            "offset_in_tensor": 21964800,
+            "file_offset": 42552416736
+          },
+          {
+            "file": "w1-e136.bin",
+            "sha256": "e413faa1ace42b6394b759cdc5ca5c92cfb8b20431da41ed356bcd2b24749e69",
+            "bytes": 422400,
+            "expert": 136,
+            "offset_in_tensor": 57446400,
+            "file_offset": 42587898336
+          },
+          {
+            "file": "w1-e150.bin",
+            "sha256": "b57567f17b04a11cd2b4d860558a7b462570399a66bae451a552a304e7cf1fc1",
+            "bytes": 422400,
+            "expert": 150,
+            "offset_in_tensor": 63360000,
+            "file_offset": 42593811936
+          },
+          {
+            "file": "w1-e171.bin",
+            "sha256": "ad152efe44b042a5b66a7c90539a740f90fcab8fe2bed90e21a59bf418085218",
+            "bytes": 422400,
+            "expert": 171,
+            "offset_in_tensor": 72230400,
+            "file_offset": 42602682336
+          },
+          {
+            "file": "w1-e219.bin",
+            "sha256": "5521813021c5a5425ef391dbdb532575afe5ae4b62458c7281f7f7f8bbb0900c",
+            "bytes": 422400,
+            "expert": 219,
+            "offset_in_tensor": 92505600,
+            "file_offset": 42622957536
+          },
+          {
+            "file": "w1-e310.bin",
+            "sha256": "250b5960e7bf14ddc5c6a556f44383e5cd42e356c998667ad371bb2f271d9a70",
+            "bytes": 422400,
+            "expert": 310,
+            "offset_in_tensor": 130944000,
+            "file_offset": 42661395936
+          },
+          {
+            "file": "w1-e365.bin",
+            "sha256": "bfa845f6139517b4fd87150f84fd5caa4fd1bce1c1c9e3852221107fbe99250c",
+            "bytes": 422400,
+            "expert": 365,
+            "offset_in_tensor": 154176000,
+            "file_offset": 42684627936
+          },
+          {
+            "file": "w1-e376.bin",
+            "sha256": "5e7cb6c5127522000c24977489621443db051f9b5f66a5b2b7120465c1924ed2",
+            "bytes": 422400,
+            "expert": 376,
+            "offset_in_tensor": 158822400,
+            "file_offset": 42689274336
+          },
+          {
+            "file": "w1-e488.bin",
+            "sha256": "836631f1b76e2d6aeaecb7e607c0546cfb3c8ee9aad8ab4512fe3f5d9ae101a8",
+            "bytes": 422400,
+            "expert": 488,
+            "offset_in_tensor": 206131200,
+            "file_offset": 42736583136
+          },
+          {
+            "file": "w1-e511.bin",
+            "sha256": "e7f238d237aec8f20e9cd9c6f02499b3b5b745e8a6c855dea3200747b29665f3",
+            "bytes": 422400,
+            "expert": 511,
+            "offset_in_tensor": 215846400,
+            "file_offset": 42746298336
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_up_exps.weight",
+        "type": 16,
+        "offset": 42746720736,
+        "bytes": 216268800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 512,
+        "expert_bytes": 422400,
+        "segments": [
+          {
+            "file": "w2-e0.bin",
+            "sha256": "f4328db3d236674a00d456a7aba4a04d9e8ea36503757ef7d1b58a81aa745e06",
+            "bytes": 422400,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 42746720736
+          },
+          {
+            "file": "w2-e48.bin",
+            "sha256": "1864c75ea94f29626159c0484fdaaca42fceeb9c1e284512ab78dc0f30ece87e",
+            "bytes": 422400,
+            "expert": 48,
+            "offset_in_tensor": 20275200,
+            "file_offset": 42766995936
+          },
+          {
+            "file": "w2-e52.bin",
+            "sha256": "743fa01c3ab3a52f4fdba48944145ae696ff35c6dd3c2a22eda0989ffc255e3f",
+            "bytes": 422400,
+            "expert": 52,
+            "offset_in_tensor": 21964800,
+            "file_offset": 42768685536
+          },
+          {
+            "file": "w2-e136.bin",
+            "sha256": "f26468568c5ec722b9c630b58724815104c5b443d1a879f6c7738d2f067cc8e9",
+            "bytes": 422400,
+            "expert": 136,
+            "offset_in_tensor": 57446400,
+            "file_offset": 42804167136
+          },
+          {
+            "file": "w2-e150.bin",
+            "sha256": "83ad73446bda88462a1293d40c5bbdd4c934b6b9516abf00fcc21f500cc18c78",
+            "bytes": 422400,
+            "expert": 150,
+            "offset_in_tensor": 63360000,
+            "file_offset": 42810080736
+          },
+          {
+            "file": "w2-e171.bin",
+            "sha256": "f8d65cd5ec8f4ac0f59cfe03970bb748f4fa8c70526f41f1bbd8f9e9829c18a6",
+            "bytes": 422400,
+            "expert": 171,
+            "offset_in_tensor": 72230400,
+            "file_offset": 42818951136
+          },
+          {
+            "file": "w2-e219.bin",
+            "sha256": "0600291fd9a79a996e8c55e769a1cce09b57edc447ed98d9a615b5c481886549",
+            "bytes": 422400,
+            "expert": 219,
+            "offset_in_tensor": 92505600,
+            "file_offset": 42839226336
+          },
+          {
+            "file": "w2-e310.bin",
+            "sha256": "d51a1e499c38352eb782b401e17d2c4d876e7f191e69884ddb2b5edd33611cc8",
+            "bytes": 422400,
+            "expert": 310,
+            "offset_in_tensor": 130944000,
+            "file_offset": 42877664736
+          },
+          {
+            "file": "w2-e365.bin",
+            "sha256": "4a0df798c12ce4153ebb54795716b35c79e646b8db4cbfdf648bd2073f88a0ee",
+            "bytes": 422400,
+            "expert": 365,
+            "offset_in_tensor": 154176000,
+            "file_offset": 42900896736
+          },
+          {
+            "file": "w2-e376.bin",
+            "sha256": "c4e6e47f28b4e71e3b1b292bfe71d3a0682a424ec3f2a860c5b08db0703cdf7f",
+            "bytes": 422400,
+            "expert": 376,
+            "offset_in_tensor": 158822400,
+            "file_offset": 42905543136
+          },
+          {
+            "file": "w2-e488.bin",
+            "sha256": "1e08c749ded19969b429b15ca533d16d95814d7f51f9dee53c6754dd11f481a9",
+            "bytes": 422400,
+            "expert": 488,
+            "offset_in_tensor": 206131200,
+            "file_offset": 42952851936
+          },
+          {
+            "file": "w2-e511.bin",
+            "sha256": "71b95e2385751abc54722d7662e528a3e79eeb4a6c8df394dd56ef75f7e09c4a",
+            "bytes": 422400,
+            "expert": 511,
+            "offset_in_tensor": 215846400,
+            "file_offset": 42962567136
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_down_exps.weight",
+        "type": 10,
+        "offset": 42962989536,
+        "bytes": 330301440,
+        "physical": 768,
+        "logical": 640,
+        "rows": 2560,
+        "experts": 512,
+        "expert_bytes": 645120,
+        "segments": [
+          {
+            "file": "w3-e0.bin",
+            "sha256": "692263032201caeb651408eeaf0719d1eb8e465211c35634e21a9f6c1c9fc9a3",
+            "bytes": 645120,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 42962989536
+          },
+          {
+            "file": "w3-e48.bin",
+            "sha256": "7ee1d20aa97fa345d4e3d9bd7cde322e2b3b1a832ff15d98b6379e79cd6599b2",
+            "bytes": 645120,
+            "expert": 48,
+            "offset_in_tensor": 30965760,
+            "file_offset": 42993955296
+          },
+          {
+            "file": "w3-e52.bin",
+            "sha256": "2983a737fbb72ea57099547f2581a36226f0d8e0023a59af9eb73edb2a917ea9",
+            "bytes": 645120,
+            "expert": 52,
+            "offset_in_tensor": 33546240,
+            "file_offset": 42996535776
+          },
+          {
+            "file": "w3-e136.bin",
+            "sha256": "8ff54087f99598e4aa5f20ca8210bf8028f5485f084846afb68a4970f74d1078",
+            "bytes": 645120,
+            "expert": 136,
+            "offset_in_tensor": 87736320,
+            "file_offset": 43050725856
+          },
+          {
+            "file": "w3-e150.bin",
+            "sha256": "5c56daebf59c31d71bc74762915e09653c5143ad913a7b50bf2fe3e365ddccbd",
+            "bytes": 645120,
+            "expert": 150,
+            "offset_in_tensor": 96768000,
+            "file_offset": 43059757536
+          },
+          {
+            "file": "w3-e171.bin",
+            "sha256": "09557170403d9f91ff008fd073bb608f80346f4b3a01975e1566fb34c4c99a13",
+            "bytes": 645120,
+            "expert": 171,
+            "offset_in_tensor": 110315520,
+            "file_offset": 43073305056
+          },
+          {
+            "file": "w3-e219.bin",
+            "sha256": "79d54a460c1a511f7c5a2939fbba98921b3a6df9a842d1668b882b9364ffea6c",
+            "bytes": 645120,
+            "expert": 219,
+            "offset_in_tensor": 141281280,
+            "file_offset": 43104270816
+          },
+          {
+            "file": "w3-e310.bin",
+            "sha256": "d6cadad261f78893c55f4fb058f65d7ed859b553673b31b9dc9ad86349a5ac15",
+            "bytes": 645120,
+            "expert": 310,
+            "offset_in_tensor": 199987200,
+            "file_offset": 43162976736
+          },
+          {
+            "file": "w3-e365.bin",
+            "sha256": "e9cd140e2ad5d2e705c767782ead5f791a111c19f61191033959b8a20fca2cde",
+            "bytes": 645120,
+            "expert": 365,
+            "offset_in_tensor": 235468800,
+            "file_offset": 43198458336
+          },
+          {
+            "file": "w3-e376.bin",
+            "sha256": "f1747fde4a09acc1ef57f1dada602801a923fe7e569c266d2c337c68281e6411",
+            "bytes": 645120,
+            "expert": 376,
+            "offset_in_tensor": 242565120,
+            "file_offset": 43205554656
+          },
+          {
+            "file": "w3-e488.bin",
+            "sha256": "d05317f704eb8e753c1b71f7c88e779c7c74722829c07cea2879f6f4affd7e25",
+            "bytes": 645120,
+            "expert": 488,
+            "offset_in_tensor": 314818560,
+            "file_offset": 43277808096
+          },
+          {
+            "file": "w3-e511.bin",
+            "sha256": "01562bc8d280187b8cfb49878bcc96f918544afb9afbdb8f66b068ac989696fa",
+            "bytes": 645120,
+            "expert": 511,
+            "offset_in_tensor": 329656320,
+            "file_offset": 43292645856
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_gate_shexp.weight",
+        "type": 8,
+        "offset": 43293290976,
+        "bytes": 1740800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w4-e0.bin",
+            "sha256": "dea1684e973fba2e45043604996d39b634dc889302873f01a2639b66f52ea73f",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 43293290976
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_up_shexp.weight",
+        "type": 8,
+        "offset": 43295031776,
+        "bytes": 1740800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w5-e0.bin",
+            "sha256": "c13a9fdc370dfeda5e2259c6ac373f9e0d4ecbe532be1dc132595734203e4223",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 43295031776
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_down_shexp.weight",
+        "type": 8,
+        "offset": 43296772576,
+        "bytes": 1740800,
+        "physical": 640,
+        "logical": 640,
+        "rows": 2560,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w6-e0.bin",
+            "sha256": "6195954c077e243a2205cabcd00cef420dbcdab2f684ed0c6d6f04156fc71656",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 43296772576
+          }
+        ]
+      },
+      {
+        "name": "blk.47.ffn_gate_inp_shexp.weight",
+        "type": 0,
+        "offset": 43298513376,
+        "bytes": 10240,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 1,
+        "experts": 1,
+        "expert_bytes": 10240,
+        "segments": [
+          {
+            "file": "w7-e0.bin",
+            "sha256": "59159ff58823cccd76fc9a148d9e6248e163dac5be09d38f64be4d2b832602eb",
+            "bytes": 10240,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 43298513376
+          }
+        ]
+      }
+    ],
+    "input_origin": "synthetic seeded FP32; not prompt activations",
+    "bytes_read": 28354560,
+    "input": {
+      "file": "input.f32",
+      "sha256": "105590c87043172103ccb3bcc00d0f3399c04f1a7b7106c8cfddb8f505ceadf6",
+      "bytes": 10240
+    },
+    "selected": [
+      [
+        488,
+        52,
+        310,
+        171,
+        376,
+        365,
+        136,
+        48,
+        219,
+        150
+      ]
+    ],
+    "loaded_experts": [
+      0,
+      48,
+      52,
+      136,
+      150,
+      171,
+      219,
+      310,
+      365,
+      376,
+      488,
+      511
+    ],
+    "probe_only": [
+      0,
+      511
+    ],
+    "probabilities": {
+      "file": "probabilities.f32",
+      "sha256": "8e0b04ac3dd373b732164e0fafad773eabb80a000cbdf1095f00b3132981050a",
+      "bytes": 2048
+    },
+    "probability_margin_k": 8.598901331424713e-06,
+    "file_size": 147207127040,
+    "upstream_revision": "812a950d7037ba93bb624b154030e9068afdce4d",
+    "upstream_hashes": {
+      "modeling_qwen4_exp.py": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+      "configuration_qwen4_exp.py": "ac0950ab34516d26fe4f6b28cffe0649d763449effe44e42b5913463806f7e0b",
+      "LICENSE": "77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049"
+    }
+  },
+  "build/qwen38-f/slice-3/manifest.json": {
+    "schema": 1,
+    "complete": true,
+    "layer": 3,
+    "config": [
+      2560,
+      512,
+      10,
+      640,
+      640,
+      768,
+      1
+    ],
+    "checkpoint_revision": "d600fe1a43d2e1cdcadb85144ce3142f66f9eefe",
+    "checkpoint_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
+    "checksum_origin": "previously authenticated artifact; not rehashed",
+    "tensors": [
+      {
+        "name": "blk.3.ffn_gate_inp.weight",
+        "type": 0,
+        "offset": 4673825376,
+        "bytes": 5242880,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 512,
+        "experts": 1,
+        "expert_bytes": 5242880,
+        "segments": [
+          {
+            "file": "w0-e0.bin",
+            "sha256": "880c73a68a24fa98a5628552e8c3dd558ab21b58635ae24c48cfde7be11ae0cb",
+            "bytes": 5242880,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 4673825376
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_gate_exps.weight",
+        "type": 16,
+        "offset": 4679068256,
+        "bytes": 216268800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 512,
+        "expert_bytes": 422400,
+        "segments": [
+          {
+            "file": "w1-e0.bin",
+            "sha256": "5340b307c13592080e3ae84cccace809301d75e4a0586bd005cc8775eaf88b9e",
+            "bytes": 422400,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 4679068256
+          },
+          {
+            "file": "w1-e16.bin",
+            "sha256": "c62afb12eea82f7dfdc79251e624b2ac8c706319ba33e6feb42f93d92a2e2d10",
+            "bytes": 422400,
+            "expert": 16,
+            "offset_in_tensor": 6758400,
+            "file_offset": 4685826656
+          },
+          {
+            "file": "w1-e162.bin",
+            "sha256": "553e37916e14f40cbb39038ce66236c93e2da073d5da76143179ebfa649f320b",
+            "bytes": 422400,
+            "expert": 162,
+            "offset_in_tensor": 68428800,
+            "file_offset": 4747497056
+          },
+          {
+            "file": "w1-e184.bin",
+            "sha256": "e858f7739c49a565fc375b5064966148eb3718e92f2ac9dcd4b7e007ec766dff",
+            "bytes": 422400,
+            "expert": 184,
+            "offset_in_tensor": 77721600,
+            "file_offset": 4756789856
+          },
+          {
+            "file": "w1-e230.bin",
+            "sha256": "7ca9a6ee7b163437d97d6e6fa51034e62afda449f283c7176072af36d8baa8cf",
+            "bytes": 422400,
+            "expert": 230,
+            "offset_in_tensor": 97152000,
+            "file_offset": 4776220256
+          },
+          {
+            "file": "w1-e237.bin",
+            "sha256": "2b993959ff1e9e3d36fd8231195f348345f58c51d8a8c853a2cd8437759b4eae",
+            "bytes": 422400,
+            "expert": 237,
+            "offset_in_tensor": 100108800,
+            "file_offset": 4779177056
+          },
+          {
+            "file": "w1-e364.bin",
+            "sha256": "610a39a37410bddf6c158fa45ad366bacf12d5bf131d3c4deba596923f7d02ab",
+            "bytes": 422400,
+            "expert": 364,
+            "offset_in_tensor": 153753600,
+            "file_offset": 4832821856
+          },
+          {
+            "file": "w1-e432.bin",
+            "sha256": "20e1deb02728336fcf5b32ba833cb559b374800a715e8991de9a8a7a09f2f6ff",
+            "bytes": 422400,
+            "expert": 432,
+            "offset_in_tensor": 182476800,
+            "file_offset": 4861545056
+          },
+          {
+            "file": "w1-e456.bin",
+            "sha256": "1d484e9a67f3939b4ce304f556764502e3f680ce438d0a134cc72960bdb5256e",
+            "bytes": 422400,
+            "expert": 456,
+            "offset_in_tensor": 192614400,
+            "file_offset": 4871682656
+          },
+          {
+            "file": "w1-e458.bin",
+            "sha256": "7289f60c510cbe85a406a63b81c2c482cf2f371dcef54571b0a9c14517a92dfc",
+            "bytes": 422400,
+            "expert": 458,
+            "offset_in_tensor": 193459200,
+            "file_offset": 4872527456
+          },
+          {
+            "file": "w1-e483.bin",
+            "sha256": "67ff8e4af18f8d877f55c88058ef55387fda06bba74c0d450512079ee1ea5689",
+            "bytes": 422400,
+            "expert": 483,
+            "offset_in_tensor": 204019200,
+            "file_offset": 4883087456
+          },
+          {
+            "file": "w1-e511.bin",
+            "sha256": "8c148e57a93aa83038ebc7d988f802e0a5685f245d2db6fb2d4b2e5ccd4670a9",
+            "bytes": 422400,
+            "expert": 511,
+            "offset_in_tensor": 215846400,
+            "file_offset": 4894914656
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_up_exps.weight",
+        "type": 16,
+        "offset": 4895337056,
+        "bytes": 216268800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 512,
+        "expert_bytes": 422400,
+        "segments": [
+          {
+            "file": "w2-e0.bin",
+            "sha256": "99e3c3c2b0af5f33f5468e521b6c99d983c0c98228a018692a053b0b2e7792a1",
+            "bytes": 422400,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 4895337056
+          },
+          {
+            "file": "w2-e16.bin",
+            "sha256": "129c1f0d54f05a268ed06daa054bc18c4441f4280bf73e980fee31b0ffbbc838",
+            "bytes": 422400,
+            "expert": 16,
+            "offset_in_tensor": 6758400,
+            "file_offset": 4902095456
+          },
+          {
+            "file": "w2-e162.bin",
+            "sha256": "4b4eea92e0054ec71a01daec882073019b2a46c9b5655bc8c937a873e28524b3",
+            "bytes": 422400,
+            "expert": 162,
+            "offset_in_tensor": 68428800,
+            "file_offset": 4963765856
+          },
+          {
+            "file": "w2-e184.bin",
+            "sha256": "9de6912e49e0f70da48263e6b8f096b9d75ba4b69d8177e835dc23be5079541b",
+            "bytes": 422400,
+            "expert": 184,
+            "offset_in_tensor": 77721600,
+            "file_offset": 4973058656
+          },
+          {
+            "file": "w2-e230.bin",
+            "sha256": "ace8ed8eb6c657536f57c57ee71ec952da5ac92e6352a49bb78282029ffbba67",
+            "bytes": 422400,
+            "expert": 230,
+            "offset_in_tensor": 97152000,
+            "file_offset": 4992489056
+          },
+          {
+            "file": "w2-e237.bin",
+            "sha256": "5aeead154b24ccd32ba3d67fe2652bfb33f69b3b058a0cc844e77905677367f8",
+            "bytes": 422400,
+            "expert": 237,
+            "offset_in_tensor": 100108800,
+            "file_offset": 4995445856
+          },
+          {
+            "file": "w2-e364.bin",
+            "sha256": "2d88da6594e156e0ce4301f03beeb09a6f9f361a37897af5fc237bacd4d7b438",
+            "bytes": 422400,
+            "expert": 364,
+            "offset_in_tensor": 153753600,
+            "file_offset": 5049090656
+          },
+          {
+            "file": "w2-e432.bin",
+            "sha256": "b176f5853d67e5c0f448855639566507efbd40d2b93c389b25f871fa8aa83893",
+            "bytes": 422400,
+            "expert": 432,
+            "offset_in_tensor": 182476800,
+            "file_offset": 5077813856
+          },
+          {
+            "file": "w2-e456.bin",
+            "sha256": "1d408352b3da42ceea9ccd60930db86f87f2523fc790ad45173eedc9f9ee6dfa",
+            "bytes": 422400,
+            "expert": 456,
+            "offset_in_tensor": 192614400,
+            "file_offset": 5087951456
+          },
+          {
+            "file": "w2-e458.bin",
+            "sha256": "00c44ac724a5f9283a3bf455982fb167559243af3aefe07e5a587cde55d114f0",
+            "bytes": 422400,
+            "expert": 458,
+            "offset_in_tensor": 193459200,
+            "file_offset": 5088796256
+          },
+          {
+            "file": "w2-e483.bin",
+            "sha256": "9e8e64ba1dbb883f9b531ccb7bd12970d36f4ea153807bbe0771af0ad4dbf318",
+            "bytes": 422400,
+            "expert": 483,
+            "offset_in_tensor": 204019200,
+            "file_offset": 5099356256
+          },
+          {
+            "file": "w2-e511.bin",
+            "sha256": "0aa460f539c7894d712a06d0b380ef12137c911b79729426b8c15dd4642486df",
+            "bytes": 422400,
+            "expert": 511,
+            "offset_in_tensor": 215846400,
+            "file_offset": 5111183456
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_down_exps.weight",
+        "type": 10,
+        "offset": 5111605856,
+        "bytes": 330301440,
+        "physical": 768,
+        "logical": 640,
+        "rows": 2560,
+        "experts": 512,
+        "expert_bytes": 645120,
+        "segments": [
+          {
+            "file": "w3-e0.bin",
+            "sha256": "6eb70aaf379c236adc050eeb6b428bddc167049c5f9c1327f7b6e70c87a07ea5",
+            "bytes": 645120,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 5111605856
+          },
+          {
+            "file": "w3-e16.bin",
+            "sha256": "e92ac61c3afbe7f5dd2054e60898f4196a3b7ec4c04376e03992f7f31e7ed32b",
+            "bytes": 645120,
+            "expert": 16,
+            "offset_in_tensor": 10321920,
+            "file_offset": 5121927776
+          },
+          {
+            "file": "w3-e162.bin",
+            "sha256": "3d8a8c4a21c6609c7db98b6b63bf01b711053a13e03d5e20f589cc6f7629fecc",
+            "bytes": 645120,
+            "expert": 162,
+            "offset_in_tensor": 104509440,
+            "file_offset": 5216115296
+          },
+          {
+            "file": "w3-e184.bin",
+            "sha256": "93e3bfb2a2faa73fcf74e7b541503ac801c6c1b93e0fc24e11fc2c055b2584c8",
+            "bytes": 645120,
+            "expert": 184,
+            "offset_in_tensor": 118702080,
+            "file_offset": 5230307936
+          },
+          {
+            "file": "w3-e230.bin",
+            "sha256": "aeaefb2c7594610c1d560513bbe6b7bce990ec4706c3c6232d9936664524b082",
+            "bytes": 645120,
+            "expert": 230,
+            "offset_in_tensor": 148377600,
+            "file_offset": 5259983456
+          },
+          {
+            "file": "w3-e237.bin",
+            "sha256": "51110ee584b83c3b417f935f23a1941bed50b1aba4038cdad93125364058d23f",
+            "bytes": 645120,
+            "expert": 237,
+            "offset_in_tensor": 152893440,
+            "file_offset": 5264499296
+          },
+          {
+            "file": "w3-e364.bin",
+            "sha256": "4168ef5b56053ad7835abbf704d39519fc8a4e506699e2797a24e6eba849a05c",
+            "bytes": 645120,
+            "expert": 364,
+            "offset_in_tensor": 234823680,
+            "file_offset": 5346429536
+          },
+          {
+            "file": "w3-e432.bin",
+            "sha256": "614d0bc803122a025189e3a1849b64ace59402fbf2b83411e0a441f996ef7e4a",
+            "bytes": 645120,
+            "expert": 432,
+            "offset_in_tensor": 278691840,
+            "file_offset": 5390297696
+          },
+          {
+            "file": "w3-e456.bin",
+            "sha256": "4a915abfe32b36c1dfec01599a4f8c9c3e62901a9ab8c7f3a76c387f5afbe3dd",
+            "bytes": 645120,
+            "expert": 456,
+            "offset_in_tensor": 294174720,
+            "file_offset": 5405780576
+          },
+          {
+            "file": "w3-e458.bin",
+            "sha256": "b152f61ef35fd91f95fafd6b77b29e500eea90f57931d7ee38b3b1f13ff8f9a5",
+            "bytes": 645120,
+            "expert": 458,
+            "offset_in_tensor": 295464960,
+            "file_offset": 5407070816
+          },
+          {
+            "file": "w3-e483.bin",
+            "sha256": "5a00500f9132e9e55569c06ba6d61a9c95a4aa94074696ee7014e64eeca747ed",
+            "bytes": 645120,
+            "expert": 483,
+            "offset_in_tensor": 311592960,
+            "file_offset": 5423198816
+          },
+          {
+            "file": "w3-e511.bin",
+            "sha256": "e795d8cb2d10ec836042a81ecba79ea5f8f6a53aeb5d20391fcf647b3e784cc4",
+            "bytes": 645120,
+            "expert": 511,
+            "offset_in_tensor": 329656320,
+            "file_offset": 5441262176
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_gate_shexp.weight",
+        "type": 8,
+        "offset": 5441907296,
+        "bytes": 1740800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w4-e0.bin",
+            "sha256": "0c9450542d865a86200e4e2762c69083103b6030c21c2457b314385a2cb2a244",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 5441907296
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_up_shexp.weight",
+        "type": 8,
+        "offset": 5443648096,
+        "bytes": 1740800,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 640,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w5-e0.bin",
+            "sha256": "b33c3e1ea04a2b94d2390ed6d476872c663a05f7884129805a8d1e7b63b0465b",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 5443648096
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_down_shexp.weight",
+        "type": 8,
+        "offset": 5445388896,
+        "bytes": 1740800,
+        "physical": 640,
+        "logical": 640,
+        "rows": 2560,
+        "experts": 1,
+        "expert_bytes": 1740800,
+        "segments": [
+          {
+            "file": "w6-e0.bin",
+            "sha256": "d04d563b7c853c9d4c5b7bce00ff1de0f4796c2dd9a880a6e7b75a77d71a59ad",
+            "bytes": 1740800,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 5445388896
+          }
+        ]
+      },
+      {
+        "name": "blk.3.ffn_gate_inp_shexp.weight",
+        "type": 0,
+        "offset": 5447129696,
+        "bytes": 10240,
+        "physical": 2560,
+        "logical": 2560,
+        "rows": 1,
+        "experts": 1,
+        "expert_bytes": 10240,
+        "segments": [
+          {
+            "file": "w7-e0.bin",
+            "sha256": "f08977ab1ace5bcb930937da4f44d68ee6b7416d8e6cb889d5c5986818fb3c16",
+            "bytes": 10240,
+            "expert": 0,
+            "offset_in_tensor": 0,
+            "file_offset": 5447129696
+          }
+        ]
+      }
+    ],
+    "input_origin": "synthetic seeded FP32; not prompt activations",
+    "bytes_read": 28354560,
+    "input": {
+      "file": "input.f32",
+      "sha256": "e55d1dbc2894b3a174a0853b10045e44022f1b8cf0f2341370851203093d32ec",
+      "bytes": 10240
+    },
+    "selected": [
+      [
+        456,
+        16,
+        237,
+        432,
+        364,
+        184,
+        162,
+        483,
+        458,
+        230
+      ]
+    ],
+    "loaded_experts": [
+      0,
+      16,
+      162,
+      184,
+      230,
+      237,
+      364,
+      432,
+      456,
+      458,
+      483,
+      511
+    ],
+    "probe_only": [
+      0,
+      511
+    ],
+    "probabilities": {
+      "file": "probabilities.f32",
+      "sha256": "4361de93df5d4b387bf23ce4418f99e00a4990f9a2be1534ec9adbd2e0f06993",
+      "bytes": 2048
+    },
+    "probability_margin_k": 7.40797258913517e-06,
+    "file_size": 147207127040,
+    "upstream_revision": "812a950d7037ba93bb624b154030e9068afdce4d",
+    "upstream_hashes": {
+      "modeling_qwen4_exp.py": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+      "configuration_qwen4_exp.py": "ac0950ab34516d26fe4f6b28cffe0649d763449effe44e42b5913463806f7e0b",
+      "LICENSE": "77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "calls": 117,
+  "peak_metal_allocated_bytes": 1048576,
+  "max_error_vs_cpu": {
+    "attend": 1.7881393432617188e-07,
+    "pool": 0.0,
+    "scores": 0.0,
+    "rope": 2.384185791015625e-07
+  },
+  "slice_error": 4.869872800157516e-08,
+  "slice_fixture_sha256": "946fd83498acbce9097460743f0d9a8e56184e82847dbe9ca2120b9cf3d8108a",
+  "source_sha256": "f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa",
+  "metal_sha256": "15035f12ebba18503cfbd2528d2f2346ed9a812faa33dee9eb3872a69c6c4cc4",
+  "test_sha256": "eeb82cd690f4cb68c65e230b27888f1a6569e81467d8bf87a35d482da0bd65e4",
+  "scope": "Private Metal stages and hybrid CPU selection; no GPU session/lifecycle or BF16 loss"
+}

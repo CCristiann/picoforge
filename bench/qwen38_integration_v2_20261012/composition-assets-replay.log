@@ -1,0 +1,11 @@
+/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_prepare_compositions.py --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+Verified composition fixture: build/qwen38-c/composed-synthetic
+Verified composition fixture: build/qwen38-c/controls-0
+Verified composition fixture: build/qwen38-c/controls-1
+Verified composition fixture: build/qwen38-c/controls-46
+Verified composition fixture: build/qwen38-c/composed-real-0
+Verified composition fixture: build/qwen38-d/slice-01
+Verified composition fixture: build/qwen38-f/slice-0
+Verified composition fixture: build/qwen38-f/slice-3
+Verified composition fixture: build/qwen38-f/slice-47

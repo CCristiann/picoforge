@@ -1,0 +1,5 @@
+./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-mtp/test_mtp build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny 3 1 12 45 19 71 83 120 64 20 49
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+2026-10-13 22:14:25.044 test_mtp[18726:477350] Metal API Validation Enabled
+snapshot: exact state/logits, PLE replay, busy/foreign/stale/window/predictor/fault PASS
+{"tokens":9,"mtp_rows":8,"chunk":3,"replay":true,"graph_bytes":333872,"checkpoint_host_bytes":91656,"metal_bytes":5799936}
