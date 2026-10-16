@@ -54,7 +54,7 @@
     }
   ],
   "reproduce": {
-    "python": "/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python",
+    "python": "/path/to/picoforge/tools/venv/bin/python",
     "first_use": "PYTHON tools/oracle/qwen38_attention.py --fetch-source",
     "tests": "PYTHON tests/test_qwen38_attention.py -v",
     "fixture": "PYTHON tools/oracle/qwen38_attention.py --case CASE --output build/qwen38-attention/NEW_DIRECTORY",

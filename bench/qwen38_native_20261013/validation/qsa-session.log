@@ -1,6 +1,6 @@
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_attention.m src/qwen38_attention.c src/qwen38_attention_gpu.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_recurrent_gpu.m src/qwen38_packed_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-d/test_attention_gpu
-./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_attention.py --source build/qwen38-f/upstream/modeling_qwen4_exp.py --native build/qwen38-d/test_attention --metal build/qwen38-d/test_attention_gpu --metal-library "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib" --slice-fixture build/qwen38-d/slice-01 MetalAttentionTests -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_attention.py --source build/qwen38-f/upstream/modeling_qwen4_exp.py --native build/qwen38-d/test_attention --metal build/qwen38-d/test_attention_gpu --metal-library "/path/to/picoforge-native-next/picoforge.metallib" --slice-fixture build/qwen38-d/slice-01 MetalAttentionTests -v
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_attention_sdpa (__main__.MetalAttentionTests.test_attention_sdpa) ... ok
 test_c_norm_and_sigmoid_then_d_rope_one_command (__main__.MetalAttentionTests.test_c_norm_and_sigmoid_then_d_rope_one_command) ... ok
 test_device_selection_tail_sparse_boundary_and_32k (__main__.MetalAttentionTests.test_device_selection_tail_sparse_boundary_and_32k) ... ok
@@ -20,7 +20,7 @@ Ran 13 tests in 29.811s
 
 OK
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_session.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_stop_capacity_and_recovery (__main__.Session.test_stop_capacity_and_recovery) ... ok
 test_template_replay_and_reset (__main__.Session.test_template_replay_and_reset) ... ok
 

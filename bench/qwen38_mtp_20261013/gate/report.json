@@ -2,7 +2,7 @@
   "complete": true,
   "gate": 0.001,
   "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
-  "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
   "checkpoint_bytes": 147207127040,
   "checkpoint_sha256_recomputed": false,
   "revision": "888f47fa2ec4ba41a31390bce9e1a0d3f1b31ddb",
@@ -512,9 +512,9 @@
       "passed": true,
       "commands": [
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "/path/to/picoforge-native-next/picoforge",
           "--qwen38",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
           "--complete",
           "def add(a, b):\n    return",
           "--context",
@@ -524,14 +524,14 @@
           "--max-new",
           "6",
           "--token-ids",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/ids.json",
+          "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/ids.json",
           "--logits",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/ordinary.f32"
+          "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/ordinary.f32"
         ],
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/mtp_real",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding",
+          "/path/to/picoforge-native-next/build/qwen38-mtp/mtp_real",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding",
           "4",
           "0",
           "727",
@@ -552,8 +552,8 @@
       ],
       "oracle_environment": {
         "DS4_QWEN4_FT_TOKENS": "727,884,2784,11,292,1590,198,262,460,264,478,292,271,727",
-        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/reference.f32",
-        "DS4_QWEN4_MTP_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/reference-mtp.f32"
+        "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/reference.f32",
+        "DS4_QWEN4_MTP_OUT": "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding/reference-mtp.f32"
       },
       "artifacts": {
         "ids.json": "d7c6be0cc098c84674d44dc506f65dfe4679bfd3012e939684b5393893d267bc",
@@ -931,9 +931,9 @@
       "passed": true,
       "commands": [
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "/path/to/picoforge-native-next/picoforge",
           "--qwen38",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
           "--complete",
           "La capitale della Francia è",
           "--context",
@@ -943,14 +943,14 @@
           "--max-new",
           "6",
           "--token-ids",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ids.json",
+          "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ids.json",
           "--logits",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ordinary.f32"
+          "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ordinary.f32"
         ],
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/mtp_real",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano",
+          "/path/to/picoforge-native-next/build/qwen38-mtp/mtp_real",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano",
           "4",
           "0",
           "8482",
@@ -967,8 +967,8 @@
       ],
       "oracle_environment": {
         "DS4_QWEN4_FT_TOKENS": "8482,178048,14786,175548,11094,4931,26109,93595,22056,37509",
-        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/reference.f32",
-        "DS4_QWEN4_MTP_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/reference-mtp.f32"
+        "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/reference.f32",
+        "DS4_QWEN4_MTP_OUT": "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/reference-mtp.f32"
       },
       "artifacts": {
         "ids.json": "151ccd11bc89643a732d8023c7736b24fbfe49c5f1b239e18df336eb6576c263",

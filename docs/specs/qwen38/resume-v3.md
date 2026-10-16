@@ -7,7 +7,7 @@ duplicato. `resume.md` rimane lo storico del giro precedente.
 ## Regole comuni per ogni incarico
 
 ```text
-Repository /Users/cristiancirje/Desktop/Dev/picoforge.
+Repository /path/to/picoforge.
 MODALITA=ESEGUI, BASE_INTEGRATA_V2=<BASE_INTEGRATA_V2>.
 Leggi istruzioni applicabili, docs/qwen38-q2-session-prompt.md,
 docs/specs/qwen38/integration.md incluso §12, spec e consegna del componente,

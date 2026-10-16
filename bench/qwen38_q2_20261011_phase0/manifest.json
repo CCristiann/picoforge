@@ -9,12 +9,12 @@
     "docs/project-review-2026-10-11.md": "5bb7445297fe8e1c3b1957b0a98cba60bc99b9497f13cd53495e7e63bf1acf0f",
     "docs/80b-100b-model-comparison-2026-10-11.md": "5ab5820f45678ac94bc5af3c378a6496f63a85c5ef05bb5fdc6ff0a477780292",
     "docs/large-model-research-2026-10-11.md": "859fc20ce7fd3f23df4b74b6818bf01efe38a1d54da67de0fbc6670811b629e0",
-    "docs/qwen38-q2-session-prompt.md": "6aa039cde91cb9078e7b59251a44a8b90728b815e4f4b6494db75560e9c65816"
+    "docs/qwen38-q2-session-prompt.md": "38e970e542f862d983d6f2834dae7378e8c9fde3c329c560353a487150540d3e"
   },
   "dwarfstar": {
     "repository": "https://github.com/antirez/ds4",
     "revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
-    "directory": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+    "directory": "/path/to/ds4-qwen38-baseline",
     "upstream_main_at_inspection": "fc80bd695da76ee14bcb86820bf900a5cdfda806"
   },
   "checkpoint": {
@@ -24,7 +24,7 @@
     "size_bytes": 147207127040,
     "published_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
     "verified_sha256": "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9",
-    "path": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+    "path": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
   },
   "settings": {
     "context_tokens": 8192,

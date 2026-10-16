@@ -4,7 +4,7 @@ Stato: SPEC, 2026-10-12. Nessun componente implementato o test numerico
 eseguito in questa sessione. Base ispezionata:
 `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`; `BASE_CONCORDATA` ancora da
 fissare nel consolidamento. Branch `spec/qwen38-f`, worktree esterno
-`/Users/cristiancirje/Desktop/Dev/picoforge-spec-f`.
+`/path/to/picoforge-spec-f`.
 
 Le affermazioni marcate **verificato** derivano da letture di codice,
 configurazione e inventario; non sono misure di correttezza numerica.
@@ -427,7 +427,7 @@ coordinatore ne materializza build e header; non lanciarli per validare SPEC.
 L'ambiente è quello esistente, l'output appartiene al nuovo worktree:
 
 ```sh
-PF_MAIN=/Users/cristiancirje/Desktop/Dev/picoforge
+PF_MAIN=/path/to/picoforge
 PF_PY="$PF_MAIN/tools/venv/bin/python"
 "$PF_PY" tools/oracle/qwen38_moe.py --synthetic --out build/qwen38-f/oracle
 make build/test_qwen38_moe
@@ -756,7 +756,7 @@ Q38_F_NATIVE="$PWD/build/qwen38-f/test_moe_gpu" \
 sovrascrittura e restituisce nonzero per errori o skip. `Q38_F_ALLOCATIONS`
 aggiunge record di allocazione nel build; scegliere un nome nuovo per ogni run.
 CPU finale: suite estesa a28 test; `make test-qwen38-links
-PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python` passa
+PYTHON=/path/to/picoforge/tools/venv/bin/python` passa
 A→B→F, C→E e A→D/E. Nessuna esecuzione del modello completo o benchmark.
 
 **Proposte concrete al coordinatore, file condivisi non modificati:**

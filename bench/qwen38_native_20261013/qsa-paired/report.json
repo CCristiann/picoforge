@@ -14,97 +14,97 @@
   "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
   "commands": [
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/64-cooperative",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/64-cooperative",
       "64",
       "25",
       "cooperative"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/64-scalar",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/64-scalar",
       "64",
       "25",
       "scalar"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/256-cooperative",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/256-cooperative",
       "256",
       "25",
       "cooperative"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/256-scalar",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/256-scalar",
       "256",
       "25",
       "scalar"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/512-scalar",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/512-scalar",
       "512",
       "25",
       "scalar"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/512-cooperative",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/512-cooperative",
       "512",
       "25",
       "cooperative"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/1024-cooperative",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/1024-cooperative",
       "1024",
       "25",
       "cooperative"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/1024-scalar",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/1024-scalar",
       "1024",
       "25",
       "scalar"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/2048-cooperative",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/2048-cooperative",
       "2048",
       "25",
       "cooperative"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/2048-scalar",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/2048-scalar",
       "2048",
       "25",
       "scalar"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/8192-cooperative",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/8192-cooperative",
       "8192",
       "25",
       "cooperative"
     ],
     [
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-attention-bench",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge.metallib",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/8192-scalar",
+      "/path/to/picoforge-native-next/build/qwen38-attention-bench",
+      "/path/to/picoforge-native-next/picoforge.metallib",
+      "/path/to/picoforge-native-next/bench/qwen38_native_20261013/qsa-paired/8192-scalar",
       "8192",
       "25",
       "scalar"

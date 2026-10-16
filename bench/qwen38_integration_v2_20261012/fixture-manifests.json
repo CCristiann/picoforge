@@ -168,7 +168,7 @@
       11
     ],
     "tokens": 5,
-    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "input_sha256": "90d68c5258a6f3f8a3df683969f6a28350a4a981199402ed2e7cd7a648e0586f",
     "packed_bytes": 1188736,
     "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
@@ -351,7 +351,7 @@
       11
     ],
     "tokens": 5,
-    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "input_sha256": "90d68c5258a6f3f8a3df683969f6a28350a4a981199402ed2e7cd7a648e0586f",
     "packed_bytes": 1188736,
     "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
@@ -534,7 +534,7 @@
       11
     ],
     "tokens": 5,
-    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "input_sha256": "90d68c5258a6f3f8a3df683969f6a28350a4a981199402ed2e7cd7a648e0586f",
     "packed_bytes": 1188736,
     "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
@@ -735,7 +735,7 @@
       12
     ],
     "tokens": 65,
-    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-c/composed-synthetic/schema.gguf",
+    "checkpoint": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-c/composed-synthetic/schema.gguf",
     "input_sha256": "4e056bdbd3a1df3dcaccb3dafeeaa2a93a81bf5d7d9f5da0e62985cb6dc452ab",
     "packed_bytes": 113728,
     "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
@@ -936,7 +936,7 @@
       12
     ],
     "tokens": 9,
-    "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "input_sha256": "0895079715f9e4abdf40ff572a3016cb9b435279f9684c09d438dbdc6bc57e5a",
     "packed_bytes": 75654016,
     "reference_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",

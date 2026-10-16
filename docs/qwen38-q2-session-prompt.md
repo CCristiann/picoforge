@@ -1,6 +1,6 @@
 # Prompt per la nuova sessione: Qwen3.8-Flash-Next Q2
 
-Lavora nella repository `/Users/cristiancirje/Desktop/Dev/picoforge`.
+Lavora nella repository `/path/to/picoforge`.
 Leggi questo documento come il passaggio di consegne della sessione precedente.
 La ricerca è stata svolta l'11 ottobre 2026. Verifica lo stato attuale della
 repository e dell'ambiente prima di agire; non assumere che siano immutati.

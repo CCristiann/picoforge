@@ -4,7 +4,7 @@ Modalità **ESEGUI**, 2026-10-12. C0–C3 implementati e verificati; C5 verifica
 per stadio su fixture sintetiche. Risultati e limiti effettivi nel §11.
 `BASE_CONCORDATA`: `c674b23bd1377b2ce0acef2d06fac8b160809446`;
 [integration.md](integration.md) prevale sulle proposte storiche dei §1–10.
-Branch `impl/qwen38-c`, worktree `/Users/cristiancirje/Desktop/Dev/picoforge-c-impl`.
+Branch `impl/qwen38-c`, worktree `/path/to/picoforge-c-impl`.
 La SPEC originaria ispezionava `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`
 su `spec/qwen38-c`; quel worktree e quello oracle sono stati preservati.
 
@@ -51,7 +51,7 @@ Le vecchie roadmap Qwen3 non prevalgono sull'incarico Qwen3.8.
 | I | `bench/qwen38_q2_20261011_phase0/inventory.json`, SHA-256 `605d00ad17ae2fa66b10cf64d0dd0c3fac16122bb526dee10db064a0b8a67093`; inventario registrato, payload non verificato da questa sessione |
 | Q | [Configurazione originale](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/config.json), revisione `de4b8e4d43b917e7706784d8bb445c9af86a3540` |
 | H | [Transformers `modeling_qwen4_exp.py`](https://github.com/huggingface/transformers/blob/812a950d7037ba93bb624b154030e9068afdce4d/src/transformers/models/qwen4_exp/modeling_qwen4_exp.py), revisione `812a950d7037ba93bb624b154030e9068afdce4d`, SHA-256 del raw letto `f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa`; RMSNorm/Gated 143–187, conv/L2 203–250, delta chunk/recurrent 254–450, GDN 456–616, GatedResidual 994–1022, PLE 1174–1246 |
-| D0 | Checkout locale `/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline`, pulito a `fc80bd695da76ee14bcb86820bf900a5cdfda806`; confronto GitHub con `main` il 2026-10-12: `identical`, nessun commit successivo da esaminare |
+| D0 | Checkout locale `/path/to/ds4-qwen38-baseline`, pulito a `fc80bd695da76ee14bcb86820bf900a5cdfda806`; confronto GitHub con `main` il 2026-10-12: `identical`, nessun commit successivo da esaminare |
 | D1 | [DwarfStar `ds4.c`](https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/ds4.c): `qwen4_ref_rms/grouped_rms/l2norm` 68008–68026, `qwen4_ref_hc_mix/combine` 68085–68120, `qwen4_ref_ple` 68146–68202, `qwen4_ref_linear` 68204–68268, layer/output 68439–68483 |
 | D2 | [DwarfStar `metal/qwen4.metal`](https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/metal/qwen4.metal): HC 28–458, conv 460–646, prep/scan 648–763, gated norm 935–959, PLE 968–1100 |
 | D3 | [Conversione pack/GGUF](https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/gguf-tools/qwen4_pack_to_qwen4exp.py): `tiled_v`, `prod_ssm_a`, `prod_gdn_conv1d_f32`, `prod_qkv_vperm`; `qwen4_exp_convert.py` per precisioni e trasformazioni delegate al convertitore |
@@ -678,7 +678,7 @@ git diff --cached --check
 **non comandi già disponibili a questa base**. Dal futuro worktree C:
 
 ```sh
-PF_MAIN=/Users/cristiancirje/Desktop/Dev/picoforge
+PF_MAIN=/path/to/picoforge
 PF_PY="$PF_MAIN/tools/venv/bin/python"
 mkdir -p build/qwen38-c
 "$PF_PY" -B tools/oracle/qwen38_recurrent.py \
@@ -913,8 +913,8 @@ Dal worktree `picoforge-c-impl`, output solo sotto `build/qwen38-c/` salvo
 artefatti del Makefile confinati a questo worktree. L'ambiente esistente è:
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
-Q38_SOURCE=/Users/cristiancirje/Desktop/Dev/picoforge-c-oracle/build/qwen38-c/upstream/modeling_qwen4_exp.py
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
+Q38_SOURCE=/path/to/picoforge-c-oracle/build/qwen38-c/upstream/modeling_qwen4_exp.py
 mkdir -p build/qwen38-c
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
   -ffp-contract=off -fsanitize=address,undefined -Isrc \
@@ -948,7 +948,7 @@ cat build/qwen38-c/gpu-report.txt
 make -j4
 ```
 
-Esito atteso: lock `/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock`,
+Esito atteso: lock `/path/to/picoforge/.git/qwen38-gpu.lock`,
 Metal API Validation Enabled, misure per lunghezza e PASS finale. Non saltare
 il wrapper: il binario del harness non acquisisce autonomamente un secondo lock.
 Il test non usa acceleratori TensorOps né precisione ridotta. MSL non dispone
@@ -1040,7 +1040,7 @@ Comandi ripetibili dal nuovo worktree (asset già preparati con il target
 `qwen38-test-assets` della base, venv esistente e sorgenti pinned locali):
 
 ```sh
-PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+PY=/path/to/picoforge/tools/venv/bin/python
 CC_SOURCES='src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c'
 CC_FLAGS='-std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc'
 # Questi comandi usano una shell POSIX per espandere le liste di argomenti.
@@ -1089,7 +1089,7 @@ del layer contemporaneamente. Il workload del layer è stato eseguito con
 il lock comune `.git/qwen38-gpu.lock`. Non è un benchmark.
 
 ```sh
-CHECKPOINT=/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+CHECKPOINT=/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
 for layer in 0 1 46; do
   "$PY" -B tools/oracle/qwen38_recurrent.py --composition --controls-only --native build/qwen38-c/test_composed --packed-reference build/qwen38-b/reference/reference --checkpoint "$CHECKPOINT" --tokens 5 --layer "$layer" --out "build/qwen38-c/controls-$layer"
 done

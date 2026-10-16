@@ -1,4 +1,4 @@
-env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/synth/make_qwen38_a.py --verify --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --reference-root "/Users/cristiancirje/Desktop/Dev/picoforge"
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/synth/make_qwen38_a.py --verify --checkpoint "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --reference-root "/path/to/picoforge"
 config OK: E=256 V=512 trunk=2 MTP=1 GDN=1 QSA=2
 config malformed metadata and lifetime OK
 config OK: E=256 V=512 trunk=2 MTP=0 GDN=1 QSA=1
@@ -22,7 +22,7 @@ text OK: 364 HF encodes, 524 HF decode cases, streaming/capacity/lifetime
 Ran 20 tests in 2.688s
 
 OK
-/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-a/small.gguf
+/path/to/picoforge-native-next/build/qwen38-a/small.gguf
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer tests/test_qwen38_integration.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm -o build/qwen38-integration/test_links
 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./build/qwen38-integration/test_links build/qwen38-a/small.gguf
 PASS: A catalog -> B projection -> F routing; C normalization -> E gate; A -> D/E config

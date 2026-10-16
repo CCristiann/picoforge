@@ -10,6 +10,6 @@
   "file_mtime_ns": 1791785892435960350,
   "file_inode": 30631842,
   "verification_s": 54.25194099999999,
-  "path": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "path": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
   "cache_note": "Full sequential hashing warms the file cache; subsequent load is not storage-cold."
 }

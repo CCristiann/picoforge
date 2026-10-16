@@ -1,4 +1,4 @@
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 op             max |Δ|    relative   verdict
 rmsnorm      1.360e-09   1.299e-09   PASS
 matmul       4.751e-10   5.720e-10   PASS

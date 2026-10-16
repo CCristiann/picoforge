@@ -14,7 +14,7 @@ già implementati né generazione nativa. La direzione resta
 ## 1. Base, provenienza e perimetro
 
 Branch coordinatore `coord/qwen38-contracts`, worktree esterno
-`/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-consolidate`.
+`/path/to/picoforge-qwen38-consolidate`.
 Base precedente `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
 Il commit di consolidamento che introduce questo file, con tutti gli header
 e i sei documenti nel suo tree, è **BASE_CONCORDATA**. Lo SHA completo viene
@@ -432,7 +432,7 @@ attuale da 32 voci: contare i kernel e adeguare nel relativo incremento.
 ## 9. Lock effettivo, comandi e budget
 
 **Un solo lock per tutti i worktree di questa repository**:
-`/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock`.
+`/path/to/picoforge/.git/qwen38-gpu.lock`.
 Il wrapper risolve `git rev-parse --git-common-dir`, canonicalizza il path,
 usa `fcntl.flock(LOCK_EX)` e conserva il fd attraverso exec del comando.
 Mai unlink, rename o cancellazione per presunto PID stale: il kernel rilascia
@@ -444,8 +444,8 @@ checkpoint. Solo piccoli oracle CPU e test bounded possono procedere senza.
 Nessun altro clone indipendente può usare un proprio lock e dirsi coordinato.
 
 ```sh
-cd /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-consolidate
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+cd /path/to/picoforge-qwen38-consolidate
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 "$Q38_PY" tools/qwen38_gpu_lock.py --print-path
 make PYTHON="$Q38_PY" test-qwen38-contracts test-gguf
 "$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- \
@@ -502,7 +502,7 @@ integra incrementi verificati; le sessioni non fanno merge/push su main.
 Questo aggiornamento sostituisce soltanto lo stato implementativo e i comandi
 storici dei §8–10; formule, ABI, precisione, ownership ed errori dei §2–7
 restano vincolanti. Branch `coord/qwen38-integrate`, worktree esterno
-`/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate`, partito da
+`/path/to/picoforge-qwen38-integrate`, partito da
 BASE_CONCORDATA `c674b23bd1377b2ce0acef2d06fac8b160809446`.
 Il commit finale con questo aggiornamento è BASE_INTEGRATA; il coordinatore
 ne restituisce lo SHA completo. Nessun merge/push su main.
@@ -643,10 +643,10 @@ resta E/F. Nuovi file D/F acquisiti restano assegnati ai rispettivi componenti.
 **Preparazione ripetibile, esplicita e separata dai test.**
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 "$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- \
   make qwen38-test-assets PYTHON="$Q38_PY" \
-  Q38_SOURCE_DIR=/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-f/upstream
+  Q38_SOURCE_DIR=/path/to/picoforge-qwen38-integrate/build/qwen38-f/upstream
 make qwen38-composition-assets PYTHON="$Q38_PY"
 make test-qwen38-cpu PYTHON="$Q38_PY"
 make test-qwen38-gpu PYTHON="$Q38_PY"

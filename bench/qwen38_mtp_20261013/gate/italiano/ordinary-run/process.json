@@ -1,8 +1,8 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+    "/path/to/picoforge-native-next/picoforge",
     "--qwen38",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "--complete",
     "La capitale della Francia \u00e8",
     "--context",
@@ -12,11 +12,11 @@
     "--max-new",
     "6",
     "--token-ids",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ids.json",
+    "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ids.json",
     "--logits",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ordinary.f32"
+    "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/italiano/ordinary.f32"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next",
+  "cwd": "/path/to/picoforge-native-next",
   "pilot": true,
   "complete": true,
   "recorded_utc": "2026-10-13T20:19:20.889364+00:00",

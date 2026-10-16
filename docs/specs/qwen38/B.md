@@ -4,7 +4,7 @@ Modalità **SPEC**, 2026-10-12. Base ispezionata:
 `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
 `BASE_CONCORDATA`: **da determinare nel consolidamento**.
 Branch di questa spec: `spec/qwen38-b`; worktree esterno:
-`/Users/cristiancirje/Desktop/Dev/picoforge-spec-b`.
+`/path/to/picoforge-spec-b`.
 
 **V** indica fatti verificati su codice, metadati o evidenze registrate;
 **P** indica contratti proposti, da consolidare; **A** una decisione aperta.
@@ -53,7 +53,7 @@ la [revisione](../../project-review-2026-10-11.md) e il contesto degli
 | Fonte | Revisione / riferimento verificato |
 |---|---|
 | picoforge | `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`; checkout principale e staging inizialmente puliti |
-| DwarfStar locale | `/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline`, `fc80bd695da76ee14bcb86820bf900a5cdfda806`, sorgenti tracciati puliti |
+| DwarfStar locale | `/path/to/ds4-qwen38-baseline`, `fc80bd695da76ee14bcb86820bf900a5cdfda806`, sorgenti tracciati puliti |
 | Checkpoint Q2 | `antirez/qwen3.8-flash-next-gguf`, revisione `d600fe1a43d2e1cdcadb85144ce3142f66f9eefe` |
 | Config/tokenizer originali | `Qwen/Qwen3.8-Flash-Next`, revisione `de4b8e4d43b917e7706784d8bb445c9af86a3540`, registrata dalla baseline |
 | ggml/llama.cpp consultato | `8bb3cf0d216a5ae48360179f2931daf284be4d01`, sorgenti pubblici letti senza installazione |
@@ -93,7 +93,7 @@ SHA-256 dei sorgenti consultati:
 ### Inventario verificato
 
 **V.** Checkpoint riutilizzato in sola lettura:
-`/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf`.
+`/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf`.
 Dimensione 147.207.127.040 byte. SHA-256 già verificato dalla
 [baseline](../../../bench/qwen38_q2_20261011_phase0/checkpoint.verification.json):
 `b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9`.
@@ -675,10 +675,10 @@ con confronto integrale in memoria all'inventario registrato; confronto
 delle tabelle con ggml upstream; sei test CPU dell'inventario, tutti passati:
 
 ```sh
-cd /Users/cristiancirje/Desktop/Dev/picoforge-spec-b
+cd /path/to/picoforge-spec-b
 mkdir -p build/spec-b-tmp
 TMPDIR="$PWD/build/spec-b-tmp" \
-  /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B \
+  /path/to/picoforge/tools/venv/bin/python -B \
   tests/test_qwen38_inventory.py
 git diff --check
 ```
@@ -693,12 +693,12 @@ sono variabili di build da introdurre dal coordinatore, non flag già esistenti.
 
 ```sh
 make test-qwen38-packed-cpu \
-  PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python \
-  DS4_REFERENCE=/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline \
+  PYTHON=/path/to/picoforge/tools/venv/bin/python \
+  DS4_REFERENCE=/path/to/ds4-qwen38-baseline \
   BUILD_DIR=build/qwen38-packed
 make test-qwen38-packed-sanitize  # ASan/UBSan, no fast-math, CPU soltanto
 make test-qwen38-packed-slices \
-  Q38_CHECKPOINT=/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+  Q38_CHECKPOINT=/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
 # Acquisire prima il lock comune definito in integration.md:
 MTL_DEBUG_LAYER=1 make test-qwen38-packed-gpu
 ```

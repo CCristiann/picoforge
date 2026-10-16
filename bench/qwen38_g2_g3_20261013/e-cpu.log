@@ -1,4 +1,4 @@
-env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_ngram.py -v
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /path/to/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_ngram.py -v
 test_all_finite_bf16_patterns_against_torch (__main__.NativeTests.test_all_finite_bf16_patterns_against_torch) ... ok
 test_bf16_duplicates_order_page_boundary_and_last_row (__main__.NativeTests.test_bf16_duplicates_order_page_boundary_and_last_row) ... ok
 test_complete_ple_32k_history (__main__.NativeTests.test_complete_ple_32k_history) ... ok

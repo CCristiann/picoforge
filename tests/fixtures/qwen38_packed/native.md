@@ -1,7 +1,7 @@
 # B — esecuzione dalla base consolidata
 
 2026-10-12. Base `c674b23bd1377b2ce0acef2d06fac8b160809446`;
-branch `impl/qwen38-b-cpu`, worktree `/Users/cristiancirje/Desktop/Dev/picoforge-b-cpu`.
+branch `impl/qwen38-b-cpu`, worktree `/path/to/picoforge-b-cpu`.
 Il worktree precedente è preservato. Recuperati solo i tre commit oracle,
 senza duplicare le spec né importare implementazioni delle altre sessioni.
 
@@ -74,9 +74,9 @@ locale del riferimento è opzionale se si riusa il binario verificato del
 worktree oracle preservato. Directory/report di output devono essere nuovi.
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
-Q38_DS4=/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline
-Q38_MODEL=/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
+Q38_DS4=/path/to/ds4-qwen38-baseline
+Q38_MODEL=/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
 mkdir -p build/qwen38-b
 "$Q38_PY" -B tools/oracle/qwen38_packed.py build "$Q38_DS4" build/qwen38-b/reference --sanitize
 Q38_REF=build/qwen38-b/reference/reference
@@ -100,7 +100,7 @@ make PYTHON="$Q38_PY" test-qwen38-contracts test-gguf
 ```
 
 Attesi 25 test/OK per suite. Il lock è quello di `git-common-dir`, verificato
-qui come `/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock`.
+qui come `/path/to/picoforge/.git/qwen38-gpu.lock`.
 Il runner passa il fd ai figli e li attende; nessun wrapper annidato.
 
 ## Integrazione residua, proprietà del coordinatore

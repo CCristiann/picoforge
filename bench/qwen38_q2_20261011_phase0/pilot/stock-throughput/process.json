@@ -1,12 +1,12 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4-bench",
+    "/path/to/ds4-qwen38-baseline/ds4-bench",
     "-m",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "--prefill-chunk",
     "1024",
     "--prompt-file",
-    "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/speed-bench/promessi_sposi.txt",
+    "/path/to/ds4-qwen38-baseline/speed-bench/promessi_sposi.txt",
     "--ctx-start",
     "8063",
     "--ctx-max",
@@ -17,9 +17,9 @@
     "128",
     "--teacher-forced-decode",
     "--csv",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/bench/qwen38_q2_20261011_phase0/pilot/stock-throughput.csv"
+    "/path/to/picoforge/bench/qwen38_q2_20261011_phase0/pilot/stock-throughput.csv"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+  "cwd": "/path/to/ds4-qwen38-baseline",
   "pilot": true,
   "complete": true,
   "executable_sha256": "27e2c3666d82123ca3d3bd93f6fff09545df4de91e606ee52c78445c99a4e5d0",

@@ -43,7 +43,7 @@ presente nell'oracle; nessun test fallisce.
 Dalla radice del worktree, con asset locali già preparati:
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 make -j4 picoforge
 make test-qwen38-g2-parts test-qwen38-d-gpu PYTHON="$Q38_PY"
 make test-qwen38-d-cpu test-qwen38-g0 test-qwen38-g1 test-qwen38-contracts PYTHON="$Q38_PY"

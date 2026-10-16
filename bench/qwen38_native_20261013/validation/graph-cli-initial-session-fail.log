@@ -1,7 +1,7 @@
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_forward.py --native build/qwen38-g2/test_forward --gguf build/qwen38-g1/graph.gguf -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_embedding_mixer_and_head_slice (__main__.GraphTests.test_embedding_mixer_and_head_slice)
-layers=0: embedding repeat, output-HC mixer and untied head only. ... /Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/oracle/qwen38_forward.py:98: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:219.)
+layers=0: embedding repeat, output-HC mixer and untied head only. ... /path/to/picoforge-native-next/tools/oracle/qwen38_forward.py:98: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:219.)
   torch.from_numpy(w.matrix(prefix + "_down.weight")),
 ok
 test_full_stack_chunks_decode_and_replay (__main__.GraphTests.test_full_stack_chunks_decode_and_replay)
@@ -218,7 +218,7 @@ OK
   L=4 final                          9.624e-07 (gate 0.001)
   L=4 logits                         9.620e-07 (gate 0.001)
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_forward_gpu.py --native build/qwen38-g2/test_forward --gguf build/qwen38-g1/graph.gguf -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_microbatch_state_and_fault (__main__.DeviceGraphTests.test_microbatch_state_and_fault) ... ok
 
 ----------------------------------------------------------------------
@@ -227,7 +227,7 @@ Ran 1 test in 1.428s
 OK
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_forward.c src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/gpu_weights.m src/metal.m -framework Metal -framework Foundation -lm -o build/qwen38-g1/test_forward
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_admission (__main__.CliTests.test_admission) ... ok
 test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits) ... ok
 test_repeat_cancel_files_and_measurement (__main__.CliTests.test_repeat_cancel_files_and_measurement) ... ok
@@ -238,7 +238,7 @@ Ran 4 tests in 0.988s
 
 OK
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_session.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_stop_capacity_and_recovery (__main__.Session.test_stop_capacity_and_recovery) ... ok
 test_template_replay_and_reset (__main__.Session.test_template_replay_and_reset) ... FAIL
 

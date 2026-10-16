@@ -1,7 +1,7 @@
 # Qwen3.8 Q2 — BASE_INTEGRATA_V2
 
 2026-10-12, Apple M5 Pro, 64 GiB. Branch `coord/qwen38-integrate-v2`,
-worktree `/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2`,
+worktree `/path/to/picoforge-qwen38-integrate-v2`,
 da `6a6b886e985185d7c9104eda888e6a406553aedf`.
 Il commit che introduce questo report è BASE_INTEGRATA_V2; lo SHA completo
 è nella consegna del coordinatore, senza hash autoreferenziale nel file.
@@ -104,10 +104,10 @@ fissato `fc80bd695da76ee14bcb86820bf900a5cdfda806`, sorgenti HF hash-pinned e
 GGUF della fase0, già autenticato. Nessuna nuova dipendenza o download in questo run.
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 "$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- \
   make qwen38-test-assets PYTHON="$Q38_PY" \
-  Q38_SOURCE_DIR=/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-f/upstream
+  Q38_SOURCE_DIR=/path/to/picoforge-qwen38-integrate/build/qwen38-f/upstream
 make qwen38-composition-assets PYTHON="$Q38_PY"
 make -j4 picoforge PYTHON="$Q38_PY"
 make test-qwen38-cpu PYTHON="$Q38_PY"

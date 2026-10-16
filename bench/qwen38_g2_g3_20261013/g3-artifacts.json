@@ -107,7 +107,7 @@
   "stock-trace_qwen_router-11_pos3.bin": "46afbdafc91321431cb656c4b6d0106b7e6141fa1064f3e09d7a546b05ce9387",
   "stock-trace_qwen_router-14_pos9.bin": "fa034de5d720fffb9ae647889da64135b6662340b1739a6f91f0c74e55dc8e8d",
   "stock-trace_qwen_router-15_pos9.bin": "69a38b3c0b4ad9d25b08a487e38ec866284b4664cde1e59b2bfc438c1426caa3",
-  "report.json": "863f65a48e70605c3f9ff258915df83b78bce3f75c7167efe64f904dddc7fe56",
+  "report.json": "0eb78521547deab2f436b3e1daa1a85babd7f0bbbd82398efb5613f9b9a7de23",
   "stock-trace_qwen_router-41_pos11.bin": "190ac1d114155c07518fcfcc5b424232d0df98ae49dcb50c26ea167a5a0f90e7",
   "stock-trace_qwen_router-44_pos6.bin": "afc1dd0c4ec398ee26042add5c1b00ccd6e933398af596a0dcd15512d1d2b043",
   "stock-trace_qwen_router-45_pos6.bin": "96a730145fdcb7de68169d5890618928d3bdef2cbafd4a07fb60b05429a9c4ed",
@@ -635,7 +635,7 @@
   "stock-trace_qwen_router-14_pos0.bin": "02ecbad819ed98c75da0af0c540101c080a13a5128234f6ba07748df56c7a7f7",
   "stock-trace_qwen_router-21_pos2.bin": "722117cde6bc49a1245004e9d73365d30eb208be02365915a679ef9b04fe90b2",
   "stock-trace_qwen_router-20_pos2.bin": "1cf844a559eb9c2fe4d192635f1102c34c258bb3483e69ea07c12ce7ba314061",
-  "stock-metal.log": "5b848ae8b2d2bcfb05d50dfab2752c73dcb8f2a59570ef01bc7d59bf01415f89",
+  "stock-metal.log": "8ca0d54e838b799d41209cf41cd1f1a86e4abbc18d01a3d9f36708317e76e636",
   "stock-trace_qwen_router-0_pos2.bin": "a603d4e321223d85ed6bef63027bcf8195bcb7963b7231e1cc8c201b86fb9513",
   "stock-trace_qwen_router-37_pos4.bin": "e74ef2df47fc13816c2f61885aa1f95bf388ab1d5c7d6a0c8a38bfaeec209409",
   "stock-trace_qwen_router-36_pos4.bin": "8b82c47e254b24bdb7ba0908e9ed20904964b9ee0e399739e0db1e867ed59d72",
@@ -1077,5 +1077,5 @@
   "chat/stdout.log": "e5f45e4920fe8f55e3053b9b8ff04b8f687652af7bd1c7cd233b2e2d7e61c83f",
   "chat/memory.jsonl": "507b3548c819af59deba4e3d62380d3da33a04c7d77269c33c475a6edd5cccc4",
   "chat/events.jsonl": "5ee8100512edecfeb4bf1fb7b8a76365315ba4aad3218a4d062b023ccf6f0590",
-  "chat/process.json": "b1e71ea17dee9069c5ad69892f604e1ead5b9d43a51f27facfddbcae01fc9f27"
+  "chat/process.json": "904d3e7ae81e6eb4275b826a35b91e3636021f6444bfbc244bb2e3a51f33602b"
 }

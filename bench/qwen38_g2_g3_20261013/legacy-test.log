@@ -1,4 +1,4 @@
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Isrc -o tests/test_ops tests/test_ops.c src/ops.o -lm
 op             max |Δ|    relative   verdict
 rmsnorm      1.360e-09   1.299e-09   PASS

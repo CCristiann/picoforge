@@ -1,14 +1,14 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge/build/dwarfstar-observed/dwarfstar_probe",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/bench/qwen38_q2_20261011_phase0/suite/lower-bound.txt",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/bench/qwen38_q2_20261011_phase0/pilot/lower-bound/answer",
+    "/path/to/picoforge/build/dwarfstar-observed/dwarfstar_probe",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge/bench/qwen38_q2_20261011_phase0/suite/lower-bound.txt",
+    "/path/to/picoforge/bench/qwen38_q2_20261011_phase0/pilot/lower-bound/answer",
     "384",
     "nothink",
     "4"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+  "cwd": "/path/to/ds4-qwen38-baseline",
   "pilot": true,
   "complete": true,
   "executable_sha256": "9049533e87a8738dbfe821221da97808a97bf60ef9489da22ec655a96dacbd63",

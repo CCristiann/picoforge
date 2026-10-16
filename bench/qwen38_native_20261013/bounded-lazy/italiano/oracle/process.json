@@ -1,9 +1,9 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+    "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+  "cwd": "/path/to/ds4-qwen38-baseline",
   "pilot": true,
   "complete": true,
   "recorded_utc": "2026-10-13T19:47:30.744852+00:00",
@@ -11,7 +11,7 @@
   "environment": {
     "DS4_METAL_MEMORY_REPORT": "1",
     "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
-    "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/reference.f32"
+    "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/reference.f32"
   },
   "removed_environment_names": [],
   "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",

@@ -1,8 +1,8 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4",
+    "/path/to/ds4-qwen38-baseline/ds4",
     "-m",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "--ctx",
     "8192",
     "--prefill-chunk",
@@ -15,9 +15,9 @@
     "-n",
     "384",
     "--prompt-file",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/bench/qwen38_q2_20261011_phase0/suite/lower-bound.txt"
+    "/path/to/picoforge/bench/qwen38_q2_20261011_phase0/suite/lower-bound.txt"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+  "cwd": "/path/to/ds4-qwen38-baseline",
   "pilot": true,
   "complete": true,
   "executable_sha256": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",

@@ -1,4 +1,4 @@
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_native_real_slices (__main__.PackedReferenceTests.test_native_real_slices) ... ok
 
 ----------------------------------------------------------------------

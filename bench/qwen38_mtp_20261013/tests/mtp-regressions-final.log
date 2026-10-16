@@ -1,15 +1,15 @@
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_gpu_lifecycle.m src/qwen38_gpu.m -framework Metal -framework Foundation -o build/qwen38-g/test_gpu_lifecycle
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-g/test_gpu_lifecycle
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 2026-10-13 22:33:59.836 test_gpu_lifecycle[31087:537314] Metal API Validation Enabled
 qwen38 gpu lifecycle: 6 ledger + 5 session groups passed
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_forward_gpu.m src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-g2/test_forward
 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/synth/make_qwen38_graph.py
-/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-g1/graph.gguf: 145 tensors, 4720640 bytes
+/path/to/picoforge-native-next/build/qwen38-g1/graph.gguf: 145 tensors, 4720640 bytes
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_forward.py --native build/qwen38-g2/test_forward --gguf build/qwen38-g1/graph.gguf -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_embedding_mixer_and_head_slice (__main__.GraphTests.test_embedding_mixer_and_head_slice)
-layers=0: embedding repeat, output-HC mixer and untied head only. ... /Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/oracle/qwen38_forward.py:98: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:219.)
+layers=0: embedding repeat, output-HC mixer and untied head only. ... /path/to/picoforge-native-next/tools/oracle/qwen38_forward.py:98: UserWarning: The given NumPy array is not writable, and PyTorch does not support non-writable tensors. This means writing to this tensor will result in undefined behavior. You may want to copy the array to protect its data or make it writable before converting it to a tensor. This type of warning will be suppressed for the rest of this program. (Triggered internally at /Users/runner/work/pytorch/pytorch/torch/csrc/utils/tensor_numpy.cpp:219.)
   torch.from_numpy(w.matrix(prefix + "_down.weight")),
 ok
 test_full_stack_chunks_decode_and_replay (__main__.GraphTests.test_full_stack_chunks_decode_and_replay)
@@ -226,7 +226,7 @@ OK
   L=4 final                          9.624e-07 (gate 0.001)
   L=4 logits                         9.620e-07 (gate 0.001)
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_forward_gpu.py --native build/qwen38-g2/test_forward --gguf build/qwen38-g1/graph.gguf -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_microbatch_state_and_fault (__main__.DeviceGraphTests.test_microbatch_state_and_fault) ... ok
 
 ----------------------------------------------------------------------
@@ -234,10 +234,10 @@ Ran 1 test in 1.487s
 
 OK
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_forward.c src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/gpu_weights.m src/metal.m -framework Metal -framework Foundation -lm -o build/qwen38-g1/test_forward
-env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/synth/make_qwen38_cli.py --reference-root "/Users/cristiancirje/Desktop/Dev/picoforge"
-/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-g2/cli.gguf: graph with byte tokenizer, 4737024 bytes
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/synth/make_qwen38_cli.py --reference-root "/path/to/picoforge"
+/path/to/picoforge-native-next/build/qwen38-g2/cli.gguf: graph with byte tokenizer, 4737024 bytes
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_admission (__main__.CliTests.test_admission) ... ok
 test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits) ... ok
 test_repeat_cancel_files_and_measurement (__main__.CliTests.test_repeat_cancel_files_and_measurement) ... ok
@@ -248,7 +248,7 @@ Ran 4 tests in 0.910s
 
 OK
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_session.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_stop_capacity_and_recovery (__main__.Session.test_stop_capacity_and_recovery) ... ok
 test_template_replay_and_reset (__main__.Session.test_template_replay_and_reset) ... ok
 
@@ -271,17 +271,17 @@ Ran 7 tests in 1.200s
 OK
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_mtp.m src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/gpu_weights.m -framework Metal -framework Foundation -lm -o build/qwen38-mtp/test_mtp
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-mtp/test_mtp build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny 3 1 12 45 19 71 83 120 64 20 49
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 2026-10-13 22:34:52.769 test_mtp[32513:542518] Metal API Validation Enabled
 snapshot: exact state/logits, PLE replay, busy/foreign/stale/window/predictor/fault PASS
 {"tokens":9,"mtp_rows":8,"chunk":3,"replay":true,"graph_bytes":333872,"checkpoint_host_bytes":91656,"metal_bytes":5799936}
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-mtp/test_mtp build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny33 33 1 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 2026-10-13 22:34:53.161 test_mtp[32515:542555] Metal API Validation Enabled
 snapshot: exact state/logits, PLE replay, busy/foreign/stale/window/predictor/fault PASS
 {"tokens":33,"mtp_rows":32,"chunk":33,"replay":true,"graph_bytes":2193496,"checkpoint_host_bytes":169224,"metal_bytes":8011776}
 ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_speculative.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_accept_reject_false_stop_and_verified_stop (__main__.Speculative.test_accept_reject_false_stop_and_verified_stop) ... ok
 test_first_stop_budgets_chunk_one_and_cancellation (__main__.Speculative.test_first_stop_budgets_chunk_one_and_cancellation) ... ok
 test_seeded_state_rejection_and_replay (__main__.Speculative.test_seeded_state_rejection_and_replay) ... ok

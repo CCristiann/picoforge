@@ -1,8 +1,8 @@
 Traceback (most recent call last):
-  File "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/tests/test_shards.py", line 70, in <module>
+  File "/path/to/picoforge-qwen38-integrate/tests/test_shards.py", line 70, in <module>
     main()
     ~~~~^^
-  File "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/tests/test_shards.py", line 54, in main
+  File "/path/to/picoforge-qwen38-integrate/tests/test_shards.py", line 54, in main
     subprocess.run([str(ROOT / "tools/venv/bin/python"), str(ROOT / "tools/quant/quantize.py"),
     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                     str(src), "q8_row"], check=True, capture_output=True, cwd=ROOT)
@@ -22,5 +22,5 @@ Traceback (most recent call last):
                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/opt/homebrew/Cellar/python@3.14/3.14.2_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1989, in _execute_child
     raise child_exception_type(errno_num, err_msg, err_filename)
-FileNotFoundError: [Errno 2] No such file or directory: '/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/tools/venv/bin/python'
+FileNotFoundError: [Errno 2] No such file or directory: '/path/to/picoforge-qwen38-integrate/tools/venv/bin/python'
 make: *** [test-shards] Error 1

@@ -36,7 +36,7 @@
     "packed_tests": 25,
     "skipped": 0,
     "library_sha256": "908df324533ae8cf7aac4ad968861b3eb2ea6f3a3ccb3a3b316d5788cc12d738",
-    "lock": "/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock",
+    "lock": "/path/to/picoforge/.git/qwen38-gpu.lock",
     "api_validation": true,
     "A": "small synthetic storage bridge",
     "C": "primitive CPU/Metal differential and state/error tests",
@@ -65,7 +65,7 @@
     "exit_code": 0,
     "skipped": 0,
     "first_attempt": "failed only at shard harness interpreter path; corrected and entire aggregate rerun",
-    "command": "python tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 UBSAN_OPTIONS=halt_on_error=1 make test-all -o models/Qwen3-0.6B-q8_row-embed -o models/Qwen3-0.6B-q4_g32 -o models/Qwen3-0.6B-q4_g32-embed PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python",
+    "command": "python tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 UBSAN_OPTIONS=halt_on_error=1 make test-all -o models/Qwen3-0.6B-q8_row-embed -o models/Qwen3-0.6B-q4_g32 -o models/Qwen3-0.6B-q4_g32-embed PYTHON=/path/to/picoforge/tools/venv/bin/python",
     "scope": [
       "primitives",
       "attention/context",
@@ -108,19 +108,19 @@
     "combined_metallib": true
   },
   "artifact_sha256": {
-    "README.md": "ed34342c5267ded6089563dc2b62c5169880d565e96e913c505cad9dd96b3f48",
-    "alias-before-fix.log": "b55111d3a4a242929f1ac53da9535177f825f692c2835674def1d53036206ff3",
+    "README.md": "63938fa52eace5fa0d457b330a07b6a67e9551185dc9e1f448a633f9f34a6aa0",
+    "alias-before-fix.log": "6d2b95845a2bef3f1ed51cacaf76d7d3667a4ad6588bb3fb17bd563f8cd240f2",
     "api.json": "9c15f41dcc11d2a1d9e9836a91cef22a24a69adb4e3a747a05e910d66dccf4e5",
-    "assets-replay.log": "35ee817b2591c4f23f59215ac2d7c16e4aeff0a89ee1ad34afe62a510f37a99d",
+    "assets-replay.log": "3015b492292e080784452f5c12eff247feb3bb11a5d3046ebf0d8657dd962ef6",
     "build.log": "032497f7f45fd4f51b6dc2e37350109f98445d39f158485d6befde14161bd1ac",
-    "cpu.log": "07fb01b2bbaddd3e2e74c6658b042160109f022db942e074071130bd45922470",
+    "cpu.log": "e5742c58694fdd949abf12598fa440687565bd7bdd53097895c7840f26300660",
     "deliveries.json": "942f1b377d65bb2f0a6d032bfcfcb36048dd411c92cdfcd61b63d5b11adf5478",
-    "gpu.log": "e47739d1dafef64b07331cc3b3cece606c4d7597e4186a5764e07f96e333a693",
-    "packed-cpu.json": "7548a0a93c722d6d08e9b50e8a5c9c2bbdce15232e583b38958124e7a7291fe5",
-    "packed-gpu.json": "e4b56f069621e700d40fa5cf1aab8d1a48ccaf23715026b2da36d62beb86a260",
+    "gpu.log": "abce78cdc70d631ca46f7ffe430e5aa11d58073f3b8591752a11f44067ab4d2b",
+    "packed-cpu.json": "99894275990ad4ac212133c70311d8fcef257b1166f42503289c8c86a6c8aa99",
+    "packed-gpu.json": "ff95ae7486bab09efb4927e7e1dce3f76238438b996bf15e84bf3ac71e26b331",
     "recurrent-cpu.json": "4b6bc4ac92a5940ad49460c61e8d3d3bb494a4d7f221754c39a36993a8305796",
-    "regression-first-failure.txt": "4a4d0936b51aff877727ec06eaf436c904d3f37de358be78e9a31c5590eb14f2",
-    "regression.log": "37f922df5ecd754253668a3251331568044b12322f13e7642e9528d498738c0f",
+    "regression-first-failure.txt": "25cbe0283914314fbcbb98cef4838b841a9d7e98dec2c61880df927354f236a1",
+    "regression.log": "186d24765a96e76c2be80f793421d5119421baa1dac1931669167b5b60a8647c",
     "source-sha256.json": "b99fcf86ac2d5b06974ebaec0284333a0a74dd2d165f902941e56c59a9fbe888"
   }
 }

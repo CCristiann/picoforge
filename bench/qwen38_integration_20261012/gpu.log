@@ -1,5 +1,5 @@
 /Applications/Xcode.app/Contents/Developer/usr/bin/make test-qwen38-a-gpu
-env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/synth/make_qwen38_a.py --verify --gpu --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --reference-root "/Users/cristiancirje/Desktop/Dev/picoforge"
+env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /path/to/picoforge/tools/venv/bin/python -B tools/synth/make_qwen38_a.py --verify --gpu --checkpoint "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --reference-root "/path/to/picoforge"
 config OK: E=256 V=512 trunk=2 MTP=1 GDN=1 QSA=2
 config malformed metadata and lifetime OK
 config OK: E=256 V=512 trunk=2 MTP=0 GDN=1 QSA=1
@@ -23,16 +23,16 @@ text OK: 364 HF encodes, 524 HF decode cases, streaming/capacity/lifetime
 Ran 20 tests in 2.488s
 
 OK
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 2026-10-12 19:09:30.974 test_storage[13403:1123514] Metal API Validation Enabled
 bindings OK: ordinary=62 MTP=26(+6 internal) disk=1 views=2
 small Metal storage attach/CPU span/forged owner OK
 binding mutation, owner, bounds, padding and lifetime OK
-/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-a/small.gguf
+/path/to/picoforge-qwen38-integrate/build/qwen38-a/small.gguf
 /Applications/Xcode.app/Contents/Developer/usr/bin/make test-qwen38-b-gpu
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_packed_gpu.m src/qwen38_packed_gpu.m src/qwen38_packed.c src/gpu_weights.m src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -framework Metal -framework Foundation -lm -o build/qwen38-b/test_packed_gpu
-/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 Q38_PACKED_LIBRARY="/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/picoforge.metallib" env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_packed.py --reference build/qwen38-b/reference/reference --native build/qwen38-b/test_packed_gpu --metal --slices build/qwen38-b/slices-0 --slices build/qwen38-b/slices-1 --slices build/qwen38-b/slices-8 --slices build/qwen38-b/slices-10 --slices build/qwen38-b/slices-16 --slices build/qwen38-b/slices-30 --report build/qwen38-b/gpu-report.json -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+/path/to/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env MTL_DEBUG_LAYER=1 Q38_PACKED_LIBRARY="/path/to/picoforge-qwen38-integrate/picoforge.metallib" env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /path/to/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_packed.py --reference build/qwen38-b/reference/reference --native build/qwen38-b/test_packed_gpu --metal --slices build/qwen38-b/slices-0 --slices build/qwen38-b/slices-1 --slices build/qwen38-b/slices-8 --slices build/qwen38-b/slices-10 --slices build/qwen38-b/slices-16 --slices build/qwen38-b/slices-30 --report build/qwen38-b/gpu-report.json -v
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_all_finite_f16_and_bf16_bit_patterns (__main__.PackedReferenceTests.test_all_finite_f16_and_bf16_bit_patterns) ... ok
 test_iq2_all_grid_sign_scale_combinations (__main__.PackedReferenceTests.test_iq2_all_grid_sign_scale_combinations) ... ok
 test_iq2_every_group_and_grid_position (__main__.PackedReferenceTests.test_iq2_every_group_and_grid_position) ... ok
@@ -65,8 +65,8 @@ Ran 25 tests in 80.519s
 OK
 /Applications/Xcode.app/Contents/Developer/usr/bin/make test-qwen38-c-gpu
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_recurrent.m src/qwen38_recurrent_gpu.m src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c -framework Metal -framework Foundation -lm -o build/qwen38-c/test_gpu
-/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 env MTL_DEBUG_LAYER=1 ./build/qwen38-c/test_gpu "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/picoforge.metallib"
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+/path/to/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 env MTL_DEBUG_LAYER=1 ./build/qwen38-c/test_gpu "/path/to/picoforge-qwen38-integrate/picoforge.metallib"
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 2026-10-12 19:10:54.359 test_gpu[16672:1134021] Metal API Validation Enabled
 GDN T=0 Hk=2 Hv=6 Dk=3 Dv=5 scaled=0 bound=5e-05
 GDN T=1 Hk=2 Hv=6 Dk=3 Dv=5 scaled=1.49011612e-08 bound=5e-05

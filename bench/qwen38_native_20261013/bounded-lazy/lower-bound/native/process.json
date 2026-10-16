@@ -1,8 +1,8 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+    "/path/to/picoforge-native-next/picoforge",
     "--qwen38",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "--tokens",
     "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
     "--context",
@@ -12,11 +12,11 @@
     "--max-new",
     "4",
     "--logits",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/native.f32",
+    "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/native.f32",
     "--token-ids",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/ids.json"
+    "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/ids.json"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next",
+  "cwd": "/path/to/picoforge-native-next",
   "pilot": true,
   "complete": true,
   "recorded_utc": "2026-10-13T19:42:46.259601+00:00",

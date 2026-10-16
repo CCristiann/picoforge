@@ -9,7 +9,7 @@ di partenza operativo per questi incrementi è BASE_INTEGRATA.
 ## Prefisso comune da inviare con ciascun incarico
 
 ```text
-Lavora in /Users/cristiancirje/Desktop/Dev/picoforge.
+Lavora in /path/to/picoforge.
 MODALITA=ESEGUI, BASE_INTEGRATA=<SHA_BASE_INTEGRATA>.
 Leggi le istruzioni applicabili, docs/qwen38-q2-session-prompt.md,
 docs/specs/qwen38/integration.md (incluso §11), la tua spec e la consegna.
@@ -115,11 +115,11 @@ nessun decoder duplicato, commit/wait per esperto o modifica Makefile/header.
 Da ciascun nuovo worktree, Python esistente e percorsi espliciti:
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 make qwen38-test-assets PYTHON="$Q38_PY" \
-  Q38_REFERENCE_ROOT=/Users/cristiancirje/Desktop/Dev/picoforge \
-  Q38_DWARFSTAR=/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline \
-  Q38_SOURCE_DIR=/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-f/upstream
+  Q38_REFERENCE_ROOT=/path/to/picoforge \
+  Q38_DWARFSTAR=/path/to/ds4-qwen38-baseline \
+  Q38_SOURCE_DIR=/path/to/picoforge-qwen38-integrate/build/qwen38-f/upstream
 make test-qwen38-cpu PYTHON="$Q38_PY"
 make test-qwen38-gpu PYTHON="$Q38_PY"
 ```

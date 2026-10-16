@@ -71,9 +71,9 @@
       "passed": true,
       "commands": [
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "/path/to/picoforge-native-next/picoforge",
           "--qwen38",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
           "--tokens",
           "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
           "--context",
@@ -83,18 +83,18 @@
           "--max-new",
           "4",
           "--logits",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/native.f32",
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/native.f32",
           "--token-ids",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/ids.json"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/ids.json"
         ],
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
         ]
       ],
       "oracle_environment": {
         "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
-        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/reference.f32"
+        "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/lower-bound/reference.f32"
       },
       "artifacts": {
         "ids.json": "dd7ea69f79cf9878e45bbf5c9c0bb611299a0a4777ff5d6565b1d3d021b540eb",
@@ -168,9 +168,9 @@
       "passed": true,
       "commands": [
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "/path/to/picoforge-native-next/picoforge",
           "--qwen38",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
           "--tokens",
           "248045,846,198,89263,6378,3687,22056,176816,218415,307,176832,1789,220,16,15,15,15,2920,198056,60603,220,17,57844,220",
           "--context",
@@ -180,18 +180,18 @@
           "--max-new",
           "4",
           "--logits",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/native.f32",
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/native.f32",
           "--token-ids",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/ids.json"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/ids.json"
         ],
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
         ]
       ],
       "oracle_environment": {
         "DS4_QWEN4_FT_TOKENS": "248045,846,198,89263,6378,3687,22056,176816,218415,307,176832,1789,220,16,15,15,15,2920,198056,60603,220,17,57844,220",
-        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/reference.f32"
+        "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/ragionamento/reference.f32"
       },
       "artifacts": {
         "ids.json": "e0c182523995fc773e263d6f94876f7b7d8356e78f34427c675f053e287df8b4",
@@ -265,9 +265,9 @@
       "passed": true,
       "commands": [
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "/path/to/picoforge-native-next/picoforge",
           "--qwen38",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
           "--tokens",
           "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
           "--context",
@@ -277,18 +277,18 @@
           "--max-new",
           "4",
           "--logits",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/native.f32",
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/native.f32",
           "--token-ids",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/ids.json"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/ids.json"
         ],
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/oracle-build/reference",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
         ]
       ],
       "oracle_environment": {
         "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,303,57786,4931,175079,180436,1789,51711,220,17,20,15,46652,791,200001,632,15264,13,414,10760",
-        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/reference.f32"
+        "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-native-bounded-settled/italiano/reference.f32"
       },
       "artifacts": {
         "ids.json": "87c82d5a777467445b5a0908845822dbf92220d57fd7cd6db8b2f1641da41bdc",

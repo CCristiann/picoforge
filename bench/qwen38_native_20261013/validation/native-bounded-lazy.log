@@ -1,4 +1,4 @@
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 Undefined symbols for architecture arm64:
   "_ds4_compute_layer_placement", referenced from:
       _engine_classify_multi_tier in qwen38_dwarfstar_cpu-a783d5.o
@@ -11,16 +11,16 @@ Undefined symbols for architecture arm64:
 ld: symbol(s) not found for architecture arm64
 clang: error: linker command failed with exit code 1 (use -v to see invocation)
 Traceback (most recent call last):
-  File "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/eval/qwen38_native_bounded.py", line 68, in <module>
+  File "/path/to/picoforge-native-next/tools/eval/qwen38_native_bounded.py", line 68, in <module>
     a=p.parse_args(); run(a.suite.resolve(),a.output.resolve(),a.dwarfstar.resolve())
                       ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/eval/qwen38_native_bounded.py", line 28, in run
+  File "/path/to/picoforge-native-next/tools/eval/qwen38_native_bounded.py", line 28, in run
     oracle_binary=build_reference(ds,out/'oracle-build',adapter=ROOT/'tools/oracle/qwen38_dwarfstar_cpu.c',
                                   decoder='ds4.c:qwen4_ref_forward_token (lazy private mapping)')
-  File "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/oracle/qwen38_packed.py", line 66, in build_reference
+  File "/path/to/picoforge-native-next/tools/oracle/qwen38_packed.py", line 66, in build_reference
     subprocess.run(command, check=True)
     ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
   File "/opt/homebrew/Cellar/python@3.14/3.14.2_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 577, in run
     raise CalledProcessError(retcode, process.args,
                              output=stdout, stderr=stderr)
-subprocess.CalledProcessError: Command '['clang', '-std=c11', '-O2', '-fno-fast-math', '-ffp-contract=off', '-Wall', '-Wextra', '-Wno-unused-function', '-DDS4_REFERENCE_SOURCE="/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c"', '-I', '/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline', '/Users/cristiancirje/Desktop/Dev/picoforge-native-next/tools/oracle/qwen38_dwarfstar_cpu.c', '-Wl,-dead_strip', '-lm', '-pthread', '-o', '/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-lazy/oracle-build/reference']' returned non-zero exit status 1.
+subprocess.CalledProcessError: Command '['clang', '-std=c11', '-O2', '-fno-fast-math', '-ffp-contract=off', '-Wall', '-Wextra', '-Wno-unused-function', '-DDS4_REFERENCE_SOURCE="/path/to/ds4-qwen38-baseline/ds4.c"', '-I', '/path/to/ds4-qwen38-baseline', '/path/to/picoforge-native-next/tools/oracle/qwen38_dwarfstar_cpu.c', '-Wl,-dead_strip', '-lm', '-pthread', '-o', '/path/to/picoforge-native-next/build/qwen38-native-bounded-lazy/oracle-build/reference']' returned non-zero exit status 1.

@@ -35,21 +35,21 @@
     "decoder": "ds4.c:qwen4_ref_row",
     "adapter_sha256": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
     "source_sha256": {
-      "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/tools/oracle/qwen38_packed_reference.c": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c": "d137a9a5936d35152d1aa7abd9631462697abd69b429f52e51663292c1d063bd",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.h": "e3bdab439fdb4459fa7105e05f7209ee77190a98d97d58b6dde8c3730f2a22da",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_ssd.h": "61f4312a8b3686d5f5591f52365e6cb6301fd44d63775d5f490bbc2dd5c8e348",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tool_text.h": "a9c09f4a4d1cf2a3260d9c539de222cd949b5cd7710c7bf17ec9be5bc58bd159",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_distributed.h": "cf2f60eb677e0eb8aeb3f8d2966636ae075893ae2198beb5e446e483af537f9e",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_image.h": "519ee87d7edd4cba3f443bb855cb4e6f712e9f63569265292ef13596e2152a63",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_engram.h": "f84a264e0fe199d23a6f0c56fbbd19e222adc7009eed13c185af6403f68f7f5c",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_tp.h": "df9fe502bcb68827d3484bf6ec8cbd73352a5227d1494776d56b3f0214821b10",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_layer_pack.h": "cbe111519a7a1035f934f890d3512e42d068c8d683295ee077a984cc5ae32bcf",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_gpu_mgpu.h": "57d3977180a391d7ac50ab063ba157047578fb0004551bff16a48225a6389f87",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_streaming_hotlist.inc": "f531a6ce780abd31eeabafb865221f8407965f358184850996a5e010a6386d92",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_streaming_hotlist_glm52.inc": "f90296ccf162cbf4d438a6e44c129b0367683ba9cf72a54621ca14b2ad5c2cb8",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4_qwen4_unicode.inc": "7ba13d74558dd013f38f691908bddcddb81c7874a5ab582e5bbc865764617b61",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/LICENSE": "4a8a1358f5b048627d71e4988de0bafd386f4988991929629e6cb9e29b7b9b2f"
+      "/path/to/picoforge-qwen38-integrate-v2/tools/oracle/qwen38_packed_reference.c": "776417974ed439d7dd67ead2445813a5fe2511603a15b04ba5832e3e8505f098",
+      "/path/to/ds4-qwen38-baseline/ds4.c": "d137a9a5936d35152d1aa7abd9631462697abd69b429f52e51663292c1d063bd",
+      "/path/to/ds4-qwen38-baseline/ds4.h": "e3bdab439fdb4459fa7105e05f7209ee77190a98d97d58b6dde8c3730f2a22da",
+      "/path/to/ds4-qwen38-baseline/ds4_ssd.h": "61f4312a8b3686d5f5591f52365e6cb6301fd44d63775d5f490bbc2dd5c8e348",
+      "/path/to/ds4-qwen38-baseline/ds4_tool_text.h": "a9c09f4a4d1cf2a3260d9c539de222cd949b5cd7710c7bf17ec9be5bc58bd159",
+      "/path/to/ds4-qwen38-baseline/ds4_distributed.h": "cf2f60eb677e0eb8aeb3f8d2966636ae075893ae2198beb5e446e483af537f9e",
+      "/path/to/ds4-qwen38-baseline/ds4_image.h": "519ee87d7edd4cba3f443bb855cb4e6f712e9f63569265292ef13596e2152a63",
+      "/path/to/ds4-qwen38-baseline/ds4_engram.h": "f84a264e0fe199d23a6f0c56fbbd19e222adc7009eed13c185af6403f68f7f5c",
+      "/path/to/ds4-qwen38-baseline/ds4_tp.h": "df9fe502bcb68827d3484bf6ec8cbd73352a5227d1494776d56b3f0214821b10",
+      "/path/to/ds4-qwen38-baseline/ds4_layer_pack.h": "cbe111519a7a1035f934f890d3512e42d068c8d683295ee077a984cc5ae32bcf",
+      "/path/to/ds4-qwen38-baseline/ds4_gpu_mgpu.h": "57d3977180a391d7ac50ab063ba157047578fb0004551bff16a48225a6389f87",
+      "/path/to/ds4-qwen38-baseline/ds4_streaming_hotlist.inc": "f531a6ce780abd31eeabafb865221f8407965f358184850996a5e010a6386d92",
+      "/path/to/ds4-qwen38-baseline/ds4_streaming_hotlist_glm52.inc": "f90296ccf162cbf4d438a6e44c129b0367683ba9cf72a54621ca14b2ad5c2cb8",
+      "/path/to/ds4-qwen38-baseline/ds4_qwen4_unicode.inc": "7ba13d74558dd013f38f691908bddcddb81c7874a5ab582e5bbc865764617b61",
+      "/path/to/ds4-qwen38-baseline/LICENSE": "4a8a1358f5b048627d71e4988de0bafd386f4988991929629e6cb9e29b7b9b2f"
     },
     "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin27.0.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
     "command": [
@@ -61,18 +61,18 @@
       "-Wall",
       "-Wextra",
       "-Wno-unused-function",
-      "-DDS4_REFERENCE_SOURCE=\"/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4.c\"",
+      "-DDS4_REFERENCE_SOURCE=\"/path/to/ds4-qwen38-baseline/ds4.c\"",
       "-I",
-      "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+      "/path/to/ds4-qwen38-baseline",
       "-fsanitize=address,undefined",
       "-fno-sanitize-recover=all",
       "-fno-omit-frame-pointer",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/tools/oracle/qwen38_packed_reference.c",
+      "/path/to/picoforge-qwen38-integrate-v2/tools/oracle/qwen38_packed_reference.c",
       "-Wl,-dead_strip",
       "-lm",
       "-pthread",
       "-o",
-      "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/reference/reference"
+      "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/reference/reference"
     ],
     "binary_sha256": "dc16d235c011afe1952b54d2614513eb276272bd3d8b5ac65154ef6b7d67190b",
     "sanitizer": true,
@@ -90,7 +90,7 @@
     "src/qwen38_iq2_grid.inc": "c053ede75c5513c9e3259947413b892e0e9f845e2b73b47586802a2a623c4b51"
   },
   "native": {
-    "path": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/test_packed",
+    "path": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/test_packed",
     "sha256": "b25eca66154ea011009fb543482c68b52706eb0df458cc990de3c62c12fd5b1e"
   },
   "backend": "cpu",
@@ -3038,42 +3038,42 @@
   ],
   "real_slices": [
     {
-      "directory": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-0",
+      "directory": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-0",
       "kind": 0,
       "rows": 8,
       "payload_bytes": 102912,
       "manifest_sha256": "e6375f94f8ede8e2f78288a4e03c994ce5f014d076e986489e4268e3b7ad5a1f"
     },
     {
-      "directory": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-1",
+      "directory": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-1",
       "kind": 1,
       "rows": 9,
       "payload_bytes": 124800,
       "manifest_sha256": "a0f6e71aa359bcc903728e9f8aa2ae7b603ad4967fecb466fff8c8d61be01f04"
     },
     {
-      "directory": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-8",
+      "directory": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-8",
       "kind": 8,
       "rows": 36,
       "payload_bytes": 114648,
       "manifest_sha256": "31e92b1617ce7e21e0ecac83ea243f2d45711ea86c582330ef4bac48d359ca1f"
     },
     {
-      "directory": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-10",
+      "directory": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-10",
       "kind": 10,
       "rows": 27,
       "payload_bytes": 6804,
       "manifest_sha256": "ba59ea0ea78ef647458d4214f7a09006939786984cf1222046bfe9ada8ad820f"
     },
     {
-      "directory": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-16",
+      "directory": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-16",
       "kind": 16,
       "rows": 54,
       "payload_bytes": 35640,
       "manifest_sha256": "acf24a06deb6de62a984a183ffe3a061c09f5b68427fef2ccc038671893fa74b"
     },
     {
-      "directory": "/Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-30",
+      "directory": "/path/to/picoforge-qwen38-integrate-v2/build/qwen38-b/slices-30",
       "kind": 30,
       "rows": 3,
       "payload_bytes": 15360,

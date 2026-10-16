@@ -1,6 +1,6 @@
 {
   "complete": true,
-  "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
   "checkpoint_bytes": 147207127040,
   "checkpoint_sha256_recomputed": false,
   "revision": "888f47fa2ec4ba41a31390bce9e1a0d3f1b31ddb",
@@ -96,9 +96,9 @@
       "modes": {
         "ordinary": {
           "command": [
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "/path/to/picoforge-native-next/picoforge",
             "--qwen38",
-            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
             "--tokens",
             "727,884,2784,11,292,1590,198,262,460",
             "--max-new",
@@ -112,7 +112,7 @@
             "--repeat",
             "3",
             "--runs-jsonl",
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/paired-real-01/coding/ordinary.jsonl"
+            "/path/to/picoforge-native-next/build/qwen38-mtp/paired-real-01/coding/ordinary.jsonl"
           ],
           "metrics": {
             "load_s": {
@@ -243,9 +243,9 @@
         },
         "mtp": {
           "command": [
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "/path/to/picoforge-native-next/picoforge",
             "--qwen38",
-            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
             "--tokens",
             "727,884,2784,11,292,1590,198,262,460",
             "--max-new",
@@ -259,7 +259,7 @@
             "--repeat",
             "3",
             "--runs-jsonl",
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/paired-real-01/coding/mtp.jsonl",
+            "/path/to/picoforge-native-next/build/qwen38-mtp/paired-real-01/coding/mtp.jsonl",
             "--mtp"
           ],
           "metrics": {
@@ -413,9 +413,9 @@
       "modes": {
         "mtp": {
           "command": [
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "/path/to/picoforge-native-next/picoforge",
             "--qwen38",
-            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
             "--tokens",
             "248045,846,198,63299,31732,180110,154294,93694,72,791,200001,632,15264,378,187532,58902,4931,190411,230769,2397,175871,13,248046,198,248045,74455,198,248068,271,248069,271",
             "--max-new",
@@ -429,7 +429,7 @@
             "--repeat",
             "3",
             "--runs-jsonl",
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/paired-real-01/italiano/mtp.jsonl",
+            "/path/to/picoforge-native-next/build/qwen38-mtp/paired-real-01/italiano/mtp.jsonl",
             "--mtp"
           ],
           "metrics": {
@@ -593,9 +593,9 @@
         },
         "ordinary": {
           "command": [
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+            "/path/to/picoforge-native-next/picoforge",
             "--qwen38",
-            "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+            "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
             "--tokens",
             "248045,846,198,63299,31732,180110,154294,93694,72,791,200001,632,15264,378,187532,58902,4931,190411,230769,2397,175871,13,248046,198,248045,74455,198,248068,271,248069,271",
             "--max-new",
@@ -609,7 +609,7 @@
             "--repeat",
             "3",
             "--runs-jsonl",
-            "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/paired-real-01/italiano/ordinary.jsonl"
+            "/path/to/picoforge-native-next/build/qwen38-mtp/paired-real-01/italiano/ordinary.jsonl"
           ],
           "metrics": {
             "load_s": {
@@ -810,5 +810,5 @@
     }
   ],
   "summary_note": "Derived from immutable report.json. load_s is one process observation per mode; n corrected from repeated per-request copies to 1. Other measurements unchanged.",
-  "source_report_sha256": "8ac9e995ef789d22061b2e2416ac63372e26cdf81e4cfecf33813440f63d4324"
+  "source_report_sha256": "728563255df8b3741075a18ffb908519cb7689e7b7b9361dac3bfda6ac4fedd6"
 }

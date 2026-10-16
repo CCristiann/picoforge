@@ -1,9 +1,9 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge/build/test_gpu_weights",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+    "/path/to/picoforge/build/test_gpu_weights",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge",
+  "cwd": "/path/to/picoforge",
   "pilot": true,
   "complete": true,
   "executable_sha256": "dd802cebde7f6b61b120525f20095c7d5b2a75264d88a19df9df3595ce088e80",

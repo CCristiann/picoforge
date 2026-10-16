@@ -1,5 +1,5 @@
-/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge.metallib"
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+/path/to/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MTL_DEBUG_LAYER=1 ./build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf "/path/to/picoforge-g1-cpu/picoforge.metallib"
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 2026-10-13 14:22:58.354 test_parts[56662:500268] Metal API Validation Enabled
 {"check":"embedding_lookup","layer":4294967295,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
 {"check":"ple_gate_near_zero","layer":1,"err":5.960e-08,"gate":1e-06,"bitwise":false,"pass":true}
@@ -80,8 +80,8 @@ GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lo
 {"check":"qsa_scores","layer":3,"err":1.732e-07,"gate":2e-05,"bitwise":false,"pass":true}
 {"check":"qsa_ids","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
 {"check":"qsa_chunk_reset","layer":3,"err":0.000e+00,"gate":0,"bitwise":true,"pass":true}
-/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+/path/to/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /path/to/picoforge/tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_cli.py -v
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 test_admission (__main__.CliTests.test_admission) ... ok
 test_greedy_and_last_logits (__main__.CliTests.test_greedy_and_last_logits) ... ERROR
 
@@ -95,7 +95,7 @@ Traceback (most recent call last):
   File "/opt/homebrew/Cellar/python@3.14/3.14.2_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 577, in run
     raise CalledProcessError(retcode, process.args,
                              output=stdout, stderr=stderr)
-subprocess.CalledProcessError: Command '['/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge', '--qwen38', '/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g1/graph.gguf', '--tokens', '5,17,300', '--context', '32', '--chunk', '3', '--max-new', '5', '--logits', '/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g2/tmp61ogtnv5/gpu.f32', '--token-ids', '/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g2/tmp61ogtnv5/ids.json']' returned non-zero exit status 1.
+subprocess.CalledProcessError: Command '['/path/to/picoforge-g1-cpu/picoforge', '--qwen38', '/path/to/picoforge-g1-cpu/build/qwen38-g1/graph.gguf', '--tokens', '5,17,300', '--context', '32', '--chunk', '3', '--max-new', '5', '--logits', '/path/to/picoforge-g1-cpu/build/qwen38-g2/tmp61ogtnv5/gpu.f32', '--token-ids', '/path/to/picoforge-g1-cpu/build/qwen38-g2/tmp61ogtnv5/ids.json']' returned non-zero exit status 1.
 
 ----------------------------------------------------------------------
 Ran 2 tests in 0.039s

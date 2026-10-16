@@ -1,4 +1,4 @@
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 {"tokens":12,"layers":48,"chunk":4,"next_pos":12,"valid":true,"replay":"none"}
       370.91 real       173.14 user         2.11 sys
          10154278912  maximum resident set size

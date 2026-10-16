@@ -65,9 +65,9 @@ GEMV/GEMM nativa. Non viene fissata qui una tolleranza per le API da consolidare
 Dalla radice del worktree, con checkout DwarfStar e ambiente già presenti:
 
 ```sh
-B_ORACLE_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
-B_ORACLE_DS4=/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline
-B_ORACLE_MODEL=/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+B_ORACLE_PY=/path/to/picoforge/tools/venv/bin/python
+B_ORACLE_DS4=/path/to/ds4-qwen38-baseline
+B_ORACLE_MODEL=/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
 
 "$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py build "$B_ORACLE_DS4" build/qwen38-packed/repro-cpu
 "$B_ORACLE_PY" -B tests/test_qwen38_packed.py --reference build/qwen38-packed/repro-cpu/reference --report build/qwen38-packed/repro-cpu-tests.json -v

@@ -71,9 +71,9 @@
       "passed": true,
       "commands": [
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/picoforge",
+          "/path/to/picoforge-native-next/picoforge",
           "--qwen38",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
           "--tokens",
           "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
           "--context",
@@ -83,18 +83,18 @@
           "--max-new",
           "4",
           "--logits",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/lower-bound/native.f32",
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/lower-bound/native.f32",
           "--token-ids",
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/lower-bound/ids.json"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/lower-bound/ids.json"
         ],
         [
-          "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/oracle-build/reference",
-          "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
+          "/path/to/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/oracle-build/reference",
+          "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf"
         ]
       ],
       "oracle_environment": {
         "DS4_QWEN4_FT_TOKENS": "248045,846,198,63299,31732,184402,184026,351,16,16,2920,33959,212087,1331,516,4570,18857,3906,2654,514,348,64,11,1331",
-        "DS4_QWEN4_FT_OUT": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/lower-bound/reference.f32"
+        "DS4_QWEN4_FT_OUT": "/path/to/picoforge-native-next/build/qwen38-native-bounded-lazy-v2/lower-bound/reference.f32"
       },
       "artifacts": {
         "ids.json": "dd7ea69f79cf9878e45bbf5c9c0bb611299a0a4777ff5d6565b1d3d021b540eb",

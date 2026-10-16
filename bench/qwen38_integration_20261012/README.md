@@ -71,11 +71,11 @@ DwarfStar fissato e GGUF verificato della fase 0. Nessuna nuova dipendenza.
 Dal worktree integrato:
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 make qwen38-test-assets PYTHON="$Q38_PY" \
-  Q38_REFERENCE_ROOT=/Users/cristiancirje/Desktop/Dev/picoforge \
-  Q38_DWARFSTAR=/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline \
-  Q38_SOURCE_DIR=/Users/cristiancirje/Desktop/Dev/picoforge-f-v1/build/qwen38-f/upstream
+  Q38_REFERENCE_ROOT=/path/to/picoforge \
+  Q38_DWARFSTAR=/path/to/ds4-qwen38-baseline \
+  Q38_SOURCE_DIR=/path/to/picoforge-f-v1/build/qwen38-f/upstream
 make -j4 picoforge PYTHON="$Q38_PY"
 make test-qwen38-cpu PYTHON="$Q38_PY"
 make test-qwen38-gpu PYTHON="$Q38_PY"

@@ -1,8 +1,8 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/mtp_real",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding",
+    "/path/to/picoforge-native-next/build/qwen38-mtp/mtp_real",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge-native-next/build/qwen38-mtp/gate-real-01/coding",
     "4",
     "0",
     "727",
@@ -20,7 +20,7 @@
     "271",
     "727"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-native-next",
+  "cwd": "/path/to/picoforge-native-next",
   "pilot": true,
   "complete": true,
   "recorded_utc": "2026-10-13T20:17:48.948090+00:00",

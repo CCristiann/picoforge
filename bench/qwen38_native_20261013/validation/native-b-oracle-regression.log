@@ -1,4 +1,4 @@
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer tests/test_qwen38_packed.c src/qwen38_packed.c src/gguf.c src/gguf_reader.c src/util.c -lm -o build/qwen38-b/test_packed
 env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_test.py tests/test_qwen38_packed.py --reference build/qwen38-b/reference/reference --native build/qwen38-b/test_packed --slices build/qwen38-b/slices-0 --slices build/qwen38-b/slices-1 --slices build/qwen38-b/slices-8 --slices build/qwen38-b/slices-10 --slices build/qwen38-b/slices-16 --slices build/qwen38-b/slices-30 --report "$(mktemp -d build/qwen38-integration/b-cpu.XXXXXX)/report.json" -v
 Integration report: build/qwen38-integration/b-cpu.n5WtWm/report.json

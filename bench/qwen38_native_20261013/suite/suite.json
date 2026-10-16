@@ -1,7 +1,7 @@
 {
   "version": 1,
   "scope": "Native runtime and local quality pilot; not a leaderboard",
-  "checkpoint": "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint": "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
   "checkpoint_bytes": 147207127040,
   "checkpoint_sha256_recomputed": false,
   "cases": [

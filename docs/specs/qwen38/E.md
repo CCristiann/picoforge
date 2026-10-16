@@ -4,7 +4,7 @@ Stato: **SPEC, proposta per il consolidamento**, 2026-10-12.
 `BASE_CONCORDATA`: da determinare; nessuna implementazione autorizzata qui.
 Base ispezionata: picoforge `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
 Branch di questa spec: `spec/qwen38-e`; worktree esterno
-`/Users/cristiancirje/Desktop/Dev/picoforge-spec-e`.
+`/path/to/picoforge-spec-e`.
 
 Le formule contrassegnate **verificate** sono ricavate dalle fonti sotto;
 API, budget e tolleranze sono **proposte**, non risultati numerici acquisiti.
@@ -54,7 +54,7 @@ SHA-256 del file Transformers letto:
 `f94401c10c1bbafd814cc174ba6f40dde1f40b35715ce1ae827ccf8ee3cd81fa`.
 Questa revisione del codice è distinta da quella dei pesi; non si assume che
 il `transformers_version` del config identifichi un commit. L'ambiente esistente
-`/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv` ha Torch `2.13.0` e
+`/path/to/picoforge/tools/venv` ha Torch `2.13.0` e
 non contiene il modulo installato `transformers.models.qwen4_exp`.
 Non è stato aggiornato né installato alcun pacchetto.
 
@@ -636,7 +636,7 @@ In ESEGUI, **target da creare dal coordinatore**, non comandi oggi disponibili:
 
 ```sh
 cd "$Q38_IMPL_WORKTREE"           # nuovo worktree dalla BASE_CONCORDATA
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 # I test invocano questo interprete tramite runner/variabile concordati,
 # non creano un secondo venv né scrivono nel checkout principale.
 "$Q38_PY" tests/test_qwen38_ngram.py --synthetic
@@ -755,7 +755,7 @@ rimane precondizione: fstat non garantisce integrità crittografica.
 Verifica ripetibile, Python esistente, nessun checkpoint aperto:
 
 ```sh
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 # Solo al primo setup, oppure copiare la piccola cache verificata dal vecchio worktree:
 "$Q38_PY" tools/oracle/qwen38_ngram.py --fetch-source
 "$Q38_PY" tests/test_qwen38_ngram.py -v
@@ -932,16 +932,16 @@ righe, niente dequantizzazione dell'intero modello; budget addizionale
 previsto entro 512 MiB oltre Python/Torch.
 
 ```sh
-cd /Users/cristiancirje/Desktop/Dev/picoforge-e-v2
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+cd /path/to/picoforge-e-v2
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 "$Q38_PY" tools/oracle/qwen38_ngram.py --fetch-source
 "$Q38_PY" tests/test_qwen38_ngram.py -v
 # Una volta, directory nuova (sorgenti DwarfStar esistenti, nessuna dipendenza):
-"$Q38_PY" -c 'import sys; sys.path.insert(0,"tools/oracle"); from qwen38_packed import build_reference; build_reference("/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline", "build/qwen38-e/packed-reference")'
+"$Q38_PY" -c 'import sys; sys.path.insert(0,"tools/oracle"); from qwen38_packed import build_reference; build_reference("/path/to/ds4-qwen38-baseline", "build/qwen38-e/packed-reference")'
 # Usare una directory --output nuova per ogni run, senza sovrascrivere evidenza.
 "$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- "$Q38_PY" \
   tools/oracle/qwen38_ngram.py \
-  --real-checkpoint /Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
+  --real-checkpoint /path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
   --native build/qwen38-e/test_ngram \
   --packed-reference build/qwen38-e/packed-reference/reference \
   --output build/qwen38-e/real-ple-new
@@ -974,7 +974,7 @@ clang -std=c11 -O1 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
   src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c -lm \
   -o build/qwen38-e/test_links
 build/qwen38-e/test_links \
-  /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-a/small.gguf
+  /path/to/picoforge-qwen38-integrate/build/qwen38-a/small.gguf
 ```
 
 PASS: collegamenti A→B→F, C→E e A→D/E preservati. Restano staging/kernel

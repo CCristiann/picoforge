@@ -31,7 +31,7 @@ python3 tools/eval/render_qwen38_report.py \
 | Published bytes | 147,207,127,040 |
 | Published SHA-256 | `b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9` |
 
-The runtime checkout is `/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline`,
+The runtime checkout is `/path/to/ds4-qwen38-baseline`,
 outside picoforge. Its upstream `main` matched the pinned revision at inspection.
 The checkpoint downloads to the existing ignored `models/` tree, with no second
 full Hugging Face cache copy. Do not treat `.part` as a runnable checkpoint.

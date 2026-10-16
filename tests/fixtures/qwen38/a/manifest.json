@@ -112,7 +112,7 @@
       "last-gdn"
     ],
     "gpu_test": "Only small synthetic storage attach/CPU byte-span, MTL_DEBUG_LAYER=1, common lock; no real payload",
-    "lock": "/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock",
+    "lock": "/path/to/picoforge/.git/qwen38-gpu.lock",
     "qwen3_regressions": {
       "vocabulary": 151643,
       "merges": 151387,

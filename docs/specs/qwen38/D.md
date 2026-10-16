@@ -3,7 +3,7 @@
 ## Evidenza ESEGUI — 2026-10-12
 
 Base effettiva `c674b23bd1377b2ce0acef2d06fac8b160809446`, branch
-`impl/qwen38-d-cpu`, worktree `/Users/cristiancirje/Desktop/Dev/picoforge-d-cpu`.
+`impl/qwen38-d-cpu`, worktree `/path/to/picoforge-d-cpu`.
 `integration.md` e gli header v1 prevalgono sulle proposte storiche sotto.
 Il precedente worktree oracle è preservato; recuperati solo i quattro commit
 oracle completati, senza riacquisire la spec:
@@ -49,7 +49,7 @@ clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
   -ffp-contract=off -fsanitize=address,undefined -Isrc \
   tests/test_qwen38_attention.c src/qwen38_attention.c -lm \
   -o build/qwen38-d/test_attention
-/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python \
+/path/to/picoforge/tools/venv/bin/python \
   tests/test_qwen38_attention.py --native build/qwen38-d/test_attention -v
 make -j4
 ```
@@ -87,7 +87,7 @@ non può essere usato dopo un nuovo begin (nessuna garanzia contro ABA).
 Stato: **SPEC**, 2026-10-12. Nessun operatore implementato o test numerico
 eseguito da questa sessione. `BASE_CONCORDATA`: da fissare in consolidamento.
 Base ispezionata: `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
-Branch: `spec/qwen38-d`; worktree esterno: `/Users/cristiancirje/Desktop/Dev/picoforge-spec-d`.
+Branch: `spec/qwen38-d`; worktree esterno: `/path/to/picoforge-spec-d`.
 Le parole **verificato**, **proposta** e **aperto** distinguono evidenza,
 contratto da consolidare e lavoro necessario. I numeri di memoria sono calcoli,
 non misure. Le tolleranze sotto sono soglie iniziali proposte, non risultati.
@@ -129,7 +129,7 @@ deve fallire esplicitamente. Il supporto Qwen3 resta separato e invariato.
   SHA-256 registrato dalla verifica precedente:
   `b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9`.
   Non riletto/hashato il payload in SPEC. L'inventario da solo non lo autentica.
-- **DS**: checkout pulito `/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline`,
+- **DS**: checkout pulito `/path/to/ds4-qwen38-baseline`,
   commit `fc80bd695da76ee14bcb86820bf900a5cdfda806`; il `main` remoto via API
   GitHub al controllo del 2026-10-12 coincide. Fonti:
   [kernel Qwen](https://github.com/antirez/ds4/blob/fc80bd695da76ee14bcb86820bf900a5cdfda806/metal/qwen4.metal)
@@ -510,7 +510,7 @@ Tre riferimenti complementari; la traduzione C→Python o DS→C non basta.
    automaticamente la tolleranza 4e-3 o la dipendenza di precisione da T.
 
 Ambiente esistente verificato via metadati: Python di
-`/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python`, NumPy 2.5.1,
+`/path/to/picoforge/tools/venv/bin/python`, NumPy 2.5.1,
 torch 2.13.0, Transformers 5.13.0, **senza** `models/qwen4_exp`.
 Proposta senza nuove dipendenze: adapter di test che carica solo definizioni
 HF revisionate necessarie (AST allowlist/metodi, torch/nn/math e config
@@ -639,9 +639,9 @@ runtime DS FP16 costituiscono da soli una baseline di qualità dei pesi.
 ### Verifica di questa SPEC (nessuna GPU)
 
 ```
-git -C /Users/cristiancirje/Desktop/Dev/picoforge-spec-d status --short --branch
-git -C /Users/cristiancirje/Desktop/Dev/picoforge-spec-d diff --check
-git -C /Users/cristiancirje/Desktop/Dev/picoforge-spec-d diff --cached --name-only
+git -C /path/to/picoforge-spec-d status --short --branch
+git -C /path/to/picoforge-spec-d diff --check
+git -C /path/to/picoforge-spec-d diff --cached --name-only
 ```
 
 Nessun `make`, `test-all`, benchmark o lettura payload lanciato: il file è
@@ -660,8 +660,8 @@ Da eseguire solo dopo che il coordinatore materializza CLI/target e lock.
 non creare un nuovo venv e non scrivere fixture in `models/` principale.
 
 ```
-make PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python test-qwen38-attention-oracle
-make PYTHON=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python test-qwen38-attention-cpu
+make PYTHON=/path/to/picoforge/tools/venv/bin/python test-qwen38-attention-oracle
+make PYTHON=/path/to/picoforge/tools/venv/bin/python test-qwen38-attention-cpu
 make test-qwen38-attention-sanitize
 ```
 
@@ -759,14 +759,14 @@ clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror \
   src/qwen38_attention.c src/qwen38_base.c src/qwen38_config.c \
   src/qwen38_weights.c src/qwen38_packed.c src/gguf.c src/gguf_reader.c \
   src/gguf_plan.c src/util.c -lm -o build/qwen38-d/test_attention
-Q38_PY=/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python
+Q38_PY=/path/to/picoforge/tools/venv/bin/python
 "$Q38_PY" tests/test_qwen38_attention.py --native build/qwen38-d/test_attention \
   AttentionOracleTests NativeAttentionTests
 "$Q38_PY" tools/qwen38_gpu_lock.py --timeout 60 -- "$Q38_PY" \
   tools/oracle/qwen38_attention.py \
-  --slice-checkpoint /Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
+  --slice-checkpoint /path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
   --native build/qwen38-d/test_attention \
-  --packed-reference /Users/cristiancirje/Desktop/Dev/picoforge-qwen38-integrate/build/qwen38-b/reference/reference \
+  --packed-reference /path/to/picoforge-qwen38-integrate/build/qwen38-b/reference/reference \
   --output build/qwen38-d/slice-01
 ```
 

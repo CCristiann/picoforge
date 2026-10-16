@@ -7,7 +7,7 @@ I §1–10 conservano la proposta SPEC del 2026-10-12: decisioni allora aperte
 e comandi allora proposti non prevalgono su integration/header v1 e §11.
 Base ispezionata: `7c0b2379b93c478a46b0d6e75c3bde91a57b1bce`.
 Branch di questa spec: `spec/qwen38-a`; worktree esterno:
-`/Users/cristiancirje/Desktop/Dev/picoforge-spec-a`.
+`/path/to/picoforge-spec-a`.
 
 Nel seguito **V** indica un fatto verificato su file/codice, **P** un contratto
 proposto, **Aperto** una decisione o prova ancora necessaria. Le dimensioni
@@ -38,7 +38,7 @@ multimodali nel vocabolario non significa supportare i relativi modelli.
 | R4 | [Config HF][hf-config] e [generation config][hf-generation], revisione `de4b8e4d43b917e7706784d8bb445c9af86a3540`. Recuperati in memoria tramite HTTPS, senza pesi né installazioni. SHA-256: rispettivamente `889658f2508e8c61d409b02e70e0d78d8d4452ec65aaafbe129805d213d2e74b` e `e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e`. |
 | R5 | [Tokenizer HF][hf-tokenizer] e [tokenizer config][hf-tokenizer-config], stessa revisione; copie preesistenti `build/qwen38-tokenizer.json` e `build/qwen38-tokenizer-config.json` nella repository principale. SHA-256: `0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3` e `b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27`. |
 | R6 | [Artifact Q2][q2], revisione `d600fe1a43d2e1cdcadb85144ce3142f66f9eefe`, SHA-256 registrato `b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9`. Inventari e verifica in `bench/qwen38_q2_20261011_phase0/`; inventario C in `bench/qwen38_q2_20261012_storage/native-inventory.json`. |
-| R7 | Checkout locale `/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline`, pulito, commit `fc80bd695da76ee14bcb86820bf900a5cdfda806`; `git ls-remote` il 12 ottobre conferma lo stesso HEAD upstream. Consultati [ds4.c][ds4-code], `config_validate_qwen4_model`, `weights_bind_qwen4_layer`, `qwen4_ref_*`, `bpe_tokenize_text_qwen35`; [convertitore][ds4-converter] e [guida Qwen][ds4-guide]. |
+| R7 | Checkout locale `/path/to/ds4-qwen38-baseline`, pulito, commit `fc80bd695da76ee14bcb86820bf900a5cdfda806`; `git ls-remote` il 12 ottobre conferma lo stesso HEAD upstream. Consultati [ds4.c][ds4-code], `config_validate_qwen4_model`, `weights_bind_qwen4_layer`, `qwen4_ref_*`, `bpe_tokenize_text_qwen35`; [convertitore][ds4-converter] e [guida Qwen][ds4-guide]. |
 
 **V.** Il file locale Q2 ha ancora 147.207.127.040 byte, inode 30631842 e
 mtime_ns 1791785892435960350, uguali alla verifica registrata. Non è stato
@@ -756,7 +756,7 @@ Comandi **proposti per ESEGUI**, da aggiungere al Makefile dal coordinatore;
 questi target/variabili non esistono alla base R1:
 
 ```sh
-PF_MAIN=/Users/cristiancirje/Desktop/Dev/picoforge
+PF_MAIN=/path/to/picoforge
 PF_PY="$PF_MAIN/tools/venv/bin/python"
 make test-qwen38-a-cpu PYTHON="$PF_PY" QWEN38_REFERENCE_ROOT="$PF_MAIN" \
   SANITIZERS=address,undefined
@@ -833,7 +833,7 @@ collegamento al grafo completo.
 ## 11. Consegna ESEGUI sulla base consolidata
 
 **Verificato il 2026-10-12.** Branch `impl/qwen38-a-v1`, worktree
-`/Users/cristiancirje/Desktop/Dev/picoforge-a-v1`, creato dalla base sopra.
+`/path/to/picoforge-a-v1`, creato dalla base sopra.
 Preservati main, `picoforge-spec-a`, `picoforge-a-oracle` e gli altri worktree.
 Recuperati soltanto i due commit oracle propri; nessuna nuova acquisizione
 della spec o di implementazioni B–F. Nessun merge/push.
@@ -901,7 +901,7 @@ Comando autonomo realmente eseguito, dal worktree A (nessun target Makefile
 nuovo necessario):
 
 ```sh
-PF_MAIN=/Users/cristiancirje/Desktop/Dev/picoforge
+PF_MAIN=/path/to/picoforge
 PF_PY="$PF_MAIN/tools/venv/bin/python"
 PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 "$PF_PY" -B \
   tools/synth/make_qwen38_a.py --verify \
@@ -926,7 +926,7 @@ Regressioni Qwen3 eseguite senza copiare asset o venv, dopo la build locale:
 ```sh
 PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 TMPDIR="$PWD/build/qwen38-a" \
   "$PF_PY" -B tools/qwen38_gpu_lock.py --timeout 60 -- "$PF_PY" -B -c \
-  'import subprocess,sys; [subprocess.run([sys.executable,"-B",t,"/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3-0.6B"],check=True) for t in ("tests/test_tokenizer.py","tests/test_encode.py","tests/test_nfc.py")]'
+  'import subprocess,sys; [subprocess.run([sys.executable,"-B",t,"/path/to/picoforge/models/Qwen3-0.6B"],check=True) for t in ("tests/test_tokenizer.py","tests/test_encode.py","tests/test_nfc.py")]'
 ```
 
 ### Memoria e limiti misurati
@@ -970,7 +970,7 @@ stato; `make test-all`, logits/generazione, misure globali e qualità. La wildca
 C esistente include già i sorgenti A nella build. Il runner elenca esattamente
 i sorgenti per ciascun harness; non è necessario ricopiare un BPE o decoder.
 Il lock comune effettivamente usato è
-`/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock`.
+`/path/to/picoforge/.git/qwen38-gpu.lock`.
 I controlli A passati non certificano operatori numerici, MTP o perdita Q2/BF16.
 
 Commit di codice da integrare in ordine (lo SHA della consegna documentale è

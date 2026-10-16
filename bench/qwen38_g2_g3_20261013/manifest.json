@@ -1,10 +1,10 @@
 {
   "base_commit": "458f8e582110c6eee26939b7b4b74a9dfd52a357",
   "branch": "coord/qwen38-g1-cpu",
-  "worktree": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu",
+  "worktree": "/path/to/picoforge-g1-cpu",
   "scope": "Full ordinary FP32 GPU graph and greedy generation; no MTP or native performance claim",
   "checkpoint_hash_recomputed": false,
-  "gpu_lock": "/Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock",
+  "gpu_lock": "/path/to/picoforge/.git/qwen38-gpu.lock",
   "source_sha256": {
     "docs/specs/qwen38/G2.md": "e56bf1ff2ffa8b4a65bf0539c4413eb92843e39e00ceb223fdbb7892f45e4823",
     "src/qwen38_cli.h": "de72123676132e3a9f332474afc8e553c4447cdcb7e90a1e4be171ab7ee8cb27",
@@ -24,7 +24,7 @@
     "tools/synth/make_qwen38_cli.py": "5e01466314be73edd5cb69c535c6bf95c9f3f72300b23a93fd24264b7d2ce1cb",
     "Makefile": "81e994d51b6fe9c260bf1991905bf9390e72a24190cc7e1024cdd558cccf42c7",
     "README.md": "930049b0d815769f6c8df34bd03cb9d74b125ef23bbdd448e6744d16b94ff0e8",
-    "docs/specs/qwen38/E.md": "ec0aa78ce09988de4cc4f46d26b42cba972a091a5588f55df05ac7ed529b7c96",
+    "docs/specs/qwen38/E.md": "efebda2c7d87383aa9851619f4828135cebfe30ac11104c04e7a47ccc5619f49",
     "docs/specs/qwen38/integration.md": "5a59ce843c977988ad10bac3c0712ad60dea35b66a31fa3da1815051e08ba5a8",
     "src/main.c": "217269c84a91f36e02d5aaf489b7c506685a536edc0032dba4f65dead69087f1",
     "src/qwen38_ngram.c": "3921b703664148221f5d1cbc8f104fba694771a6d964a0539c812197cb39f24a",

@@ -1,5 +1,5 @@
 Chat locale: http://127.0.0.1:8001
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 Qwen3.8: 48 layers, 0 prompt tokens, context 8192, chunk 128; graph buffers 748.7 MiB
 127.0.0.1 - - [13/Oct/2026 22:38:58] "GET / HTTP/1.1" 200 -
 127.0.0.1 - - [13/Oct/2026 22:38:58] "GET /api/status HTTP/1.1" 200 -

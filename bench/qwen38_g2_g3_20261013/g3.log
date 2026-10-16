@@ -1,5 +1,5 @@
-/Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /Users/cristiancirje/Desktop/Dev/picoforge/tools/venv/bin/python -B tools/qwen38_g3.py --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --dwarfstar "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline" --output "build/qwen38-g3-final"
-GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+/path/to/picoforge/tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /path/to/picoforge/tools/venv/bin/python -B tools/qwen38_g3.py --checkpoint "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --dwarfstar "/path/to/ds4-qwen38-baseline" --output "build/qwen38-g3-final"
+GPU lock acquired: /path/to/picoforge/.git/qwen38-gpu.lock
 {
   "hidden_max": 2.560192690342646e-06,
   "fp32_reference": {

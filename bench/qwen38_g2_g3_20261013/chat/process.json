@@ -1,18 +1,18 @@
 {
   "command": [
-    "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/picoforge",
+    "/path/to/picoforge-g1-cpu/picoforge",
     "--qwen38",
-    "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
     "--chat",
     "Rispondi in italiano: quanto fa 2 + 2?",
     "--max-new",
     "16",
     "--token-ids",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/chat-ids.json",
+    "/path/to/picoforge-g1-cpu/build/qwen38-g3-final/chat-ids.json",
     "--logits",
-    "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu/build/qwen38-g3-final/chat-logits.f32"
+    "/path/to/picoforge-g1-cpu/build/qwen38-g3-final/chat-logits.f32"
   ],
-  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-g1-cpu",
+  "cwd": "/path/to/picoforge-g1-cpu",
   "pilot": true,
   "complete": true,
   "executable_sha256": "793714295715475e8bbc91475137477ee4b16b8ca7c0fa293b7e89e32697fb9c",
