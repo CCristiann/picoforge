@@ -31,7 +31,10 @@ both engines (ds4-bench measures one frontier per process); `summarize` gives
 the median, nearest-sample p10/p90 and the ratio; `ssd-check` makes one try.
 Lesson: mapping the checkpoint while the last Metal process's ~46 GiB were
 still wired froze the Mac twice. Every launch now waits for release before
-and after and runs under a strict memory guard. Smoke: pending (controller run).
+and after and runs under a strict memory guard. Smoke (short frontier, AC,
+1 warm-up + 2 measured per engine, not the baseline): picoforge 1.064 tok/s,
+DwarfStar 33.07 tok/s, ratio 0.032; pressure normal, swap 0. `ds4
+--ssd-streaming` refuses Qwen3.8 (exit 1: SSD streaming not supported).
 
 ### R0.4a — Teacher-forced decode in the CLI
 
