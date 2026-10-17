@@ -315,9 +315,14 @@ Qwen38Status q38g_forward_set_profile(Qwen38GpuForward *f,Q38Profile *p,Qwen38Er
 void q38g_profile_mark(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t layer,const char *op,uint32_t type,uint64_t bytes) {
     if (!f->prof_ticket) return;
     void *pass=q38_profile_group(f->prof,layer,op,type,bytes);
+    /* R0.3: the session checks the encoder by identity, so the split sees the
+     * real one; the graph then encodes through the counting proxy. */
+    cmd->compute_encoder=q38_profile_unwrap(f->prof,cmd->compute_encoder);
     if (!pass || q38g_session_split(f->session,f->prof_ticket,pass,cmd,NULL)) f->prof_failed=true;
+    else cmd->compute_encoder=q38_profile_wrap(f->prof,cmd->compute_encoder);
 }
-#define MARK(layer,op,type,bytes) q38g_profile_mark(f,cmd,layer,op,type,bytes)
+/* Arguments are evaluated only in profile mode. */
+#define MARK(layer,op,type,bytes) do { if (f->prof_ticket) q38g_profile_mark(f,cmd,layer,op,type,bytes); } while(0)
 static Qwen38Status linear(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t layer,const char *op,G2Weight w,Qwen38GpuF32 x,Qwen38GpuF32 y,Qwen38Error *e) {
     MARK(layer,op,w.binding->tensor.type,w.binding->tensor.bytes);   /* nominal: the whole matrix once */
     TRY(q38_packed_encode(f->b,cmd,f->store,w.binding,&w.layout,0,flat(x),flat(y),e)); barrier(*cmd); return Q38_OK;
@@ -397,8 +402,26 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
     }
     return Q38_OK;
 }
-/* Profile groups: embed reads t rows; composite groups (ple, gdn, qsa.core,
- * moe) carry MIXED/0 bytes until R0.3 counts them. */
+/* R0.3 weight bytes of the composite groups: the tensors their kernels read in
+ * this append. gdn: C's linears (HN/A/DT/CONV/GN were copied into graph
+ * buffers); ple: key/value plus the staged F32 n-gram rows; moe: router and
+ * shared weights once per 32-token microbatch plus top_k experts of gate/up/
+ * down per token, exact for decode and an upper bound for t>1 (tokens may
+ * share experts). qsa.core reads KV/index caches, no weights: it stays 0. */
+static uint64_t gdn_bytes(const G2Layer *l) {
+    uint64_t s=0;
+    for (size_t j=0;j<Q38CW_COUNT;j++) if (!l->cw.constant[j].span.buffer) s+=l->cb[j]->tensor.bytes;
+    return s;
+}
+static uint64_t ple_bytes(const G2Layer *l,size_t t) {
+    return l->eb[0]->tensor.bytes+l->eb[1]->tensor.bytes+t*l->ew.rows.stride_bytes[0];
+}
+static uint64_t moe_bytes(const G2Layer *l,size_t t,uint64_t k) {
+    uint64_t s=0;
+    for (size_t j=0;j<8;j++) s+=j>=1 && j<=3 ? t*k*l->fl[j].expert_bytes : (t+31)/32*l->fb[j]->tensor.bytes;
+    return s;
+}
+/* Profile groups: embed reads t rows, linears their whole matrix once. */
 static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint32_t layers,size_t rows,uint32_t pos,Qwen38Error *e) {
     MARK(QWEN38_GLOBAL_LAYER,"embed",f->embed.binding->tensor.type,t*(f->embed.binding->tensor.bytes/f->c.vocab_size));
     TRY(q38_packed_lookup(f->b,cmd,f->store,f->embed.binding,&f->embed.layout,f->tokens.span,time_view(f->mixed,t),e));
@@ -406,13 +429,13 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
     copy(f,*cmd,time_view(f->mixed,t),time_view(f->r,t),true);
     for (uint32_t i=0;i<layers;i++) {
         G2Layer *l=&f->layer[i];
-        if (l->es) { MARK(i,"ple",Q38_PROFILE_MIXED,0); TRY(ple(f,*cmd,i,t,e)); }
-        if (l->kind.kind==Q38_LAYER_GDN) { MARK(i,"gdn",Q38_PROFILE_MIXED,0); TRY(gdn(f,*cmd,i,t,e)); }
+        if (l->es) { MARK(i,"ple",Q38_PROFILE_MIXED,ple_bytes(l,t)); TRY(ple(f,*cmd,i,t,e)); }
+        if (l->kind.kind==Q38_LAYER_GDN) { MARK(i,"gdn",Q38_PROFILE_MIXED,gdn_bytes(l)); TRY(gdn(f,*cmd,i,t,e)); }
         else TRY(qsa(f,cmd,i,t,pos,e));
         emit(f,*cmd,i,Q38G_ATTN_RESIDUAL,time_view(f->r,t));
         TRY(hc_read(f,cmd,i,&l->ffn,HC_FFN,t,e));
         emit(f,*cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
-        MARK(i,"moe",Q38_PROFILE_MIXED,0); TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
+        MARK(i,"moe",Q38_PROFILE_MIXED,moe_bytes(l,t,f->c.moe.top_k)); TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
         MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
     }
     TRY(hc_read(f,cmd,QWEN38_GLOBAL_LAYER,&f->final,HC_FINAL,t,e)); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));
@@ -503,8 +526,8 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
     if (submitted) rc=qwen38_gpu_session_finish(f->session,&ticket,e);
     else if (begun) qwen38_gpu_session_abort(f->session,&ticket,false,NULL);
-    if (f->prof && !q38_profile_end_append(f->prof,!rc && submitted) && !rc) rc=fail(e,Q38_GPU_ERROR,"profile samples");
     f->stats.wait_s=clock_s()-wait_start;
+    if (f->prof && !q38_profile_end_append(f->prof,!rc && submitted) && !rc) rc=fail(e,Q38_GPU_ERROR,"profile samples");
     if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->session);
     rc=jobs(f,!rc && layers==f->c.trunk_blocks,rc,e);
     if (rc || layers<f->c.trunk_blocks) f->valid=false;

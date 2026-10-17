@@ -248,6 +248,8 @@ int qwen38_cli(int argc,char **argv) {
                 fputs("{\"event\":\"reset\"}\n",stdout); fflush(stdout); continue;
             }
         }
+        /* Warm-up repetitions write no profile rows: detached, the graph never splits. */
+        if (profile) check(q38g_forward_set_profile(graph,repetition<warmup ? NULL : profile,&e),&e);
         double request_start=now(),reset_s=0;
         if (session || repetition) {
             check(qwen38_gpu_forward_reset(graph,&e),&e); qwen38_decoder_reset(decoder);
