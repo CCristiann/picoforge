@@ -2,6 +2,20 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R0/R1 — measure, then make Qwen3.8 Q2 decode fast (from 2026-10-17)
+
+Plan: [R0-R1-plan.md](specs/qwen38/R0-R1-plan.md), spec:
+[R0-R1-decode.md](specs/qwen38/R0-R1-decode.md). For this stage the human
+chose to **build first and study afterwards**: agents implement each step
+under the usual gates, and every step leaves a note here (concept, what
+changed, the measured number) to be studied line by line later. Notes below
+are newest first.
+
+Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
+`make test-qwen38-mtp test-qwen38-speculative`, `make test-all` and
+`make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
+gate, argmax and ordered top-5 12/12.
+
 ## 2026-10-11 — accepted-route cost predictor, opt-in experiment
 
 `auto-experts` forecasts verify cost from the last 32 accepted input routes,
