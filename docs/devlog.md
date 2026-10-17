@@ -16,6 +16,23 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R0.1 — Metal capability probe
+
+We ask the live device what it supports instead of trusting headers: Metal 4
+and residency sets are young, so each is called only after
+`respondsToSelector:`/`@available`. What matters for R0.2 is the counter
+sampling point: *stage* sampling reads the GPU clock at the start/end of a
+whole encoder pass, *dispatch* sampling around every dispatch inside one
+encoder (what per-op timing in a fused graph would need). New:
+`tools/probe/qwen38_capabilities.m` and `make test-qwen38-r0-tools` (one lock
+in the recipe, none in the test). Measured on this M5 Pro (macOS 27.0.1, AC,
+thermal `nominal`; `bench/qwen38_r0_20261017/capabilities.json`): the only
+counter set is `timestamp`, sampling works at the **stage** boundary only
+(dispatch, draw, blit, tile false), so per-op times need separate encoders or
+command buffers. `GPUStartTime/EndTime` are valid; Metal 4 family,
+`MTL4CommandQueue` and residency sets are available; working set 55.66 GB,
+max buffer 41.75 GB, unified memory.
+
 ## 2026-10-11 — accepted-route cost predictor, opt-in experiment
 
 `auto-experts` forecasts verify cost from the last 32 accepted input routes,
