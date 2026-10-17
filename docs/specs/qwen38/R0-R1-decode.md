@@ -94,6 +94,11 @@ alternato.
   lo stesso lavoro di `ds4-bench`.
 - La baseline lenta (8K a ~34 minuti per run) si misura con le ripetizioni
   possibili, dichiarate.
+- *Deviazione (R0.4b):* anche al prompt breve DwarfStar si misura con
+  `ds4-bench --teacher-forced-decode`, non con la CLI: la CLI si ferma a EOS e
+  non garantisce 128 token, né lo stesso lavoro. Il caso coding congelato ha
+  solo 32 token registrati, quindi i 128 ID forzati sono la continuazione greedy
+  di picoforge (ruling R7); entrambi i tokenizzatori devono riprodurli.
 
 Nello stesso passo si verifica se `ds4 --ssd-streaming` accetta il file Qwen3.8.
 Serve alla roadmap e non costa nulla.

@@ -10,6 +10,7 @@ Real runs need the common lock:
   tools/qwen38_gpu_lock.py -- PYTHON tools/eval/qwen38_compare.py prepare OUT
 """
 import argparse
+import csv
 import json
 import os
 from pathlib import Path
@@ -36,7 +37,13 @@ SPECIALS = ('<|', '<｜', '｜DSML｜', '[gMASK]', '<sop>', 'think>', '<tool_', 
 # Ruling R9: stop a child at pressure level >= 2 (warn) or > 256 MiB of swap growth on
 # two consecutive samples 0.25 s apart. Healthy runs of both engines stay at level 1.
 GUARD, INTERVAL = dict(pressure=2, swap_bytes=256 << 20, samples=2), .25
-TOKENIZE_TIMEOUT, GREEDY_TIMEOUT = 60, 1800
+TOKENIZE_TIMEOUT, GREEDY_TIMEOUT, RUN_TIMEOUT, SSD_TIMEOUT = 60, 1800, 3600, 900
+PROTOCOL = ('One process per sample for both engines (ds4-bench measures one frontier per process): '
+            'prefill to the frontier, then 128 forced one-token appends. tok/s = forced IDs / decode '
+            'seconds (picoforge decode_s, ds4-bench gen_tps). Warm-ups discarded. OS file cache warm, '
+            'not purged: no cold-start claim.')
+COLUMNS = ('index', 'engine', 'warmup', 'tok_s', 'decode_tokens', 'ac_power', 'swap_delta_bytes',
+           'peak_footprint_bytes', 'process_s')
 
 
 def schedule(counts, block):
@@ -206,6 +213,134 @@ class Engines:
         return got['generated_ids'], text[:-1].decode()
 
 
+def pinned(revision):
+    """DwarfStar must be the pinned revision with a clean tree (read and execute only)."""
+    def git(*a):
+        return subprocess.check_output(['git', '-C', str(DWARFSTAR), *a], text=True)
+    head = git('rev-parse', 'HEAD').strip()
+    if head != revision or git('status', '--porcelain'):
+        raise RuntimeError(f'{DWARFSTAR.name} must be {revision[:7]} with a clean tree')
+    return head
+
+
+def thermal():
+    """NSProcessInfo.thermalState from the R0.1 probe; taken at run start and end only."""
+    probe = ROOT/'build/qwen38-capabilities'
+    done = subprocess.run([str(probe)], capture_output=True, text=True) if probe.exists() else None
+    return json.loads(done.stdout)['thermal_state'] if done and done.returncode == 0 else None
+
+
+def provenance(revision):
+    def git(*a):
+        return subprocess.check_output(['git', *a], cwd=ROOT, text=True)
+    binaries = {'picoforge': ENGINE, 'picoforge.metallib': ROOT/'picoforge.metallib',
+                'ds4-bench': DWARFSTAR/'ds4-bench', 'ds4': DWARFSTAR/'ds4', 'tool': Path(__file__)}
+    return dict(revision=git('rev-parse', 'HEAD').strip(), diff=git('diff', '--', 'src', 'tools', 'tests'),
+                dwarfstar_revision=pinned(revision), checkpoint=str(CHECKPOINT.relative_to(ROOT)),
+                checkpoint_bytes=CHECKPOINT.stat().st_size, checkpoint_sha256_recomputed=False,
+                sha256={name: sha(path) for name, path in binaries.items()})
+
+
+def command(engine, f, text, d):
+    """One teacher-forced sample. Never --logits: picoforge writes its rows inside decode_s."""
+    n = str(len(f['prompt_ids']))
+    if engine == 'picoforge':
+        return [str(ENGINE), '--qwen38', str(CHECKPOINT), '--tokens', ','.join(map(str, f['prompt_ids'] + f['forced_ids'])),
+                '--teacher-forced', str(FORCED), '--context', str(CONTEXT), '--chunk', str(CHUNK),
+                '--runs-jsonl', str(d/'runs.jsonl'), '--token-ids', str(d/'ids.json')], ROOT
+    return [str(DWARFSTAR/'ds4-bench'), '-m', str(CHECKPOINT), '--prefill-chunk', str(CHUNK), '--prompt-file', str(text),
+            '--ctx-start', n, '--ctx-max', n, '--ctx-alloc', str(CONTEXT), '--gen-tokens', str(FORCED),
+            '--teacher-forced-decode', '--csv', str(d/'bench.csv')], DWARFSTAR
+
+
+def result(engine, f, d):
+    """tok/s of one sample, after checking it appended all of this frontier's forced IDs."""
+    if engine == 'picoforge':
+        rows = [json.loads(line) for line in (d/'runs.jsonl').read_text().splitlines()]
+        ids, r = json.loads((d/'ids.json').read_text()), rows[0] if len(rows) == 1 else {}
+        if (r.get('mode') != 'teacher-forced' or r['decode_tokens'] != FORCED or r['stop_reason'] != 'length'
+                or not r['decode_s'] > 0 or (ids['prompt_ids'], ids['forced_ids']) != (f['prompt_ids'], f['forced_ids'])):
+            raise ValueError(f'{d.name}: not a complete teacher-forced sample of this frontier')
+        return dict(tok_s=r['decode_tokens']/r['decode_s'], decode_tokens=r['decode_tokens'],
+                    decode_s=r['decode_s'], prefill_s=r['prefill_s'])
+    with (d/'bench.csv').open(newline='') as fh:
+        rows = list(csv.DictReader(fh))
+    if len(rows) != 1 or int(rows[0]['ctx_tokens']) != len(f['prompt_ids']) or int(rows[0]['gen_tokens']) != FORCED:
+        raise ValueError(f'{d.name}: not a complete teacher-forced sample of this frontier')
+    r = rows[0]  # ds4-bench stops early on EOS: prepare refused stop IDs among the forced ones
+    return dict(tok_s=float(r['gen_tps']), decode_tokens=int(r['gen_tokens']),
+                gen_first_ms=float(r['gen_first_ms']), prefill_tps=float(r['prefill_tps']))
+
+
+def run(suite_dir, out, name, counts, block, timeout, launch=None):
+    """Alternate engine blocks on one frontier: one observed process per sample."""
+    plan, launch = schedule(counts, block), launch or Launcher()
+    suite = json.loads((suite_dir/'suite.json').read_text())
+    f = suite['frontiers'][name]
+    text = suite_dir/f['text_file']
+    if sha(text) != f['text_sha256']:
+        raise ValueError('frontier text changed since prepare')
+    out.mkdir(parents=True, exist_ok=False)
+    manifest = dict(complete=False, frontier=name, counts=counts, block=block, plan=plan, protocol=PROTOCOL,
+                    suite_sha256=sha(suite_dir/'suite.json'), guard=GUARD, **provenance(bounded()[1]),
+                    before=dict(conditions(), thermal_state=thermal()))
+    dump(out/'manifest.json', manifest)
+    samples = []
+    for engine, flags in plan:
+        for warmup in flags:
+            d = out/(f'{len(samples):03d}-{engine}' + ('-warmup' if warmup else ''))
+            cmd, cwd = command(engine, f, text, d)
+            code = launch(d, cwd, cmd, timeout)
+            if code:
+                raise RuntimeError(f'{d.name} failed (code {code}); raw evidence retained')
+            info, around = (json.loads((d/x).read_text()) for x in ('process/process.json', 'conditions.json'))
+            a, b = info['system_before'], info['system_after']
+            samples.append(dict(index=len(samples), engine=engine, warmup=warmup, **result(engine, f, d),
+                                ac_power=around['before']['ac_power'] and around['after']['ac_power'],
+                                swap_delta_bytes=b['system_swap_used_bytes'] - a['system_swap_used_bytes'] if a and b else None,
+                                peak_footprint_bytes=info['lifetime_peak_footprint_bytes'],
+                                process_s=info['process_s'], command=cmd))
+            with (out/'samples.jsonl').open('a') as fh:
+                fh.write(json.dumps(samples[-1]) + '\n')
+    with (out/'samples.csv').open('x', newline='') as fh:
+        writer = csv.DictWriter(fh, COLUMNS, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(samples)
+    manifest.update(complete=True, after=dict(conditions(), thermal_state=thermal()))
+    dump(out/'manifest.json', manifest)
+    summarize(out)
+
+
+def summarize(out):
+    """Median, nearest-sample p10/p90 and the ratio; summary.json is derived and rewritable."""
+    samples = [json.loads(line) for line in (out/'samples.jsonl').read_text().splitlines()]
+    result = dict(summary(samples), complete=json.loads((out/'manifest.json').read_text())['complete'],
+                  on_battery=any(not s['ac_power'] for s in samples),
+                  max_swap_delta_bytes=max(s['swap_delta_bytes'] or 0 for s in samples))
+    dump(out/'summary.json', result)
+    for e in ENGINES:
+        r = result[e]
+        print(f"{e}: median {r['median']:.3f} tok/s, p10 {r['p10']:.3f}, p90 {r['p90']:.3f}, n {r['n']}"
+              if r else f'{e}: no measured sample')
+    print(f"picoforge/DwarfStar {result['ratio_picoforge_over_dwarfstar']}, on battery {result['on_battery']}, "
+          f"complete {result['complete']}")
+
+
+def ssd_check(out, timeout, launch=None):
+    """One attempt of `ds4 --ssd-streaming` on the Qwen3.8 file; its exit status is the finding."""
+    launch, head = launch or Launcher(), pinned(bounded()[1])
+    out.mkdir(parents=True, exist_ok=False)
+    cmd = [str(DWARFSTAR/'ds4'), '-m', str(CHECKPOINT), '--ssd-streaming', '-c', str(CONTEXT),
+           '-n', '8', '--temp', '0', '-p', FROZEN_TEXT]
+    launch(out/'ssd', DWARFSTAR, cmd, timeout)
+    info = json.loads((out/'ssd/process/process.json').read_text())
+    dump(out/'ssd-check.json', dict(command=cmd, dwarfstar_revision=head, ds4_sha256=sha(DWARFSTAR/'ds4'),
+         returncode=info['returncode'], stop_reason=info['stop_reason'],
+         accepted=info['returncode'] == 0 and info['stop_reason'] is None))
+    print(f"ds4 --ssd-streaming exit status {info['returncode']}" +
+          (f" ({info['stop_reason']})" if info['stop_reason'] else ''))
+
+
 def frozen_case(directory=FROZEN):
     """The 9-ID coding prompt and its recorded 32-ID greedy continuation."""
     command = json.loads((directory/'ordinary/process.json').read_text())['command']
@@ -221,15 +356,42 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='action', required=True)
     sub.add_parser('prepare', help='fix the IDs of both frontiers').add_argument('output', type=Path)
+    r = sub.add_parser('run', help='alternate engine blocks on one frontier')
+    r.add_argument('suite', type=Path)
+    r.add_argument('output', type=Path)
+    r.add_argument('--frontier', choices=('short', '8k'), required=True)
+    for name in ('warmup', 'measure', 'block'):
+        r.add_argument('--' + name, type=int, required=True)
+    r.add_argument('--picoforge-warmup', type=int, help='override for picoforge (the slow 8K baseline)')
+    r.add_argument('--picoforge-measure', type=int)
+    r.add_argument('--timeout', type=float, default=RUN_TIMEOUT, help='seconds per process')
+    sub.add_parser('summarize', help='recompute the summary of a run').add_argument('output', type=Path)
+    s = sub.add_parser('ssd-check', help='one ds4 --ssd-streaming attempt')
+    s.add_argument('output', type=Path)
+    s.add_argument('--timeout', type=float, default=SSD_TIMEOUT)
     a = p.parse_args()
     out = a.output.resolve()
+    if a.action == 'summarize':
+        return summarize(out)
     if out.exists():
         p.error(f'output exists, never overwritten: {out}')
+    if a.action == 'run':
+        counts = {'picoforge': (a.warmup if a.picoforge_warmup is None else a.picoforge_warmup,
+                                a.measure if a.picoforge_measure is None else a.picoforge_measure),
+                  'dwarfstar': (a.warmup, a.measure)}
+        try:
+            schedule(counts, a.block)
+        except ValueError as e:
+            p.error(str(e))
     if 'PICOFORGE_GPU_LOCK_FD' not in os.environ:
         p.error('run under tools/qwen38_gpu_lock.py')
     require_lock()
-    prepare(out, Engines(out), CORPUS, frozen_case())
-
+    if a.action == 'prepare':
+        prepare(out, Engines(out), CORPUS, frozen_case())
+    elif a.action == 'run':
+        run(a.suite.resolve(), out, a.frontier, counts, a.block, a.timeout)
+    else:
+        ssd_check(out, a.timeout)
 
 if __name__ == '__main__':
     main()

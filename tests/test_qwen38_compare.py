@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -76,6 +77,31 @@ def memory_sample(pressure=1, swap=0):
                     system_swap_used_bytes=swap if pid else 0, phys_footprint_bytes=1,
                     lifetime_peak_phys_footprint_bytes=1)
     return sample
+
+
+def bench_launch(calls):
+    """In place of Launcher for `run`: writes what each engine's sample leaves behind."""
+    def launch(directory, cwd, command, timeout):
+        def arg(flag):
+            return command[command.index(flag) + 1]
+        name = Path(command[0]).name
+        calls.append((name, command))
+        (directory/'process').mkdir(parents=True)
+        if name == 'picoforge':
+            ids, n = [int(t) for t in arg('--tokens').split(',')], int(arg('--teacher-forced'))
+            Path(arg('--runs-jsonl')).write_text(json.dumps(dict(mode='teacher-forced', decode_tokens=n,
+                                                 stop_reason='length', decode_s=n/1.25, prefill_s=2.0)) + '\n')
+            Path(arg('--token-ids')).write_text(json.dumps(dict(prompt_ids=ids[:-n], forced_ids=ids[-n:])))
+        else:
+            Path(arg('--csv')).write_text('ctx_tokens,prefill_tokens,prefill_tps,gen_tokens,gen_tps,gen_first_ms,'
+                                          f"gen_steady_tokens,gen_steady_tps,kvcache_bytes\n{arg('--ctx-start')},2,"
+                                          f"9.0,{arg('--gen-tokens')},31.00,40.0,127,31.10,0\n")
+        memory = dict(system_swap_used_bytes=0)
+        (directory/'process/process.json').write_text(json.dumps(dict(
+            system_before=memory, system_after=memory, lifetime_peak_footprint_bytes=1, process_s=1.0)))
+        (directory/'conditions.json').write_text(json.dumps(dict(before=dict(ac_power=True), after=dict(ac_power=True))))
+        return 0
+    return launch
 
 
 class CompareTests(unittest.TestCase):
@@ -196,6 +222,47 @@ class CompareTests(unittest.TestCase):
             self.assertEqual((rc, meta['stop_reason'], meta['guard_limits']),
                              (0, None, {'pressure': 4, 'swap_bytes': 2 << 30, 'samples': 3}))
             self.assertEqual(meta['guard'], 'stop after 3 samples: critical pressure or swap growth > 2 GiB')
+
+
+    def test_run_rejects_existing_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)/'out'
+            out.mkdir()
+            (out/'keep.txt').write_text('evidence')
+            done = subprocess.run([sys.executable, '-B', str(TOOL), 'run', str(Path(directory)/'suite'), str(out),
+                                   '--frontier', 'short', '--warmup', '0', '--measure', '1', '--block', '1'],
+                                  capture_output=True, text=True)
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn('exists', done.stderr)
+            self.assertEqual([p.name for p in out.iterdir()], ['keep.txt'])
+            self.assertEqual((out/'keep.txt').read_text(), 'evidence')
+
+
+    def test_run_alternates_and_summarizes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d, calls = Path(directory), []
+            corpus = d/'corpus.txt'
+            corpus.write_text(''.join(f'riga {i:05d} del romanzo\n' for i in range(4000)))
+            qc.prepare(d/'suite', Fake(), corpus, CASE)
+            with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
+                    patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
+                qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 10, bench_launch(calls))
+            self.assertEqual([c[0] for c in calls], ['picoforge', 'ds4-bench']*3)
+            pico, bench = calls[0][1], calls[1][1]
+            self.assertNotIn('--logits', pico)  # its fwrite would be timed inside decode_s
+            self.assertEqual(pico[pico.index('--tokens') + 1], ','.join(map(str, [97, 98] + [99]*128)))
+            for flag, value in (('--ctx-start', '2'), ('--ctx-max', '2'), ('--ctx-alloc', '8192'), ('--gen-tokens', '128')):
+                self.assertEqual(bench[bench.index(flag) + 1], value)
+            self.assertIn('--teacher-forced-decode', bench)
+            self.assertEqual(Path(bench[bench.index('--prompt-file') + 1]).name, 'short.txt')
+            samples = [json.loads(line) for line in (d/'out/samples.jsonl').read_text().splitlines()]
+            self.assertEqual([(x['engine'], x['warmup']) for x in samples],
+                             [('picoforge', True), ('dwarfstar', True)] + [('picoforge', False), ('dwarfstar', False)]*2)
+            summary = json.loads((d/'out/summary.json').read_text())
+            self.assertEqual((summary['picoforge']['median'], summary['dwarfstar']['median']), (1.25, 31.0))
+            self.assertAlmostEqual(summary['ratio_picoforge_over_dwarfstar'], 1.25/31.0)
+            self.assertTrue(json.loads((d/'out/manifest.json').read_text())['complete'])
+            self.assertEqual((d/'out/samples.csv').read_text().splitlines()[0], ','.join(qc.COLUMNS))
 
 
 if __name__ == '__main__':

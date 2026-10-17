@@ -16,6 +16,23 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R0.4b — Paired picoforge/DwarfStar decode harness
+
+Paired: both engines decode the same IDs on the same Mac and file, so the
+ratio isolates the engine. Teacher-forced: after prefill to a frontier, 128
+fixed IDs are appended one by one, so tok/s (forced IDs / decode seconds)
+counts equal work. Alternated: engine blocks interleave, so heat or background
+drift falls on both. `tools/eval/qwen38_compare.py`: `prepare` fixes the IDs of
+the short frontier (frozen 9-ID coding prompt + 128 IDs of picoforge's greedy
+continuation, refused if a stop ID appears) and of the 8K one (first 8063 + 128
+IDs of `promessi_sposi.txt`), and requires picoforge and `ds4 --dump-tokens`
+to tokenize them identically; `run` gives one observed process per sample for
+both engines (ds4-bench measures one frontier per process); `summarize` gives
+the median, nearest-sample p10/p90 and the ratio; `ssd-check` makes one try.
+Lesson: mapping the checkpoint while the last Metal process's ~46 GiB were
+still wired froze the Mac twice. Every launch now waits for release before
+and after and runs under a strict memory guard. Smoke: pending (controller run).
+
 ### R0.4a — Teacher-forced decode in the CLI
 
 Teacher forcing means the next input token comes from a fixed list, not from
