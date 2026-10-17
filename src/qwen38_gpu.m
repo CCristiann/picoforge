@@ -267,6 +267,21 @@ Qwen38Status q38g_session_rewind(Qwen38GpuSession *g,const void *model,uint64_t 
     if (!rc) { l->next_pos=position; l->state=position ? Q38_SESSION_VALID : Q38_SESSION_IDLE; }
     return rc;
 }
+/* R0.2 profile mode only: end the current encoder and continue the SAME
+ * command in a new one (from an MTLComputePassDescriptor, or plain if NULL).
+ * Encoders of one command buffer keep Metal's order and hazard tracking. */
+Qwen38Status q38g_session_split(Qwen38GpuSession *g, const Qwen38GpuTicket *t, void *pass,
+    Qwen38GpuCommand *cmd, Qwen38Error *e) {
+    if (!g || !cmd || cmd->compute_encoder != g->encoder) return report(e, Q38_INVALID_ARGUMENT);
+    Qwen38Status s = qwen38_gpu_ledger_check(&g->ledger, t, Q38_SESSION_ENCODING, e);
+    if (s) return s;
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)g->command;
+    [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding]; drop(&g->encoder);
+    id<MTLComputeCommandEncoder> enc = pass ? [cb computeCommandEncoderWithDescriptor:
+        (__bridge MTLComputePassDescriptor *)pass] : [cb computeCommandEncoder];
+    cmd->compute_encoder = g->encoder = enc ? (__bridge_retained void *)enc : NULL;
+    return report(e, enc ? Q38_OK : Q38_GPU_ERROR);   /* nil: the caller must abort */
+}
 Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
     if (!g) return report(e, Q38_INVALID_ARGUMENT);
     if (qwen38_gpu_ledger_info(&g->ledger).busy) return report(e, Q38_BUSY);
