@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R0.2 — Opt-in per-op GPU profile
+
+The GPU stamps time only at encoder boundaries, so `--profile FILE.csv` gives
+each group (embed, every `linear()`, each HC C op, `gdn`, `qsa.core`, `moe`,
+`hc_add`, `final.*`, `lm_head`) its own compute encoder in the same command
+buffer, with start/end timestamps in a counter sample buffer; GPU ticks are
+calibrated with `sampleTimestamps:gpuTimestamp:` (1 ns per tick here). Metal
+keeps encoder order and hazard tracking, so results are unchanged; but each
+boundary costs a little and the gaps between encoders belong to no group, so
+the sum of `gpu_us` is not `gpu_s`. New: `src/qwen38_profile.{h,m}`,
+`q38g_session_split`, graph marks (no-op, no extra encoder, without a profile;
+MTP appends are not profiled), `make test-qwen38-profile`. Real checkpoint,
+coding prompt, one decode token per mode (n=1): logits bitwise identical;
+`gpu_s` 931.7 ms normal, 934.2 ms profiled (+0.27%); sum of the 656 groups
+932.1 ms (+0.04%). Tiny CLI graph, median of 20: +1.8% and +1.0%.
+
 ### R0.1 — Metal capability probe
 
 We ask the live device what it supports instead of trusting headers: Metal 4

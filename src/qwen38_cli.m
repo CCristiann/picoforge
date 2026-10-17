@@ -3,6 +3,7 @@
 #include "picoforge.h"
 #include "qwen38_cli.h"
 #include "qwen38_forward_gpu.h"
+#include "qwen38_g_internal.h"
 #include "qwen38_text.h"
 #include <errno.h>
 #include <math.h>
@@ -40,6 +41,7 @@ static void usage(void) {
         "       [--session] (resident local worker protocol)\n"
         "       [--stop-after N] (SIGUSR1 also stops cooperatively)\n"
         "       [--mtp] (one-token predictor, exact greedy verification)\n"
+        "       [--profile FILE.csv] (per-op GPU time of trunk appends; MTP appends are not profiled)\n"
         "Greedy FP32 generation; defaults: context 8192, chunk 1024, max-new 32.\n");
 }
 static Qwen38Bytes bytes(const char *s) { return (Qwen38Bytes){(const uint8_t *)s,strlen(s)}; }
@@ -141,7 +143,7 @@ int qwen38_cli(int argc,char **argv) {
     if (argc==3 && !strcmp(argv[2],"--help")) { usage(); return 0; }
     if (argc<4) { usage(); return 2; }
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
-    const char *runs_path=NULL; char *owned_input=NULL;
+    const char *runs_path=NULL,*profile_path=NULL; char *owned_input=NULL;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX;
     bool thinking=false,encode_only=false,session=false,mtp=false;
     for (int i=3;i<argc;i++) {
@@ -166,10 +168,11 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--replay-chunk")) replay_chunk=number(value,1,1024,opt);
         else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,32768,opt);
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
+        else if (!strcmp(opt,"--profile")) profile_path=value;
         else die("unknown Qwen3.8 option %s",opt);
     }
     if (!mode) die("a prompt is required");
-    if (session && (runs_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
+    if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
     if (!strcmp(mode,"--chat-file") || !strcmp(mode,"--complete-file")) {
         owned_input=read_prompt(input); input=owned_input;
         mode=!strcmp(mode,"--chat-file") ? "--chat" : "--complete";
@@ -180,6 +183,8 @@ int qwen38_cli(int argc,char **argv) {
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
     FILE *runs=runs_path ? fopen(runs_path,"wx") : NULL;
     if (runs_path && !runs) die("runs output must be a new file");
+    FILE *profile_csv=profile_path ? fopen(profile_path,"wx") : NULL; Q38Profile *profile=NULL;
+    if (profile_path && !profile_csv) die("profile output must be a new file");
     struct sigaction action={0}; action.sa_handler=stop_generation; action.sa_flags=SA_RESTART; sigemptyset(&action.sa_mask);
     if (sigaction(SIGUSR1,&action,NULL)) die("cannot install stop handler");
     @autoreleasepool {
@@ -213,7 +218,7 @@ int qwen38_cli(int argc,char **argv) {
             fputs("{\"prompt_ids\":",stdout); ids_json(stdout,tokens,count);
             fprintf(stdout,",\"prompt_tokens\":%zu,\"context\":%u}\n",count,capacity);
             qwen38_tokenizer_free(tok); qwen38_weights_free(weights); qwen38_config_free(config); gguf_close(&g);
-            free(tokens); free(generated); free(owned_input); if (runs) fclose(runs); return 0;
+            free(tokens); free(generated); free(owned_input); if (runs) fclose(runs); if (profile_csv) fclose(profile_csv); return 0;
         }
         id<MTLDevice> device=MTLCreateSystemDefaultDevice();
         if (!device) die("Metal device unavailable");
@@ -224,6 +229,7 @@ int qwen38_cli(int argc,char **argv) {
         Qwen38GpuForward *graph;
         check(qwen38_gpu_forward_create(&g,config,weights,store,(__bridge void *)device,(__bridge void *)lib,mtp ? MAX(chunk,2u) : chunk,capacity,mtp ? 2 : 1,&graph,&e),&e);
         if (mtp) check(qwen38_gpu_mtp_enable(graph,&e),&e);
+        if (profile_csv) { check(q38_profile_create((__bridge void *)device,profile_csv,&profile,&e),&e); check(q38g_forward_set_profile(graph,profile,&e),&e); }
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
             c->trunk_blocks,count,capacity,chunk,(double)qwen38_gpu_forward_bytes(graph)/1048576.0);
         size_t logits_bytes=(size_t)c->vocab_size*4*(mtp ? 2u : 1u);
@@ -257,6 +263,7 @@ int qwen38_cli(int argc,char **argv) {
         double prefill_start=now();
         for (size_t start=0;start<count && !stopped;start+=current_chunk) {
             size_t n=MIN((size_t)current_chunk,count-start); y.dim[0]=start+n==count ? 1 : 0;
+            q38_profile_begin_append(profile,"prefill",start);
             check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);
             accumulate(&prefill_stats,graph);
             residual_offset=n-1;
@@ -316,6 +323,7 @@ int qwen38_cli(int argc,char **argv) {
                     Qwen38GpuCheckpoint snapshot; part=now();
                     check(qwen38_gpu_checkpoint_save(graph,&snapshot,&e),&e); snapshot_s+=now()-part;
                     int32_t pair[2]={id,draft}; y.dim[0]=draft_stop ? 1 : 2; part=now();
+                    q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
                     check(qwen38_gpu_forward(graph,pair,y.dim[0],c->trunk_blocks,y,NULL,NULL,&e),&e);
                     verify_s+=now()-part; verified_tokens+=y.dim[0]; target_appends++; accumulate(&decode_stats,graph); y.dim[0]=1;
                     if (stopped) { check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e); break; }
@@ -324,10 +332,12 @@ int qwen38_cli(int argc,char **argv) {
                     if (target==draft) { accepted++; queued=!draft_stop; residual_offset=draft_stop ? 0 : 1; }
                     else if (!draft_stop) {
                         part=now(); check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e);
+                        q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
                         check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
                         replay_s+=now()-part; rollback_count++; target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
                     } else residual_offset=0;
                 } else {
+                    q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
                     check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
                     target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
                 }
@@ -371,6 +381,7 @@ int qwen38_cli(int argc,char **argv) {
         }
         }
         qwen38_decoder_free(decoder); qwen38_gpu_forward_destroy(graph); qwen38_tokenizer_free(tok);
+        if (!q38_profile_close(profile)) die("profile write failed");
         qwen38_weights_free(weights); gpu_weights_close(store); qwen38_config_free(config); gguf_close(&g);
         free(tokens); free(generated); free(logits);
     }

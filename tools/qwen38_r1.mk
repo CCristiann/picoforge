@@ -10,3 +10,9 @@ test-qwen38-r0-tools: build/qwen38-capabilities
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_capabilities.py --native $< -v
 
 .PHONY: test-qwen38-r0-tools
+
+# R0.2 per-op GPU profile on the tiny CLI graph; one lock in the recipe only.
+test-qwen38-profile: picoforge build/qwen38-g2/cli.gguf
+	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_profile.py -v
+
+.PHONY: test-qwen38-profile

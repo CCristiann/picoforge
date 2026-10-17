@@ -15,4 +15,10 @@ Qwen38Status q38g_session_rewind(Qwen38GpuSession *,const void *model,uint64_t e
  * updates cmd. On failure the caller must abort the command. */
 Qwen38Status q38g_session_split(Qwen38GpuSession *,const Qwen38GpuTicket *,void *pass,
     Qwen38GpuCommand *,Qwen38Error *);
+/* Attach a borrowed profile (NULL detaches) while idle. */
+Qwen38Status q38g_forward_set_profile(Qwen38GpuForward *,Q38Profile *,Qwen38Error *);
+/* Closes the current group and opens the next. A no-op, with zero extra
+ * encoders, without a profile or outside an ordinary trunk append (MTP). */
+void q38g_profile_mark(Qwen38GpuForward *,Qwen38GpuCommand *,uint32_t layer,const char *op,
+    uint32_t gguf_type,uint64_t weight_bytes);
 #endif

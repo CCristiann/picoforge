@@ -46,6 +46,7 @@ struct Qwen38GpuForward {
     uint64_t last_start,snapshot_serial,saved_start; size_t last_count,saved_count;
     void *snapshot; size_t snapshot_bytes;
     Qwen38GpuCheckpoint saved;
+    Q38Profile *prof; const Qwen38GpuTicket *prof_ticket; bool prof_failed; /* R0.2, trunk appends only */
 };
 static Qwen38Status fail(Qwen38Error *e,Qwen38Status code,const char *detail) {
     if (e) { memset(e,0,sizeof *e); e->code=code;
@@ -306,20 +307,39 @@ static void emit(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t layer,Qwen38G
     copy(f,cmd,src,dst,false);
     f->traces[f->trace_count++]=(G2Trace){layer,stage,dst}; f->trace_offset+=dst.span.bytes;
 }
-static Qwen38Status linear(Qwen38GpuForward *f,Qwen38GpuCommand cmd,G2Weight w,Qwen38GpuF32 x,Qwen38GpuF32 y,Qwen38Error *e) {
-    TRY(q38_packed_encode(f->b,&cmd,f->store,w.binding,&w.layout,0,flat(x),flat(y),e)); barrier(cmd); return Q38_OK;
+Qwen38Status q38g_forward_set_profile(Qwen38GpuForward *f,Q38Profile *p,Qwen38Error *e) {
+    if (!f) return fail(e,Q38_INVALID_ARGUMENT,"null graph");
+    if (f->busy) return fail(e,Q38_BUSY,"graph busy");
+    f->prof=p; return fail(e,Q38_OK,NULL);
 }
-static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand cmd,const G2Hc *hc,size_t t,Qwen38Error *e) {
-    Q38CGpuSpec spec={.hc=f->c.hc,.eps=f->c.hc.rms_eps};
+void q38g_profile_mark(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t layer,const char *op,uint32_t type,uint64_t bytes) {
+    if (!f->prof_ticket) return;
+    void *pass=q38_profile_group(f->prof,layer,op,type,bytes);
+    if (!pass || q38g_session_split(f->session,f->prof_ticket,pass,cmd,NULL)) f->prof_failed=true;
+}
+#define MARK(layer,op,type,bytes) q38g_profile_mark(f,cmd,layer,op,type,bytes)
+static Qwen38Status linear(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t layer,const char *op,G2Weight w,Qwen38GpuF32 x,Qwen38GpuF32 y,Qwen38Error *e) {
+    MARK(layer,op,w.binding->tensor.type,w.binding->tensor.bytes);   /* nominal: the whole matrix once */
+    TRY(q38_packed_encode(f->b,cmd,f->store,w.binding,&w.layout,0,flat(x),flat(y),e)); barrier(*cmd); return Q38_OK;
+}
+/* Profile group names of one HC read, in encode order; C ops keep their Q38C_ name. */
+enum { HC_ATTN,HC_FFN,HC_FINAL };
+static const char *const hc_ops[3][7]={
+    {"hc_attn.rms","hc_attn.down","hc_attn.hc_low","hc_attn.up","hc_attn.hc_read","hc_attn.inject","hc_attn.hc_inject"},
+    {"hc_ffn.rms","hc_ffn.down","hc_ffn.hc_low","hc_ffn.up","hc_ffn.hc_read","hc_ffn.inject","hc_ffn.hc_inject"},
+    {"final.rms","final.down","final.hc_low","final.up","final.hc_read","final.inject","final.hc_inject"}};
+static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t layer,const G2Hc *hc,int kind,size_t t,Qwen38Error *e) {
+    Q38CGpuSpec spec={.hc=f->c.hc,.eps=f->c.hc.rms_eps}; const char *const *n=hc_ops[kind];
 #define V(x) time_view(f->x,t)
-#define OP(op,...) do { Qwen38GpuF32 vv[]={__VA_ARGS__}; TRY(q38c_gpu_encode(f->ops,cmd,Q38C_##op,&spec,vv,sizeof vv/sizeof *vv,e)); } while(0)
-    OP(RMS,V(r),hc->gain,V(normed));
-    TRY(linear(f,cmd,hc->down,V(normed),V(low),e));
-    OP(HC_LOW,V(low),V(act));
-    TRY(linear(f,cmd,hc->up,V(act),V(gate),e));
-    OP(HC_READ,V(normed),V(gate),V(mixed));
+#define OP(k,op,...) do { MARK(layer,n[k],Q38_PROFILE_NONE,0); Qwen38GpuF32 vv[]={__VA_ARGS__}; \
+    TRY(q38c_gpu_encode(f->ops,*cmd,Q38C_##op,&spec,vv,sizeof vv/sizeof *vv,e)); } while(0)
+    OP(0,RMS,V(r),hc->gain,V(normed));
+    TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
+    OP(2,HC_LOW,V(low),V(act));
+    TRY(linear(f,cmd,layer,n[3],hc->up,V(act),V(gate),e));
+    OP(4,HC_READ,V(normed),V(gate),V(mixed));
     if (hc->inject.binding) {
-        TRY(linear(f,cmd,hc->inject,V(normed),V(il),e)); OP(HC_INJECT,V(il),V(inject));
+        TRY(linear(f,cmd,layer,n[5],hc->inject,V(normed),V(il),e)); OP(6,HC_INJECT,V(il),V(inject));
     }
 #undef OP
 #undef V
@@ -346,20 +366,21 @@ static Qwen38Status gdn(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
     emit(f,cmd,i,Q38G_ATTN_MIXED,w.trace[Q38CT_MIX]); emit(f,cmd,i,Q38G_ATTN_INJECT,w.trace[Q38CT_INJECT]);
     emit(f,cmd,i,Q38G_ATTN_CONTRIBUTION,w.trace[Q38CT_OUT]); return Q38_OK;
 }
-static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size_t t,uint32_t pos,Qwen38Error *e) {
+static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t i,size_t t,uint32_t pos,Qwen38Error *e) {
     G2Layer *l=&f->layer[i]; Q38DGpuLayer w=l->dw;
 #define W(x) w.x=time_view(f->dw.x,t)
     W(qg); W(k); W(v); W(iq); W(ik); W(qn); W(qr); W(gate); W(kn); W(iqn); W(iqr); W(out);
 #undef W
     w.pooled=f->dw.pooled; w.pooled_n=f->dw.pooled_n;
     w.scores=time_view(f->dw.scores,f->capacity/l->ac.ratio); w.keep=f->dw.keep; w.ids=f->dw.ids;
-    TRY(hc_read(f,cmd,&l->attn,t,e));
+    TRY(hc_read(f,cmd,i,&l->attn,HC_ATTN,t,e));
     Qwen38GpuF32 outputs[]={w.qg,w.k,w.v,w.iq,w.ik};
-    for (size_t j=0;j<5;j++) TRY(linear(f,cmd,l->qsa[j],time_view(f->mixed,t),outputs[j],e));
-    TRY(q38d_layer_encode(f->d,f->ops,cmd,&l->ac,pos,(uint32_t)t,&w,e));
-    TRY(linear(f,cmd,l->qsa[5],w.out,time_view(f->block,t),e));
-    emit(f,cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
-    emit(f,cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t)); return hc_add(f,cmd,t,e);
+    static const char *const names[]={"qsa.qg","qsa.k","qsa.v","qsa.iq","qsa.ik","qsa.out"};
+    for (size_t j=0;j<5;j++) TRY(linear(f,cmd,i,names[j],l->qsa[j],time_view(f->mixed,t),outputs[j],e));
+    MARK(i,"qsa.core",Q38_PROFILE_MIXED,0); TRY(q38d_layer_encode(f->d,f->ops,*cmd,&l->ac,pos,(uint32_t)t,&w,e));
+    TRY(linear(f,cmd,i,names[5],l->qsa[5],w.out,time_view(f->block,t),e));
+    emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
+    emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t)); MARK(i,"hc_add",Q38_PROFILE_NONE,0); return hc_add(f,*cmd,t,e);
 }
 static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size_t t,Qwen38Error *e) {
     G2Layer *l=&f->layer[i];
@@ -376,22 +397,26 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
     }
     return Q38_OK;
 }
-static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand cmd,size_t t,uint32_t layers,size_t rows,uint32_t pos,Qwen38Error *e) {
-    TRY(q38_packed_lookup(f->b,&cmd,f->store,f->embed.binding,&f->embed.layout,f->tokens.span,time_view(f->mixed,t),e));
-    barrier(cmd); emit(f,cmd,QWEN38_GLOBAL_LAYER,Q38G_EMBEDDING,time_view(f->mixed,t));
-    copy(f,cmd,time_view(f->mixed,t),time_view(f->r,t),true);
+/* Profile groups: embed reads t rows; composite groups (ple, gdn, qsa.core,
+ * moe) carry MIXED/0 bytes until R0.3 counts them. */
+static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint32_t layers,size_t rows,uint32_t pos,Qwen38Error *e) {
+    MARK(QWEN38_GLOBAL_LAYER,"embed",f->embed.binding->tensor.type,t*(f->embed.binding->tensor.bytes/f->c.vocab_size));
+    TRY(q38_packed_lookup(f->b,cmd,f->store,f->embed.binding,&f->embed.layout,f->tokens.span,time_view(f->mixed,t),e));
+    barrier(*cmd); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_EMBEDDING,time_view(f->mixed,t));
+    copy(f,*cmd,time_view(f->mixed,t),time_view(f->r,t),true);
     for (uint32_t i=0;i<layers;i++) {
         G2Layer *l=&f->layer[i];
-        if (l->es) TRY(ple(f,cmd,i,t,e));
-        if (l->kind.kind==Q38_LAYER_GDN) TRY(gdn(f,cmd,i,t,e)); else TRY(qsa(f,cmd,i,t,pos,e));
-        emit(f,cmd,i,Q38G_ATTN_RESIDUAL,time_view(f->r,t));
-        TRY(hc_read(f,cmd,&l->ffn,t,e));
-        emit(f,cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
-        TRY(moe(f,cmd,i,t,e)); emit(f,cmd,i,Q38G_MOE,time_view(f->block,t));
-        TRY(hc_add(f,cmd,t,e)); emit(f,cmd,i,Q38G_OUTPUT,time_view(f->r,t));
+        if (l->es) { MARK(i,"ple",Q38_PROFILE_MIXED,0); TRY(ple(f,*cmd,i,t,e)); }
+        if (l->kind.kind==Q38_LAYER_GDN) { MARK(i,"gdn",Q38_PROFILE_MIXED,0); TRY(gdn(f,*cmd,i,t,e)); }
+        else TRY(qsa(f,cmd,i,t,pos,e));
+        emit(f,*cmd,i,Q38G_ATTN_RESIDUAL,time_view(f->r,t));
+        TRY(hc_read(f,cmd,i,&l->ffn,HC_FFN,t,e));
+        emit(f,*cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
+        MARK(i,"moe",Q38_PROFILE_MIXED,0); TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
+        MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
     }
-    TRY(hc_read(f,cmd,&f->final,t,e)); emit(f,cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));
-    if (rows) TRY(linear(f,cmd,f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e));
+    TRY(hc_read(f,cmd,QWEN38_GLOBAL_LAYER,&f->final,HC_FINAL,t,e)); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));
+    if (rows) TRY(linear(f,cmd,QWEN38_GLOBAL_LAYER,"lm_head",f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e));
     return Q38_OK;
 }
 static Qwen38Status jobs(Qwen38GpuForward *f,bool commit,Qwen38Status rc,Qwen38Error *e) {
@@ -470,11 +495,15 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     Qwen38GpuTicket ticket; Qwen38GpuCommand cmd; bool begun=false,submitted=false;
     if (!rc) { rc=qwen38_gpu_session_begin(f->session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc; }
     if (!rc) rc=claim(f,f->session,&ticket,e);
-    if (!rc) rc=run(f,cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
+    if (!rc) { f->prof_ticket=f->prof ? &ticket : NULL; f->prof_failed=false; }
+    if (!rc) rc=run(f,&cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
+    if (!rc && f->prof_failed) rc=fail(e,Q38_GPU_ERROR,"profile encoder split");
+    f->prof_ticket=NULL;
     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }
     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
     if (submitted) rc=qwen38_gpu_session_finish(f->session,&ticket,e);
     else if (begun) qwen38_gpu_session_abort(f->session,&ticket,false,NULL);
+    if (f->prof && !q38_profile_end_append(f->prof,!rc && submitted) && !rc) rc=fail(e,Q38_GPU_ERROR,"profile samples");
     f->stats.wait_s=clock_s()-wait_start;
     if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->session);
     rc=jobs(f,!rc && layers==f->c.trunk_blocks,rc,e);
@@ -561,16 +590,16 @@ static Qwen38Status mtp_run(Qwen38GpuForward *f,Qwen38GpuCommand cmd,size_t offs
     Qwen38GpuF32 hv[]={shape(slice(f->r,offset,t).span,3,(size_t[]){t,1,h*d}),f->mtp_hgain,time_view(f->mtp_hn,t)};
     TRY(q38c_gpu_encode(f->ops,cmd,Q38C_RMS,&spec,hv,3,e));
     mtp_wire(f,cmd,t,false);
-    TRY(linear(f,cmd,f->mtp_eh,time_view(f->mtp_cat,t*(h+1)),time_view(f->mtp_proj,t*(h+1)),e));
+    TRY(linear(f,&cmd,f->c.trunk_blocks,"mtp.eh",f->mtp_eh,time_view(f->mtp_cat,t*(h+1)),time_view(f->mtp_proj,t*(h+1)),e));
     mtp_wire(f,cmd,t,true);
     /* The shared operators use r. Restore this borrowed view on EVERY exit. */
     Qwen38GpuF32 trunk=f->r; f->r=f->mtp_r; uint32_t i=f->c.trunk_blocks;
-    Qwen38Status rc=qsa(f,cmd,i,t,pos,e);
-    if (!rc) rc=hc_read(f,cmd,&f->layer[i].ffn,t,e);
+    Qwen38Status rc=qsa(f,&cmd,i,t,pos,e);
+    if (!rc) rc=hc_read(f,&cmd,i,&f->layer[i].ffn,HC_FFN,t,e);
     if (!rc) rc=moe(f,cmd,i,t,e);
     if (!rc) rc=hc_add(f,cmd,t,e);
-    if (!rc && rows) rc=hc_read(f,cmd,&f->mtp_head,t,e);
-    if (!rc && rows) rc=linear(f,cmd,f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e);
+    if (!rc && rows) rc=hc_read(f,&cmd,QWEN38_GLOBAL_LAYER,&f->mtp_head,HC_FINAL,t,e);
+    if (!rc && rows) rc=linear(f,&cmd,QWEN38_GLOBAL_LAYER,"lm_head",f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e);
     f->r=trunk; return rc;
 }
 Qwen38Status qwen38_gpu_mtp(Qwen38GpuForward *f,size_t offset,const int32_t *tokens,size_t count,Qwen38F32Mut logits,Qwen38Error *e) {
