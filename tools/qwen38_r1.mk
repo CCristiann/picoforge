@@ -16,3 +16,9 @@ test-qwen38-profile: picoforge build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_profile.py -v
 
 .PHONY: test-qwen38-profile
+
+# R0.3 profile summary on fixture CSVs: pure Python, no GPU, so no lock.
+test-qwen38-profile-summary:
+	$(Q38_TEST) tests/test_qwen38_profile_summary.py -v
+
+.PHONY: test-qwen38-profile-summary

@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R0.3 — Bytes, dispatches and barriers per profiled op
+
+Decode reads each weight it uses once per token, so time ≥ bytes ÷ 307 GB/s;
+launches set a second floor, time ≥ dispatches × 1.4 µs (Step 4.1). The
+profile now fills both per group: `weight_bytes` from the real bindings, also
+for composites (`gdn` its linears, `moe` router + shared + top_k experts of
+gate/up/down, `ple` key/value + staged n-gram rows; `qsa.core` reads caches,
+not weights: 0), and dispatches/barriers counted by an `NSProxy` around the
+encoder, in profile mode only. `tools/eval/qwen38_profile_summary.py` makes
+the per-op table and per-token totals. Also: a stale reused timestamp now
+fails, warm-up repetitions write no rows, resolve left `wait_s`. Real
+checkpoint, one decode token (mean of 2, on battery): 6.10 GB of weights →
+floor 19.9 ms, measured 935.6 ms (6.5 GB/s, 2.1% of peak); 2977 dispatches →
+floor 4.2 ms; 3024 barriers; sum of groups / normal `gpu_s` 1.0015. Logits
+bitwise identical with and without `--profile`.
+
 ### R0.2 — Opt-in per-op GPU profile
 
 The GPU stamps time only at encoder boundaries, so `--profile FILE.csv` gives
