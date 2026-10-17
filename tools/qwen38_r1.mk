@@ -22,3 +22,9 @@ test-qwen38-profile-summary:
 	$(Q38_TEST) tests/test_qwen38_profile_summary.py -v
 
 .PHONY: test-qwen38-profile-summary
+
+# R0.4 paired harness logic with fake tokenizers: pure Python, no GPU, so no lock.
+test-qwen38-compare:
+	$(Q38_TEST) tests/test_qwen38_compare.py -v
+
+.PHONY: test-qwen38-compare

@@ -27,7 +27,13 @@ def sample(probe, pid=None):
     return json.loads(result.stdout) if result.returncode == 0 else None
 
 
-def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
+# Kill the child after `samples` consecutive samples at pressure level >= `pressure`
+# or swap growth > `swap_bytes`. Callers may pass a stricter guard; this is the default.
+DEFAULT_GUARD = dict(pressure=4, swap_bytes=2 * 2**30, samples=3)
+
+
+def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None, guard=None):
+    limits = dict(DEFAULT_GUARD, **(guard or {}))
     probe = ROOT / "build/process_memory"
     before = sample(probe)
     if before is None:
@@ -46,7 +52,10 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
                     environment={"DS4_METAL_MEMORY_REPORT": "1", **(env_overrides or {})},
                     removed_environment_names=sorted(k for k in os.environ if k.startswith("DS4_")),
                     thermal_before=thermal, sample_interval_s=interval, system_before=before,
-                    guard="stop after 3 samples: critical pressure or swap growth > 2 GiB")
+                    guard=("stop after 3 samples: critical pressure or swap growth > 2 GiB" if guard is None else
+                           f"stop after {limits['samples']} samples: pressure level >= {limits['pressure']} "
+                           f"or swap growth > {limits['swap_bytes'] / 2**20:g} MiB"),
+                    guard_limits=limits)
     meta_path = output / "process.json"
     meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
     start = now()
@@ -76,10 +85,10 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
                         samples.append(row)
                         memory.write(json.dumps(row) + "\n")
                         memory.flush()
-                        unsafe = (row["system_pressure_level"] == 4 or
-                                  row["system_swap_used_bytes"] - before["system_swap_used_bytes"] > 2 * 2**30)
+                        unsafe = (row["system_pressure_level"] >= limits["pressure"] or
+                                  row["system_swap_used_bytes"] - before["system_swap_used_bytes"] > limits["swap_bytes"])
                         bad = bad + 1 if unsafe else 0
-                        if bad >= 3:
+                        if bad >= limits["samples"]:
                             reason = "memory guard"
                 if current - start > timeout:
                     reason = reason or "timeout"
