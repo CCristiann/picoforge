@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R0.4a — Teacher-forced decode in the CLI
+
+Teacher forcing means the next input token comes from a fixed list, not from
+the model's own choice. Given the same IDs, picoforge and DwarfStar
+(`ds4-bench --teacher-forced-decode`) do exactly the same work, so tok/s
+compares equal work even where the two would sample differently. Each forced
+ID is its own one-token append (one logits row, one argmax), as in
+`ds4_session_eval`: a batched append would be prefill, not decode. New
+`--teacher-forced N` (with `--tokens`; excludes `--mtp`, `--session`,
+`--stop-after`, `--max-new`): the first count−N IDs are prefilled in chunks,
+the last N appended one by one, no stop on EOS; `decode_s` spans the N
+appends and argmaxes, `decode_tokens = N`, JSONL adds `mode`/`forced_tokens`.
+Test: forcing an ordinary greedy run's own tokens reproduces its logits bit
+for bit. Smoke, real checkpoint, slow baseline, on battery, one run: 4 forced
+tokens after a 9-token prompt, 3.763 s → 1.06 tok/s (941 ms/token).
+
 ### R0.3 — Bytes, dispatches and barriers per profiled op
 
 Decode reads each weight it uses once per token, so time ≥ bytes ÷ 307 GB/s;

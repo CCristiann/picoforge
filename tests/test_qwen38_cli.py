@@ -97,5 +97,50 @@ class CliTests(unittest.TestCase):
                                   cwd=ROOT, capture_output=True)
             self.assertNotEqual(done.returncode, 0)
 
+    def test_teacher_forced_matches_plain_appends(self):
+        # R0.4a: forcing the plain greedy continuation must redo exactly the same
+        # appends, so its logits are the plain ones bit for bit (ds4-bench parity).
+        prompt, k = [5, 17, 300, 9, 44], 6
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
+            p = Path(directory)
+            base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32', '--chunk', '3']
+            self.run_cli(base+['--tokens', ','.join(map(str, prompt)), '--max-new', str(k),
+                               '--logits', str(p/'plain.f32'), '--token-ids', str(p/'plain.json')])
+            ids = json.loads((p/'plain.json').read_text())['generated_ids']
+            self.assertEqual(len(ids), k, 'prompt must not reach a stop token')
+            self.run_cli(base+['--tokens', ','.join(map(str, prompt+ids[:k-1])), '--teacher-forced', str(k-1),
+                               '--logits', str(p/'forced.f32'), '--token-ids', str(p/'forced.json'),
+                               '--warmup', '1', '--repeat', '2', '--runs-jsonl', str(p/'runs.jsonl')])
+            plain = np.fromfile(p/'plain.f32', '<f4').reshape(-1, 512)
+            forced = np.fromfile(p/'forced.f32', '<f4').reshape(-1, 512)
+            self.assertEqual(plain.shape, (k, 512))
+            self.assertEqual(forced.shape, (k, 512))
+            self.assertEqual(plain.tobytes(), forced[:k].tobytes())
+            info = json.loads((p/'forced.json').read_text())
+            self.assertEqual(info['prompt_ids'], prompt)
+            self.assertEqual(info['forced_ids'], ids[:k-1])
+            self.assertEqual(info['generated_ids'], ids[1:])
+            rows = [json.loads(x) for x in (p/'runs.jsonl').read_text().splitlines()]
+            self.assertEqual([r['warmup'] for r in rows], [True, False, False])
+            for r in rows:
+                self.assertEqual((r['mode'], r['forced_tokens'], r['decode_tokens']), ('teacher-forced', k-1, k-1))
+                self.assertEqual((r['generated_tokens'], r['generated_ids']), (k-1, ids[1:]))
+                self.assertEqual((r['prompt_tokens'], r['position'], r['stop_reason']), (len(prompt), len(prompt)+k-1, 'length'))
+                self.assertGreater(r['decode_s'], 0)
+                self.assertGreaterEqual(r['request_s'], r['prefill_s']+r['decode_s'])
+
+    def test_teacher_forced_admission(self):
+        base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32']
+        for args in (['--complete', 'abc', '--teacher-forced', '1'], ['--tokens', '5,17', '--teacher-forced', '0'],
+                     ['--tokens', '5,17', '--teacher-forced', '2'], ['--session', '--teacher-forced', '1'],
+                     ['--tokens', '5,17', '--teacher-forced', '1', '--mtp'],
+                     ['--tokens', '5,17', '--teacher-forced', '1', '--stop-after', '1'],
+                     ['--tokens', '5,17', '--teacher-forced', '1', '--max-new', '1']):
+            with self.subTest(args=args):
+                done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(b'teacher-forced', done.stderr)
+                self.assertNotIn(b'unknown', done.stderr)
+
 if __name__ == '__main__':
     unittest.main()

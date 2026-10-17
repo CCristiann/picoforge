@@ -42,7 +42,17 @@ static void usage(void) {
         "       [--stop-after N] (SIGUSR1 also stops cooperatively)\n"
         "       [--mtp] (one-token predictor, exact greedy verification)\n"
         "       [--profile FILE.csv] (per-op GPU time of trunk appends; MTP appends are not profiled)\n"
+        "       [--teacher-forced N] (--tokens only: prefill all but the last N IDs, append those one by one)\n"
         "Greedy FP32 generation; defaults: context 8192, chunk 1024, max-new 32.\n");
+}
+/* Greedy choice shared by ordinary and teacher-forced decode: first maximum wins. */
+static int32_t greedy(const float *logits,uint32_t n) {
+    int32_t id=0;
+    for (uint32_t j=0;j<n;j++) {
+        if (!isfinite(logits[j])) die("nonfinite logit after successful append");
+        if (logits[j]>logits[id]) id=(int32_t)j;
+    }
+    return id;
 }
 static Qwen38Bytes bytes(const char *s) { return (Qwen38Bytes){(const uint8_t *)s,strlen(s)}; }
 static uint8_t *chat(Qwen38Tokenizer *tok,const char *text,bool thinking,size_t *n) {
@@ -144,8 +154,8 @@ int qwen38_cli(int argc,char **argv) {
     if (argc<4) { usage(); return 2; }
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
     const char *runs_path=NULL,*profile_path=NULL; char *owned_input=NULL;
-    uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX;
-    bool thinking=false,encode_only=false,session=false,mtp=false;
+    uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
+    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false;
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
@@ -157,7 +167,7 @@ int qwen38_cli(int argc,char **argv) {
         if (!strcmp(opt,"--chat") || !strcmp(opt,"--complete") || !strcmp(opt,"--tokens") ||
             !strcmp(opt,"--chat-file") || !strcmp(opt,"--complete-file")) {
             if (mode) die("choose one prompt mode"); mode=opt; input=value;
-        } else if (!strcmp(opt,"--max-new")) max_new=number(value,0,32768,opt);
+        } else if (!strcmp(opt,"--max-new")) { max_new=number(value,0,32768,opt); max_new_given=true; }
         else if (!strcmp(opt,"--context")) capacity=number(value,1,32768,opt);
         else if (!strcmp(opt,"--chunk")) chunk=number(value,1,1024,opt);
         else if (!strcmp(opt,"--logits")) logits_path=value;
@@ -169,9 +179,12 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,32768,opt);
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
         else if (!strcmp(opt,"--profile")) profile_path=value;
+        else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,32768,opt);
         else die("unknown Qwen3.8 option %s",opt);
     }
     if (!mode) die("a prompt is required");
+    if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
+        die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
     if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
     if (!strcmp(mode,"--chat-file") || !strcmp(mode,"--complete-file")) {
         owned_input=read_prompt(input); input=owned_input;
@@ -212,6 +225,11 @@ int qwen38_cli(int argc,char **argv) {
             size_t n=strlen(input); uint8_t *rendered=NULL; Qwen38Bytes prompt=bytes(input);
             if (!strcmp(mode,"--chat")) { rendered=chat(tok,input,thinking,&n); prompt=(Qwen38Bytes){rendered,n}; }
             check(qwen38_encode(tok,prompt,tokens,capacity,&count,&e),&e); free(rendered);
+        }
+        /* Teacher forcing: tokens[count..count+forced) stay in the array, outside the prompt. */
+        if (forced) {
+            if (forced>=count) die("--teacher-forced N must leave at least one prompt token");
+            count-=forced; max_new=forced;
         }
         if (!session && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
         if (encode_only) {
@@ -285,15 +303,28 @@ int qwen38_cli(int argc,char **argv) {
         y.dim[0]=1; FILE *logfile=logits_path ? fopen(logits_path,"wb") : NULL;
         if (logits_path && !logfile) die("cannot open logits output");
         size_t got=0; const char *reason=stopped ? "cancelled" : "length";
-        for (uint32_t step=0;step<MAX(max_new,1u) && !stopped;step++) {
+        if (forced) {
+            /* Teacher-forced decode, the same work as ds4-bench --teacher-forced-decode
+             * (ds4 fc80bd6, MIT, ds4_bench.c:main): each forced ID is its own
+             * one-token append with one logits row and a greedy argmax, never a
+             * batch, and stop tokens do not end the run. --logits keeps the
+             * prefill row first, so it lines up with an ordinary run. */
+            if (!stopped) {
+                if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
+                first_token=decode_start=now();
+            }
+            for (uint32_t i=0;i<forced && !stopped;i++) {
+                q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
+                check(qwen38_gpu_forward(graph,tokens+count+i,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
+                target_appends++; accumulate(&decode_stats,graph);
+                if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
+                generated[got++]=greedy(logits,c->vocab_size);
+            }
+        } else for (uint32_t step=0;step<MAX(max_new,1u) && !stopped;step++) {
             if (got==stop_after) { reason="cancelled"; break; }
             if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
             if (!max_new) break;
-            int32_t id=0;
-            for (uint32_t j=0;j<c->vocab_size;j++) {
-                if (!isfinite(logits[j])) die("nonfinite logit after successful append");
-                if (logits[j]>logits[id]) id=(int32_t)j;
-            }
+            int32_t id=greedy(logits,c->vocab_size);
             generated[got++]=id;
             if (qwen38_token_is_stop(tok,id)) reason="stop";
             else emit(decoder,&id,session);
@@ -351,6 +382,7 @@ int qwen38_cli(int argc,char **argv) {
         if (ids_path) {
             FILE *out=fopen(ids_path,"w"); if (!out) die("cannot open token IDs output");
             fputs("{\"prompt_ids\":",out); ids_json(out,tokens,count); fputs(",\"generated_ids\":",out); ids_json(out,generated,got);
+            if (forced) { fputs(",\"forced_ids\":",out); ids_json(out,tokens+count,forced); }
             fprintf(out,",\"context\":%u,\"chunk\":%u,\"greedy\":true}\n",capacity,chunk);
             if (fclose(out)) die("token IDs write failed");
         }
@@ -368,10 +400,11 @@ int qwen38_cli(int argc,char **argv) {
             fprintf(runs,",\"prompt_tokens\":%zu,\"generated_tokens\":%zu,\"decode_tokens\":%zu,"
                 "\"context\":%u,\"chunk\":%u,\"stop_reason\":\"%s\",\"position\":%llu,"
                 "\"metal_allocated_bytes\":%zu,\"metal_recommended_bytes\":%zu,\"graph_buffer_bytes\":%zu,\"generated_ids\":",
-                count,got,got ? got-1 : 0,capacity,current_chunk,reason,
+                count,got,forced ? got : got ? got-1 : 0,capacity,current_chunk,reason,
                 (unsigned long long)qwen38_gpu_forward_info(graph).next_pos,
                 (size_t)device.currentAllocatedSize,(size_t)device.recommendedMaxWorkingSetSize,qwen38_gpu_forward_bytes(graph));
             ids_json(runs,generated,got);
+            if (forced) fprintf(runs,",\"mode\":\"teacher-forced\",\"forced_tokens\":%u",forced);
             fprintf(runs,",\"mtp\":{\"enabled\":%s,\"proposed\":%zu,\"accepted\":%zu,\"rollback_count\":%zu,"
                 "\"target_decode_appends\":%zu,\"verified_tokens\":%zu,\"prefill_s\":%.9f,\"draft_s\":%.9f,"
                 "\"verify_s\":%.9f,\"snapshot_s\":%.9f,\"replay_s\":%.9f,\"checkpoint_host_bytes\":%zu}",
