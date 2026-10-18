@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "rule": "Condition (b) of a fast kernel: |y_fast - y_oracle| / max(sum|w*x|, 2^-126) <= tol. tol is the power of two just above the maximum measured over the whole corpus of tests/test_qwen38_fast_kernels.py. Condition (a), the FP64 bound gamma(2K+8)*sum|w*x| + 2*ulp32(r), applies to every kernel regardless.",
+  "fields": {
+    "tol": "power of two used by condition (b)",
+    "max": "largest measured (b) ratio over the corpus",
+    "p99": "99th percentile of the (b) ratio",
+    "samples": "number of output elements measured",
+    "commit": "commit whose harness run measured max and p99",
+    "note": "why this kernel's error has this size"
+  },
+  "kernels": {}
+}

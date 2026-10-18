@@ -16,6 +16,23 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.1 — Reference-kernel selector and fast-kernel harness
+
+Every R1 fast kernel is judged against the slow oracle it replaces (one thread
+per output row, serial K loop), so the oracle stays selectable for good:
+`Q38_REF_KERNELS=1` (or `all`, or a family list such as `linear,moe`) is read
+once when a context is created; an unknown token selects every oracle, so a
+typo can never silently run a fast kernel. `q38_packed_encode_fast` exists with
+the same admission as `q38_packed_encode` and answers UNSUPPORTED for now; the
+default path is untouched. `make test-qwen38-fast-kernels` runs oracle, fast
+path and an FP64 product (from `q38_packed_decode_row`) on the real row slices
+plus seeded shapes, with S = Σ|w·x| per output. A fast kernel must meet
+(a) |y−r| ≤ γ(2K+8)·S + 2·ulp32(r), valid for any summation order, and
+(b) |y_fast−y_oracle| / max(S, 2^-126) ≤ tol, tol the power of two above the
+measured corpus maximum (`tests/qwen38_kernel_tolerances.json`, empty today).
+Measured: 45 cases, 19,944 outputs, oracle against itself 0 bits apart, (a) at
+most 1.1% of the bound, ~15 s per run; every fast case is "unsupported".
+
 ### R1.0 — Fenced G3 launches and picoforge-only runs
 
 G3 (`tools/qwen38_g3.py`) maps the 46 GiB checkpoint four times back to back:
