@@ -163,21 +163,39 @@ def lid_open(ioreg_text):
     return '"AppleClamshellState" = No' in ioreg_text
 
 
+def clamshell_awake(ioreg_text):
+    """True iff the same `ioreg` output says closing the lid does not sleep the Mac.
+
+    Clamshell mode (lid closed, external display, on AC) prints `AppleClamshellCausesSleep`
+    = No next to `AppleClamshellState` = Yes: the Mac stays fully awake with the lid shut,
+    so it counts as awake (ruling R20, user decision 2026-10-18).
+    """
+    return '"AppleClamshellCausesSleep" = No' in ioreg_text
+
+
 def awake():
-    """Is the Mac fully awake, lid open and on AC? A DarkWake cannot be told from AC power alone."""
+    """Is the Mac fully awake, lid open (or closed in clamshell mode) and on AC?
+
+    A DarkWake cannot be told from AC power alone, hence the Graphics check. `lid_ok` is
+    what `require_awake` reads: the lid is open, or it is closed with an external display
+    that keeps the Mac awake (`clamshell_causes_sleep` False, ruling R20).
+    """
     state = subprocess.run(['pmset', '-g', 'systemstate'], capture_output=True, text=True).stdout
     clamshell = subprocess.run(['ioreg', '-r', '-k', 'AppleClamshellState', '-d', '1'], capture_output=True, text=True).stdout
     batt = subprocess.run(['pmset', '-g', 'batt'], capture_output=True, text=True).stdout
-    return dict(graphics=graphics(state), lid_open=lid_open(clamshell), ac_power="'AC Power'" in batt,
+    return dict(graphics=graphics(state), lid_open=lid_open(clamshell),
+                clamshell_causes_sleep=not clamshell_awake(clamshell),
+                lid_ok=lid_open(clamshell) or clamshell_awake(clamshell), ac_power="'AC Power'" in batt,
                 systemstate=state.strip().split('\n')[0].strip())
 
 
 def require_awake(state):
-    """Refuse to start anything unless `awake()` says fully awake, lid open, on AC (ruling R13)."""
-    failed = [name for name in ('graphics', 'lid_open', 'ac_power') if not state[name]]
+    """Refuse to start anything unless `awake()` says fully awake, lid ok, on AC (rulings R13, R20)."""
+    failed = [name for name in ('graphics', 'lid_ok', 'ac_power') if not state[name]]
     if failed:
-        raise RuntimeError(f"{', '.join(failed)} is false: the Mac must be fully awake (Graphics), "
-                           f"lid open, on AC (ruling R13); {state.get('systemstate', '')!r}")
+        raise RuntimeError(f"{', '.join(failed)} is false: the Mac must be fully awake (Graphics), lid open, or "
+                           f"closed with an external display that keeps the Mac awake, on AC "
+                           f"(rulings R13, R20); {state.get('systemstate', '')!r}")
 
 
 def conditions():
@@ -197,8 +215,9 @@ class Launcher:
     the Mac twice (WindowServer watchdog panic). So every launch waits for the
     release before AND after its process, even a failed one, and runs it
     observed under GUARD. Power, wake state and swap are recorded around it. Before
-    anything is created it also refuses unless the Mac is fully awake, lid open, on
-    AC (ruling R13): a DarkWake runs for ~20 s per 15 min and ruined a whole baseline.
+    anything is created it also refuses unless the Mac is fully awake, lid open (or
+    closed in clamshell mode with an external display, ruling R20), on AC (ruling
+    R13): a DarkWake runs for ~20 s per 15 min and ruined a whole baseline.
     """
     def __init__(self, settle=None, observe=observe, conditions=conditions, awake=awake):
         self.settle, self.observe, self.conditions, self.awake = settle, observe, conditions, awake
@@ -331,7 +350,7 @@ def run(suite_dir, out, name, counts, block, timeout, launch=None, awake=awake):
     text = suite_dir/f['text_file']
     if sha(text) != f['text_sha256']:
         raise ValueError('frontier text changed since prepare')
-    require_awake(awake())  # no evidence directory on a sleeping, closed or battery-powered Mac
+    require_awake(awake())  # no evidence directory on a sleeping, sleep-closed (R20) or battery-powered Mac
     out.mkdir(parents=True, exist_ok=False)
     manifest = dict(complete=False, frontier=name, engines=[e for e in ENGINES if any(counts[e])], counts=counts,
                     block=block, plan=plan, protocol=PROTOCOL,

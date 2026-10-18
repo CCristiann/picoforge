@@ -15,10 +15,15 @@ import qwen38_compare as qc  # noqa: E402
 import run_observed  # noqa: E402
 
 SPECIAL = {'<|endoftext|>': 1000, '<|im_end|>': 1002}
-AWAKE = lambda: dict(graphics=True, lid_open=True, ac_power=True)  # noqa: E731  no test reads the real Mac
+AWAKE = lambda: dict(graphics=True, lid_open=True, lid_ok=True, ac_power=True)  # noqa: E731  no test reads the real Mac
 # Real `pmset -g systemstate`: awake, and the DarkWake of the failed 8K baseline (no Graphics).
 FULL_WAKE = 'Current System Capabilities are: CPU Graphics Audio Network \nCurrent Power State: 4\n'
 DARK_WAKE = 'Current System Capabilities are: CPU Network \nCurrent Power State: 2\n'
+# Real `ioreg -r -k AppleClamshellState -d 1` lines (ruling R20): open lid, closed lid on its own
+# (the Mac sleeps), and the user's clamshell mode (lid closed, external display: the Mac stays awake).
+LID_OPEN = '    "AppleClamshellCausesSleep" = Yes\n    "AppleClamshellState" = No\n'
+LID_CLOSED_ASLEEP = '    "AppleClamshellCausesSleep" = Yes\n    "AppleClamshellState" = Yes\n'
+CLAMSHELL = '    "AppleClamshellCausesSleep" = No\n    "AppleClamshellState" = Yes\n'
 
 
 def fake_ids(text):
@@ -237,14 +242,44 @@ class CompareTests(unittest.TestCase):
         self.assertFalse(qc.graphics(DARK_WAKE))  # the failed baseline: CPU Network only
         self.assertFalse(qc.graphics(''))
         self.assertFalse(qc.graphics('Graphics\nCurrent System Capabilities are: CPU Network\n'))  # only that line counts
+        self.assertTrue(qc.lid_open(LID_OPEN))
         self.assertTrue(qc.lid_open('    "AppleClamshellCausesSleep" = No\n    "AppleClamshellState" = No\n'))
-        self.assertFalse(qc.lid_open('    "AppleClamshellCausesSleep" = No\n    "AppleClamshellState" = Yes\n'))
+        self.assertFalse(qc.lid_open(CLAMSHELL))
         self.assertFalse(qc.lid_open(''))
+
+    def test_clamshell_with_external_display_counts_as_awake(self):
+        # Ruling R20 (user decision 2026-10-18): lid closed but the Mac does not sleep.
+        self.assertTrue(qc.clamshell_awake(CLAMSHELL))
+        self.assertFalse(qc.lid_open(CLAMSHELL))
+        self.assertFalse(qc.clamshell_awake(LID_CLOSED_ASLEEP))  # a closed lid on its own: the Mac sleeps
+        self.assertFalse(qc.lid_open(LID_CLOSED_ASLEEP))
+        self.assertTrue(qc.lid_open(LID_OPEN))
+        self.assertFalse(qc.clamshell_awake(LID_OPEN))
+        self.assertFalse(qc.clamshell_awake(''))
+        outputs = {'systemstate': FULL_WAKE, 'batt': "Now drawing from 'AC Power'\n"}
+
+        def awake_with(clamshell):
+            def run(command, **kwargs):
+                text = clamshell if command[0] == 'ioreg' else outputs[command[2]]
+                return subprocess.CompletedProcess(command, 0, stdout=text)
+            with patch.object(qc.subprocess, 'run', run):
+                return qc.awake()
+        for clamshell, lid_ok in ((LID_OPEN, True), (CLAMSHELL, True), (LID_CLOSED_ASLEEP, False), ('', False)):
+            with self.subTest(clamshell=clamshell):
+                state = awake_with(clamshell)
+                self.assertEqual((state['lid_ok'], state['lid_open'], state['clamshell_causes_sleep']),
+                                 (lid_ok, qc.lid_open(clamshell), not qc.clamshell_awake(clamshell)))
+                self.assertEqual((state['graphics'], state['ac_power']), (True, True))
+                if lid_ok:
+                    qc.require_awake(state)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'lid_ok.*external display'):
+                        qc.require_awake(state)
 
     def test_launcher_refuses_without_full_wake(self):
         with tempfile.TemporaryDirectory() as directory:
             d, calls = Path(directory), []
-            names = ('graphics', 'lid_open', 'ac_power')
+            names = ('graphics', 'lid_ok', 'ac_power')
             for condition in names:
                 state = dict(AWAKE(), **{condition: False})
                 launch = qc.Launcher(lambda path: calls.append('settle'), lambda *a, **k: calls.append('observe'), dict,
@@ -254,6 +289,12 @@ class CompareTests(unittest.TestCase):
                 self.assertFalse((d/condition).exists())
                 self.assertFalse([n for n in names if n != condition and n in str(e.exception)])  # names only the failed one
             self.assertEqual(calls, [])  # not even the release wait: nothing started
+            # Accepted: lid closed, but an external display keeps the Mac awake (ruling R20).
+            clamshell = dict(AWAKE(), lid_open=False, clamshell_causes_sleep=False)
+            launch = qc.Launcher(lambda path: calls.append('settle'), lambda *a, **k: calls.append('observe') or 0, dict,
+                                 lambda: clamshell)
+            self.assertEqual(launch(d/'clamshell', d, ['x'], 1), 0)
+            self.assertEqual(calls, ['settle', 'observe', 'settle'])
 
     def test_run_refuses_before_creating_output_when_not_awake(self):
         with tempfile.TemporaryDirectory() as directory:

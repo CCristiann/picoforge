@@ -10,7 +10,7 @@ sys.path[:0] = [str(ROOT/'tools'), str(ROOT/'tools/eval')]
 import qwen38_compare as qc  # noqa: E402
 import qwen38_g3 as g3  # noqa: E402
 
-AWAKE = lambda: dict(graphics=True, lid_open=True, ac_power=True)  # noqa: E731  no test reads the real Mac
+AWAKE = lambda: dict(graphics=True, lid_open=True, lid_ok=True, ac_power=True)  # noqa: E731  no test reads the real Mac
 STEPS = ['native', 'stock-metal', 'fp32-reference', 'chat']
 
 

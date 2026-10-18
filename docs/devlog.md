@@ -69,6 +69,11 @@ conditions.json records the wake state. The number: the failed attempt's
 sampling gaps reached 899.05 s; the longest gap in the 46 valid short-run
 samples is 0.35 s, so 5 s separates the two by a wide margin.
 
+Ruling R20 (user decision 2026-10-18): clamshell mode counts as awake. With the
+lid closed, two external displays and AC, `ioreg` prints `AppleClamshellCausesSleep`
+= No and `AppleClamshellState` = Yes, and the Mac does not sleep. The precheck
+now reads `lid_ok` = lid open or `AppleClamshellCausesSleep` = No; the sleep-gap abort is unchanged.
+
 ### R0.4b — Paired picoforge/DwarfStar decode harness
 
 Paired: both engines decode the same IDs on the same Mac and file, so the
