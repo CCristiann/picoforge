@@ -1,7 +1,7 @@
 /* R1 fast-kernel harness, native side. `selector` checks Q38_REF_KERNELS
  * parsing (no GPU). GPU modes run only through qwen38_gpu_lock.py:
  *   <oracle|encode|fast> type physical logical n m [xpitch ypitch offset]
- *   bench <oracle|fast> n K m
+ *   bench <oracle|fast> n K m [reps]
  * oracle = q38_packed_encode with the oracle forced, encode = q38_packed_encode
  * as configured by the environment, fast = q38_packed_encode_fast.
  * stdin: n packed rows, then x [m,logical] FP32. stdout: y [m,n] FP32, then
@@ -13,7 +13,9 @@
  * so a read past k_logical or between rows poisons y; every y byte outside the
  * view is 0xa5 and must stay so (no write outside y).
  * bench: Q8_0 [n,K] and x from a fixed seed (no stdin), 3 warm-ups + 20
- * measured command buffers, GPU time from GPUStartTime/GPUEndTime. */
+ * measured command buffers, GPU time from GPUStartTime/GPUEndTime. reps > 1
+ * encodes the kernel reps times back to back in each command buffer (as in
+ * the decode graph) and reports the time per encode. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "qwen38_b_internal.h"
@@ -47,7 +49,7 @@ static int selector_cases(void) {
     return 0;
 }
 
-typedef struct { const char *mode; uint32_t type; size_t physical, logical, n, m, bytes, xpitch, ypitch, offset; } Request;
+typedef struct { const char *mode; uint32_t type; size_t physical, logical, n, m, bytes, xpitch, ypitch, offset, reps; } Request;
 static size_t number(const char *s) {
     assert(*s && strspn(s,"0123456789")==strlen(s));
     errno=0;
@@ -58,9 +60,10 @@ static size_t number(const char *s) {
 static Request request(int argc,char **argv) {
     assert(argc>1);
     bool bench=!strcmp(argv[1],"bench");
-    assert(bench ? argc==6 : argc==7 || argc==10);
-    Request r={argv[1+bench],8,0,0,0,0,0,0,0,0};
-    if (bench) { r.physical=r.logical=number(argv[4]); r.n=number(argv[3]); r.m=number(argv[5]); }
+    assert(bench ? argc==6 || argc==7 : argc==7 || argc==10);
+    Request r={argv[1+bench],8,0,0,0,0,0,0,0,0,1};
+    if (bench) { r.physical=r.logical=number(argv[4]); r.n=number(argv[3]); r.m=number(argv[5]);
+                 r.reps=argc==7 ? number(argv[6]) : 1; assert(r.reps && r.reps<=1000); }
     else { r.type=(uint32_t)number(argv[2]); r.physical=number(argv[3]); r.logical=number(argv[4]);
            r.n=number(argv[5]); r.m=number(argv[6]); }
     r.xpitch=argc==10 ? number(argv[7]) : r.logical;
@@ -70,10 +73,12 @@ static Request request(int argc,char **argv) {
     const GgufFormat *format=NULL;
     assert(q38_b_format(r.type,&format)==Q38_OK && r.physical%format->block==0);
     assert(r.logical && r.logical<=r.physical && r.n && r.m && r.xpitch>=r.logical && r.ypitch>=r.n);
-    /* the B harness's transport budget; bench data never crosses stdin */
+    /* The B harness's transport budget (decoded rows cross stdout); bench data
+     * never crosses a pipe and is bounded by its packed size instead. */
     const size_t limit=bench ? 1024u*1024u*1024u : 32u*1024u*1024u;
-    assert(r.physical<=limit/4/r.n && r.m<=limit/4/MAX(r.xpitch,r.ypitch) && r.offset<=limit/4);
+    assert(r.physical<=(bench ? limit/r.n : limit/4/r.n) && r.m<=limit/4/MAX(r.xpitch,r.ypitch) && r.offset<=limit/4);
     r.bytes=r.physical/format->block*format->bytes*r.n;
+    assert(r.bytes<=limit);
     return r;
 }
 /* One rank-2 tensor in an unlinked file, 32 bytes past a page boundary so the
@@ -128,8 +133,10 @@ static void write_decoded(const GpuWeightStore *store,const GgufBinding *binding
     assert(qwen38_weights_cpu_span(store,binding,&w.span,&err)==Q38_OK);
     assert(q38_packed_layout_init(&binding->tensor,r.logical,&w.layout,NULL)==Q38_OK);
     float *row=malloc(r.physical*4); assert(row);
-    for (size_t i=0;i<r.n;i++) {
-        assert(q38_packed_decode_row(&w,0,i,row,r.physical,&err)==Q38_OK);
+    for (size_t i=0;i<r.n;i++) { /* a row it rejects (nonfinite padding) is sent as NaN */
+        Qwen38Status status=q38_packed_decode_row(&w,0,i,row,r.physical,&err);
+        assert(status==Q38_OK || status==Q38_NONFINITE);
+        for (size_t k=0;status && k<r.physical;k++) row[k]=NAN;
         assert(fwrite(row,4,r.physical,stdout)==r.physical);
     }
     free(row);
@@ -155,10 +162,11 @@ static double quantile(const double *v,size_t n,double q) { /* numpy's linear ru
 static void report(Request r,double *seconds,const float *y) {
     for (size_t i=0;i<r.m*r.n;i++) assert(isfinite(y[i]));
     double *t=seconds+3; qsort(t,20,sizeof *t,ascending);
+    for (size_t i=0;i<20;i++) t[i]/=(double)r.reps;
     double bytes=(double)(r.bytes+4*r.m*(r.logical+r.n)), median=quantile(t,20,0.5);
-    printf("{\"mode\": \"%s\", \"n\": %zu, \"k\": %zu, \"m\": %zu, \"bytes\": %.0f, "
+    printf("{\"mode\": \"%s\", \"n\": %zu, \"k\": %zu, \"m\": %zu, \"reps\": %zu, \"bytes\": %.0f, "
            "\"median_us\": %.1f, \"p10_us\": %.1f, \"p90_us\": %.1f, \"gbps\": %.1f}\n",
-           r.mode,r.n,r.logical,r.m,bytes,median*1e6,quantile(t,20,0.1)*1e6,quantile(t,20,0.9)*1e6,
+           r.mode,r.n,r.logical,r.m,r.reps,bytes,median*1e6,quantile(t,20,0.1)*1e6,quantile(t,20,0.9)*1e6,
            bytes/median/1e9);
 }
 
@@ -207,7 +215,7 @@ int main(int argc,char **argv) {
             id<MTLCommandBuffer> command=[queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
             Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
-            status=(int)encode(ctx,r,cmd,store,binding,xv,yv);
+            for (size_t rep=0;rep<r.reps && !status;rep++) status=(int)encode(ctx,r,cmd,store,binding,xv,yv);
             [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
             assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
             seconds[run]=command.GPUEndTime-command.GPUStartTime;

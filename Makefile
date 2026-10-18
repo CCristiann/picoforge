@@ -34,7 +34,7 @@ build/kernels.air: src/kernels.metal
 	# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
 	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/kernels.air
 
-$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air build/qwen38-e/ple.air build/qwen38-g2/forward.air
+$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air build/qwen38-e/ple.air build/qwen38-g2/forward.air build/qwen38-r1/matvec.air
 	xcrun -sdk macosx metallib $^ -o $@
 
 build/qwen38-e/ple.air: src/qwen38_ple.metal

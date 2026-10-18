@@ -9,5 +9,14 @@
     "commit": "commit whose harness run measured max and p99",
     "note": "why this kernel's error has this size"
   },
-  "kernels": {}
+  "kernels": {
+    "q8_0": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.9971228128520784e-07,
+      "p99": 2.582966034894082e-08,
+      "samples": 257323,
+      "commit": "c48800b harness + q38_matvec_q8_0 of the commit adding this entry",
+      "note": "Products w*x are bit-identical to the oracle's (w = d*code is exact in FP32); only the summation order differs. The oracle adds K products serially; the fast kernel sums each 32-column block, then a lane's blocks, then simd_sum over 32 lanes. So (b) mostly measures the oracle's own serial rounding: on the real tensors the fast kernel is within 1.6e-8 of FP64 and the oracle within 1.5e-7. K = 32 (one block, same serial order) gives b = 0. The max 4.0e-7 (6.7 u of S, u = 2^-24) is at N512 K2560; 2^-22 = 2.4e-7 is below it."
+    }
+  }
 }

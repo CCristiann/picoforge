@@ -119,6 +119,13 @@ def q8_0_rows(physical, n, rng):
     return raw
 
 
+def q8_0_decode(raw, physical):
+    """Independent Q8_0 decode [n, physical]: d*code, exact in FP32 (11 x 8 significant bits)."""
+    blocks = raw.reshape(-1, 34)
+    w = blocks[:, :2].copy().view("<f2").astype(np.float32) * blocks[:, 2:].view(np.int8).astype(np.float32)
+    return w.reshape(-1, physical)
+
+
 def scaled_difference(y, y_oracle, magnitude):
     """Condition (b)'s measured side: |y - y_oracle| / max(S, 2^-126)."""
     return np.abs(y.astype(np.float64) - y_oracle) / np.maximum(magnitude, 2.0**-126)
@@ -130,9 +137,10 @@ def against_oracle(y, y_oracle, magnitude):
 
 
 class FastKernelTests(unittest.TestCase):
-    def fast_case(self, label, kind, physical, logical, data, x, view=(), y_oracle=None):
+    def fast_case(self, label, kind, physical, logical, data, x, view=(), y_oracle=None, decoded=None):
         """Fast kernel on one case: supported, finite, (a) and (b); recorded in the corpus."""
-        status, fast, decoded = native("fast", kind, physical, logical, data, x, view=view)
+        status, fast, cpu = native("fast", kind, physical, logical, data, x, view=view)
+        decoded = cpu if decoded is None else decoded
         self.assertNotEqual(status, UNSUPPORTED, f"{label}: {NAMES[kind]} has no fast kernel")
         if y_oracle is None:
             _, y_oracle, _ = native("oracle", kind, physical, logical, data, x, view=view)
@@ -217,9 +225,10 @@ class FastKernelTests(unittest.TestCase):
                 padding = raw[:, -(-logical // 32):]  # whole blocks past k_logical
                 padding[:, :, :2] = np.array([np.nan, np.inf], "<f2")[np.arange(padding.shape[1]) % 2].view(np.uint8).reshape(-1, 2)
                 x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
-                # Pitch logical+1: the NaN after each row and after x is what a read past k_logical meets.
+                # Pitch logical+1: the NaN after each row and after x is what a read past k_logical
+                # meets. The CPU decoder rejects nonfinite padding, so the reference decodes here.
                 self.fast_case(f"padding:q8_0:N{n}:K{logical}/{physical}:M{m}", 8, physical, logical,
-                               raw.tobytes(), x, view=(logical + 1, n, 0))
+                               raw.tobytes(), x, view=(logical + 1, n, 0), decoded=q8_0_decode(raw, physical))
 
     def test_nonfinite_sets_error_word(self):
         """Review Focus 3: NaN/Inf in x or in a used weight scale sets bit 1 (exit 16), oracle and fast alike."""

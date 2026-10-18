@@ -35,6 +35,11 @@ test-qwen38-g3-tools:
 
 .PHONY: test-qwen38-g3-tools
 
+# R1.2 fast matvec kernels, same flags as build/qwen38-b/packed.air; linked into $(METALLIB).
+build/qwen38-r1/matvec.air: src/qwen38_matvec.metal src/qwen38_quant_decode.h
+	@mkdir -p $(@D)
+	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c $< -o $@
+
 # R1.1 fast-kernel harness: sanitized like build/qwen38-b/test_packed_gpu.
 build/qwen38-r1/test_fast_kernels: tests/test_qwen38_fast_kernels.m src/qwen38_packed_gpu.m src/qwen38_packed.c $(Q38_STORAGE) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
 	@mkdir -p $(@D)
@@ -50,15 +55,19 @@ test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels $(METALLIB)
 .PHONY: test-qwen38-fast-kernels
 
 # R1.2 isolated-kernel timing on synthetic Q8_0 (never the checkpoint; the
-# LM-head shape is 644 MiB), without the validation layer: GB/s on the LM head
-# and attn_qkv, then fast vs oracle by x rows on attn_qkv. One JSON line per
-# run plus `pmset -g therm` before and after, into a new build/qwen38-r1 file.
-Q38_R1_BENCH_ROWS := 1 2 4 8 32 128 1024
+# LM-head shape is 644 MiB), without the validation layer, K = 2560. Specs are
+# mode:n_out:rows:reps; reps 1 = one command buffer per encode (the protocol),
+# reps 20 = 20 encodes back to back per command buffer, as in the decode graph
+# (a lone short dispatch runs at an idle GPU clock). One JSON line per run plus
+# `pmset -g therm` before and after, into a new build/qwen38-r1 file.
+Q38_R1_BENCH := fast:248320:1:1 fast:248320:1:20 oracle:248320:1:1 \
+	$(foreach m,1 2 4 8 32,$(foreach r,1 20,fast:10240:$(m):$(r) oracle:10240:$(m):$(r))) \
+	$(foreach m,128 1024,fast:10240:$(m):1 oracle:10240:$(m):1)
 bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels $(METALLIB)
 	@out="$$(mktemp build/qwen38-r1/bench.XXXXXX)"; \
 	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c 'pmset -g therm; \
-	  for mode in fast oracle; do ./$< bench $$mode 248320 2560 1 || exit 1; done; \
-	  for m in $(Q38_R1_BENCH_ROWS); do for mode in fast oracle; do ./$< bench $$mode 10240 2560 $$m || exit 1; done; done; \
-	  pmset -g therm' > "$$out"; status=$$?; cat "$$out"; echo "bench: $$out"; exit $$status
+	  for spec in $(Q38_R1_BENCH); do set -- $$(echo $$spec | tr : " "); \
+	    ./$< bench $$1 $$2 2560 $$3 $$4 || exit 1; done; pmset -g therm' > "$$out"; \
+	status=$$?; cat "$$out"; echo "bench: $$out"; exit $$status
 
 .PHONY: bench-qwen38-matvec

@@ -16,6 +16,59 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.2a — Cooperative Q8_0 matvec kernel
+
+Decode reads every weight once per token, so a matvec should stream bytes at
+the 307 GB/s ceiling. The oracle gives one thread per output row and walks
+K serially, decoding one element at a time. `q38_matvec_q8_0`
+(`src/qwen38_matvec.metal`, reached only through `q38_packed_encode_fast`
+until Task 8) gives one 32-lane simdgroup per output row. Lane l takes whole
+34-byte blocks l, l+32, …, so the simdgroup reads 1088 contiguous bytes. It
+sums each block in column order, then its blocks, then `simd_sum`. That order
+depends only on K, never on rows or tiling. Each decoded block serves 4 rows
+of x. w = d·code is exact in FP32, so every product equals the oracle's; only
+the order of the sum differs. Against FP64 the fast kernel is about 10x closer
+than the oracle (real tensors: 1.6e-8 vs 1.5e-7 of S = Σ|w·x|).
+`tol["q8_0"] = 2^-21`: corpus max 4.0e-7, p99 2.6e-8, 257,323 outputs. The
+fp16 scale decodes exactly on all 65,536 patterns. Measured on synthetic data,
+K = 2560, median of 20 after 3 warm-ups, AC power, no thermal warning:
+
+| tensor | fast, 1 encode per command buffer | fast, 20 per buffer | oracle |
+|---|---|---|---|
+| LM head 248320 rows, 644 MiB | 2757 µs, 245 GB/s | **2476 µs, 273 GB/s (89%)** | 12939 µs, 52 GB/s |
+| attn_qkv 10240 rows, 26.6 MB | 324 µs, 86 GB/s | 85.2 µs, 328 GB/s¹ | 632 µs, 44 GB/s |
+
+¹ above the ceiling: back to back, part of the 26.6 MB stays in the system
+cache. The LM head, 24 times larger, is the honest number. A lone short
+command buffer runs at an idle GPU clock, so it is slow and noisy; the decode
+graph encodes about 3000 dispatches per buffer.
+
+| attn_qkv, rows of x | 1 | 2 | 4 | 8 | 32 | 128 | 1024 |
+|---|---|---|---|---|---|---|---|
+| fast µs | 85.2 | 105.0 | 151.4 | 299.1 | 2127 | 10060 | 87801 |
+| oracle µs | 630.5 | 1259 | 2287 | 4432 | 17002 | 67167 | 536527 |
+| speedup | 7.4x | 12.0x | 15.1x | 14.8x | 8.0x | 6.7x | 6.1x |
+
+Rows ≤ 32 are timed 20 per buffer, 128 and 1024 one per buffer. Fast is
+faster at every row count. Beyond 8 rows it is compute-bound: whole-block
+lanes read x at a 128-byte stride.
+
+Alternatives tried, rows = 1, GB/s on 160 MB / attn_qkv / ssm_out (K 6144):
+- Simdgroups × output rows per simdgroup: **1×1: 287/339/405**; 2×1 280/317/388;
+  4×1 253/305/360; 8×1 243/293/390; 1×2 277/314/349; 4×2 255/257/350;
+  1×4 238/258/343; 8×4 222/266/337.
+- Loads, 4×2 tile: bytes 272/315/351; packed_char4 + packed_float4
+  272/297/338; ushort 264/314/350.
+- Quarter block per lane, the layout of ds4 fc80bd6 (MIT,
+  metal/dense.metal:kernel_mul_mv_q8_0_f32_impl): 280/270/290. At 128 rows
+  25% faster, at 4–8 rows slower.
+- Rows of x per threadgroup, µs at 1/4/8/128 rows: T=1 102/221/488/11817;
+  T=2 115/175/361/10698; **T=4 105/180/305/9984**; T=8 104/219/312/10217;
+  T=16 125/329/502/9906.
+- x staged in threadgroup memory (33-float pitch): 167 µs vs 85 at one row,
+  24 ms vs 10 at 128. Occupancy loss, rejected.
+- Explicit `fma`: no gain (bound by x loads), so `fp contract(off)` stays.
+
 ### R1.1 — Reference-kernel selector and fast-kernel harness
 
 Every R1 fast kernel is judged against the slow oracle it replaces (one thread
