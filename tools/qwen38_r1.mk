@@ -28,3 +28,9 @@ test-qwen38-compare:
 	$(Q38_TEST) tests/test_qwen38_compare.py -v
 
 .PHONY: test-qwen38-compare
+
+# G3 launch fencing (R1.0) with a fake Launcher: pure Python, no GPU, so no lock.
+test-qwen38-g3-tools:
+	$(Q38_TEST) tests/test_qwen38_g3_tools.py -v
+
+.PHONY: test-qwen38-g3-tools

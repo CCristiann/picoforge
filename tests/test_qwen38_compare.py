@@ -54,7 +54,7 @@ class FakeObserve:
     def __init__(self, calls, code=0):
         self.calls, self.code = calls, code
 
-    def __call__(self, output, cwd, command, timeout, interval, guard):
+    def __call__(self, output, cwd, command, timeout, interval, guard, env_overrides=None):
         def arg(flag):
             return command[command.index(flag) + 1]
         kind = 'tokenize' if '--encode-only' in command or '--dump-tokens' in command else 'greedy'

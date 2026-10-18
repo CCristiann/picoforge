@@ -200,7 +200,7 @@ class Launcher:
     def __init__(self, settle=None, observe=observe, conditions=conditions, awake=awake):
         self.settle, self.observe, self.conditions, self.awake = settle, observe, conditions, awake
 
-    def __call__(self, directory, cwd, command, timeout):
+    def __call__(self, directory, cwd, command, timeout, env=None):
         require_awake(self.awake())
         settle = self.settle or bounded()[0]
         directory.mkdir(parents=True)
@@ -211,7 +211,8 @@ class Launcher:
         wait('release-before')
         before = self.conditions()
         try:
-            code = self.observe(directory/'process', cwd, command, timeout=timeout, interval=INTERVAL, guard=GUARD)
+            code = self.observe(directory/'process', cwd, command, timeout=timeout, interval=INTERVAL, guard=GUARD,
+                                env_overrides=env)
         finally:
             wait('release-after')
         dump(directory/'conditions.json', dict(before=before, after=self.conditions()))
