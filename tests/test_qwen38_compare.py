@@ -15,6 +15,10 @@ import qwen38_compare as qc  # noqa: E402
 import run_observed  # noqa: E402
 
 SPECIAL = {'<|endoftext|>': 1000, '<|im_end|>': 1002}
+AWAKE = lambda: dict(graphics=True, lid_open=True, ac_power=True)  # noqa: E731  no test reads the real Mac
+# Real `pmset -g systemstate`: awake, and the DarkWake of the failed 8K baseline (no Graphics).
+FULL_WAKE = 'Current System Capabilities are: CPU Graphics Audio Network \nCurrent Power State: 4\n'
+DARK_WAKE = 'Current System Capabilities are: CPU Network \nCurrent Power State: 2\n'
 
 
 def fake_ids(text):
@@ -168,7 +172,7 @@ class CompareTests(unittest.TestCase):
             corpus = d/'corpus.txt'
             corpus.write_text(''.join(f'riga {i:05d} del romanzo\n' for i in range(4000)))
             launch = qc.Launcher(settle=lambda path: calls.append(('settle', path.name)),
-                                 observe=FakeObserve(calls), conditions=dict)
+                                 observe=FakeObserve(calls), conditions=dict, awake=AWAKE)
             qc.prepare(d/'suite', qc.Engines(d/'suite', launch), corpus, CASE)
             # Every process is fenced by a release wait on both sides, so no mapping of the
             # checkpoint can start while a previous Metal process's pages are still wired.
@@ -184,29 +188,29 @@ class CompareTests(unittest.TestCase):
             self.assertEqual(json.loads((d/'suite/suite.json').read_text())['frontiers']['short']['forced_ids'], [99]*128)
             # A failed or crashed process is still followed by the release wait.
             calls.clear()
-            self.assertEqual(qc.Launcher(lambda path: calls.append(('settle', path.name)), FakeObserve(calls, 9), dict)(
+            self.assertEqual(qc.Launcher(lambda path: calls.append(('settle', path.name)), FakeObserve(calls, 9), dict, AWAKE)(
                 d/'failed', d, [sys.executable, '--encode-only'], 1), 9)
             def crash(*args, **kwargs):
                 raise KeyboardInterrupt
             with self.assertRaises(KeyboardInterrupt):
-                qc.Launcher(lambda path: calls.append(('settle', path.name)), crash, dict)(d/'crashed', d, ['x'], 1)
+                qc.Launcher(lambda path: calls.append(('settle', path.name)), crash, dict, AWAKE)(d/'crashed', d, ['x'], 1)
             self.assertEqual([c[1] if c[0] == 'settle' else c[0] for c in calls],
                              ['release-before', 'launch', 'release-after', 'release-before', 'release-after'])
         # Statically: the Launcher holds the only observe() call, and no other subprocess
-        # call in the tool can start an engine (only pmset, git and the capability probe).
+        # call in the tool can start an engine (only pmset, ioreg, git and the capability probe).
         source = Path(qc.__file__).read_text()
         self.assertEqual(source.count('self.observe('), 1)
         self.assertEqual(re.findall(r'(?<!self\.)\bobserve\(', source), [])
         for line in source.splitlines():
             if 'subprocess.' in line:
-                self.assertTrue(any(k in line for k in ("['pmset'", "['git'", '[str(probe)]')), line)
+                self.assertTrue(any(k in line for k in ("['pmset'", "['ioreg'", "['git'", '[str(probe)]')), line)
 
     def test_watchdog_kills_guard_breach(self):
-        self.assertEqual(qc.GUARD, {'pressure': 2, 'swap_bytes': 256 << 20, 'samples': 2})
+        self.assertEqual(qc.GUARD, {'pressure': 2, 'swap_bytes': 256 << 20, 'samples': 2, 'gap_s': 5})
         sleeper = [sys.executable, '-c', 'import time; time.sleep(30)']
         with tempfile.TemporaryDirectory() as directory:
             d = Path(directory)
-            launch = qc.Launcher(settle=lambda path: None, conditions=dict)  # the real run_observed
+            launch = qc.Launcher(settle=lambda path: None, conditions=dict, awake=AWAKE)  # the real run_observed
             for name, sample in (('pressure', memory_sample(pressure=2)), ('swap', memory_sample(swap=257 << 20))):
                 with self.subTest(name), patch.object(run_observed, 'sample', sample):
                     self.assertNotEqual(launch(d/name, d, sleeper, 20), 0)
@@ -223,6 +227,66 @@ class CompareTests(unittest.TestCase):
                              (0, None, {'pressure': 4, 'swap_bytes': 2 << 30, 'samples': 3}))
             self.assertEqual(meta['guard'], 'stop after 3 samples: critical pressure or swap growth > 2 GiB')
 
+
+    def test_parsers_detect_dark_wake_and_closed_lid(self):
+        self.assertTrue(qc.graphics(FULL_WAKE))
+        self.assertFalse(qc.graphics(DARK_WAKE))  # the failed baseline: CPU Network only
+        self.assertFalse(qc.graphics(''))
+        self.assertFalse(qc.graphics('Graphics\nCurrent System Capabilities are: CPU Network\n'))  # only that line counts
+        self.assertTrue(qc.lid_open('    "AppleClamshellCausesSleep" = No\n    "AppleClamshellState" = No\n'))
+        self.assertFalse(qc.lid_open('    "AppleClamshellCausesSleep" = No\n    "AppleClamshellState" = Yes\n'))
+        self.assertFalse(qc.lid_open(''))
+
+    def test_launcher_refuses_without_full_wake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d, calls = Path(directory), []
+            names = ('graphics', 'lid_open', 'ac_power')
+            for condition in names:
+                state = dict(AWAKE(), **{condition: False})
+                launch = qc.Launcher(lambda path: calls.append('settle'), lambda *a, **k: calls.append('observe'), dict,
+                                     lambda: state)
+                with self.subTest(condition), self.assertRaisesRegex(RuntimeError, f'{condition}.*fully awake.*lid open.*AC') as e:
+                    launch(d/condition, d, ['x'], 1)
+                self.assertFalse((d/condition).exists())
+                self.assertFalse([n for n in names if n != condition and n in str(e.exception)])  # names only the failed one
+            self.assertEqual(calls, [])  # not even the release wait: nothing started
+
+    def test_run_refuses_before_creating_output_when_not_awake(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d, calls = Path(directory), []
+            corpus = d/'corpus.txt'
+            corpus.write_text(''.join(f'riga {i:05d} del romanzo\n' for i in range(4000)))
+            qc.prepare(d/'suite', Fake(), corpus, CASE)
+            with self.assertRaisesRegex(RuntimeError, 'graphics'):
+                qc.run(d/'suite', d/'out', 'short', {'picoforge': (0, 1), 'dwarfstar': (0, 1)}, 1, 10,
+                       bench_launch(calls), lambda: dict(AWAKE(), graphics=False))
+            self.assertFalse((d/'out').exists())
+            self.assertEqual(calls, [])
+
+    def test_sleep_gap_invalidates_sample_and_stops_run(self):
+        good, calls = bench_launch([]), []
+        def launch(directory, cwd, command, timeout):
+            calls.append(directory.name)
+            if len(calls) < 3:
+                return good(directory, cwd, command, timeout)
+            # The third sample: the observer stopped its child because the Mac slept.
+            (directory/'process').mkdir(parents=True)
+            (directory/'process/process.json').write_text(json.dumps(dict(stop_reason='sleep gap', max_sample_gap_s=899.1)))
+            return 1
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            corpus = d/'corpus.txt'
+            corpus.write_text(''.join(f'riga {i:05d} del romanzo\n' for i in range(4000)))
+            qc.prepare(d/'suite', Fake(), corpus, CASE)
+            with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
+                    patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
+                with self.assertRaisesRegex(RuntimeError, r'002-picoforge.*slept.*invalid.*stopped'):
+                    qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 10, launch, AWAKE)
+            self.assertEqual(len(calls), 3)  # no launch after the invalid sample
+            self.assertFalse(json.loads((d/'out/manifest.json').read_text())['complete'])
+            self.assertFalse((d/'out/samples.csv').exists())
+            kept = [json.loads(line) for line in (d/'out/samples.jsonl').read_text().splitlines()]
+            self.assertEqual([(x['engine'], x['warmup']) for x in kept], [('picoforge', True), ('dwarfstar', True)])
 
     def test_run_rejects_existing_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -246,7 +310,7 @@ class CompareTests(unittest.TestCase):
             qc.prepare(d/'suite', Fake(), corpus, CASE)
             with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
                     patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
-                qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 10, bench_launch(calls))
+                qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 10, bench_launch(calls), AWAKE)
             self.assertEqual([c[0] for c in calls], ['picoforge', 'ds4-bench']*3)
             pico, bench = calls[0][1], calls[1][1]
             self.assertNotIn('--logits', pico)  # its fwrite would be timed inside decode_s

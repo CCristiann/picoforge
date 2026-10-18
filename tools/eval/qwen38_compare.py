@@ -36,7 +36,10 @@ STOP_TEXTS = ('<|endoftext|>', '<|im_end|>')  # picoforge pad/eos, DwarfStar end
 SPECIALS = ('<|', '<｜', '｜DSML｜', '[gMASK]', '<sop>', 'think>', '<tool_', '</tool_', '<arg_', '</arg_')
 # Ruling R9: stop a child at pressure level >= 2 (warn) or > 256 MiB of swap growth on
 # two consecutive samples 0.25 s apart. Healthy runs of both engines stay at level 1.
-GUARD, INTERVAL = dict(pressure=2, swap_bytes=256 << 20, samples=2), .25
+# Ruling R13: also stop it when two sample attempts are > 5 s apart (the longest gap in
+# 46 healthy short runs was 0.35 s): the Mac slept, and a sample that spans a sleep is
+# not a measurement. The failed 8K baseline ran through a DarkWake with ~899 s gaps.
+GUARD, INTERVAL = dict(pressure=2, swap_bytes=256 << 20, samples=2, gap_s=5), .25
 TOKENIZE_TIMEOUT, GREEDY_TIMEOUT, RUN_TIMEOUT, SSD_TIMEOUT = 60, 1800, 3600, 900
 PROTOCOL = ('One process per sample for both engines (ds4-bench measures one frontier per process): '
             'prefill to the frontier, then 128 forced one-token appends. tok/s = forced IDs / decode '
@@ -142,13 +145,45 @@ def bounded():
     return settle_after_metal, REVISION
 
 
+def graphics(systemstate):
+    """True iff `pmset -g systemstate` lists Graphics among the current capabilities.
+
+    Awake: `CPU Graphics Audio Network`. A DarkWake (the ~20 s maintenance slices a closed
+    Mac wakes for) has `CPU Network`: no GPU work runs there.
+    """
+    line = next((l for l in systemstate.splitlines() if l.lstrip().startswith('Current System Capabilities are:')), '')
+    return 'Graphics' in line.split()
+
+
+def lid_open(ioreg_text):
+    """True iff `ioreg -r -k AppleClamshellState -d 1` reports the lid open (a closed lid prints Yes)."""
+    return '"AppleClamshellState" = No' in ioreg_text
+
+
+def awake():
+    """Is the Mac fully awake, lid open and on AC? A DarkWake cannot be told from AC power alone."""
+    state = subprocess.run(['pmset', '-g', 'systemstate'], capture_output=True, text=True).stdout
+    clamshell = subprocess.run(['ioreg', '-r', '-k', 'AppleClamshellState', '-d', '1'], capture_output=True, text=True).stdout
+    batt = subprocess.run(['pmset', '-g', 'batt'], capture_output=True, text=True).stdout
+    return dict(graphics=graphics(state), lid_open=lid_open(clamshell), ac_power="'AC Power'" in batt,
+                systemstate=state.strip().split('\n')[0].strip())
+
+
+def require_awake(state):
+    """Refuse to start anything unless `awake()` says fully awake, lid open, on AC (ruling R13)."""
+    failed = [name for name in ('graphics', 'lid_open', 'ac_power') if not state[name]]
+    if failed:
+        raise RuntimeError(f"{', '.join(failed)} is false: the Mac must be fully awake (Graphics), "
+                           f"lid open, on AC (ruling R13); {state.get('systemstate', '')!r}")
+
+
 def conditions():
-    """Power source, thermal warnings and swap (powermetrics needs sudo: ruling R6)."""
+    """Wake state, power source, thermal warnings and swap (powermetrics needs sudo: ruling R6)."""
     def pmset(what):
         return subprocess.run(['pmset', '-g', what], capture_output=True, text=True).stdout
-    batt, memory = pmset('batt'), sample(ROOT/'build/process_memory')
-    return dict(ac_power="'AC Power'" in batt, batt=batt, therm=pmset('therm'),
-                swap_used_bytes=memory['system_swap_used_bytes'] if memory else None)
+    memory = sample(ROOT/'build/process_memory')
+    return dict(batt=pmset('batt'), therm=pmset('therm'),
+                swap_used_bytes=memory['system_swap_used_bytes'] if memory else None, **awake())
 
 
 class Launcher:
@@ -158,12 +193,15 @@ class Launcher:
     ~1.5 s after it exits; mapping the checkpoint again inside that window froze
     the Mac twice (WindowServer watchdog panic). So every launch waits for the
     release before AND after its process, even a failed one, and runs it
-    observed under GUARD. Power and swap are recorded around it.
+    observed under GUARD. Power, wake state and swap are recorded around it. Before
+    anything is created it also refuses unless the Mac is fully awake, lid open, on
+    AC (ruling R13): a DarkWake runs for ~20 s per 15 min and ruined a whole baseline.
     """
-    def __init__(self, settle=None, observe=observe, conditions=conditions):
-        self.settle, self.observe, self.conditions = settle, observe, conditions
+    def __init__(self, settle=None, observe=observe, conditions=conditions, awake=awake):
+        self.settle, self.observe, self.conditions, self.awake = settle, observe, conditions, awake
 
     def __call__(self, directory, cwd, command, timeout):
+        require_awake(self.awake())
         settle = self.settle or bounded()[0]
         directory.mkdir(parents=True)
 
@@ -272,7 +310,16 @@ def result(engine, f, d):
                 gen_first_ms=float(r['gen_first_ms']), prefill_tps=float(r['prefill_tps']))
 
 
-def run(suite_dir, out, name, counts, block, timeout, launch=None):
+def stop_note(directory):
+    """What the observer recorded when it stopped a sample, for the error message."""
+    path = directory/'process/process.json'
+    reason = json.loads(path.read_text()).get('stop_reason') if path.exists() else None
+    if reason == 'sleep gap':
+        return ', sleep gap: the system slept, this sample is invalid and the run stopped'
+    return f', {reason}' if reason else ''
+
+
+def run(suite_dir, out, name, counts, block, timeout, launch=None, awake=awake):
     """Alternate engine blocks on one frontier: one observed process per sample."""
     plan, launch = schedule(counts, block), launch or Launcher()
     suite = json.loads((suite_dir/'suite.json').read_text())
@@ -280,6 +327,7 @@ def run(suite_dir, out, name, counts, block, timeout, launch=None):
     text = suite_dir/f['text_file']
     if sha(text) != f['text_sha256']:
         raise ValueError('frontier text changed since prepare')
+    require_awake(awake())  # no evidence directory on a sleeping, closed or battery-powered Mac
     out.mkdir(parents=True, exist_ok=False)
     manifest = dict(complete=False, frontier=name, counts=counts, block=block, plan=plan, protocol=PROTOCOL,
                     suite_sha256=sha(suite_dir/'suite.json'), guard=GUARD, **provenance(bounded()[1]),
@@ -292,7 +340,7 @@ def run(suite_dir, out, name, counts, block, timeout, launch=None):
             cmd, cwd = command(engine, f, text, d)
             code = launch(d, cwd, cmd, timeout)
             if code:
-                raise RuntimeError(f'{d.name} failed (code {code}); raw evidence retained')
+                raise RuntimeError(f'{d.name} failed (code {code}{stop_note(d)}); raw evidence retained')
             info, around = (json.loads((d/x).read_text()) for x in ('process/process.json', 'conditions.json'))
             a, b = info['system_before'], info['system_after']
             samples.append(dict(index=len(samples), engine=engine, warmup=warmup, **result(engine, f, d),

@@ -16,6 +16,25 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R0.5a — Sleep-gap abort and full-wake precheck
+
+The first 8K paired baseline ran while the Mac was in a DarkWake (lid closed):
+it wakes for ~20 s maintenance slices every ~15 min with no Graphics, so
+picoforge advanced only during those slices and the sample ran into the 3600 s
+timeout without anything noticing. The observer's clock is CLOCK_MONOTONIC,
+which on macOS keeps counting through sleep, so a sleep appears as one very
+long gap between two memory-sample attempts. A sample spanning a sleep is not
+a measurement. `run_observed.py` takes an optional guard key `gap_s` (absent
+from the default guard, so other callers are unchanged): a larger gap SIGTERMs
+then SIGKILLs the child with `stop_reason: "sleep gap"`, and `process.json`
+always records `max_sample_gap_s`. The paired harness sets `gap_s=5`, and its
+Launcher refuses any checkpoint launch unless Graphics is in `pmset -g
+systemstate`, the lid is open (`ioreg` AppleClamshellState) and the Mac is on
+AC; `run` checks the same before it creates its output directory, and every
+conditions.json records the wake state. The number: the failed attempt's
+sampling gaps reached 899.05 s; the longest gap in the 46 valid short-run
+samples is 0.35 s, so 5 s separates the two by a wide margin.
+
 ### R0.4b — Paired picoforge/DwarfStar decode harness
 
 Paired: both engines decode the same IDs on the same Mac and file, so the

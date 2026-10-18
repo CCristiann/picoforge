@@ -29,6 +29,8 @@ def sample(probe, pid=None):
 
 # Kill the child after `samples` consecutive samples at pressure level >= `pressure`
 # or swap growth > `swap_bytes`. Callers may pass a stricter guard; this is the default.
+# Optional `gap_s` (not in the default): also kill the child when two consecutive sample
+# attempts are more than that many seconds apart on our clock (see the loop below).
 DEFAULT_GUARD = dict(pressure=4, swap_bytes=2 * 2**30, samples=3)
 
 
@@ -72,12 +74,21 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None, gu
     for name in logs:
         selector.register(getattr(process, name), selectors.EVENT_READ, name)
     first, samples, reason, bad, next_sample = {}, [], None, 0, start
+    last_attempt, max_gap = None, None
     terminated = None
     try:
         with (output / "events.jsonl").open("w") as events, (output / "memory.jsonl").open("w") as memory:
             while selector.get_map() or process.poll() is None:
                 current = now()
                 if current >= next_sample and process.poll() is None:
+                    # now() is CLOCK_MONOTONIC, which on macOS keeps counting while the Mac sleeps,
+                    # so a sleep shows up as one long gap between attempts (a failed probe counts
+                    # too). A sample that spanned a sleep is not a measurement: stop the child.
+                    if last_attempt is not None:
+                        max_gap = max(current - last_attempt, max_gap or 0)
+                        if limits.get("gap_s") and current - last_attempt > limits["gap_s"]:
+                            reason = reason or "sleep gap"
+                    last_attempt = current
                     row = sample(probe, process.pid)
                     next_sample = current + interval
                     if row is not None:
@@ -126,7 +137,7 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None, gu
                         returncode=process.returncode, stop_reason=reason,
                         complete=process.returncode == 0 and reason is None,
                         first_stream_bytes_s=first, system_after=sample(probe),
-                        samples=len(samples),
+                        samples=len(samples), max_sample_gap_s=max_gap,
                         sampled_peak_footprint_bytes=max((s["phys_footprint_bytes"] for s in samples), default=None),
                         lifetime_peak_footprint_bytes=max((s["lifetime_peak_phys_footprint_bytes"] for s in samples), default=None))
         meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
