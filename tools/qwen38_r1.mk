@@ -48,3 +48,17 @@ test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels $(METALLIB)
 	$(Q38_LOCK) env MTL_DEBUG_LAYER=1 Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" $(Q38_TEST) tests/test_qwen38_fast_kernels.py --native $< $(Q38_R1_SLICES) --report "$$(mktemp -d build/qwen38-r1/fast-kernels.XXXXXX)/report.json" -v
 
 .PHONY: test-qwen38-fast-kernels
+
+# R1.2 isolated-kernel timing on synthetic Q8_0 (never the checkpoint; the
+# LM-head shape is 644 MiB), without the validation layer: GB/s on the LM head
+# and attn_qkv, then fast vs oracle by x rows on attn_qkv. One JSON line per
+# run plus `pmset -g therm` before and after, into a new build/qwen38-r1 file.
+Q38_R1_BENCH_ROWS := 1 2 4 8 32 128 1024
+bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels $(METALLIB)
+	@out="$$(mktemp build/qwen38-r1/bench.XXXXXX)"; \
+	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c 'pmset -g therm; \
+	  for mode in fast oracle; do ./$< bench $$mode 248320 2560 1 || exit 1; done; \
+	  for m in $(Q38_R1_BENCH_ROWS); do for mode in fast oracle; do ./$< bench $$mode 10240 2560 $$m || exit 1; done; done; \
+	  pmset -g therm' > "$$out"; status=$$?; cat "$$out"; echo "bench: $$out"; exit $$status
+
+.PHONY: bench-qwen38-matvec
