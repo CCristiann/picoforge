@@ -2,9 +2,11 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "qwen38_b_internal.h"
+#include "qwen38_ref.h"
 #include <stdlib.h>
 
-struct Q38PackedGpu { void *device, *linear, *indexed, *lookup; };
+/* ref_*: run the oracle kernel for that family (qwen38_ref.h), fixed at creation. */
+struct Q38PackedGpu { void *device, *linear, *indexed, *lookup; bool ref_linear, ref_indexed; };
 
 Qwen38Status q38_packed_gpu_create(void *device, void *library,
                                   Q38PackedGpu **out, Qwen38Error *err) {
@@ -28,12 +30,18 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->linear=(__bridge_retained void *)pipeline;
     ctx->indexed=(__bridge_retained void *)indexed;
     ctx->lookup=(__bridge_retained void *)embedding;
+    ctx->ref_linear=q38_ref_kernels("linear");
+    ctx->ref_indexed=q38_ref_kernels("indexed");
     *out=ctx;
     return q38_b_result(err,Q38_OK,"");
 }
 void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (!ctx) return;
     CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->lookup); CFRelease(ctx->device); free(ctx);
+}
+/* Tests force the choice regardless of the environment read at creation. */
+void q38_packed_gpu_set_reference(Q38PackedGpu *ctx, bool linear, bool indexed) {
+    if (ctx) { ctx->ref_linear=linear; ctx->ref_indexed=indexed; }
 }
 
 static Qwen38Status gpu_span(id<MTLDevice> dev, Qwen38GpuSpan span, size_t needed,
@@ -136,6 +144,20 @@ Qwen38Status q38_packed_encode(Q38PackedGpu *ctx, const Qwen38GpuCommand *comman
     NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
     [encoder dispatchThreads:MTLSizeMake(layout->n_out,x.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
     return q38_b_result(err,Q38_OK,"");
+}
+
+/* Always the fast kernel, never the oracle: the harness measures it against
+ * q38_packed_encode. Validation comes FIRST (the same admit() and expert check,
+ * so a bad call fails identically on both paths); only then does a format with
+ * no fast kernel report UNSUPPORTED. No format has one yet (R1.1). */
+Qwen38Status q38_packed_encode_fast(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
+        size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
+    Admitted a;
+    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
+    if (status) return status;
+    if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
+    return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
 }
 
 Qwen38Status q38_packed_encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,

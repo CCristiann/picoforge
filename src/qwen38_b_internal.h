@@ -79,5 +79,12 @@ Q38_B_INLINE Qwen38Status q38_b_matrix(size_t rank, const size_t dim[4],
     }
     return *extent > capacity ? Q38_CAPACITY : Q38_OK;
 }
+/* R1 kernel choice (qwen38_ref.h): override the flags read at creation. */
+void q38_packed_gpu_set_reference(Q38PackedGpu *, bool linear, bool indexed);
+/* Same contract and admission as q38_packed_encode, always the fast kernel:
+ * Q38_UNSUPPORTED if the format has no fast kernel yet. */
+Qwen38Status q38_packed_encode_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
+    size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
 #undef Q38_B_INLINE
 #endif

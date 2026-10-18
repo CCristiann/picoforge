@@ -34,3 +34,14 @@ test-qwen38-g3-tools:
 	$(Q38_TEST) tests/test_qwen38_g3_tools.py -v
 
 .PHONY: test-qwen38-g3-tools
+
+# R1.1 fast-kernel harness: sanitized like build/qwen38-b/test_packed_gpu.
+build/qwen38-r1/test_fast_kernels: tests/test_qwen38_fast_kernels.m src/qwen38_packed_gpu.m src/qwen38_packed.c $(Q38_STORAGE) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
+
+# The selector is pure parsing: no GPU, so no lock.
+test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels
+	$(Q38_ENV) ./$< selector
+
+.PHONY: test-qwen38-fast-kernels
