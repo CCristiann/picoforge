@@ -1,0 +1,72 @@
+{
+  "complete": true,
+  "max_wired_bytes": 17179869184,
+  "elapsed_s": 1.5333520000003773,
+  "samples": [
+    {
+      "pid": 40429,
+      "monotonic_s": 12120.911759,
+      "resident_bytes": 1835008,
+      "phys_footprint_bytes": 1360232,
+      "lifetime_peak_phys_footprint_bytes": 1393000,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 2176483,
+      "system_compressor_pages": 119703
+    },
+    {
+      "pid": 40430,
+      "monotonic_s": 12121.422591,
+      "resident_bytes": 1835008,
+      "phys_footprint_bytes": 1360232,
+      "lifetime_peak_phys_footprint_bytes": 1393000,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 244946,
+      "system_compressor_pages": 119703
+    },
+    {
+      "pid": 40434,
+      "monotonic_s": 12121.935769,
+      "resident_bytes": 1835008,
+      "phys_footprint_bytes": 1360232,
+      "lifetime_peak_phys_footprint_bytes": 1393000,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 244770,
+      "system_compressor_pages": 119703
+    },
+    {
+      "pid": 40435,
+      "monotonic_s": 12122.442201,
+      "resident_bytes": 1835008,
+      "phys_footprint_bytes": 1360232,
+      "lifetime_peak_phys_footprint_bytes": 1393000,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 244559,
+      "system_compressor_pages": 119703
+    }
+  ],
+  "cache_state": "Not purged or controlled"
+}

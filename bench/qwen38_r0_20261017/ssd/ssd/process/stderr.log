@@ -1,0 +1,1 @@
+ds4: Qwen3.8 requires Metal or single-GPU CUDA (or --cpu --first-token-test); tensor parallelism, pipeline execution, SSD streaming, DSpark, external MTP models and power throttling are not supported

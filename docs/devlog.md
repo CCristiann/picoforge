@@ -50,6 +50,24 @@ nothing and stay plain. The gate itself is untouched. The second change is
 Every R1 task measures picoforge alone, 3 warm-ups + 20 measured on the short
 frontier; DwarfStar's baseline stays the R0 one.
 
+### R0.5 — Recorded decode baseline
+
+Before any R1 kernel changes, decode is measured where it stands and against
+DwarfStar on the same Mac and file, so the profile, not taste, orders R1 and
+every step has a baseline. Decode reads each weight once per token: ceiling =
+bytes ÷ 307 GB/s. Short frontier, paired, teacher-forced (9 + 128 IDs, one
+process per sample, alternated, 3 warm-ups + 20 measured): picoforge 1.064
+tok/s (p10 1.062, p90 1.066), DwarfStar `fc80bd6` 33.075 (p10 23.62: three
+consecutive slow samples and one at 27.6, thermal nominal, kept), ratio 0.0322.
+Profile, 935.5 ms/token: `gdn` 34.6%, `moe` 28.1%, HC F16 26.5% (`inject`,
+n_out = 4, 0.04 GB/s), so the spec order R1.2 → R1.3 → R1.5 stands. 6104.78 MB
+per token (ceiling ~50 tok/s), 6.5 GB/s = 2.1% of 307; DwarfStar ≈ 202 GB/s
+(65.8%, estimated with picoforge's bytes); 2986 dispatches, floor 4.2 ms. At
+8K only a profile (974.0 ms/token, prefill 1406 s, `qsa.core` 3.1 → 40.5 ms):
+the paired 8K run is deferred (ruling R22) after three invalid attempts, all
+kept. `oracle/oracle-logits.f32` is the reference for `Q38_REF_KERNELS=1`.
+Evidence and limits: `bench/qwen38_r0_20261017/README.md`.
+
 ### R0.5a — Sleep-gap abort and full-wake precheck
 
 The first 8K paired baseline ran while the Mac was in a DarkWake (lid closed):
