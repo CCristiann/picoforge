@@ -122,7 +122,11 @@ class CompareTests(unittest.TestCase):
             flags = [f for e, block in plan if e == engine for f in block]
             self.assertEqual(flags, [True]*warmup + [False]*measure)  # warm-ups first, per engine
         self.assertTrue(all(len(block) == 1 for _, block in plan))
-        for bad in ({'picoforge': (0, 0), 'dwarfstar': (0, 1)}, {'picoforge': (-1, 1), 'dwarfstar': (0, 1)}):
+        # An unused engine is (0, 0) and is skipped; a requested one still needs measured >= 1.
+        self.assertEqual(qc.schedule({'picoforge': (1, 2), 'dwarfstar': (0, 0)}, 2),
+                         [('picoforge', [True, False]), ('picoforge', [False])])
+        for bad in ({'picoforge': (2, 0), 'dwarfstar': (0, 1)}, {'picoforge': (-1, 1), 'dwarfstar': (0, 1)},
+                    {'picoforge': (0, 0), 'dwarfstar': (0, 0)}, {'picoforge': (0, 1)}):
             with self.assertRaises(ValueError):
                 qc.schedule(bad, 1)
         with self.assertRaises(ValueError):
@@ -300,6 +304,11 @@ class CompareTests(unittest.TestCase):
             self.assertIn('exists', done.stderr)
             self.assertEqual([p.name for p in out.iterdir()], ['keep.txt'])
             self.assertEqual((out/'keep.txt').read_text(), 'evidence')
+            for engines in ('picoforge', 'nope'):  # --engines picoforge parses; anything else is refused
+                done = subprocess.run([sys.executable, '-B', str(TOOL), 'run', str(Path(directory)/'suite'), str(out),
+                                       '--frontier', 'short', '--warmup', '0', '--measure', '1', '--block', '1',
+                                       '--engines', engines], capture_output=True, text=True)
+                self.assertIn('exists' if engines == 'picoforge' else 'invalid choice', done.stderr)
 
 
     def test_run_alternates_and_summarizes(self):
@@ -327,6 +336,30 @@ class CompareTests(unittest.TestCase):
             self.assertAlmostEqual(summary['ratio_picoforge_over_dwarfstar'], 1.25/31.0)
             self.assertTrue(json.loads((d/'out/manifest.json').read_text())['complete'])
             self.assertEqual((d/'out/samples.csv').read_text().splitlines()[0], ','.join(qc.COLUMNS))
+
+    def test_picoforge_only_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d, calls = Path(directory), []
+            corpus = d/'corpus.txt'
+            corpus.write_text(''.join(f'riga {i:05d} del romanzo\n' for i in range(4000)))
+            qc.prepare(d/'suite', Fake(), corpus, CASE)
+            with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
+                    patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
+                qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (0, 0)}, 2, 10, bench_launch(calls), AWAKE)
+            self.assertEqual([c[0] for c in calls], ['picoforge']*3)  # ds4-bench never starts
+            self.assertEqual(sorted(p.name for p in (d/'out').glob('0*')), ['000-picoforge-warmup', '001-picoforge', '002-picoforge'])
+            summary = json.loads((d/'out/summary.json').read_text())
+            self.assertEqual(summary['picoforge']['median'], 1.25)
+            self.assertIsNone(summary['dwarfstar'])
+            self.assertIsNone(summary['ratio_picoforge_over_dwarfstar'])
+            self.assertTrue(summary['complete'])
+            manifest = json.loads((d/'out/manifest.json').read_text())
+            self.assertEqual((manifest['engines'], manifest['complete']), (['picoforge'], True))
+            self.assertEqual(len((d/'out/samples.csv').read_text().splitlines()), 4)  # header + 3 samples
+            qc.summarize(d/'out')  # prints "dwarfstar: no measured sample"; a None ratio must not crash
+            # The default keeps both engines in the manifest.
+            qc.run(d/'suite', d/'both', 'short', {'picoforge': (0, 1), 'dwarfstar': (0, 1)}, 1, 10, bench_launch([]), AWAKE)
+            self.assertEqual(json.loads((d/'both/manifest.json').read_text())['engines'], ['picoforge', 'dwarfstar'])
 
 
 if __name__ == '__main__':

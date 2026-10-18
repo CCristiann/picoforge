@@ -54,10 +54,13 @@ def schedule(counts, block):
 
     counts maps each engine to (warm-ups, measured). Within an engine the warm-ups
     (True) come first. Alternation spreads slow drift (heat, background load)
-    over both engines instead of charging it to whichever ran second.
+    over both engines instead of charging it to whichever ran second. An engine
+    given (0, 0) is not run (picoforge-only runs); a requested one needs measured >= 1.
     """
-    if set(counts) != set(ENGINES) or block < 1 or any(w < 0 or m < 1 for w, m in counts.values()):
-        raise ValueError('need both engines, block >= 1, warm-ups >= 0 and measured >= 1')
+    requested = [c for c in counts.values() if any(c)]
+    if set(counts) != set(ENGINES) or block < 1 or not requested or any(w < 0 or m < 1 for w, m in requested):
+        raise ValueError('need both engines (an unused one as (0, 0)), block >= 1, and for each used one '
+                         'warm-ups >= 0 and measured >= 1')
     queues = {e: [True]*counts[e][0] + [False]*counts[e][1] for e in ENGINES}
     plan = []
     while any(queues.values()):
@@ -330,7 +333,8 @@ def run(suite_dir, out, name, counts, block, timeout, launch=None, awake=awake):
         raise ValueError('frontier text changed since prepare')
     require_awake(awake())  # no evidence directory on a sleeping, closed or battery-powered Mac
     out.mkdir(parents=True, exist_ok=False)
-    manifest = dict(complete=False, frontier=name, counts=counts, block=block, plan=plan, protocol=PROTOCOL,
+    manifest = dict(complete=False, frontier=name, engines=[e for e in ENGINES if any(counts[e])], counts=counts,
+                    block=block, plan=plan, protocol=PROTOCOL,
                     suite_sha256=sha(suite_dir/'suite.json'), guard=GUARD, **provenance(bounded()[1]),
                     before=dict(conditions(), thermal_state=thermal()))
     dump(out/'manifest.json', manifest)
@@ -413,6 +417,8 @@ def main():
         r.add_argument('--' + name, type=int, required=True)
     r.add_argument('--picoforge-warmup', type=int, help='override for picoforge (the slow 8K baseline)')
     r.add_argument('--picoforge-measure', type=int)
+    r.add_argument('--engines', choices=('both', 'picoforge'), default='both',
+                   help='picoforge: no DwarfStar samples (the R1 ladder keeps the R0 DwarfStar baseline)')
     r.add_argument('--timeout', type=float, default=RUN_TIMEOUT, help='seconds per process')
     sub.add_parser('summarize', help='recompute the summary of a run').add_argument('output', type=Path)
     s = sub.add_parser('ssd-check', help='one ds4 --ssd-streaming attempt')
@@ -427,7 +433,7 @@ def main():
     if a.action == 'run':
         counts = {'picoforge': (a.warmup if a.picoforge_warmup is None else a.picoforge_warmup,
                                 a.measure if a.picoforge_measure is None else a.picoforge_measure),
-                  'dwarfstar': (a.warmup, a.measure)}
+                  'dwarfstar': (a.warmup, a.measure) if a.engines == 'both' else (0, 0)}
         try:
             schedule(counts, a.block)
         except ValueError as e:

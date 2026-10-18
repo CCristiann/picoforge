@@ -16,6 +16,23 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.0 — Fenced G3 launches and picoforge-only runs
+
+G3 (`tools/qwen38_g3.py`) maps the 46 GiB checkpoint four times back to back:
+`forward_real`, the stock-Metal oracle, `ds4 --cpu`, the picoforge chat. A
+Metal process's wired pages stay wired for ~1.5 s after it exits, and mapping
+the checkpoint again inside that window froze the Mac twice (ruling R9); in
+the R0 baseline G3 the stock-Metal process started under a second after
+`forward_real` exited. Those four steps now start through the paired
+harness's `Launcher` (release wait before and after, strict memory guard with
+the R0.5a sleep gap, full-wake precheck), each in its own `launch-<name>`
+directory with a 900 s timeout; clang and the synthetic-graph replay map
+nothing and stay plain. The gate itself is untouched. The second change is
+`qwen38_compare.py run --engines picoforge`: DwarfStar gets no samples
+(`(0, 0)` in the schedule, `null` in the summary, `engines` in the manifest).
+Every R1 task measures picoforge alone, 3 warm-ups + 20 measured on the short
+frontier; DwarfStar's baseline stays the R0 one.
+
 ### R0.5a — Sleep-gap abort and full-wake precheck
 
 The first 8K paired baseline ran while the Mac was in a DarkWake (lid closed):
