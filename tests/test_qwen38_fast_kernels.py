@@ -29,7 +29,8 @@ oracle = packed.oracle
 NAMES = {0: "f32", 1: "f16", 8: "q8_0", 10: "q2_k", 12: "q4_k", 16: "iq2_xxs", 30: "bf16", 39: "mxfp4"}
 SHAPES = [(1, 32, 1), (3, 640, 3), (33, 2560, 2), (512, 640, 1)]  # (N, K logical, M)
 UNSUPPORTED, NONFINITE = 8, 16  # Q38_UNSUPPORTED (no fast kernel), Q38_NONFINITE (error bit 1)
-FAST = {"q8_0"}  # formats whose fast kernel exists: UNSUPPORTED is a failure for them
+FAST = {"q8_0", "f16", "f32"}  # formats whose fast kernel exists: UNSUPPORTED is a failure for them
+KINDS = {name: kind for kind, name in NAMES.items() if name in FAST}
 BANNER = re.compile(rb"(?m)^.*Metal API Validation Enabled\r?\n")
 NATIVE, SLICES, TOLERANCES, CASES, ORACLE, RESULTS, CORPUS = None, [], {}, [], {}, {}, {}
 
@@ -126,6 +127,41 @@ def q8_0_decode(raw, physical):
     return w.reshape(-1, physical)
 
 
+DENSE = {1: "<f2", 0: "<f4"}  # F16 and F32: one element per column, no blocks
+
+
+def weight_rows(kind, physical, n, rng):
+    """Packed rows [n, row bytes] of one fast format. F16/F32: values of both signs over
+    2^-16..2^0 (F16 subnormals included), so products and sums exercise every exponent."""
+    if kind == 8:
+        return q8_0_rows(physical, n, rng).reshape(n, -1)
+    values = rng.choice([-1, 1], (n, physical)) * 2.0 ** rng.uniform(-16, 0, (n, physical))
+    return values.astype(DENSE[kind]).view(np.uint8).reshape(n, -1)
+
+
+def decode_rows(kind, raw, physical):
+    """Independent decode [n, physical] of weight_rows' layout (nonfinite padding allowed)."""
+    if kind == 8:
+        return q8_0_decode(raw, physical)
+    return raw.copy().view(DENSE[kind]).astype(np.float32).reshape(-1, physical)
+
+
+def poison(kind, raw, row, column, value):
+    """Copy of raw with the weight that feeds (row, column) set to value: the Q8_0 block scale or the element."""
+    bad = raw.copy()
+    if kind == 8:
+        bad[row, column // 32 * 34:column // 32 * 34 + 2] = np.array([value], "<f2").view(np.uint8)
+    else:
+        size = np.dtype(DENSE[kind]).itemsize
+        bad[row, column * size:(column + 1) * size] = np.array([value], DENSE[kind]).view(np.uint8)
+    return bad
+
+
+def seeded(seed, kind):
+    """Per-format generator; Q8_0 keeps its original seed so its corpus (and tol) is unchanged."""
+    return np.random.default_rng(seed if kind == 8 else [seed, kind])
+
+
 def scaled_difference(y, y_oracle, magnitude):
     """Condition (b)'s measured side: |y - y_oracle| / max(S, 2^-126)."""
     return np.abs(y.astype(np.float64) - y_oracle) / np.maximum(magnitude, 2.0**-126)
@@ -154,8 +190,8 @@ class FastKernelTests(unittest.TestCase):
         self.assertLessEqual(stats["vs_oracle"]["max"], tol, label)
         return fast
 
-    def assert_nonfinite(self, mode, physical, logical, data, x, label):
-        code, stdout, stderr, _ = run_native(mode, 8, physical, logical, data, x)
+    def assert_nonfinite(self, mode, physical, logical, data, x, label, kind=8):
+        code, stdout, stderr, _ = run_native(mode, kind, physical, logical, data, x)
         self.assertEqual((code, stdout, stderr), (NONFINITE, b"", b"qwen38 Metal: error bits 1\n"), f"{mode} {label}")
 
     def test_selector_parsing(self):
@@ -196,78 +232,99 @@ class FastKernelTests(unittest.TestCase):
                 self.assertIsNotNone(tol, f"{NAMES[kind]}: fast kernel without a measured tolerance")
                 self.assertLessEqual(stats["vs_oracle"]["max"], tol)
 
-    def test_q8_0_real_tensors_within_tolerance(self):
-        """Every real Q8_0 slice group (LM head, attn_qkv, ssm_out, shared experts, ...) runs fast."""
-        real = [case for case in CASES if case[1] == 8 and case[0].startswith("real:")]
-        self.assertTrue(real, "no real Q8_0 slices")
+    def real_within_tolerance(self, kind):
+        """Every real slice group of one format runs fast within (a) and (b)."""
+        real = [case for case in CASES if case[1] == kind and case[0].startswith("real:")]
+        self.assertTrue(real, f"no real {NAMES[kind]} slices")
         for case in real:
             with self.subTest(case=case[0]):
                 self.fast_case(*case[:6], y_oracle=reference(case)[0])
 
+    def test_q8_0_real_tensors_within_tolerance(self):
+        """Q8_0 slices: LM head, attn_qkv, ssm_out, shared experts, ..."""
+        self.real_within_tolerance(8)
+
+    def test_f16_real_tensors_within_tolerance(self):
+        """F16 slices: the HC down/inject (K 10240) and up (K 320) tensors."""
+        self.real_within_tolerance(1)
+
+    def test_f32_real_tensors_within_tolerance(self):
+        """F32 slices: router (ffn_gate_inp) and ssm_alpha (K 2560), norms."""
+        self.real_within_tolerance(0)
+
     def test_shapes_not_multiple_of_tile(self):
-        """Review Focus 1: n_out and K off every tile size, partial tail blocks, one LM-head-sized n_out."""
-        rng = np.random.default_rng(3814)
-        # M rotates with n and K together, so every K meets every M in {1, 2, 5}.
-        shapes = [(n, k, k, (1, 2, 5)[(i + j) % 3]) for i, n in enumerate((1, 3, 33, 512))
-                  for j, k in enumerate((32, 640, 2560))]
-        shapes += [(33, 64, 40, 3), (3, 2560, 2550, 2), (248320, 32, 32, 1)]  # (N, physical, logical, M)
-        for n, physical, logical, m in shapes:
-            with self.subTest(n=n, physical=physical, logical=logical, m=m):
-                x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
-                self.fast_case(f"tile:q8_0:N{n}:K{logical}/{physical}:M{m}", 8, physical, logical,
-                               q8_0_rows(physical, n, rng).tobytes(), x)
+        """Review Focus 1: n_out and K off every tile size, partial tails, one LM-head-sized n_out."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3814, kind)
+            # M rotates with n and K together, so every K meets every M in {1, 2, 5}.
+            shapes = [(n, k, k, (1, 2, 5)[(i + j) % 3]) for i, n in enumerate((1, 3, 33, 512))
+                      for j, k in enumerate((32, 640, 2560))]
+            shapes += [(33, 64, 40, 3), (3, 2560, 2550, 2), (248320, 32, 32, 1)]  # (N, physical, logical, M)
+            if kind != 8:  # no blocks: odd K (rows not 4-byte aligned), and HC inject's n_out 4 at K 10240
+                shapes += [(33, 37, 37, 3), (7, 2561, 2561, 4), (4, 10240, 10240, 1), (4, 10240, 10240, 5)]
+            for n, physical, logical, m in shapes:
+                with self.subTest(kernel=name, n=n, physical=physical, logical=logical, m=m):
+                    x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
+                    self.fast_case(f"tile:{name}:N{n}:K{logical}/{physical}:M{m}", kind, physical, logical,
+                                   weight_rows(kind, physical, n, rng).tobytes(), x)
 
     def test_logical_k_padding(self):
-        """Review Focus 2: nonfinite padding scales never reach y, and x is never read past k_logical."""
-        rng = np.random.default_rng(3815)
-        for n, physical, logical, m in ((33, 768, 640, 3), (5, 64, 40, 4), (3, 2560, 2550, 2)):
-            with self.subTest(physical=physical, logical=logical):
-                raw = q8_0_rows(physical, n, rng).reshape(n, physical // 32, 34)
-                padding = raw[:, -(-logical // 32):]  # whole blocks past k_logical
-                padding[:, :, :2] = np.array([np.nan, np.inf], "<f2")[np.arange(padding.shape[1]) % 2].view(np.uint8).reshape(-1, 2)
-                x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
-                # Pitch logical+1: the NaN after each row and after x is what a read past k_logical
-                # meets. The CPU decoder rejects nonfinite padding, so the reference decodes here.
-                self.fast_case(f"padding:q8_0:N{n}:K{logical}/{physical}:M{m}", 8, physical, logical,
-                               raw.tobytes(), x, view=(logical + 1, n, 0), decoded=q8_0_decode(raw, physical))
+        """Review Focus 2: nonfinite padding never reaches y, and x is never read past k_logical."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3815, kind)
+            for n, physical, logical, m in ((33, 768, 640, 3), (5, 64, 40, 4), (3, 2560, 2550, 2)):
+                with self.subTest(kernel=name, physical=physical, logical=logical):
+                    raw = weight_rows(kind, physical, n, rng)
+                    first = -(-logical // 32) * 32 if kind == 8 else logical  # first column wholly past k_logical
+                    for column in range(first, physical, 32 if kind == 8 else 1):  # Q8_0: the block scale
+                        raw = poison(kind, raw, slice(None), column, (np.nan, np.inf)[column // (32 if kind == 8 else 1) % 2])
+                    x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
+                    # Pitch logical+1: the NaN after each row and after x is what a read past k_logical
+                    # meets. The CPU decoder rejects nonfinite padding, so the reference decodes here.
+                    self.fast_case(f"padding:{name}:N{n}:K{logical}/{physical}:M{m}", kind, physical, logical,
+                                   raw.tobytes(), x, view=(logical + 1, n, 0), decoded=decode_rows(kind, raw, physical))
 
     def test_nonfinite_sets_error_word(self):
-        """Review Focus 3: NaN/Inf in x or in a used weight scale sets bit 1 (exit 16), oracle and fast alike."""
-        rng = np.random.default_rng(3816)
-        raw, x = q8_0_rows(640, 33, rng).reshape(33, 20, 34), rng.uniform(-1, 1, (3, 640)).astype(np.float32)
-        for label, value in (("nan", np.nan), ("inf", np.inf)):
-            poisoned = x.copy()
-            poisoned[1, 100] = value
-            bad = raw.copy()
-            bad[5, 3, :2] = np.array([value], "<f2").view(np.uint8)
-            for mode in ("oracle", "fast"):
-                with self.subTest(mode=mode, poison=label):
-                    self.assert_nonfinite(mode, 640, 640, raw.tobytes(), poisoned, f"x {label}")
-                    self.assert_nonfinite(mode, 640, 640, bad.tobytes(), x, f"scale {label}")
+        """Review Focus 3: NaN/Inf in x or in a used weight sets bit 1 (exit 16), oracle and fast alike."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3816, kind)
+            raw, x = weight_rows(kind, 640, 33, rng), rng.uniform(-1, 1, (3, 640)).astype(np.float32)
+            for label, value in (("nan", np.nan), ("inf", np.inf)):
+                poisoned = x.copy()
+                poisoned[1, 100] = value
+                bad = poison(kind, raw, 5, 96, value)
+                for mode in ("oracle", "fast"):
+                    with self.subTest(kernel=name, mode=mode, poison=label):
+                        self.assert_nonfinite(mode, 640, 640, raw.tobytes(), poisoned, f"x {label}", kind)
+                        self.assert_nonfinite(mode, 640, 640, bad.tobytes(), x, f"weight {label}", kind)
 
     def test_rows_bit_independent(self):
         """Review Focus 4: a row's bits depend neither on M, nor on its x position, nor on its n_out position."""
-        rng = np.random.default_rng(3817)
-        n, k, m = 37, 2560, 19
-        raw, x = q8_0_rows(k, n, rng), rng.uniform(-1, 1, (m, k)).astype(np.float32)
-        full = self.fast_case(f"rows:q8_0:N{n}:K{k}:M{m}", 8, k, k, raw.tobytes(), x)
-        for rows in ([0], [m - 1], list(range(3, 9)), list(range(m - 1, -1, -1)), [4] * 9):
-            with self.subTest(rows=rows[:4]):
-                _, y, _ = native("fast", 8, k, k, raw.tobytes(), x[rows])
-                np.testing.assert_array_equal(y.view("<u4"), full[rows].view("<u4"))
-        _, shifted, _ = native("fast", 8, k, k, raw[k // 32:].tobytes(), x)  # weight row j+1 becomes row j
-        np.testing.assert_array_equal(shifted.view("<u4"), full[:, 1:].view("<u4"))
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3817, kind)
+            n, k, m = 37, 2560, 19
+            raw, x = weight_rows(kind, k, n, rng), rng.uniform(-1, 1, (m, k)).astype(np.float32)
+            with self.subTest(kernel=name):
+                full = self.fast_case(f"rows:{name}:N{n}:K{k}:M{m}", kind, k, k, raw.tobytes(), x)
+                for rows in ([0], [m - 1], list(range(3, 9)), list(range(m - 1, -1, -1)), [4] * 9):
+                    with self.subTest(kernel=name, rows=rows[:4]):
+                        _, y, _ = native("fast", kind, k, k, raw.tobytes(), x[rows])
+                        np.testing.assert_array_equal(y.view("<u4"), full[rows].view("<u4"))
+                _, shifted, _ = native("fast", kind, k, k, raw[1:].tobytes(), x)  # weight row j+1 becomes row j
+                np.testing.assert_array_equal(shifted.view("<u4"), full[:, 1:].view("<u4"))
 
     def test_strided_offset_views(self):
         """Review Focus 5: pitches above K*4 and n*4 and nonzero offsets (an LM head on a slice) change no bit."""
-        rng = np.random.default_rng(3818)
-        n, k, m = 33, 640, 5
-        raw, x = q8_0_rows(k, n, rng).tobytes(), rng.uniform(-1, 1, (m, k)).astype(np.float32)
-        plain = self.fast_case(f"views:q8_0:N{n}:K{k}:M{m}", 8, k, k, raw, x)
-        for view in ((k + 12, n + 7, 37), (k, n, 5 * k), (k + 1, n + 1, 1)):
-            with self.subTest(view=view):
-                strided = self.fast_case(f"views:q8_0:N{n}:K{k}:M{m}:{view}", 8, k, k, raw, x, view=view)
-                np.testing.assert_array_equal(strided.view("<u4"), plain.view("<u4"))
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3818, kind)
+            n, k, m = 33, 640, 5
+            raw, x = weight_rows(kind, k, n, rng).tobytes(), rng.uniform(-1, 1, (m, k)).astype(np.float32)
+            with self.subTest(kernel=name):
+                plain = self.fast_case(f"views:{name}:N{n}:K{k}:M{m}", kind, k, k, raw, x)
+                for view in ((k + 12, n + 7, 37), (k, n, 5 * k), (k + 1, n + 1, 1)):
+                    with self.subTest(kernel=name, view=view):
+                        strided = self.fast_case(f"views:{name}:N{n}:K{k}:M{m}:{view}", kind, k, k, raw, x, view=view)
+                        np.testing.assert_array_equal(strided.view("<u4"), plain.view("<u4"))
 
     def separating_case(self):
         """A dense Q8_0 case whose fast and oracle bits differ (else the selector tests prove nothing)."""
@@ -321,6 +378,24 @@ class FastKernelTests(unittest.TestCase):
             with self.subTest(patterns=len(chosen), first=hex(int(chosen[0]))):
                 self.assert_nonfinite("fast", 32, 32, bad.tobytes(), x[:1], "scale pattern")
 
+
+    def test_f16_decode_matches_oracle(self):
+        """All 65536 fp16 weight patterns: finite ones decode exactly (one-hot x), nonfinite ones set bit 1."""
+        patterns = np.arange(65536, dtype=np.uint16)
+        finite = patterns[(patterns & 0x7C00) != 0x7C00]  # 63488 = 1984 rows of 32
+        x = np.eye(32, dtype=np.float32)
+        _, fast, _ = native("fast", 1, 32, 32, finite.tobytes(), x)
+        self.assertIsNotNone(fast, "f16 has no fast kernel")
+        _, y_oracle, _ = native("oracle", 1, 32, 32, finite.tobytes(), x)
+        expected = finite.view("<f2").astype(np.float32).reshape(-1, 32).T
+        np.testing.assert_array_equal(fast, expected)  # exact value (+0 and -0 compare equal)
+        np.testing.assert_array_equal(fast.view("<u4"), y_oracle.view("<u4"))  # and the oracle's bits
+        nonfinite = patterns[(patterns & 0x7C00) == 0x7C00]
+        for chosen in (nonfinite, *(np.array([p], np.uint16) for p in (0x7C00, 0xFC00, 0x7C01, 0x7E00, 0xFFFF))):
+            bad = np.zeros((len(chosen), 32), np.uint16)
+            bad[:, 0] = chosen
+            with self.subTest(patterns=len(chosen), first=hex(int(chosen[0]))):
+                self.assert_nonfinite("fast", 32, 32, bad.tobytes(), x[:1], "weight pattern", 1)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

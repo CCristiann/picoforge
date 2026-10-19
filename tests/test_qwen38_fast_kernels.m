@@ -1,7 +1,7 @@
 /* R1 fast-kernel harness, native side. `selector` checks Q38_REF_KERNELS
  * parsing (no GPU). GPU modes run only through qwen38_gpu_lock.py:
  *   <oracle|encode|fast> type physical logical n m [xpitch ypitch offset]
- *   bench <oracle|fast> n K m [reps]
+ *   bench <oracle|fast> n K m [reps [type]]
  * oracle = q38_packed_encode with the oracle forced, encode = q38_packed_encode
  * as configured by the environment, fast = q38_packed_encode_fast.
  * stdin: n packed rows, then x [m,logical] FP32. stdout: y [m,n] FP32, then
@@ -12,7 +12,8 @@
  * `offset` floats past a 16-byte guard. Every x float outside the view is NaN,
  * so a read past k_logical or between rows poisons y; every y byte outside the
  * view is 0xa5 and must stay so (no write outside y).
- * bench: Q8_0 [n,K] and x from a fixed seed (no stdin), 3 warm-ups + 20
+ * bench: a [n,K] tensor of `type` (default 8, Q8_0; 1 F16, 0 F32) and x from a
+ * fixed seed (no stdin), 3 warm-ups + 20
  * measured command buffers, GPU time from GPUStartTime/GPUEndTime. reps > 1
  * encodes the kernel reps times back to back in each command buffer (as in
  * the decode graph) and reports the time per encode. */
@@ -60,10 +61,11 @@ static size_t number(const char *s) {
 static Request request(int argc,char **argv) {
     assert(argc>1);
     bool bench=!strcmp(argv[1],"bench");
-    assert(bench ? argc==6 || argc==7 : argc==7 || argc==10);
+    assert(bench ? argc>=6 && argc<=8 : argc==7 || argc==10);
     Request r={argv[1+bench],8,0,0,0,0,0,0,0,0,1};
     if (bench) { r.physical=r.logical=number(argv[4]); r.n=number(argv[3]); r.m=number(argv[5]);
-                 r.reps=argc==7 ? number(argv[6]) : 1; assert(r.reps && r.reps<=1000); }
+                 r.reps=argc>=7 ? number(argv[6]) : 1; assert(r.reps && r.reps<=1000);
+                 r.type=argc==8 ? (uint32_t)number(argv[7]) : 8; assert(r.type==8 || r.type<=1); }
     else { r.type=(uint32_t)number(argv[2]); r.physical=number(argv[3]); r.logical=number(argv[4]);
            r.n=number(argv[5]); r.m=number(argv[6]); }
     r.xpitch=argc==10 ? number(argv[7]) : r.logical;
@@ -142,9 +144,24 @@ static void write_decoded(const GpuWeightStore *store,const GgufBinding *binding
     free(row);
 }
 
-/* bench data: xorshift64 bytes; Q8_0 scales finite in [2^-7, 2^-6) so y stays finite. */
+/* bench data: xorshift64 bytes; Q8_0 scales finite in [2^-7, 2^-6), F16/F32
+ * elements finite with magnitude below 1, so y stays finite. */
 static uint64_t mix(uint64_t *s) { *s^=*s<<13; *s^=*s>>7; *s^=*s<<17; return *s; }
-static void synthesize(unsigned char *raw,size_t bytes,uint64_t *seed) {
+static void synthesize(unsigned char *raw,size_t bytes,uint64_t *seed,uint32_t type) {
+    if (type==1) { /* sign, exponent 1..14 (2^-14..2^-1), random fraction */
+        for (size_t i=0;i+1<bytes;i+=2) {
+            uint64_t v=mix(seed); uint16_t h=(uint16_t)((v&0x83ffu)|((1u+(v>>16)%14u)<<10));
+            memcpy(raw+i,&h,2);
+        }
+        return;
+    }
+    if (type==0) { /* sign, exponent 2^-20..2^-1, random fraction */
+        for (size_t i=0;i+3<bytes;i+=4) {
+            uint64_t v=mix(seed); uint32_t f=(uint32_t)((v&0x807fffffu)|((107u+(v>>32)%20u)<<23));
+            memcpy(raw+i,&f,4);
+        }
+        return;
+    }
     assert(raw && bytes%34==0);
     for (size_t b=0;b<bytes;b+=34) {
         for (size_t i=2;i<34;i+=8) { uint64_t v=mix(seed); memcpy(raw+b+i,&v,MIN((size_t)8,34-i)); }
@@ -164,9 +181,9 @@ static void report(Request r,double *seconds,const float *y) {
     double *t=seconds+3; qsort(t,20,sizeof *t,ascending);
     for (size_t i=0;i<20;i++) t[i]/=(double)r.reps;
     double bytes=(double)(r.bytes+4*r.m*(r.logical+r.n)), median=quantile(t,20,0.5);
-    printf("{\"mode\": \"%s\", \"n\": %zu, \"k\": %zu, \"m\": %zu, \"reps\": %zu, \"bytes\": %.0f, "
+    printf("{\"mode\": \"%s\", \"type\": %u, \"n\": %zu, \"k\": %zu, \"m\": %zu, \"reps\": %zu, \"bytes\": %.0f, "
            "\"median_us\": %.1f, \"p10_us\": %.1f, \"p90_us\": %.1f, \"gbps\": %.1f}\n",
-           r.mode,r.n,r.logical,r.m,r.reps,bytes,median*1e6,quantile(t,20,0.1)*1e6,quantile(t,20,0.9)*1e6,
+           r.mode,r.type,r.n,r.logical,r.m,r.reps,bytes,median*1e6,quantile(t,20,0.1)*1e6,quantile(t,20,0.9)*1e6,
            bytes/median/1e9);
 }
 
@@ -180,7 +197,7 @@ int main(int argc,char **argv) {
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);
     uint64_t seed=3813;
-    if (timing) synthesize(raw,r.bytes,&seed); else assert(raw && fread(raw,1,r.bytes,stdin)==r.bytes);
+    if (timing) synthesize(raw,r.bytes,&seed,r.type); else assert(raw && fread(raw,1,r.bytes,stdin)==r.bytes);
     size_t initial=gpu_weights_live_mapped_bytes();
     size_t xw=floats(r,r.logical,r.xpitch)+8, yw=floats(r,r.n,r.ypitch)+8; /* words incl. guards */
     int status=0;

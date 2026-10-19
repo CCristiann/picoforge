@@ -6,12 +6,31 @@
 #include <stdlib.h>
 
 /* ref_*: run the oracle kernel for that family (qwen38_ref.h), fixed at creation.
- * q8_0: the cooperative Q8_0 matvec (qwen38_matvec.metal), the default linear
- * path for Q8_0; NULL on a GPU whose simdgroups are not 32 wide. */
-struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0; bool ref_linear, ref_indexed; };
-/* q38_matvec_q8_0's tile (Q8_T in the kernel): a threadgroup is one 32-lane
- * simdgroup computing one output row for Q38_Q8_T rows of x. */
-enum { Q38_Q8_T = 4, Q38_SIMD = 32 };
+ * q8_0, f16, f32: the cooperative matvecs of qwen38_matvec.metal, one per
+ * format (q8_0 is the default linear path for Q8_0); each is NULL on a GPU
+ * whose simdgroups are not 32 wide. */
+struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32; bool ref_linear, ref_indexed; };
+/* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
+ * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
+ * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
+enum { Q38_Q8_T = 4, Q38_DENSE_T = 4, Q38_DENSE_S = 8, Q38_SIMD = 32 };
+/* Mirror of dense_split in qwen38_matvec.metal (the kernel checks the match):
+ * simdgroups per output row from K alone, doubling while each lane keeps at
+ * least 5 chunks of 8 columns. */
+static size_t dense_split(size_t k) {
+    size_t s=1;
+    while (s<Q38_DENSE_S && k>=2*s*Q38_SIMD*8*5) s*=2;
+    return s;
+}
+
+/* The fast kernels' simd_sum and lane-to-column map assume 32-wide
+ * simdgroups; elsewhere the slot stays NULL, the fast path answers
+ * UNSUPPORTED and q38_packed_encode runs the oracle. */
+static void *fast_pipeline(id<MTLComputePipelineState> pipeline, size_t simdgroups) {
+    if (pipeline.threadExecutionWidth!=Q38_SIMD || pipeline.maxTotalThreadsPerThreadgroup<Q38_SIMD*simdgroups)
+        return NULL;
+    return (__bridge_retained void *)pipeline;
+}
 
 Qwen38Status q38_packed_gpu_create(void *device, void *library,
                                   Q38PackedGpu **out, Qwen38Error *err) {
@@ -24,24 +43,28 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLFunction> gather=[lib newFunctionWithName:@"q38_packed_linear_indexed"];
     id<MTLFunction> lookup=[lib newFunctionWithName:@"q38_packed_lookup"];
     id<MTLFunction> q8=[lib newFunctionWithName:@"q38_matvec_q8_0"];
-    if (!function || !gather || !lookup || !q8) return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
+    id<MTLFunction> f16=[lib newFunctionWithName:@"q38_matvec_f16"];
+    id<MTLFunction> f32=[lib newFunctionWithName:@"q38_matvec_f32"];
+    if (!function || !gather || !lookup || !q8 || !f16 || !f32)
+        return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
     NSError *failure=nil;
     id<MTLComputePipelineState> pipeline=[dev newComputePipelineStateWithFunction:function error:&failure];
     id<MTLComputePipelineState> indexed=[dev newComputePipelineStateWithFunction:gather error:&failure];
     id<MTLComputePipelineState> embedding=[dev newComputePipelineStateWithFunction:lookup error:&failure];
-    id<MTLComputePipelineState> matvec=[dev newComputePipelineStateWithFunction:q8 error:&failure];
-    if (!pipeline || !indexed || !embedding || !matvec) return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
+    id<MTLComputePipelineState> matvec_q8=[dev newComputePipelineStateWithFunction:q8 error:&failure];
+    id<MTLComputePipelineState> matvec_f16=[dev newComputePipelineStateWithFunction:f16 error:&failure];
+    id<MTLComputePipelineState> matvec_f32=[dev newComputePipelineStateWithFunction:f32 error:&failure];
+    if (!pipeline || !indexed || !embedding || !matvec_q8 || !matvec_f16 || !matvec_f32)
+        return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
     Q38PackedGpu *ctx=calloc(1,sizeof *ctx);
     if (!ctx) return q38_b_result(err,Q38_OOM,"cannot allocate packed context");
     ctx->device=(__bridge_retained void *)dev;
     ctx->linear=(__bridge_retained void *)pipeline;
     ctx->indexed=(__bridge_retained void *)indexed;
     ctx->lookup=(__bridge_retained void *)embedding;
-    /* The kernel's simd_sum and lane-to-block map assume 32-wide simdgroups;
-     * elsewhere q8_0 stays NULL, the fast path answers UNSUPPORTED and
-     * q38_packed_encode runs the oracle. */
-    if (matvec.threadExecutionWidth==Q38_SIMD && matvec.maxTotalThreadsPerThreadgroup>=Q38_SIMD)
-        ctx->q8_0=(__bridge_retained void *)matvec;
+    ctx->q8_0=fast_pipeline(matvec_q8,1);
+    ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
+    ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
     *out=ctx;
@@ -51,6 +74,8 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (!ctx) return;
     CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->lookup);
     if (ctx->q8_0) CFRelease(ctx->q8_0);
+    if (ctx->f16) CFRelease(ctx->f16);
+    if (ctx->f32) CFRelease(ctx->f32);
     CFRelease(ctx->device); free(ctx);
 }
 /* Tests force the choice regardless of the environment read at creation. */
@@ -140,13 +165,20 @@ static void bind(id<MTLComputeCommandEncoder> encoder, const Admitted *a, Qwen38
     [encoder setBuffer:a->word offset:command->error_word.offset_bytes atIndex:3];
 }
 
+/* The fast kernel of a format and its rows of x per threadgroup; NULL: none. */
+static void *fast_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t *tile) {
+    *tile=type==8 ? Q38_Q8_T : Q38_DENSE_T;
+    return type==8 ? ctx->q8_0 : type==1 ? ctx->f16 : type==0 ? ctx->f32 : NULL;
+}
+
 /* One linear encode, shared by both entry points so validation is identical:
  * admit() and the expert check come FIRST, a bad call fails the same way on
  * either path. Fast today: Q8_0 (R1.2), for any number of rows (Task 7
  * measured it faster than the oracle at 1..1024 rows). Not bit-identical to the
  * oracle: Q38_REF_KERNELS=linear (or 1) restores the oracle, bit for bit as 360acf0.
  * force_fast: q38_packed_encode_fast, which never falls back to the oracle and
- * reports UNSUPPORTED for a format with no fast kernel. */
+ * reports UNSUPPORTED for a format with no fast kernel (it also runs F16 and
+ * F32, R1.3, which the default path does not use yet). */
 static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
         size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, bool force_fast, Qwen38Error *err) {
@@ -154,19 +186,22 @@ static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *com
     Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
     if (status) return status;
     if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
-    bool fast=layout->gguf_type==8 && ctx->q8_0 && (force_fast || !ctx->ref_linear);
+    size_t tile;
+    void *kernel=fast_kernel(ctx,layout->gguf_type,&tile);
+    bool fast=kernel && (force_fast || (layout->gguf_type==8 && !ctx->ref_linear));
     if (force_fast && !fast) return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
     if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
     size_t offset=binding->offset+expert*layout->expert_bytes;
     Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(fast ? ctx->q8_0 : ctx->linear);
+    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(fast ? kernel : ctx->linear);
     [encoder setComputePipelineState:pipeline];
     bind(encoder,&a,x,y,command);
     [encoder setBytes:&args length:sizeof args atIndex:4];
     if (fast) {
-        MTLSize groups=MTLSizeMake(layout->n_out,(x.dim[0]+Q38_Q8_T-1)/Q38_Q8_T,1);
-        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
+        size_t simdgroups=layout->gguf_type==8 ? 1 : dense_split(layout->k_logical);
+        MTLSize groups=MTLSizeMake(layout->n_out,(x.dim[0]+tile-1)/tile,1);
+        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*simdgroups,1,1)];
     } else {
         NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
         [encoder dispatchThreads:MTLSizeMake(layout->n_out,x.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];

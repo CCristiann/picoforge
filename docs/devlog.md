@@ -16,6 +16,41 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.3 — F16 and F32 matvecs
+
+The HC tensors are F16 (down 10240→320, inject 10240→4, up 320→10240, 49
+layers each) and the router and ssm_alpha/beta are F32; the oracle gave
+inject 4 threads for 10240 columns each, 0.04 GB/s. `q38_matvec_f16` and
+`q38_matvec_f32` repeat the Q8_0 scheme with an 8-column chunk in place of a
+block (one 16- or 32-byte load per lane), and add one thing: S simdgroups
+share an output row, S = `dense_split(K)` = 1 below K 2560, 2, 4, then 8 from
+K 10240. S depends on K alone, so the order of the sum (chunk, lane's chunks,
+`simd_sum`, the S partials in order) still never depends on the rows or the
+tiling. Every weight decodes exactly (F16 by hand, like the oracle; the
+65,536 patterns are tested), so the products equal the oracle's.
+`tol["f16"] = 2^-21` (max 4.2e-7, p99 1.7e-7, 255,206 outputs),
+`tol["f32"] = 2^-20` (max 4.9e-7, p99 1.8e-7, 255,182). Evidence:
+[bench/qwen38_r1_20261020/matvec-f16-f32](../bench/qwen38_r1_20261020/matvec-f16-f32/README.md).
+
+| shape, 1 row (µs) | fast | oracle | speedup |
+|---|---|---|---|
+| F16 500 MiB, 20 per buffer | 1830, **287 GB/s (93%)** | 5903, 89 GB/s | 3.2x |
+| F32 500 MiB, 20 per buffer | 1823, **288 GB/s (94%)** | 2649, 198 GB/s | 1.5x |
+| HC down 320×10240, 200 per buffer | 24.5 | 2154.5 | 88x |
+| HC inject 4×10240 | 5.2 | 2002.3 | 385x |
+| HC up 10240×320 | 42.1 | 72.9 | 1.7x |
+| router 512×2560 | 12.6 | 439.6 | 35x |
+
+Fast is faster at every row count 1–1024 on HC down, router, up and inject
+(narrowest: HC down at 1024 rows, 43.0 vs 58.2 ms). Alternatives tried
+(exploration runs, not committed): S fixed at 1 / 2 / 4 / 8 on inject 20.6 /
+11.5 / 6.3 / 4.2 µs, on HC down 27.8 / 22.4 / 21.5 / 22.3, on HC up 41.2 /
+59.8 / 91.4 / 152 (so S grows with K only); F16 by hardware `float(half)`
+(also exact on all patterns) 285 vs 290 GB/s and slower on the small shapes;
+chunks of 4 or 16 columns with byte loads 184–200 GB/s on F16 (F32 stays at
+~294 either way); rows of x per threadgroup T = 1/2/4/8 on HC down at 1/4/32
+rows 19.0/67.0/514, 22.0/46.2/382, **24.5/36.6/349**, 30.0/46.8/333 µs.
+
 ### R1.2b — Q8_0 matvec by default in the graph
 
 `q38_packed_encode` now runs `q38_matvec_q8_0` for every Q8_0 tensor, at any

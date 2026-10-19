@@ -54,29 +54,47 @@ test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels $(METALLIB)
 
 .PHONY: test-qwen38-fast-kernels
 
-# R1.2 isolated-kernel timing on synthetic Q8_0 (never the checkpoint; the
-# LM-head shape is 644 MiB), without the validation layer. Specs are
-# mode:n_out:K:rows:reps; reps 1 = one command buffer per encode (the
-# protocol), reps 20 = 20 encodes back to back per command buffer, as in the
-# decode graph (a lone short dispatch runs at an idle GPU clock).
-# Ruling R23: the raw evidence goes to a NEW BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0,
-# never overwritten: runs.jsonl, the conditions before and after (therm, batt,
-# swap, NSProcessInfo.thermalState from the capabilities probe) and a manifest.
+# R1.2/R1.3 isolated-kernel timing on synthetic data (never the checkpoint;
+# the LM-head shape is 644 MiB), without the validation layer. Specs are
+# mode:n_out:K:rows:reps[:type] (type 8 Q8_0 by default, 1 F16, 0 F32);
+# reps 1 = one command buffer per encode (the protocol), reps 20 = 20 encodes
+# back to back per command buffer, as in the decode graph (a lone short
+# dispatch runs at an idle GPU clock).
+# Ruling R23: the raw evidence goes to a NEW directory, never overwritten:
+# BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0 (Q38_R1_BENCH) or
+# .../matvec-f16-f32 (Q38_R1_BENCH_DENSE). It holds runs.jsonl, the conditions
+# before and after (therm, batt, swap, NSProcessInfo.thermalState from the
+# capabilities probe) and a manifest.
 # The README.md next to them is written by hand from runs.jsonl.
 Q38_R1_BENCH := fast:248320:2560:1:1 fast:248320:2560:1:20 oracle:248320:2560:1:1 \
 	$(foreach m,1 2 4 8 32,$(foreach r,1 20,fast:10240:2560:$(m):$(r) oracle:10240:2560:$(m):$(r))) \
 	$(foreach m,128 1024,fast:10240:2560:$(m):1 oracle:10240:2560:$(m):1) \
 	$(foreach s,2560:640 2560:6144 640:2560,$(foreach m,1 4 32,fast:$(s):$(m):20 oracle:$(s):$(m):20) \
 	  fast:$(s):1024:1 oracle:$(s):1024:1)
+# F16/F32 (R1.3): 500 MiB tensors for the honest bandwidth, the real HC down
+# (320x10240), inject (4x10240), up (10240x320), router (512x2560) and
+# ssm_alpha (48x2560) shapes; reps 200 steadies the GPU clock of dispatches
+# under ~30 us. Then fast vs oracle by rows of x (exit criterion 4).
+# q38_dense(n_out,K,rows,reps list,type): fast and oracle specs.
+q38_dense = $(foreach r,$(4),fast:$(1):$(2):$(3):$(r):$(5) oracle:$(1):$(2):$(3):$(r):$(5))
+q38_hc_router = $(call q38_dense,320,10240,$(1),$(2),1) $(call q38_dense,512,2560,$(1),$(2),0) \
+	$(call q38_dense,10240,320,$(1),$(2),1) $(call q38_dense,4,10240,$(1),$(2),1)
+Q38_R1_BENCH_DENSE := $(call q38_dense,25600,10240,1,1,1) fast:25600:10240:1:20:1 \
+	$(call q38_dense,51200,2560,1,1,0) fast:51200:2560:1:20:0 \
+	$(call q38_dense,320,10240,1,1 20 200,1) $(call q38_dense,4,10240,1,1 20 200,1) \
+	$(call q38_dense,10240,320,1,1 20 200,1) $(call q38_dense,512,2560,1,1 20 200,0) \
+	$(call q38_dense,48,2560,1,1 20 200,0) \
+	$(foreach m,2 4 8 32,$(call q38_hc_router,$(m),20)) $(foreach m,128 1024,$(call q38_hc_router,$(m),1))
 Q38_R1_CONDITIONS := date -u +%Y-%m-%dT%H:%M:%SZ; pmset -g therm; pmset -g batt; sysctl vm.swapusage; ./build/qwen38-capabilities
 bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities $(METALLIB)
 	@case "$(BENCH_OUT)" in bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \
-	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0 (a new directory)" >&2; exit 2;; esac
+	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-f16-f32) ;; \
+	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0 or .../matvec-f16-f32 (a new directory)" >&2; exit 2;; esac
 	@mkdir -p "$(dir $(BENCH_OUT))" && mkdir "$(BENCH_OUT)" # an existing directory fails here: never overwritten
 	@{ git rev-parse HEAD; git status --porcelain; shasum -a 256 $< $(METALLIB); } > "$(BENCH_OUT)/manifest.txt"
 	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c '{ $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/before.txt" && \
-	  for spec in $(Q38_R1_BENCH); do set -- $$(echo $$spec | tr : " "); \
-	    ./$< bench $$1 $$2 $$3 $$4 $$5 || exit 1; done > "$(BENCH_OUT)/runs.jsonl" && \
+	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(Q38_R1_BENCH)); do \
+	    set -- $$(echo $$spec | tr : " "); ./$< bench $$1 $$2 $$3 $$4 $$5 $$6 || exit 1; done > "$(BENCH_OUT)/runs.jsonl" && \
 	  { $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/after.txt"'
 	@cat "$(BENCH_OUT)/runs.jsonl"; echo "bench: $(BENCH_OUT); add README.md from runs.jsonl"
 
