@@ -61,7 +61,10 @@ a zero row and a single impulse). One GPU-vs-GPU check compared formats: the
 MoE padding test ran the Q2_K down tensor against the same values as F32 with
 1e30 padding, equal only while both used the oracle's order; it now compares
 two F32 runs (original vs poisoned padding), same intent.
-Measured (controller, ladder): pending.
+Measured (controller, ladder, short, 3+20, AC): 3.956 tok/s (p10 3.952, p90
+3.962; Task 8 1.377, x2.87), GPU 248 ms/token (Task 8 722); HC F16 now ~2.4%,
+MoE 64%, GDN 22%. G3 scaled 8.0e-7; `Q38_REF_KERNELS=1` bit-identical
+(`bench/qwen38_r1_20261020`).
 
 ### R1.2b — Q8_0 matvec by default in the graph
 

@@ -1,0 +1,14 @@
+{
+  "picoforge": {
+    "median": 3.956486320139046,
+    "p10": 3.95228602693977,
+    "p90": 3.961665071735386,
+    "n": 20
+  },
+  "dwarfstar": null,
+  "ratio_picoforge_over_dwarfstar": null,
+  "warmups_excluded": 3,
+  "complete": true,
+  "on_battery": false,
+  "max_swap_delta_bytes": 0
+}
