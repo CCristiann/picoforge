@@ -614,10 +614,14 @@ class NativeForwardTests(unittest.TestCase):
         # Replace the whole down tensor by F32 with huge finite trailing poison;
         # runtime B must never read beyond the ACT view's logical columns.
         x=(rng.normal(size=(2,256))*0.001).astype(np.float32)
+        # Both sides are F32 (the original trailing values, then 1e30): F32 runs
+        # the fast matvec and Q2_K the oracle, whose sums differ in order (R1.3),
+        # so only the same format on both sides isolates the padding.
         poisoned=matrices[3].copy(); poisoned[...,640:]=1e30
         mixed=list(payloads); mixed[3]=(0,poisoned.astype("<f4").tobytes())
+        clean=list(payloads); clean[3]=(0,matrices[3].astype("<f4").tobytes())
         alt=list(matrices); alt[3]=poisoned
-        actual,_=self.verify(c,x,weights,matrices,payloads)
+        actual,_=self.verify(c,x,weights,matrices,clean)
         other,_=self.verify(c,x,weights,alt,mixed)
         for key in actual: np.testing.assert_array_equal(actual[key],other[key])
 

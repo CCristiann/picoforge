@@ -173,12 +173,13 @@ static void *fast_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t *tile) {
 
 /* One linear encode, shared by both entry points so validation is identical:
  * admit() and the expert check come FIRST, a bad call fails the same way on
- * either path. Fast today: Q8_0 (R1.2), for any number of rows (Task 7
- * measured it faster than the oracle at 1..1024 rows). Not bit-identical to the
- * oracle: Q38_REF_KERNELS=linear (or 1) restores the oracle, bit for bit as 360acf0.
+ * either path. Fast today: Q8_0 (R1.2), F16 and F32 (R1.3), for any number of
+ * rows (each measured faster than the oracle at 1..1024 rows). Not
+ * bit-identical to the oracle: Q38_REF_KERNELS=linear (or 1) restores the
+ * oracle, bit for bit as 360acf0. A format without a fast kernel, or a GPU
+ * without 32-wide simdgroups (NULL pipeline), runs the oracle.
  * force_fast: q38_packed_encode_fast, which never falls back to the oracle and
- * reports UNSUPPORTED for a format with no fast kernel (it also runs F16 and
- * F32, R1.3, which the default path does not use yet). */
+ * reports UNSUPPORTED for a format with no fast kernel. */
 static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
         size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, bool force_fast, Qwen38Error *err) {
@@ -188,7 +189,7 @@ static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *com
     if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
     size_t tile;
     void *kernel=fast_kernel(ctx,layout->gguf_type,&tile);
-    bool fast=kernel && (force_fast || (layout->gguf_type==8 && !ctx->ref_linear));
+    bool fast=kernel && (force_fast || !ctx->ref_linear);
     if (force_fast && !fast) return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
     if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
     size_t offset=binding->offset+expert*layout->expert_bytes;

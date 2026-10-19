@@ -51,6 +51,18 @@ chunks of 4 or 16 columns with byte loads 184–200 GB/s on F16 (F32 stays at
 ~294 either way); rows of x per threadgroup T = 1/2/4/8 on HC down at 1/4/32
 rows 19.0/67.0/514, 22.0/46.2/382, **24.5/36.6/349**, 30.0/46.8/333 µs.
 
+In the graph: `q38_packed_encode` now runs the F16 and F32 kernels by default,
+at any row count, like Q8_0 (one predicate: a format with a fast pipeline and
+`linear` not selected). `Q38_REF_KERNELS=linear` restores the oracle bit for
+bit. Tests: `test_default_selects_fast_f16`/`_f32`, and
+`test_reference_env_selects_oracle` over the three formats. No Make target
+compares `q38_packed_encode` with the CPU bit for bit (B-GPU's exact checks are
+a zero row and a single impulse). One GPU-vs-GPU check compared formats: the
+MoE padding test ran the Q2_K down tensor against the same values as F32 with
+1e30 padding, equal only while both used the oracle's order; it now compares
+two F32 runs (original vs poisoned padding), same intent.
+Measured (controller, ladder): pending.
+
 ### R1.2b — Q8_0 matvec by default in the graph
 
 `q38_packed_encode` now runs `q38_matvec_q8_0` for every Q8_0 tensor, at any
