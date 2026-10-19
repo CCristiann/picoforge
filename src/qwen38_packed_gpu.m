@@ -6,7 +6,8 @@
 #include <stdlib.h>
 
 /* ref_*: run the oracle kernel for that family (qwen38_ref.h), fixed at creation.
- * q8_0: the cooperative matvec of q38_packed_encode_fast (qwen38_matvec.metal). */
+ * q8_0: the cooperative matvec of q38_packed_encode_fast (qwen38_matvec.metal),
+ * NULL on a GPU whose simdgroups are not 32 wide. */
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0; bool ref_linear, ref_indexed; };
 /* q38_matvec_q8_0's tile (Q8_T in the kernel): a threadgroup is one 32-lane
  * simdgroup computing one output row for Q38_Q8_T rows of x. */
@@ -30,16 +31,17 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLComputePipelineState> embedding=[dev newComputePipelineStateWithFunction:lookup error:&failure];
     id<MTLComputePipelineState> matvec=[dev newComputePipelineStateWithFunction:q8 error:&failure];
     if (!pipeline || !indexed || !embedding || !matvec) return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
-    /* The kernel's simd_sum and lane-to-block map assume 32-wide simdgroups. */
-    if (matvec.threadExecutionWidth!=Q38_SIMD || matvec.maxTotalThreadsPerThreadgroup<Q38_SIMD)
-        return q38_b_result(err,Q38_UNSUPPORTED,"matvec tile does not fit this GPU");
     Q38PackedGpu *ctx=calloc(1,sizeof *ctx);
     if (!ctx) return q38_b_result(err,Q38_OOM,"cannot allocate packed context");
     ctx->device=(__bridge_retained void *)dev;
     ctx->linear=(__bridge_retained void *)pipeline;
     ctx->indexed=(__bridge_retained void *)indexed;
     ctx->lookup=(__bridge_retained void *)embedding;
-    ctx->q8_0=(__bridge_retained void *)matvec;
+    /* The kernel's simd_sum and lane-to-block map assume 32-wide simdgroups;
+     * elsewhere q8_0 stays NULL, the fast path answers UNSUPPORTED and the
+     * oracle still works. */
+    if (matvec.threadExecutionWidth==Q38_SIMD && matvec.maxTotalThreadsPerThreadgroup>=Q38_SIMD)
+        ctx->q8_0=(__bridge_retained void *)matvec;
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
     *out=ctx;
@@ -47,7 +49,8 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
 }
 void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (!ctx) return;
-    CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->lookup); CFRelease(ctx->q8_0);
+    CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->lookup);
+    if (ctx->q8_0) CFRelease(ctx->q8_0);
     CFRelease(ctx->device); free(ctx);
 }
 /* Tests force the choice regardless of the environment read at creation. */
@@ -168,7 +171,7 @@ Qwen38Status q38_packed_encode_fast(Q38PackedGpu *ctx, const Qwen38GpuCommand *c
     Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
     if (status) return status;
     if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
-    if (layout->gguf_type!=8) return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
+    if (layout->gguf_type!=8 || !ctx->q8_0) return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
     if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
     size_t offset=binding->offset+expert*layout->expert_bytes;
     Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);

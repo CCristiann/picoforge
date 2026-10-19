@@ -39,7 +39,8 @@ static inline bool q38_ref_parse(const char *value, const char *family) {
         p = comma;
     }
 }
-static inline bool q38_ref_kernels(const char *family) {
+/* unused: test-qwen38-contracts compiles this header alone, as in qwen38_b_internal.h. */
+static inline __attribute__((unused)) bool q38_ref_kernels(const char *family) {
     return q38_ref_parse(getenv("Q38_REF_KERNELS"), family);
 }
 #endif

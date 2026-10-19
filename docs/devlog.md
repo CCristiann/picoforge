@@ -29,31 +29,35 @@ depends only on K, never on rows or tiling. Each decoded block serves 4 rows
 of x. w = d·code is exact in FP32, so every product equals the oracle's; only
 the order of the sum differs. Against FP64 the fast kernel is about 10x closer
 than the oracle (real tensors: 1.6e-8 vs 1.5e-7 of S = Σ|w·x|).
-`tol["q8_0"] = 2^-21`: corpus max 4.0e-7, p99 2.6e-8, 257,323 outputs. The
-fp16 scale decodes exactly on all 65,536 patterns. Measured on synthetic data,
-K = 2560, median of 20 after 3 warm-ups, AC power, no thermal warning:
+`tol["q8_0"] = 2^-21`: corpus max 4.6e-7, p99 2.6e-8, 257,323 outputs. The
+fp16 scale decodes exactly on the 63,488 finite patterns; the 2,048 non-finite
+ones set bit 1. Measured on synthetic data, median of 20 after 3 warm-ups, AC
+power, thermal state nominal before and after. Raw evidence and conditions are
+in [bench/qwen38_r1_20261019/matvec-q8_0](../bench/qwen38_r1_20261019/matvec-q8_0/README.md):
 
-| tensor | fast, 1 encode per command buffer | fast, 20 per buffer | oracle |
+| tensor (K 2560) | fast, 1 encode per command buffer | fast, 20 per buffer | oracle |
 |---|---|---|---|
-| LM head 248320 rows, 644 MiB | 2757 µs, 245 GB/s | **2476 µs, 273 GB/s (89%)** | 12939 µs, 52 GB/s |
-| attn_qkv 10240 rows, 26.6 MB | 324 µs, 86 GB/s | 85.2 µs, 328 GB/s¹ | 632 µs, 44 GB/s |
+| LM head 248320 rows, 644 MiB | 2518 µs, 269 GB/s | **2414 µs, 280 GB/s (91%)** | 12933 µs, 52 GB/s |
+| attn_qkv 10240 rows, 26.6 MiB | 320 µs, 87 GB/s | 80.2 µs, 348 GB/s¹ | 625 µs, 45 GB/s |
 
-¹ above the ceiling: back to back, part of the 26.6 MB stays in the system
+¹ above the ceiling: back to back, part of the 26.6 MiB stays in the system
 cache. The LM head, 24 times larger, is the honest number. A lone short
 command buffer runs at an idle GPU clock, so it is slow and noisy; the decode
 graph encodes about 3000 dispatches per buffer.
 
 | attn_qkv, rows of x | 1 | 2 | 4 | 8 | 32 | 128 | 1024 |
 |---|---|---|---|---|---|---|---|
-| fast µs | 85.2 | 105.0 | 151.4 | 299.1 | 2127 | 10060 | 87801 |
-| oracle µs | 630.5 | 1259 | 2287 | 4432 | 17002 | 67167 | 536527 |
-| speedup | 7.4x | 12.0x | 15.1x | 14.8x | 8.0x | 6.7x | 6.1x |
+| fast µs | 80.2 | 107.1 | 151.4 | 298.7 | 2128 | 10011 | 87942 |
+| oracle µs | 633.5 | 1273 | 2311 | 4462 | 17019 | 66885 | 538161 |
+| speedup | 7.9x | 11.9x | 15.3x | 14.9x | 8.0x | 6.7x | 6.1x |
 
 Rows ≤ 32 are timed 20 per buffer, 128 and 1024 one per buffer. Fast is
-faster at every row count. Beyond 8 rows it is compute-bound: whole-block
-lanes read x at a 128-byte stride.
+faster at every row count, also on the other real shapes (2560×640,
+2560×6144, 640×2560: 5.8x to 45x, in the same folder). Beyond 8 rows it is
+compute-bound: whole-block lanes read x at a 128-byte stride.
 
-Alternatives tried, rows = 1, GB/s on 160 MB / attn_qkv / ssm_out (K 6144):
+Alternatives tried (exploration runs of 2026-10-18, not committed as evidence),
+rows = 1, GB/s on 159 MiB / attn_qkv / ssm_out (K 6144):
 - Simdgroups × output rows per simdgroup: **1×1: 287/339/405**; 2×1 280/317/388;
   4×1 253/305/360; 8×1 243/293/390; 1×2 277/314/349; 4×2 255/257/350;
   1×4 238/258/343; 8×4 222/266/337.

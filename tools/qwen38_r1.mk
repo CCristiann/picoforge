@@ -55,19 +55,29 @@ test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels $(METALLIB)
 .PHONY: test-qwen38-fast-kernels
 
 # R1.2 isolated-kernel timing on synthetic Q8_0 (never the checkpoint; the
-# LM-head shape is 644 MiB), without the validation layer, K = 2560. Specs are
-# mode:n_out:rows:reps; reps 1 = one command buffer per encode (the protocol),
-# reps 20 = 20 encodes back to back per command buffer, as in the decode graph
-# (a lone short dispatch runs at an idle GPU clock). One JSON line per run plus
-# `pmset -g therm` before and after, into a new build/qwen38-r1 file.
-Q38_R1_BENCH := fast:248320:1:1 fast:248320:1:20 oracle:248320:1:1 \
-	$(foreach m,1 2 4 8 32,$(foreach r,1 20,fast:10240:$(m):$(r) oracle:10240:$(m):$(r))) \
-	$(foreach m,128 1024,fast:10240:$(m):1 oracle:10240:$(m):1)
-bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels $(METALLIB)
-	@out="$$(mktemp build/qwen38-r1/bench.XXXXXX)"; \
-	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c 'pmset -g therm; \
+# LM-head shape is 644 MiB), without the validation layer. Specs are
+# mode:n_out:K:rows:reps; reps 1 = one command buffer per encode (the
+# protocol), reps 20 = 20 encodes back to back per command buffer, as in the
+# decode graph (a lone short dispatch runs at an idle GPU clock).
+# Ruling R23: the raw evidence goes to a NEW BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0,
+# never overwritten: runs.jsonl, the conditions before and after (therm, batt,
+# swap, NSProcessInfo.thermalState from the capabilities probe) and a manifest.
+# The README.md next to them is written by hand from runs.jsonl.
+Q38_R1_BENCH := fast:248320:2560:1:1 fast:248320:2560:1:20 oracle:248320:2560:1:1 \
+	$(foreach m,1 2 4 8 32,$(foreach r,1 20,fast:10240:2560:$(m):$(r) oracle:10240:2560:$(m):$(r))) \
+	$(foreach m,128 1024,fast:10240:2560:$(m):1 oracle:10240:2560:$(m):1) \
+	$(foreach s,2560:640 2560:6144 640:2560,$(foreach m,1 4 32,fast:$(s):$(m):20 oracle:$(s):$(m):20) \
+	  fast:$(s):1024:1 oracle:$(s):1024:1)
+Q38_R1_CONDITIONS := date -u +%Y-%m-%dT%H:%M:%SZ; pmset -g therm; pmset -g batt; sysctl vm.swapusage; ./build/qwen38-capabilities
+bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities $(METALLIB)
+	@case "$(BENCH_OUT)" in bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \
+	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0 (a new directory)" >&2; exit 2;; esac
+	@mkdir -p "$(dir $(BENCH_OUT))" && mkdir "$(BENCH_OUT)" # an existing directory fails here: never overwritten
+	@{ git rev-parse HEAD; git status --porcelain; shasum -a 256 $< $(METALLIB); } > "$(BENCH_OUT)/manifest.txt"
+	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c '{ $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/before.txt" && \
 	  for spec in $(Q38_R1_BENCH); do set -- $$(echo $$spec | tr : " "); \
-	    ./$< bench $$1 $$2 2560 $$3 $$4 || exit 1; done; pmset -g therm' > "$$out"; \
-	status=$$?; cat "$$out"; echo "bench: $$out"; exit $$status
+	    ./$< bench $$1 $$2 $$3 $$4 $$5 || exit 1; done > "$(BENCH_OUT)/runs.jsonl" && \
+	  { $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/after.txt"'
+	@cat "$(BENCH_OUT)/runs.jsonl"; echo "bench: $(BENCH_OUT); add README.md from runs.jsonl"
 
 .PHONY: bench-qwen38-matvec

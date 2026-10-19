@@ -207,8 +207,9 @@ class FastKernelTests(unittest.TestCase):
     def test_shapes_not_multiple_of_tile(self):
         """Review Focus 1: n_out and K off every tile size, partial tail blocks, one LM-head-sized n_out."""
         rng = np.random.default_rng(3814)
-        shapes = [(n, k, k, (1, 2, 5)[i % 3]) for i, (n, k) in
-                  enumerate((n, k) for n in (1, 3, 33, 512) for k in (32, 640, 2560))]
+        # M rotates with n and K together, so every K meets every M in {1, 2, 5}.
+        shapes = [(n, k, k, (1, 2, 5)[(i + j) % 3]) for i, n in enumerate((1, 3, 33, 512))
+                  for j, k in enumerate((32, 640, 2560))]
         shapes += [(33, 64, 40, 3), (3, 2560, 2550, 2), (248320, 32, 32, 1)]  # (N, physical, logical, M)
         for n, physical, logical, m in shapes:
             with self.subTest(n=n, physical=physical, logical=logical, m=m):
