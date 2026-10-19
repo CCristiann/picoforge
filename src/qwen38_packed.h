@@ -21,6 +21,8 @@ Qwen38Status q38_packed_matmul(const Q38PackedCpuView *, size_t expert,
 Qwen38Status q38_packed_gpu_create(void *device, void *library,
     Q38PackedGpu **, Qwen38Error *);
 void q38_packed_gpu_free(Q38PackedGpu *); /* only after all commands complete */
+/* Q8_0 runs the fast matvec (not bit-identical to the oracle kernel) unless
+ * Q38_REF_KERNELS selects `linear` at creation; other formats run the oracle. */
 Qwen38Status q38_packed_encode(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
     size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);

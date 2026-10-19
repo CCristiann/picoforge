@@ -6,8 +6,8 @@
 #include <stdlib.h>
 
 /* ref_*: run the oracle kernel for that family (qwen38_ref.h), fixed at creation.
- * q8_0: the cooperative matvec of q38_packed_encode_fast (qwen38_matvec.metal),
- * NULL on a GPU whose simdgroups are not 32 wide. */
+ * q8_0: the cooperative Q8_0 matvec (qwen38_matvec.metal), the default linear
+ * path for Q8_0; NULL on a GPU whose simdgroups are not 32 wide. */
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0; bool ref_linear, ref_indexed; };
 /* q38_matvec_q8_0's tile (Q8_T in the kernel): a threadgroup is one 32-lane
  * simdgroup computing one output row for Q38_Q8_T rows of x. */
@@ -38,8 +38,8 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->indexed=(__bridge_retained void *)indexed;
     ctx->lookup=(__bridge_retained void *)embedding;
     /* The kernel's simd_sum and lane-to-block map assume 32-wide simdgroups;
-     * elsewhere q8_0 stays NULL, the fast path answers UNSUPPORTED and the
-     * oracle still works. */
+     * elsewhere q8_0 stays NULL, the fast path answers UNSUPPORTED and
+     * q38_packed_encode runs the oracle. */
     if (matvec.threadExecutionWidth==Q38_SIMD && matvec.maxTotalThreadsPerThreadgroup>=Q38_SIMD)
         ctx->q8_0=(__bridge_retained void *)matvec;
     ctx->ref_linear=q38_ref_kernels("linear");
@@ -140,48 +140,50 @@ static void bind(id<MTLComputeCommandEncoder> encoder, const Admitted *a, Qwen38
     [encoder setBuffer:a->word offset:command->error_word.offset_bytes atIndex:3];
 }
 
-Qwen38Status q38_packed_encode(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+/* One linear encode, shared by both entry points so validation is identical:
+ * admit() and the expert check come FIRST, a bad call fails the same way on
+ * either path. Fast today: Q8_0 (R1.2), for any number of rows (Task 7
+ * measured it faster than the oracle at 1..1024 rows). Not bit-identical to the
+ * oracle: Q38_REF_KERNELS=linear (or 1) restores the oracle, bit for bit as 360acf0.
+ * force_fast: q38_packed_encode_fast, which never falls back to the oracle and
+ * reports UNSUPPORTED for a format with no fast kernel. */
+static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
-        size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
+        size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, bool force_fast, Qwen38Error *err) {
     Admitted a;
     Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
     if (status) return status;
     if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
+    bool fast=layout->gguf_type==8 && ctx->q8_0 && (force_fast || !ctx->ref_linear);
+    if (force_fast && !fast) return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
     if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
     size_t offset=binding->offset+expert*layout->expert_bytes;
     Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)ctx->linear;
+    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(fast ? ctx->q8_0 : ctx->linear);
     [encoder setComputePipelineState:pipeline];
     bind(encoder,&a,x,y,command);
     [encoder setBytes:&args length:sizeof args atIndex:4];
-    NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
-    [encoder dispatchThreads:MTLSizeMake(layout->n_out,x.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    if (fast) {
+        MTLSize groups=MTLSizeMake(layout->n_out,(x.dim[0]+Q38_Q8_T-1)/Q38_Q8_T,1);
+        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
+    } else {
+        NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
+        [encoder dispatchThreads:MTLSizeMake(layout->n_out,x.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    }
     return q38_b_result(err,Q38_OK,"");
 }
-
+Qwen38Status q38_packed_encode(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
+        size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
+    return encode_linear(ctx,command,store,binding,layout,expert,x,y,false,err);
+}
 /* Always the fast kernel, never the oracle: the harness measures it against
- * q38_packed_encode. Validation comes FIRST (the same admit() and expert check,
- * so a bad call fails identically on both paths); only then does a format with
- * no fast kernel report UNSUPPORTED. Fast today: Q8_0 (R1.2). */
+ * the oracle selected in q38_packed_encode. */
 Qwen38Status q38_packed_encode_fast(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
         size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
-    Admitted a;
-    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
-    if (status) return status;
-    if (expert>=layout->n_experts) return q38_b_result(err,Q38_RANGE,"expert outside tensor");
-    if (layout->gguf_type!=8 || !ctx->q8_0) return q38_b_result(err,Q38_UNSUPPORTED,"no fast kernel for this format");
-    if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
-    size_t offset=binding->offset+expert*layout->expert_bytes;
-    Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
-    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->q8_0];
-    bind(encoder,&a,x,y,command);
-    [encoder setBytes:&args length:sizeof args atIndex:4];
-    MTLSize groups=MTLSizeMake(layout->n_out,(x.dim[0]+Q38_Q8_T-1)/Q38_Q8_T,1);
-    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
-    return q38_b_result(err,Q38_OK,"");
+    return encode_linear(ctx,command,store,binding,layout,expert,x,y,true,err);
 }
 
 Qwen38Status q38_packed_encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,

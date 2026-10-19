@@ -269,6 +269,37 @@ class FastKernelTests(unittest.TestCase):
                 strided = self.fast_case(f"views:q8_0:N{n}:K{k}:M{m}:{view}", 8, k, k, raw, x, view=view)
                 np.testing.assert_array_equal(strided.view("<u4"), plain.view("<u4"))
 
+    def separating_case(self):
+        """A dense Q8_0 case whose fast and oracle bits differ (else the selector tests prove nothing)."""
+        rng = np.random.default_rng(3819)
+        raw, x = q8_0_rows(2560, 33, rng).tobytes(), rng.uniform(-1, 1, (3, 2560)).astype(np.float32)
+        _, fast, _ = native("fast", 8, 2560, 2560, raw, x)
+        _, y_oracle, _ = native("oracle", 8, 2560, 2560, raw, x)
+        self.assertFalse(np.array_equal(fast.view("<u4"), y_oracle.view("<u4")), "case does not separate the paths")
+        return raw, x, fast, y_oracle
+
+    def test_default_selects_fast_q8_0(self):
+        """R1.2b: unless `linear` is selected, q38_packed_encode runs the fast Q8_0 kernel; other formats keep the oracle."""
+        raw, x, fast, _ = self.separating_case()
+        for env in ({}, {"Q38_REF_KERNELS": "0"}, {"Q38_REF_KERNELS": ""}, {"Q38_REF_KERNELS": "indexed"}):
+            with self.subTest(env=env):
+                _, y, _ = native("encode", 8, 2560, 2560, raw, x, env)
+                np.testing.assert_array_equal(y.view("<u4"), fast.view("<u4"))
+        for case in [c for c in CASES if c[1] == 8 and c[0].startswith("real:")] + [c for c in CASES if c[1] == 10][:1]:
+            label, kind, physical, logical, data, xs, _ = case
+            with self.subTest(case=label):
+                _, y, _ = native("encode", kind, physical, logical, data, xs)
+                _, want, _ = native("fast" if kind == 8 else "oracle", kind, physical, logical, data, xs)
+                np.testing.assert_array_equal(y.view("<u4"), want.view("<u4"))
+
+    def test_reference_env_selects_oracle(self):
+        """Q38_REF_KERNELS naming `linear` (or all, or a typo: ruling R18) restores the oracle bit for bit."""
+        raw, x, _, y_oracle = self.separating_case()
+        for value in ("linear", "1", "all", "linear,indexed", "lineer"):
+            with self.subTest(value=value):
+                _, y, _ = native("encode", 8, 2560, 2560, raw, x, {"Q38_REF_KERNELS": value})
+                np.testing.assert_array_equal(y.view("<u4"), y_oracle.view("<u4"))
+
     def test_q8_0_scale_decode_matches_oracle(self):
         """All 65536 fp16 scale patterns: finite ones decode exactly (one-hot x), nonfinite ones set bit 1."""
         patterns = np.arange(65536, dtype=np.uint16)

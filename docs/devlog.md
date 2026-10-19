@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.2b — Q8_0 matvec by default in the graph
+
+`q38_packed_encode` now runs `q38_matvec_q8_0` for every Q8_0 tensor, at any
+row count (R1.2a measured it faster than the oracle from 1 to 1024 rows).
+Both entry points share one helper, so validation is identical. Other formats,
+the indexed path and the lookup keep the oracle. The oracle stays reachable:
+`Q38_REF_KERNELS=linear` (or `1`, or a typo, ruling R18) restores it bit for
+bit. So the default path is no longer bit-identical to `360acf0`. The gate is
+G3, plus `Q38_REF_KERNELS=1` bit-identical to the oracle logits. Tests:
+`test_default_selects_fast_q8_0`, `test_reference_env_selects_oracle`. No
+Make target needed the reference: none compares `q38_packed_encode` with the
+CPU bit for bit. B, F, G2 and compositions use the γ bound or a tolerance. The
+exact checks are GPU against GPU (chunk, replay, MTP) or exact IDs, and they
+pass on the fast path.
+Measured (controller, ladder): pending.
+
 ### R1.2a — Cooperative Q8_0 matvec kernel
 
 Decode reads every weight once per token, so a matvec should stream bytes at
