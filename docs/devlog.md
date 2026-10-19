@@ -30,7 +30,9 @@ Make target needed the reference: none compares `q38_packed_encode` with the
 CPU bit for bit. B, F, G2 and compositions use the γ bound or a tolerance. The
 exact checks are GPU against GPU (chunk, replay, MTP) or exact IDs, and they
 pass on the fast path.
-Measured (controller, ladder): pending.
+Measured (controller, ladder, short, 3+20, AC): 1.377 tok/s (p10 1.376, p90
+1.377; R0 1.064, +29%), GPU 722 ms/token (R0 936); LM head 2.44 ms at 277 GB/s.
+G3 scaled 1.7e-6; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261019`).
 
 ### R1.2a — Cooperative Q8_0 matvec kernel
 

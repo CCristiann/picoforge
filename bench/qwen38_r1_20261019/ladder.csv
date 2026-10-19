@@ -1,0 +1,3 @@
+step,commit,date,frontier,engine,warmup,measure,tok_s_median,tok_s_p10,tok_s_p90,gpu_ms_per_token_median,effective_gbps,dispatches_per_token,barriers_per_token,vs_dwarfstar_r0_median,evidence
+R0 baseline,44d04bf,2026-10-17,short,picoforge,3,20,1.0641,1.0619,1.0663,935.62,6.53,2986,3033,0.0322,bench/qwen38_r0_20261017/paired-short + profile-short
+R1.2b Q8_0 matvec by default (Task 8),ef69335,2026-10-19,short,picoforge,3,20,1.3765,1.3758,1.3769,722.38,8.45,2986,3033,0.0416,bench/qwen38_r1_20261019/ladder-t8 + profile-t8
