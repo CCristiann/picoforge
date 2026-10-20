@@ -33,6 +33,22 @@
       "samples": 255182,
       "commit": "a3a7592",
       "note": "Products w*x are bit-identical to the oracle's (every F32 weight decodes exactly to FP32); only the summation order differs. The oracle adds K products serially; the fast kernel sums each 8-column chunk, then a lane's chunks, then simd_sum over 32 lanes, then the dense_split(K) simdgroup partials in order (1 below K 2560, 8 from K 10240). So (b) mostly measures the oracle's serial rounding: on the real router/ssm_alpha (K 2560) and K 10240 rows the fast kernel is within 1.6e-8 and 1.6e-9 of FP64, the oracle within 8.9e-8 and 3.5e-8. The max 4.9e-7 (8.3 u of S) is at N248320 K32, above 2^-21 = 4.8e-7, so tol is 2^-20. The weights span 2^-16..2^0, so p99 is higher than Q8_0's."
+    },
+    "iq2_xxs": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.653738572568702e-07,
+      "p99": 1.0336309066738883e-07,
+      "samples": 341531,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5a). Every weight decodes to the oracle's exact FP32 value (test_iq2_xxs_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 32-column group, then a lane's groups, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real gate/up slices (K 2560) the fast kernel is within 1.3e-8 of FP64 and the oracle within 2.3e-7. The max 3.7e-7 (6.1 u of S, u = 2^-24) is at N32768 K256; 2^-22 = 2.4e-7 is below it."
+    },
+    "q2_k": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.573851486180951e-07,
+      "p99": 1.0083521720921607e-07,
+      "samples": 334889,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5a). Every weight decodes to the oracle's exact FP32 value (test_q2_k_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 16-column scale group, then a lane's groups, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real down slices (640 of 768) the fast kernel is within 1.5e-8 of FP64 and the oracle within 1.2e-7. The max 3.6e-7 (6.0 u of S) is at N512 K640/768; 2^-22 = 2.4e-7 is below it."
     }
   }
 }

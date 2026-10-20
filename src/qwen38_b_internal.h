@@ -86,6 +86,11 @@ void q38_packed_gpu_set_reference(Q38PackedGpu *, bool linear, bool indexed);
 Qwen38Status q38_packed_encode_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
     size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
+/* Same contract and admission as q38_packed_encode_indexed, always the
+ * indexed fast kernel (R1.5): Q38_UNSUPPORTED if the format has none. */
+Qwen38Status q38_packed_encode_indexed_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
+    Qwen38GpuSpan expert_ids, size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
 /* R1.4 multi-GEMV: count (1..Q38_MULTI_MAX) projections of the same x, each
  * with q38_packed_encode's admission (expert 0). One dispatch per format;
  * every y[i] is bit-identical to q38_packed_encode_fast(bindings[i], x, y[i]).

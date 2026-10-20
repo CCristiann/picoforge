@@ -259,3 +259,49 @@ kernel void q38_matvec_multi_f32(MULTI_PARAMS, uint sg [[simdgroup_index_in_thre
     MULTI_PICK
     dense_matvec<0>(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane, sg, sgs, part);
 }
+
+/* Indexed expert matvecs (R1.5): y[p, n] = row n of expert ids[p] . x[p / x_divisor],
+ * the contract of q38_packed_linear_indexed. One simdgroup per output
+ * element (p, n), IDX_SG of them along n per threadgroup (mirrored by
+ * Q38_IDX_SG in qwen38_packed_gpu.m); the dot is q38_quant_row<F> of
+ * qwen38_quant_decode.h, whose order depends only on K and the format, so
+ * the bits of (p, n) depend neither on the number of slots or tokens nor on
+ * the slot, the expert id or the x divisor. Bounds as the oracle: an expert
+ * id past the tensor, or a weight row, x row or y element outside its
+ * extent, sets bit 2 and that element is not written; a nonfinite output
+ * sets bit 1. (Idea of one cooperative kernel per routed format: ds4
+ * fc80bd6, MIT, metal/qwen4.metal: kernel_qwen4_moe_mid / moe_down.) */
+struct IndexedArgs { PackedArgs base; ulong expert_bytes; uint experts, x_divisor; };
+static_assert(sizeof(IndexedArgs) == 96, "indexed wire record size");
+#define IDX_SG 4
+template <typename F>
+static inline void indexed_matvec(device const uchar *weights, device const float *x, device float *y,
+        device atomic_uint *error, constant IndexedArgs &a, device const uint *ids, uint2 group, uint sg,
+        uint lane) {
+    constant PackedArgs &p = a.base;
+    const ulong n = ulong(group.x) * IDX_SG + sg;
+    const uint m = group.y;
+    if (n >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
+    const uint expert = ids[m];
+    const ulong row = p.weight_offset + ulong(expert) * a.expert_bytes + n * p.row_bytes;
+    const ulong xi = ulong(m / a.x_divisor) * (p.x_stride / 4), yi = ulong(m) * (p.y_stride / 4) + n;
+    if (expert >= a.experts || row > p.weight_end || p.row_bytes > p.weight_end - row ||
+        xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi || yi >= p.y_bytes / 4) {
+        if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    const float v = q38_quant_row<F>(weights + row, x + xi, p.k_logical, lane);
+    if (lane) return;
+    y[yi] = v;
+    if (!isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}
+#define INDEXED_KERNEL(name, F) \
+kernel void name(device const uchar *weights [[buffer(0)]], device const float *x [[buffer(1)]], \
+        device float *y [[buffer(2)]], device atomic_uint *error [[buffer(3)]], \
+        constant IndexedArgs &a [[buffer(4)]], device const uint *ids [[buffer(5)]], \
+        uint2 group [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]], \
+        uint lane [[thread_index_in_simdgroup]]) { \
+    indexed_matvec<F>(weights, x, y, error, a, ids, group, sg, lane); \
+}
+INDEXED_KERNEL(q38_matvec_indexed_iq2_xxs, Q38Iq2Xxs)
+INDEXED_KERNEL(q38_matvec_indexed_q2_k, Q38Q2K)

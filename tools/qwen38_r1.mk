@@ -36,7 +36,7 @@ test-qwen38-g3-tools:
 .PHONY: test-qwen38-g3-tools
 
 # R1.2 fast matvec kernels, same flags as build/qwen38-b/packed.air; linked into $(METALLIB).
-build/qwen38-r1/matvec.air: src/qwen38_matvec.metal src/qwen38_quant_decode.h
+build/qwen38-r1/matvec.air: src/qwen38_matvec.metal src/qwen38_quant_decode.h src/qwen38_iq2_grid.inc
 	@mkdir -p $(@D)
 	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c $< -o $@
 

@@ -50,7 +50,8 @@ static int selector_cases(void) {
     return 0;
 }
 
-typedef struct { const char *mode; uint32_t type; size_t physical, logical, n, m, bytes, xpitch, ypitch, offset, reps; } Request;
+/* experts: 0 or 1 = a rank-2 tensor; more = rank 3 [physical, n, experts] (indexed modes). */
+typedef struct { const char *mode; uint32_t type; size_t physical, logical, n, m, bytes, xpitch, ypitch, offset, reps, experts; } Request;
 static size_t number(const char *s) {
     assert(*s && strspn(s,"0123456789")==strlen(s));
     errno=0;
@@ -62,7 +63,7 @@ static Request request(int argc,char **argv) {
     assert(argc>1);
     bool bench=!strcmp(argv[1],"bench");
     assert(bench ? argc>=6 && argc<=8 : argc==7 || argc==10);
-    Request r={argv[1+bench],8,0,0,0,0,0,0,0,0,1};
+    Request r={argv[1+bench],8,0,0,0,0,0,0,0,0,1,0};
     if (bench) { r.physical=r.logical=number(argv[4]); r.n=number(argv[3]); r.m=number(argv[5]);
                  r.reps=argc>=7 ? number(argv[6]) : 1; assert(r.reps && r.reps<=1000);
                  r.type=argc==8 ? (uint32_t)number(argv[7]) : 8; assert(r.type==8 || r.type<=1); }
@@ -95,7 +96,8 @@ static GpuWeightStore *make_store(id<MTLDevice> dev,size_t count,const Request *
     g->fd=mkstemp(path);
     assert(g->fd>=0 && unlink(path)==0);
     for (size_t i=0;i<count;at+=(r[i].bytes+32+page-1)/page*page,raw+=r[i++].bytes) {
-        t[i]=(GgufTensor){.type=r[i].type,.rank=2,.shape={r[i].physical,r[i].n},.file_offset=at+32,.bytes=r[i].bytes};
+        t[i]=(GgufTensor){.type=r[i].type,.rank=r[i].experts>1 ? 3 : 2,.shape={r[i].physical,r[i].n,MAX(r[i].experts,(size_t)1)},
+                          .file_offset=at+32,.bytes=r[i].bytes};
         snprintf(t[i].name,sizeof t[i].name,"fixture%zu",i);
         for (size_t done=0;done<r[i].bytes;) {
             ssize_t wrote=pwrite(g->fd,raw+done,r[i].bytes-done,(off_t)(t[i].file_offset+done));
@@ -140,8 +142,8 @@ static void write_decoded(const GpuWeightStore *store,const GgufBinding *binding
     assert(qwen38_weights_cpu_span(store,binding,&w.span,&err)==Q38_OK);
     assert(q38_packed_layout_init(&binding->tensor,r.logical,&w.layout,NULL)==Q38_OK);
     float *row=malloc(r.physical*4); assert(row);
-    for (size_t i=0;i<r.n;i++) { /* a row it rejects (nonfinite padding) is sent as NaN */
-        Qwen38Status status=q38_packed_decode_row(&w,0,i,row,r.physical,&err);
+    for (size_t i=0;i<r.n*MAX(r.experts,(size_t)1);i++) { /* a row it rejects (nonfinite padding) is sent as NaN */
+        Qwen38Status status=q38_packed_decode_row(&w,i/r.n,i%r.n,row,r.physical,&err);
         assert(status==Q38_OK || status==Q38_NONFINITE);
         for (size_t k=0;status && k<r.physical;k++) row[k]=NAN;
         assert(fwrite(row,4,r.physical,stdout)==r.physical);
@@ -164,6 +166,17 @@ static void synthesize(unsigned char *raw,size_t bytes,uint64_t *seed,uint32_t t
         for (size_t i=0;i+3<bytes;i+=4) {
             uint64_t v=mix(seed); uint32_t f=(uint32_t)((v&0x807fffffu)|((107u+(v>>32)%20u)<<23));
             memcpy(raw+i,&f,4);
+        }
+        return;
+    }
+    if (type!=8) { /* R1.5 block formats: random codes, small finite scales, so y stays finite */
+        for (size_t i=0;i<bytes;i+=8) { uint64_t v=mix(seed); memcpy(raw+i,&v,MIN((size_t)8,bytes-i)); }
+        const GgufFormat *format=gguf_format(type);
+        for (size_t b=0;b<bytes;b+=format->bytes) {
+            uint16_t h[2];
+            for (size_t j=0;j<2;j++) { uint64_t v=mix(seed); h[j]=(uint16_t)((v&0x83ffu)|((5u+(v>>16)%5u)<<10)); }
+            if (type==39) raw[b]=(unsigned char)(118u+mix(seed)%7u); /* scale 2^-9..2^-3 */
+            else memcpy(raw+b+(type==10 ? 80 : 0),h,type==16 ? 2 : 4); /* d (and dmin) 2^-10..2^-5 */
         }
         return;
     }
@@ -320,6 +333,127 @@ static int multi_main(int argc,char **argv,const char *library) {
     return status;
 }
 
+/* R1.5 indexed expert matvecs (q38_packed_encode_indexed's contract):
+ *   indexed <oracle|encode|fast> type physical logical n experts rows divisor [xpitch ypitch offset]
+ * stdin: the packed [experts, n, physical] tensor, ids uint32 [rows], then x
+ * [rows/divisor, logical]. stdout: y [rows, n] (even when the error word is
+ * set: an element that is not written stays the NaN it was filled with),
+ * then, with a clean error word, the CPU-decoded rows [experts*n, physical].
+ * Views as above (x has rows/divisor rows, y has rows).
+ *   ibench <oracle|fast> type n physical logical experts rows divisor reps
+ * synthetic tensor, ids distinct within each run of 10 rows (a token's
+ * slots), 3 warm-ups + 20 measured command buffers of reps encodes each. */
+static int indexed_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"ibench");
+    assert(timing ? argc==11 : argc==10 || argc==13);
+    Request r={.mode=argv[2],.type=(uint32_t)number(argv[3])};
+    size_t at=4;
+    if (timing) { r.n=number(argv[at++]); r.physical=number(argv[at++]); }
+    else { r.physical=number(argv[at++]); r.logical=number(argv[at++]); r.n=number(argv[at++]); }
+    if (timing) r.logical=number(argv[at++]);
+    r.experts=number(argv[at++]);
+    size_t rows=number(argv[at++]), divisor=number(argv[at++]);
+    r.reps=timing ? number(argv[at++]) : 1;
+    assert(!strcmp(r.mode,"oracle") || !strcmp(r.mode,"fast") || (!timing && !strcmp(r.mode,"encode")));
+    const GgufFormat *format=NULL;
+    assert(q38_b_format(r.type,&format)==Q38_OK && r.physical%format->block==0 && r.logical && r.logical<=r.physical);
+    assert(r.n && r.experts && rows && divisor && rows%divisor==0 && r.reps && r.reps<=1000);
+    r.m=rows/divisor;
+    r.xpitch=argc==13 ? number(argv[10]) : r.logical;
+    r.ypitch=argc==13 ? number(argv[11]) : r.n;
+    r.offset=argc==13 ? number(argv[12]) : 0;
+    const size_t limit=timing ? 1024u*1024u*1024u : 32u*1024u*1024u;
+    assert(r.xpitch>=r.logical && r.ypitch>=r.n && r.offset<=limit/4 && r.m<=limit/4/r.xpitch && rows<=limit/4/r.ypitch);
+    assert(r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts));
+    r.bytes=r.physical/format->block*format->bytes*r.n*r.experts;
+    assert(r.bytes<=limit);
+    Request ry=r; ry.m=rows; /* the y view's rows */
+    unsigned char *raw=malloc(r.bytes); assert(raw);
+    uint32_t *ids=malloc(rows*4); assert(ids);
+    uint64_t seed=3813;
+    if (timing) {
+        synthesize(raw,r.bytes,&seed,r.type);
+        for (size_t p=0;p<rows;p++) /* distinct within a token's 10 slots */
+            for (bool again=true;again;) {
+                ids[p]=(uint32_t)(mix(&seed)%r.experts); again=false;
+                for (size_t q=p/10*10;q<p && r.experts>=10;q++) again=again || ids[q]==ids[p];
+            }
+    } else assert(fread(raw,1,r.bytes,stdin)==r.bytes && fread(ids,4,rows,stdin)==rows);
+    size_t initial=gpu_weights_live_mapped_bytes();
+    size_t xw=floats(r,r.logical,r.xpitch)+8, yw=floats(ry,r.n,r.ypitch)+8;
+    int status=0;
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error];
+        if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); abort(); }
+        Q38PackedGpu *ctx=NULL;
+        assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
+        Gguf g={0}; GgufTensor tensor;
+        GpuWeightStore *store=make_store(dev,1,&r,raw,&g,&tensor);
+        const GgufBinding *binding=&gpu_weights_plan(store)->weights[0];
+        Q38PackedLayout layout;
+        assert(q38_packed_layout_init(&binding->tensor,r.logical,&layout,NULL)==Q38_OK);
+        id<MTLBuffer> input=shared(dev,xw*4),output=shared(dev,yw*4),word=shared(dev,4),route=shared(dev,rows*4);
+        memcpy(route.contents,ids,rows*4);
+        float *x=(float *)input.contents+4, *y=(float *)output.contents+4;
+        for (size_t i=0;i<xw;i++) ((float *)input.contents)[i]=NAN; /* guards and gaps */
+        for (size_t i=0;i<r.m;i++) {
+            float *row=x+r.offset+i*r.xpitch;
+            if (!timing) assert(fread(row,4,r.logical,stdin)==r.logical);
+            else for (size_t k=0;k<r.logical;k++) row[k]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
+        }
+        assert(timing || fgetc(stdin)==EOF);
+        memset(output.contents,0xa5,yw*4);
+        for (size_t i=0;i<rows;i++)
+            for (size_t j=0;j<r.n;j++) y[r.offset+i*r.ypitch+j]=NAN; /* an unwritten output cannot pass */
+        Qwen38GpuF32 xv=matrix(input,r,r.logical,r.xpitch), yv=matrix(output,ry,r.n,r.ypitch);
+        Qwen38GpuSpan span={(__bridge void *)route,0,rows*4};
+        uint32_t *flags=word.contents;
+        if (!strcmp(r.mode,"oracle")) q38_packed_gpu_set_reference(ctx,true,true);
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        double seconds[23];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            flags[0]=0;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            for (size_t rep=0;rep<r.reps && !status;rep++) {
+                Qwen38Error err={0};
+                status=(int)(!strcmp(r.mode,"fast") ?
+                    q38_packed_encode_indexed_fast(ctx,&cmd,store,binding,&layout,span,divisor,xv,yv,&err) :
+                    q38_packed_encode_indexed(ctx,&cmd,store,binding,&layout,span,divisor,xv,yv,&err));
+                if (status && status!=Q38_UNSUPPORTED) { fprintf(stderr,"encode: %d %s\n",status,err.detail); abort(); }
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            assert(!timing || (!status && !flags[0]));
+        }
+        const uint32_t *words=output.contents; /* no write outside y */
+        for (size_t i=0;i<yw;i++)
+            assert((i>=4 && i<yw-4 && in_view(ry,r.n,r.ypitch,i-4)) || words[i]==0xa5a5a5a5u);
+        if (timing) {
+            size_t distinct=0; /* bytes actually read: each distinct expert once, x and y */
+            for (size_t e=0;e<r.experts;e++) { bool used=false; for (size_t p=0;p<rows && !used;p++) used=ids[p]==e; distinct+=used; }
+            Request t=ry; /* report() adds 4*rows*(logical+n): keep x at its rows/divisor rows (modular size_t) */
+            t.bytes=distinct*layout.expert_bytes+4*r.m*r.logical-4*rows*r.logical;
+            report(t,seconds,NULL,NULL);
+        } else if (!status) {
+            for (size_t i=0;i<rows;i++) assert(fwrite(y+r.offset+i*r.ypitch,4,r.n,stdout)==r.n);
+            if (flags[0]) {
+                status=(flags[0]&Q38_GPU_NONFINITE) ? Q38_NONFINITE : Q38_GPU_ERROR;
+                fprintf(stderr,"qwen38 Metal: error bits %u\n",flags[0]);
+            } else write_decoded(store,binding,r);
+        }
+        q38_packed_gpu_free(ctx); gpu_weights_close(store); assert(close(g.fd)==0);
+    }
+    assert(gpu_weights_live_mapped_bytes()==initial);
+    free(raw); free(ids);
+    return status;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -327,6 +461,7 @@ int main(int argc,char **argv) {
         fprintf(stderr,"run through tools/qwen38_gpu_lock.py with Q38_PACKED_LIBRARY set\n"); return 2;
     }
     if (argc>1 && (!strcmp(argv[1],"multi") || !strcmp(argv[1],"mbench"))) return multi_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"indexed") || !strcmp(argv[1],"ibench"))) return indexed_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

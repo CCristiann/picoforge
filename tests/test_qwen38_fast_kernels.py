@@ -9,6 +9,9 @@ and S = sum|w*x| per output. A fast kernel must meet both conditions:
 with tol from tests/qwen38_kernel_tolerances.json. Run through the GPU lock.
 Formats in FAST must have a fast kernel (UNSUPPORTED fails); the Review Focus
 tests (constraints.md 1-5) and the scale-decode test exercise them directly.
+R1.5: the formats in INDEXED_FAST have an indexed (routed expert) fast kernel,
+measured against q38_packed_linear_indexed by the *_indexed Review Focus
+tests, test_expert_id_bounds and test_<format>_decode_matches_oracle.
 """
 import argparse
 import json
@@ -31,6 +34,9 @@ SHAPES = [(1, 32, 1), (3, 640, 3), (33, 2560, 2), (512, 640, 1)]  # (N, K logica
 UNSUPPORTED, NONFINITE = 8, 16  # Q38_UNSUPPORTED (no fast kernel), Q38_NONFINITE (error bit 1)
 FAST = {"q8_0", "f16", "f32"}  # formats whose fast kernel exists: UNSUPPORTED is a failure for them
 KINDS = {name: kind for kind, name in NAMES.items() if name in FAST}
+INDEXED_FAST = {"iq2_xxs", "q2_k"}  # R1.5: formats with an indexed (routed expert) fast kernel
+INDEXED_KINDS = {name: kind for kind, name in NAMES.items() if name in INDEXED_FAST}
+GPU_ERROR = 20  # Q38_GPU_ERROR: error word without bit 1 (bounds, bit 2)
 BANNER = re.compile(rb"(?m)^.*Metal API Validation Enabled\r?\n")
 NATIVE, SLICES, TOLERANCES, CASES, ORACLE, RESULTS, CORPUS = None, [], {}, [], {}, {}, {}
 
@@ -205,6 +211,65 @@ def real_projections(kind, logical, names):
                     any(name in record["tensor"] for name in names)):
                 tensors.setdefault(record["tensor"], []).append((directory / record["artifacts"]["packed"]["file"]).read_bytes())
     return [(kind, logical, len(rows), b"".join(rows)) for rows in tensors.values()]
+
+
+def run_indexed(mode, kind, physical, logical, n, experts, data, ids, x, divisor, env=None, view=()):
+    """One q38_packed_encode_indexed call: (exit code, y [rows, n] or None, CPU-decoded rows
+    [experts*n, physical] or None, stderr without the banner). y is also returned when the
+    error word is set (exit 16/20): an element the kernel did not write is still NaN."""
+    rows, lock = len(ids), os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    result = subprocess.run([str(NATIVE), "indexed", mode, str(kind), str(physical), str(logical), str(n), str(experts),
+                             str(rows), str(divisor), *map(str, view)],
+                            input=data + np.asarray(ids, "<u4").tobytes() + x.astype("<f4").tobytes(),
+                            capture_output=True, timeout=120, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr, values = BANNER.sub(b"", result.stderr), np.frombuffer(result.stdout, "<f4")
+    if result.returncode == UNSUPPORTED and not values.size:
+        return UNSUPPORTED, None, None, stderr
+    if values.size not in (rows * n, rows * n + experts * n * physical):
+        raise AssertionError(f"{mode} kind {kind}: exit {result.returncode}, {stderr!r}")
+    decoded = values[rows * n:].reshape(experts * n, physical) if values.size > rows * n else None
+    return result.returncode, values[:rows * n].reshape(rows, n), decoded, stderr
+
+
+def indexed_fp64(decoded, ids, x, divisor, logical, n):
+    """FP64 product and S of the indexed contract: row p uses expert ids[p] and x[p // divisor]."""
+    ids, rows = np.asarray(ids), np.arange(len(ids))
+    a = x.astype(np.float64)[rows // divisor]
+    ref, magnitude = np.zeros((len(ids), n)), np.zeros((len(ids), n))
+    for expert in np.unique(ids):
+        chosen, w = ids == expert, decoded[expert * n:(expert + 1) * n, :logical].astype(np.float64)
+        ref[chosen], magnitude[chosen] = a[chosen] @ w.T, np.abs(a[chosen]) @ np.abs(w.T)
+    return ref, magnitude
+
+
+SCALES = {16: (0,), 10: (80, 82), 12: (0, 2)}  # byte offsets of the fp16 d (and dmin) in a block
+
+
+def quant_rows(kind, physical, count, rng):
+    """Packed rows [count, row bytes] of a block format: random codes, finite scales of both
+    signs over 2^-14..2^-4 (fp16 d/dmin) or 2^-12..2^0 (MXFP4 exponent)."""
+    block, size = oracle.FORMATS[kind]
+    raw = rng.integers(0, 256, (count * physical // block, size), dtype=np.uint8)
+    if kind == 39:
+        raw[:, 0] = rng.integers(115, 128, len(raw))
+    for at in SCALES.get(kind, ()):
+        scales = (rng.choice([-1, 1], len(raw)) * 2.0 ** rng.uniform(-14, -4, len(raw))).astype("<f2")
+        raw[:, at:at + 2] = scales.view(np.uint8).reshape(-1, 2)
+    return raw.reshape(count, -1)
+
+
+def poison_block(kind, raw, row, column, value):
+    """Copy of raw with the scale of the block holding (row, column) set to a nonfinite value."""
+    block, size = oracle.FORMATS[kind]
+    bad, at = raw.copy(), column // block * size
+    if kind == 39:
+        bad[row, at] = 255  # the E8M0 escape: Inf or NaN
+    else:
+        offset = SCALES[kind][0]
+        bad[row, at + offset:at + offset + 2] = np.array([value], "<f2").view(np.uint8)
+    return bad
+
 
 
 class FastKernelTests(unittest.TestCase):
@@ -512,6 +577,211 @@ class FastKernelTests(unittest.TestCase):
             bad[:, 0] = chosen
             with self.subTest(patterns=len(chosen), first=hex(int(chosen[0]))):
                 self.assert_nonfinite("fast", 32, 32, bad.tobytes(), x[:1], "weight pattern", 1)
+
+    # ---- R1.5 indexed expert matvecs (q38_packed_encode_indexed) ----
+
+    def indexed_case(self, label, kind, physical, logical, n, experts, data, ids, x, divisor, view=(), decoded=None):
+        """Indexed fast kernel on one case: supported, finite, (a) and (b) against the indexed oracle."""
+        code, fast, cpu, stderr = run_indexed("fast", kind, physical, logical, n, experts, data, ids, x, divisor, view=view)
+        self.assertNotEqual(code, UNSUPPORTED, f"{label}: {NAMES[kind]} has no indexed fast kernel")
+        self.assertEqual((code, stderr), (0, b""), label)
+        code, y_oracle, _, stderr = run_indexed("oracle", kind, physical, logical, n, experts, data, ids, x, divisor, view=view)
+        self.assertEqual((code, stderr), (0, b""), label)
+        ref, magnitude = indexed_fp64(cpu if decoded is None else decoded, ids, x, divisor, logical, n)
+        stats = against_fp64(fast, ref, magnitude, logical) | dict(vs_oracle=against_oracle(fast, y_oracle, magnitude))
+        RESULTS.setdefault(label, {})["fast"] = stats
+        RESULTS[label]["oracle"] = against_fp64(y_oracle, ref, magnitude, logical)  # the oracle's own distance
+        CORPUS.setdefault(NAMES[kind], {})[label] = scaled_difference(fast, y_oracle, magnitude).ravel()
+        tol = TOLERANCES["kernels"].get(NAMES[kind], {}).get("tol")
+        self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+        self.assertIsNotNone(tol, f"{NAMES[kind]}: fast kernel without a measured tolerance")
+        self.assertLessEqual(stats["vs_oracle"]["max"], tol, label)
+        return fast
+
+    @staticmethod
+    def indexed_shapes(kind):
+        """(N, physical, logical): K off every chunk and tile, partial chunks, the largest N the
+        transport allows (decoded rows cross stdout: 32 MiB)."""
+        block = oracle.FORMATS[kind][0]
+        ks = ((32, 32), (640, 640), (2560, 2560), (64, 40)) if block == 32 else \
+             ((256, 256), (768, 640), (2560, 2560), (768, 600))
+        shapes = [(n, *k) for i, n in enumerate((1, 3, 33, 512)) for k in ks[i % 2::2]]
+        return shapes + [(248320 if block == 32 else 32768, block if block == 32 else 256, block if block == 32 else 256)]
+
+    def test_shapes_not_multiple_of_tile_indexed(self):
+        """Review Focus 1 (indexed): n_out and K off the tile and chunk, slots 1/2/10 as gate
+        (x divisor = slots) and down (divisor 1), 3 experts with repeated ids."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3830, kind)
+            for i, (n, physical, logical) in enumerate(self.indexed_shapes(kind)):
+                slots, tokens, experts = (1, 2, 10)[i % 3], (1, 2, 3)[i % 2] if n < 1000 else 1, 3 if n < 1000 else 1
+                divisor = slots if i % 2 else 1
+                rows = slots * tokens
+                with self.subTest(kernel=name, n=n, physical=physical, logical=logical, rows=rows, divisor=divisor):
+                    ids = rng.integers(0, experts, rows)
+                    x = rng.uniform(-1, 1, (rows // divisor, logical)).astype(np.float32)
+                    self.indexed_case(f"indexed:{name}:N{n}:K{logical}/{physical}:R{rows}/{divisor}", kind, physical,
+                                      logical, n, experts, quant_rows(kind, physical, experts * n, rng).tobytes(), ids, x, divisor)
+
+    def test_logical_k_padding_indexed(self):
+        """Review Focus 2 (indexed): the 640/768 down padding (random codes) and a wholly padded
+        block with a nonfinite scale never reach y; x is never read past k_logical (NaN there)."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3831, kind), oracle.FORMATS[kind][0]
+            for n, physical, logical, rows in ((33, 768, 640, 3), (5, 1024 if block == 256 else 768, 640, 4)):
+                with self.subTest(kernel=name, physical=physical, logical=logical):
+                    clean = quant_rows(kind, physical, 2 * n, rng)
+                    raw = clean
+                    first = -(-logical // block) * block  # first block wholly past k_logical
+                    for column in range(first, physical, block):
+                        raw = poison_block(kind, raw, slice(None), column, (np.nan, np.inf)[column // block % 2])
+                    ids, x = rng.integers(0, 2, rows), rng.uniform(-1, 1, (rows, logical)).astype(np.float32)
+                    _, _, decoded, _ = run_indexed("fast", kind, physical, logical, n, 2, clean.tobytes(), ids, x, 1)
+                    self.indexed_case(f"indexed-padding:{name}:N{n}:K{logical}/{physical}:R{rows}", kind, physical,
+                                      logical, n, 2, raw.tobytes(), ids, x, 1, view=(logical + 1, n, 0), decoded=decoded)
+
+    def test_nonfinite_sets_error_word_indexed(self):
+        """Review Focus 3 (indexed): NaN/Inf in x or in a used block scale sets bit 1, oracle and fast."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3832, kind)
+            raw, x, ids = quant_rows(kind, 2560, 2 * 33, rng), rng.uniform(-1, 1, (3, 2560)).astype(np.float32), [1, 0, 1]
+            for label, value in (("nan", np.nan), ("inf", np.inf)):
+                poisoned = x.copy()
+                poisoned[1, 100] = value
+                bad = poison_block(kind, raw, 33 + 5, 96, value)  # row 5 of expert 1
+                for mode in ("oracle", "fast"):
+                    with self.subTest(kernel=name, mode=mode, poison=label):
+                        for data, xs in ((raw, poisoned), (bad, x)):
+                            code, _, _, stderr = run_indexed(mode, kind, 2560, 2560, 33, 2, data.tobytes(), ids, xs, 1)
+                            self.assertEqual((code, stderr), (NONFINITE, b"qwen38 Metal: error bits 1\n"))
+
+    def test_rows_bit_independent_indexed(self):
+        """Review Focus 4 (indexed): an output's bits depend neither on the number of rows, nor on
+        its row, nor on its n_out position, nor on the expert's id, nor on the x divisor."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3833, kind)
+            n, k, m, experts = 37, 2560, 19, 4
+            raw, x, ids = quant_rows(kind, k, experts * n, rng), rng.uniform(-1, 1, (m, k)).astype(np.float32), rng.integers(0, experts, m)
+            with self.subTest(kernel=name):
+                full = self.indexed_case(f"indexed-rows:{name}:N{n}:K{k}:R{m}", kind, k, k, n, experts, raw.tobytes(), ids, x, 1)
+                fast = lambda data, i, xs, d, nn=n: run_indexed("fast", kind, k, k, nn, experts, data, i, xs, d)[1]
+                for rows in ([0], [m - 1], list(range(3, 9)), list(range(m - 1, -1, -1)), [4] * 9):
+                    with self.subTest(kernel=name, rows=rows[:4]):
+                        np.testing.assert_array_equal(fast(raw.tobytes(), ids[rows], x[rows], 1).view("<u4"), full[rows].view("<u4"))
+                shifted = raw.reshape(experts, n, -1)[:, 1:].tobytes()  # weight row j+1 becomes row j
+                np.testing.assert_array_equal(fast(shifted, ids, x, 1, n - 1).view("<u4"), full[:, 1:].view("<u4"))
+                relabeled = raw.reshape(experts, n, -1)[::-1].tobytes()  # expert e becomes experts-1-e
+                np.testing.assert_array_equal(fast(relabeled, experts - 1 - ids, x, 1).view("<u4"), full.view("<u4"))
+                gate = fast(raw.tobytes(), ids[:18], x[:6], 3)  # 6 tokens x 3 slots against x repeated per slot
+                np.testing.assert_array_equal(gate.view("<u4"), fast(raw.tobytes(), ids[:18], np.repeat(x[:6], 3, 0), 1).view("<u4"))
+
+    def test_strided_offset_views_indexed(self):
+        """Review Focus 5 (indexed): pitches above K*4 and n*4 and nonzero offsets change no bit."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3834, kind)
+            n, k, rows, experts = 33, 768, 6, 3
+            raw, ids = quant_rows(kind, k, experts * n, rng).tobytes(), rng.integers(0, experts, rows)
+            x = rng.uniform(-1, 1, (rows // 2, 640)).astype(np.float32)
+            with self.subTest(kernel=name):
+                plain = self.indexed_case(f"indexed-views:{name}:N{n}:K640/{k}", kind, k, 640, n, experts, raw, ids, x, 2)
+                for view in ((640 + 12, n + 7, 37), (640, n, 5 * 640), (640 + 1, n + 1, 1)):
+                    with self.subTest(kernel=name, view=view):
+                        strided = self.indexed_case(f"indexed-views:{name}:N{n}:K640/{k}:{view}", kind, k, 640, n,
+                                                    experts, raw, ids, x, 2, view=view)
+                        np.testing.assert_array_equal(strided.view("<u4"), plain.view("<u4"))
+
+    def test_expert_id_bounds(self):
+        """Review Focus 5 (indexed): an expert id >= n_experts sets bit 2 and leaves its row
+        unwritten (still the harness's NaN), oracle and fast; the other rows are unchanged."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3835, kind)
+            n, experts = 33, 3
+            raw, x = quant_rows(kind, 768, experts * n, rng).tobytes(), rng.uniform(-1, 1, (6, 640)).astype(np.float32)
+            ids, bad = np.array([0, 1, 3, 2, 7, 0xFFFFFFFF]), np.array([False, False, True, False, True, True])
+            for mode in ("oracle", "fast"):
+                with self.subTest(kernel=name, mode=mode):
+                    code, y, _, stderr = run_indexed(mode, kind, 768, 640, n, experts, raw, ids, x, 1)
+                    self.assertEqual((code, stderr), (GPU_ERROR, b"qwen38 Metal: error bits 2\n"))
+                    _, want, _, _ = run_indexed(mode, kind, 768, 640, n, experts, raw, np.where(bad, 0, ids), x, 1)
+                    np.testing.assert_array_equal(y[~bad].view("<u4"), want[~bad].view("<u4"))
+                    np.testing.assert_array_equal(y[bad].view("<u4"), np.full((3, n), np.nan, np.float32).view("<u4"))
+
+    def indexed_real_within_tolerance(self, kind):
+        """The real expert rows of one format, each its own expert (n_out 1), every saved and
+        seeded x row against every expert as a gate dispatch (x divisor = experts)."""
+        real = [case for case in CASES if case[1] == kind and case[0].startswith("real:")]
+        self.assertTrue(real, f"no real {NAMES[kind]} slices")
+        for label, _, physical, logical, data, x, saved in real:
+            experts = len(saved)
+            with self.subTest(case=label):
+                ids = np.tile(np.arange(experts), len(x))
+                y = self.indexed_case(f"indexed-{label}", kind, physical, logical, 1, experts, data, ids, x, experts)
+                self.assertEqual(y.shape, (len(x) * experts, 1))
+
+    def test_iq2_xxs_real_indexed_within_tolerance(self):
+        """IQ2_XXS slices: ffn_gate/up_exps of layers 0, 23, 47."""
+        self.indexed_real_within_tolerance(16)
+
+    def test_q2_k_real_indexed_within_tolerance(self):
+        """Q2_K slices: ffn_down_exps (640 of 768) of layers 0, 23, 47."""
+        self.indexed_real_within_tolerance(10)
+
+    def assert_decode_matches_oracle(self, kind, packed, columns, batch):
+        """One-hot x through the indexed kernel: y[p, j] = w[j, p]. Fast equals the CPU decoder's
+        value (+0 == -0) and the oracle's bits; rows in batches the transport allows."""
+        x, rows = np.eye(columns, dtype=np.float32), len(packed)
+        for start in range(0, rows, batch):
+            chunk = packed[start:start + batch]
+            with self.subTest(kind=NAMES[kind], rows=start):
+                code, fast, decoded, stderr = run_indexed("fast", kind, columns, columns, len(chunk), 1, chunk.tobytes(),
+                                                    np.zeros(columns), x, 1)
+                self.assertEqual((code, stderr), (0, b""))
+                _, y_oracle, _, _ = run_indexed("oracle", kind, columns, columns, len(chunk), 1, chunk.tobytes(),
+                                                np.zeros(columns), x, 1)
+                np.testing.assert_array_equal(fast.T, decoded)
+                np.testing.assert_array_equal(fast.view("<u4"), y_oracle.view("<u4"))
+
+    def assert_scale_nonfinite(self, kind, block):
+        """Every nonfinite fp16 d (and Q2_K dmin) pattern sets bit 1 through the fast kernel."""
+        patterns = np.arange(65536, dtype=np.uint16)
+        nonfinite = patterns[(patterns & 0x7C00) == 0x7C00]
+        for at in SCALES[kind]:
+            bad = np.tile(block, (len(nonfinite), 1))
+            bad[:, at:at + 2] = nonfinite.view(np.uint8).reshape(-1, 2)
+            with self.subTest(kind=NAMES[kind], field=at):
+                code, _, _, stderr = run_indexed("fast", kind, 256, 256, len(bad), 1, bad.tobytes(), [0], np.ones((1, 256), np.float32), 1)
+                self.assertEqual((code, stderr), (NONFINITE, b"qwen38 Metal: error bits 1\n"))
+
+    def test_iq2_xxs_decode_matches_oracle(self):
+        """Every grid index at every (group, slot) position, every 7-bit sign word (8th sign by
+        parity) in every slot, every group scale, and every finite fp16 d (cycled over the
+        rows): exact, the oracle's bits."""
+        finite = np.arange(65536, dtype=np.uint16)
+        finite = finite[(finite & 0x7C00) != 0x7C00]
+        index = np.arange(65536)  # position (g, s) holds grid index (index + 4g + s) % 256
+        start, sign_id, scale = index % 256, index // 256 % 128, (index + index // 256) % 16
+        words = (sign_id * (1 | 1 << 7 | 1 << 14 | 1 << 21) | scale << 28).astype("<u4")
+        packed = np.zeros((len(index), 66), np.uint8)
+        packed[:, :2] = finite[index % len(finite)].view(np.uint8).reshape(-1, 2)
+        for g in range(8):
+            packed[:, 2 + 8 * g:6 + 8 * g] = (start[:, None] + 4 * g + np.arange(4)) % 256
+            packed[:, 6 + 8 * g:10 + 8 * g] = words.view(np.uint8).reshape(-1, 4)
+        self.assert_decode_matches_oracle(16, packed, 256, 16384)
+        self.assert_scale_nonfinite(16, packed[0])
+
+    def test_q2_k_decode_matches_oracle(self):
+        """Every scale/min byte at every scale position, every code at every column, and every
+        finite fp16 d and dmin (cycled over the rows): exact, the oracle's bits."""
+        finite = np.arange(65536, dtype=np.uint16)
+        finite = finite[(finite & 0x7C00) != 0x7C00]
+        rows = np.arange(65536)
+        packed = np.zeros((len(rows), 84), np.uint8)
+        packed[:, :16] = (rows[:, None] + 17 * np.arange(16)) % 256
+        packed[:, 16:80] = (rows[:, None] * 29 + 7 * np.arange(64)) % 256
+        packed[:, 80:82] = finite[rows % len(finite)].view(np.uint8).reshape(-1, 2)
+        packed[:, 82:84] = finite[(rows * 7919) % len(finite)].view(np.uint8).reshape(-1, 2)
+        self.assert_decode_matches_oracle(10, packed, 256, 16384)
+        self.assert_scale_nonfinite(10, packed[0])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
