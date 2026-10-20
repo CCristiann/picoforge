@@ -313,11 +313,13 @@ Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *
     if (!bindings || !layouts || !y || !count || count>Q38_MULTI_MAX)
         return q38_b_result(err,Q38_INVALID_ARGUMENT,"multi-GEMV needs 1..8 projections");
     Admitted a[Q38_MULTI_MAX];
-    for (size_t i=0;i<count;i++) { /* each projection admitted as alone; then no two outputs overlap */
+    for (size_t i=0;i<count;i++) { /* each admitted as alone; no output overlaps another output or weights */
         Qwen38Status status=admit(ctx,command,store,bindings[i],&layouts[i],x,y[i],y[i].dim[0],&a[i],err);
         if (status) return status;
         for (size_t j=0;j<i;j++)
-            if (gpu_alias(a[i].output,y[i].span.offset_bytes,a[i].yb,a[j].output,y[j].span.offset_bytes,a[j].yb))
+            if (gpu_alias(a[i].output,y[i].span.offset_bytes,a[i].yb,a[j].output,y[j].span.offset_bytes,a[j].yb) ||
+                gpu_alias(a[i].output,y[i].span.offset_bytes,a[i].yb,a[j].weights,bindings[j]->offset,layouts[j].tensor_bytes) ||
+                gpu_alias(a[j].output,y[j].span.offset_bytes,a[j].yb,a[i].weights,bindings[i]->offset,layouts[i].tensor_bytes))
                 return q38_b_result(err,Q38_INVALID_ARGUMENT,"aliased GPU outputs");
     }
     /* group[f]: projections of fast format f (0 Q8_0, 1 F16, 2 F32) in call
