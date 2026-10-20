@@ -37,7 +37,10 @@ call and one barrier per site; profile group `qsa.proj` replaces the five
 | GDN, 2 Q8_0 + 2 F32 | 182.1 / 266.7 | 180.4 / 271.2 |
 | shared expert, 2 F32 + 2 Q8_0 | 26.1 / 42.1 | 31.5 / 51.6 |
 
-Measured (controller, ladder): pending.
+Measured (controller, quick closure, 8-token profile, AC): GPU 248.6 ms/token
+(Task 9 248.4: no measurable gain), dispatches 2986 → 2770, barriers 3033 →
+2733; the MoE (64%) hides it. G3 scaled 8.0e-7; `Q38_REF_KERNELS=1`
+bit-identical; default logits equal to Task 9's (`bench/qwen38_r1_20261020`).
 
 ### R1.3 — F16 and F32 matvecs
 
