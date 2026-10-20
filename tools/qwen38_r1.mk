@@ -85,16 +85,29 @@ Q38_R1_BENCH_DENSE := $(call q38_dense,25600,10240,1,1,1) fast:25600:10240:1:20:
 	$(call q38_dense,10240,320,1,1 20 200,1) $(call q38_dense,512,2560,1,1 20 200,0) \
 	$(call q38_dense,48,2560,1,1 20 200,0) \
 	$(foreach m,2 4 8 32,$(call q38_hc_router,$(m),20)) $(foreach m,128 1024,$(call q38_hc_router,$(m),1))
+# R1.4 multi-GEMV (BENCH_OUT=.../matvec-multi): the QSA (5 x Q8_0), GDN
+# (QKV, Z Q8_0 + alpha, beta F32) and shared-expert (router, slogit F32 + gate,
+# up Q8_0) groups at 1 and 4 rows, one multi call vs the fast single calls,
+# each followed by one barrier, 20 per command buffer as in the graph; the
+# order alternates between the two row counts.
+# Specs are mode@rows@reps@type:physical:logical:n@...
+q38_k = $(foreach p,$(1),$(2):2560:2560:$(p))
+Q38_R1_MULTI_GROUPS := $(subst $(eval) ,@,$(call q38_k,12288 512 512 512 128,8)) \
+	$(subst $(eval) ,@,$(call q38_k,10240 6144,8) $(call q38_k,48 48,0)) \
+	$(subst $(eval) ,@,$(call q38_k,512 1,0) $(call q38_k,640 640,8))
+Q38_R1_BENCH_MULTI := $(foreach g,$(Q38_R1_MULTI_GROUPS),multi@1@20@$(g) single@1@20@$(g) single@4@20@$(g) multi@4@20@$(g))
 Q38_R1_CONDITIONS := date -u +%Y-%m-%dT%H:%M:%SZ; pmset -g therm; pmset -g batt; sysctl vm.swapusage; ./build/qwen38-capabilities
 bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities $(METALLIB)
 	@case "$(BENCH_OUT)" in bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-f16-f32) ;; \
-	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0 or .../matvec-f16-f32 (a new directory)" >&2; exit 2;; esac
+	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-multi) ;; \
+	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32 or .../matvec-multi (a new directory)" >&2; exit 2;; esac
 	@mkdir -p "$(dir $(BENCH_OUT))" && mkdir "$(BENCH_OUT)" # an existing directory fails here: never overwritten
 	@{ git rev-parse HEAD; git status --porcelain; shasum -a 256 $< $(METALLIB); } > "$(BENCH_OUT)/manifest.txt"
 	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c '{ $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/before.txt" && \
-	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(Q38_R1_BENCH)); do \
-	    set -- $$(echo $$spec | tr : " "); ./$< bench $$1 $$2 $$3 $$4 $$5 $$6 || exit 1; done > "$(BENCH_OUT)/runs.jsonl" && \
+	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(if $(filter %/matvec-multi,$(BENCH_OUT)),$(Q38_R1_BENCH_MULTI),$(Q38_R1_BENCH))); do \
+	    case $$spec in *@*) ./$< mbench $$(echo $$spec | tr @ " ") || exit 1;; \
+	    *) set -- $$(echo $$spec | tr : " "); ./$< bench $$1 $$2 $$3 $$4 $$5 $$6 || exit 1;; esac; done > "$(BENCH_OUT)/runs.jsonl" && \
 	  { $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/after.txt"'
 	@cat "$(BENCH_OUT)/runs.jsonl"; echo "bench: $(BENCH_OUT); add README.md from runs.jsonl"
 

@@ -1,0 +1,10 @@
+5cdcc2e1c8e016210db382e76e8c64d8f1262f62
+ M src/qwen38_b_internal.h
+ M src/qwen38_matvec.metal
+ M src/qwen38_packed_gpu.m
+ M tests/test_qwen38_fast_kernels.m
+ M tests/test_qwen38_fast_kernels.py
+ M tools/qwen38_r1.mk
+?? bench/qwen38_r1_20261020/matvec-multi/
+eb6991f3feb4f62c4d6d39cd83ffad79f1e507bfc8180914790bdeac58e24d99  build/qwen38-r1/test_fast_kernels
+b60e5ffd65c7946d18c78d574f6d0564a7d9cc213908cc39f4c5c5f3a712c7d5  picoforge.metallib
