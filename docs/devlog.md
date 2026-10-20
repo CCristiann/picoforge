@@ -16,6 +16,29 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.4 — Multi-GEMV
+
+Several projections often read the same x: QSA's five (qg, k, v, iq, ik), GDN's
+QKV, Z, alpha, beta, and the router, shared gate/up and shared logit of the
+MoE. Each was its own dispatch plus a barrier, a few µs of launch per call.
+`q38_packed_encode_multi` encodes up to 8 of them as one dispatch per format:
+the grid holds the sum of their n_out, a threadgroup finds its projection
+from prefix offsets and runs the single kernel's row function, so every
+output is bit-identical to the single call (order still K and format only).
+x-side fields come from `p[0]`, only the tensor side from `p[j]`: indexing
+every field dynamically made each short threadgroup ~5% slower. Graph: one
+call and one barrier per site; profile group `qsa.proj` replaces the five
+`qsa.*` projection groups. Synthetic, 20 per buffer, K 2560
+([bench/qwen38_r1_20261020/matvec-multi](../bench/qwen38_r1_20261020/matvec-multi/README.md)):
+
+| group, rows 1 / 4 (µs) | multi | single calls |
+|---|---|---|
+| QSA, 5 × Q8_0 | 139.1 / 220.2 | 147.7 / 231.9 |
+| GDN, 2 Q8_0 + 2 F32 | 182.1 / 266.7 | 180.4 / 271.2 |
+| shared expert, 2 F32 + 2 Q8_0 | 26.1 / 42.1 | 31.5 / 51.6 |
+
+Measured (controller, ladder): pending.
+
 ### R1.3 — F16 and F32 matvecs
 
 The HC tensors are F16 (down 10240→320, inject 10240→4, up 320→10240, 49

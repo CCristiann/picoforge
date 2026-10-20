@@ -6,6 +6,7 @@
 #include "qwen38_e_internal.h"
 #include "qwen38_d_internal.h"
 #include "qwen38_f_internal.h"
+#include "qwen38_b_internal.h"
 #include "qwen38_ngram_internal.h"
 #include <stdlib.h>
 #include <time.h>
@@ -327,6 +328,20 @@ static Qwen38Status linear(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t la
     MARK(layer,op,w.binding->tensor.type,w.binding->tensor.bytes);   /* nominal: the whole matrix once */
     TRY(q38_packed_encode(f->b,cmd,f->store,w.binding,&w.layout,0,flat(x),flat(y),e)); barrier(*cmd); return Q38_OK;
 }
+/* R1.4: n projections of the same x in one multi call (one dispatch per
+ * format), one profile group and one barrier for all of them. */
+static Qwen38Status linears(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t layer,const char *op,const G2Weight *w,size_t n,
+        Qwen38GpuF32 x,const Qwen38GpuF32 *y,Qwen38Error *e) {
+    const GgufBinding *b[Q38_MULTI_MAX]; Q38PackedLayout l[Q38_MULTI_MAX]; Qwen38GpuF32 out[Q38_MULTI_MAX];
+    uint32_t type=w[0].binding->tensor.type; uint64_t bytes=0;
+    if (n>Q38_MULTI_MAX) return fail(e,Q38_INVALID_ARGUMENT,"too many projections");
+    for (size_t j=0;j<n;j++) {
+        b[j]=w[j].binding; l[j]=w[j].layout; out[j]=flat(y[j]); bytes+=b[j]->tensor.bytes;
+        if (b[j]->tensor.type!=type) type=Q38_PROFILE_MIXED;
+    }
+    MARK(layer,op,type,bytes);
+    TRY(q38_packed_encode_multi(f->b,cmd,f->store,b,l,n,flat(x),out,e)); barrier(*cmd); return Q38_OK;
+}
 /* Profile group names of one HC read, in encode order; C ops keep their Q38C_ name. */
 enum { HC_ATTN,HC_FFN,HC_FINAL };
 static const char *const hc_ops[3][7]={
@@ -380,10 +395,9 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t i,siz
     w.scores=time_view(f->dw.scores,f->capacity/l->ac.ratio); w.keep=f->dw.keep; w.ids=f->dw.ids;
     TRY(hc_read(f,cmd,i,&l->attn,HC_ATTN,t,e));
     Qwen38GpuF32 outputs[]={w.qg,w.k,w.v,w.iq,w.ik};
-    static const char *const names[]={"qsa.qg","qsa.k","qsa.v","qsa.iq","qsa.ik","qsa.out"};
-    for (size_t j=0;j<5;j++) TRY(linear(f,cmd,i,names[j],l->qsa[j],time_view(f->mixed,t),outputs[j],e));
+    TRY(linears(f,cmd,i,"qsa.proj",l->qsa,5,time_view(f->mixed,t),outputs,e));
     MARK(i,"qsa.core",Q38_PROFILE_MIXED,0); TRY(q38d_layer_encode(f->d,f->ops,*cmd,&l->ac,pos,(uint32_t)t,&w,e));
-    TRY(linear(f,cmd,i,names[5],l->qsa[5],w.out,time_view(f->block,t),e));
+    TRY(linear(f,cmd,i,"qsa.out",l->qsa[5],w.out,time_view(f->block,t),e));
     emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
     emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t)); MARK(i,"hc_add",Q38_PROFILE_NONE,0); return hc_add(f,*cmd,t,e);
 }

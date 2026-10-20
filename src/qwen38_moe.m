@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #include "qwen38_f_internal.h"
 #include "qwen38_c_internal.h"
+#include "qwen38_b_internal.h"
 #include <stdlib.h>
 enum { GX,GD,GG,GU,GA,GS,GSL,GSA,GR2P,GP2R,GWEIGHT,GROUTED,GBUFFERS };
 struct Q38FMoeGpu {
@@ -265,7 +266,14 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
 #define ACT(kind,in,out) do { Q38CGpuSpec spec={.activation=kind}; Qwen38GpuF32 v[]={in,out}; \
     Q38C_TRY(q38c_gpu_encode(ops,cmd,Q38C_ACT,&spec,v,2,err)); } while (0)
 #define MUL(a,u,n) do { at(enc,(a).span,0); at(enc,(u).span,1); at(enc,cmd.error_word,2); run(enc,r->product,n); } while (0)
-    LIN(0,x,w->logits);
+    { /* R1.4: router, shared gate/up and shared logit all read x: one multi call, one barrier */
+        const size_t slot[]={0,4,5,7};
+        const GgufBinding *mb[4]; Q38PackedLayout ml[4];
+        const Qwen38GpuF32 out[]={w->logits,w->sgate,w->sup,w->slogit};
+        for (size_t j=0;j<4;j++) { mb[j]=wb[slot[j]]; ml[j]=wl[slot[j]]; }
+        Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,4,x,out,err));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
     struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
     [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5); run(enc,r->route,t);
@@ -273,9 +281,8 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     IDX(1,x,w->gate,k); IDX(2,x,w->up,k);
     ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i);
     IDX(3,w->act,w->down,1);
-    LIN(4,x,w->sgate); LIN(5,x,w->sup);
     ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
-    LIN(6,w->sact,w->shared); LIN(7,x,w->slogit);
+    LIN(6,w->sact,w->shared);
     ACT(Q38_SIGMOID,w->slogit,w->ssig);
     FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
     at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);

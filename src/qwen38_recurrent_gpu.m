@@ -1,6 +1,7 @@
 /* Private per-stage harness glue. No submission, waits or numerical CPU path. */
 #import <Metal/Metal.h>
 #include "qwen38_c_internal.h"
+#include "qwen38_b_internal.h"
 #include <stdlib.h>
 struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS]; };
 void q38c_gpu_destroy(Q38CGpu *g) {
@@ -268,7 +269,14 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     LINEAR(HD,N,LOW); OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
     OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
     LINEAR(HI,N,IL); OP(HC_INJECT,V(IL),V(INJECT));
-    LINEAR(QKV,MIX,QKV); LINEAR(Z,MIX,Z); LINEAR(AP,MIX,ALPHA); LINEAR(BP,MIX,BR);
+    { /* R1.4: the four projections of MIX in one multi call, one barrier */
+        const Q38CWeight slot[]={Q38CW_QKV,Q38CW_Z,Q38CW_AP,Q38CW_BP};
+        const GgufBinding *mb[4]; Q38PackedLayout ml[4];
+        const Qwen38GpuF32 out[]={V(QKV),V(Z),V(ALPHA),V(BR)};
+        for (size_t i=0;i<4;++i) { mb[i]=bindings[slot[i]]; ml[i]=l->weight[slot[i]].layout; }
+        Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,4,V(MIX),out,e));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
     OP(CONV,V(QKV),K(CONV),V(CONV),w->history);
     OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));
     OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));

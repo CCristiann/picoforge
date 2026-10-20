@@ -43,7 +43,7 @@ class ProfileTests(unittest.TestCase):
             for layer in [*map(str, range(layers)), 'global']:
                 self.assertTrue(any(r['layer'] == layer for r in rows), layer)
             ops = {r['op'] for r in rows}
-            for op in ('embed', 'gdn', 'qsa.qg', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.hc_read',
+            for op in ('embed', 'gdn', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.hc_read',
                        'moe', 'hc_add', 'final.up', 'lm_head'):
                 self.assertIn(op, ops)
             for r in rows:
@@ -66,6 +66,8 @@ class ProfileTests(unittest.TestCase):
             for r in rows:
                 self.assertGreater(int(r['dispatches']), 0, r)
                 self.assertGreater(int(r['barriers']), 0, r)
+                if r['op'] == 'qsa.proj':  # R1.4: five projections, one multi call: one dispatch, one barrier
+                    self.assertEqual((r['format'], r['dispatches'], r['barriers']), ('Q8_0', '1', '1'), r)
             def counts(token):
                 return [(r['layer'], r['op'], r['dispatches'], r['barriers'], r['weight_bytes'])
                         for r in rows if (r['phase'], r['token']) == ('decode', token)]
