@@ -216,3 +216,46 @@ kernel void q38_matvec_f32(device const uchar *weights [[buffer(0)]],
     dense_matvec<0>(weights, x, y, error, p, p, group.x, group.y, lane, sg, sgs, part);
 }
 
+/* Multi-GEMV (R1.4): up to MULTI_MAX projections of the same x, one format,
+ * in one dispatch (idea: ds4 fc80bd6, MIT, metal/qwen4.metal:
+ * kernel_qwen4_multi_gemv). Threadgroup column g of the grid belongs to
+ * projection j with first[j] <= g < first[j] + p[j].n_out and computes its
+ * local row g - first[j] with the single kernel's own row function above, so
+ * every output is bit-identical to a single call: the order inside a row
+ * still depends only on K and the format. Fixed slots (no argument buffer):
+ * weights in 0..7, outputs in 8..15, so Metal tracks every buffer as usual;
+ * the host binds unused slots to the error word, never read here.
+ * The x side comes from p[0] (all projections share x), only the tensor side
+ * from p[j], and j without a loop: a dynamic index on every field, or a
+ * walk, made each short threadgroup ~5% slower (R1.4 in docs/devlog.md). */
+#define MULTI_MAX 8
+struct MultiArgs { uint count, first[MULTI_MAX]; };
+#define MULTI_SLOT(i) device const uchar *w##i [[buffer(i)]], device float *y##i [[buffer(8 + i)]]
+#define MULTI_PARAMS MULTI_SLOT(0), MULTI_SLOT(1), MULTI_SLOT(2), MULTI_SLOT(3), MULTI_SLOT(4), \
+    MULTI_SLOT(5), MULTI_SLOT(6), MULTI_SLOT(7), device const float *x [[buffer(16)]], \
+    device atomic_uint *error [[buffer(17)]], constant PackedArgs *p [[buffer(18)]], \
+    constant MultiArgs &m [[buffer(19)]], uint2 group [[threadgroup_position_in_grid]], \
+    uint lane [[thread_index_in_simdgroup]]
+#define MULTI_CASE(i) case i: w = w##i; y = y##i; break;
+/* Projection of grid column g (uniform over the threadgroup) and its buffers. */
+#define MULTI_PICK \
+    uint j = 0; \
+    for (uint i = 1; i < MULTI_MAX; i++) j += i < m.count && group.x >= m.first[i]; \
+    device const uchar *w = w0; device float *y = y0; \
+    switch (j) { MULTI_CASE(1) MULTI_CASE(2) MULTI_CASE(3) MULTI_CASE(4) MULTI_CASE(5) MULTI_CASE(6) MULTI_CASE(7) }
+kernel void q38_matvec_multi_q8_0(MULTI_PARAMS) {
+    MULTI_PICK
+    q8_0_matvec(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane);
+}
+kernel void q38_matvec_multi_f16(MULTI_PARAMS, uint sg [[simdgroup_index_in_threadgroup]],
+        uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float part[DENSE_S * DENSE_T];
+    MULTI_PICK
+    dense_matvec<1>(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane, sg, sgs, part);
+}
+kernel void q38_matvec_multi_f32(MULTI_PARAMS, uint sg [[simdgroup_index_in_threadgroup]],
+        uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float part[DENSE_S * DENSE_T];
+    MULTI_PICK
+    dense_matvec<0>(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane, sg, sgs, part);
+}

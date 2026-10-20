@@ -7,9 +7,10 @@
 
 /* ref_*: run the oracle kernel for that family (qwen38_ref.h), fixed at creation.
  * q8_0, f16, f32: the cooperative matvecs of qwen38_matvec.metal, one per
- * format (q8_0 is the default linear path for Q8_0); each is NULL on a GPU
- * whose simdgroups are not 32 wide. */
-struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32; bool ref_linear, ref_indexed; };
+ * format (q8_0 is the default linear path for Q8_0); multi: their multi-GEMV
+ * entry points (Q8_0, F16, F32); each is NULL on a GPU whose simdgroups are
+ * not 32 wide. */
+struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3]; bool ref_linear, ref_indexed; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
  * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
@@ -45,7 +46,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLFunction> q8=[lib newFunctionWithName:@"q38_matvec_q8_0"];
     id<MTLFunction> f16=[lib newFunctionWithName:@"q38_matvec_f16"];
     id<MTLFunction> f32=[lib newFunctionWithName:@"q38_matvec_f32"];
-    if (!function || !gather || !lookup || !q8 || !f16 || !f32)
+    static NSString *const multi_names[3]={@"q38_matvec_multi_q8_0",@"q38_matvec_multi_f16",@"q38_matvec_multi_f32"};
+    id<MTLFunction> multi[3];
+    for (size_t i=0;i<3;i++) multi[i]=[lib newFunctionWithName:multi_names[i]];
+    if (!function || !gather || !lookup || !q8 || !f16 || !f32 || !multi[0] || !multi[1] || !multi[2])
         return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
     NSError *failure=nil;
     id<MTLComputePipelineState> pipeline=[dev newComputePipelineStateWithFunction:function error:&failure];
@@ -54,7 +58,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLComputePipelineState> matvec_q8=[dev newComputePipelineStateWithFunction:q8 error:&failure];
     id<MTLComputePipelineState> matvec_f16=[dev newComputePipelineStateWithFunction:f16 error:&failure];
     id<MTLComputePipelineState> matvec_f32=[dev newComputePipelineStateWithFunction:f32 error:&failure];
-    if (!pipeline || !indexed || !embedding || !matvec_q8 || !matvec_f16 || !matvec_f32)
+    id<MTLComputePipelineState> matvec_multi[3];
+    for (size_t i=0;i<3;i++) matvec_multi[i]=[dev newComputePipelineStateWithFunction:multi[i] error:&failure];
+    if (!pipeline || !indexed || !embedding || !matvec_q8 || !matvec_f16 || !matvec_f32 ||
+        !matvec_multi[0] || !matvec_multi[1] || !matvec_multi[2])
         return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
     Q38PackedGpu *ctx=calloc(1,sizeof *ctx);
     if (!ctx) return q38_b_result(err,Q38_OOM,"cannot allocate packed context");
@@ -65,6 +72,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->q8_0=fast_pipeline(matvec_q8,1);
     ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
     ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
+    for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? Q38_DENSE_S : 1);
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
     *out=ctx;
@@ -76,6 +84,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->q8_0) CFRelease(ctx->q8_0);
     if (ctx->f16) CFRelease(ctx->f16);
     if (ctx->f32) CFRelease(ctx->f32);
+    for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     CFRelease(ctx->device); free(ctx);
 }
 /* Tests force the choice regardless of the environment read at creation. */
@@ -291,4 +300,66 @@ Qwen38Status q38_packed_lookup(Q38PackedGpu *ctx,const Qwen38GpuCommand *cmd,
     [enc setBytes:&args length:sizeof args atIndex:4];
     [enc dispatchThreads:MTLSizeMake(l->k_logical,y.dim[0],1) threadsPerThreadgroup:MTLSizeMake(MIN(l->k_logical,p.maxTotalThreadsPerThreadgroup),1,1)];
     return q38_b_result(e,Q38_OK,"");
+}
+
+/* R1.4 multi-GEMV: the projections of one x, one dispatch per fast format.
+ * Mirror of MultiArgs in qwen38_matvec.metal: first[j] is projection j's
+ * first threadgroup column (sum of the earlier n_out of its dispatch). */
+typedef struct { uint32_t count, first[Q38_MULTI_MAX]; } Q38MultiArgs;
+_Static_assert(sizeof(Q38MultiArgs)==36,"multi Metal argument layout");
+Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *const *bindings, const Q38PackedLayout *layouts,
+        size_t count, Qwen38GpuF32 x, const Qwen38GpuF32 *y, Qwen38Error *err) {
+    if (!bindings || !layouts || !y || !count || count>Q38_MULTI_MAX)
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"multi-GEMV needs 1..8 projections");
+    Admitted a[Q38_MULTI_MAX];
+    for (size_t i=0;i<count;i++) { /* each projection admitted as alone; then no two outputs overlap */
+        Qwen38Status status=admit(ctx,command,store,bindings[i],&layouts[i],x,y[i],y[i].dim[0],&a[i],err);
+        if (status) return status;
+        for (size_t j=0;j<i;j++)
+            if (gpu_alias(a[i].output,y[i].span.offset_bytes,a[i].yb,a[j].output,y[j].span.offset_bytes,a[j].yb))
+                return q38_b_result(err,Q38_INVALID_ARGUMENT,"aliased GPU outputs");
+    }
+    /* group[f]: projections of fast format f (0 Q8_0, 1 F16, 2 F32) in call
+     * order; the rest (no fast kernel, Q38_REF_KERNELS=linear, no 32-wide
+     * simdgroups) run q38_packed_encode one by one: the oracle, bit for bit. */
+    size_t group[3][Q38_MULTI_MAX], size[3]={0};
+    for (size_t i=0;i<count;i++) {
+        uint32_t type=layouts[i].gguf_type;
+        size_t f=type==8 ? 0 : type==1 ? 1 : type==0 ? 2 : 3;
+        if (f<3 && ctx->multi[f] && !ctx->ref_linear) group[f][size[f]++]=i;
+        else {
+            Qwen38Status status=encode_linear(ctx,command,store,bindings[i],&layouts[i],0,x,y[i],false,err);
+            if (status) return status;
+        }
+    }
+    if (!x.dim[0]) return q38_b_result(err,Q38_OK,"");
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    for (size_t f=0;f<3;f++) {
+        if (!size[f]) continue;
+        Q38PackedArgs args[Q38_MULTI_MAX]; Q38MultiArgs multi={(uint32_t)size[f],{0}};
+        size_t columns=0;
+        [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->multi[f]];
+        for (size_t j=0;j<Q38_MULTI_MAX;j++) { /* unused slots: the error word, never read */
+            [encoder setBuffer:a[0].word offset:command->error_word.offset_bytes atIndex:j];
+            [encoder setBuffer:a[0].word offset:command->error_word.offset_bytes atIndex:8+j];
+        }
+        for (size_t j=0;j<size[f];j++) {
+            size_t i=group[f][j], offset=bindings[i]->offset;
+            args[j]=wire(&layouts[i],offset,offset+layouts[i].expert_bytes,x.dim[0],x,y[i],&a[i]);
+            multi.first[j]=(uint32_t)columns;
+            columns+=layouts[i].n_out;
+            if (columns>UINT32_MAX) return q38_b_result(err,Q38_RANGE,"multi-GEMV rows exceed uint32");
+            [encoder setBuffer:a[i].weights offset:0 atIndex:j];
+            [encoder setBuffer:a[i].output offset:y[i].span.offset_bytes atIndex:8+j];
+        }
+        [encoder setBuffer:a[0].input offset:x.span.offset_bytes atIndex:16];
+        [encoder setBuffer:a[0].word offset:command->error_word.offset_bytes atIndex:17];
+        [encoder setBytes:args length:size[f]*sizeof *args atIndex:18];
+        [encoder setBytes:&multi length:sizeof multi atIndex:19];
+        size_t tile=f ? Q38_DENSE_T : Q38_Q8_T, simdgroups=f ? dense_split(x.dim[1]) : 1;
+        [encoder dispatchThreadgroups:MTLSizeMake(columns,(x.dim[0]+tile-1)/tile,1)
+                threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*simdgroups,1,1)];
+    }
+    return q38_b_result(err,Q38_OK,"");
 }

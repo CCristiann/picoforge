@@ -83,26 +83,31 @@ static Request request(int argc,char **argv) {
     assert(r.bytes<=limit);
     return r;
 }
-/* One rank-2 tensor in an unlinked file, 32 bytes past a page boundary so the
- * binding offset is not page aligned (as in test_qwen38_packed_gpu.m). */
-static GpuWeightStore *make_store(id<MTLDevice> dev,Request r,const unsigned char *raw,
+/* count rank-2 tensors (raw back to back) in an unlinked file, each 32 bytes
+ * past its own page boundary so no binding offset is page aligned (as in
+ * test_qwen38_packed_gpu.m); the view cap (the largest tensor) splits them
+ * over several Metal buffers, so a multi call binds different weight buffers. */
+static GpuWeightStore *make_store(id<MTLDevice> dev,size_t count,const Request *r,const unsigned char *raw,
                                   Gguf *g,GgufTensor *t) {
-    size_t page=(size_t)sysconf(_SC_PAGESIZE), extent=(r.bytes+32+page-1)/page*page;
+    size_t page=(size_t)sysconf(_SC_PAGESIZE), extent=0, at=page;
+    for (size_t i=0;i<count;i++) extent=MAX(extent,(r[i].bytes+32+page-1)/page*page);
     char path[]="build/qwen38-r1/weights-XXXXXX";
     g->fd=mkstemp(path);
     assert(g->fd>=0 && unlink(path)==0);
-    g->file_size=extent+2*page;
-    assert(ftruncate(g->fd,(off_t)g->file_size)==0);
-    *t=(GgufTensor){.name="fixture",.type=r.type,.rank=2,.shape={r.physical,r.n},
-                    .file_offset=page+32,.bytes=r.bytes};
-    for (size_t done=0;done<r.bytes;) {
-        ssize_t wrote=pwrite(g->fd,raw+done,r.bytes-done,(off_t)(t->file_offset+done));
-        if (wrote<0 && errno==EINTR) continue;
-        assert(wrote>0); done+=(size_t)wrote;
+    for (size_t i=0;i<count;at+=(r[i].bytes+32+page-1)/page*page,raw+=r[i++].bytes) {
+        t[i]=(GgufTensor){.type=r[i].type,.rank=2,.shape={r[i].physical,r[i].n},.file_offset=at+32,.bytes=r[i].bytes};
+        snprintf(t[i].name,sizeof t[i].name,"fixture%zu",i);
+        for (size_t done=0;done<r[i].bytes;) {
+            ssize_t wrote=pwrite(g->fd,raw+done,r[i].bytes-done,(off_t)(t[i].file_offset+done));
+            if (wrote<0 && errno==EINTR) continue;
+            assert(wrote>0); done+=(size_t)wrote;
+        }
     }
-    g->tensors=t; g->tensor_count=1;
+    g->file_size=at+page;
+    assert(ftruncate(g->fd,(off_t)g->file_size)==0);
+    g->tensors=t; g->tensor_count=count;
     GpuWeightStore *store=gpu_weights_open((__bridge void *)dev,g,extent);
-    assert(store && gpu_weights_plan(store)->view_count==1);
+    assert(store && gpu_weights_plan(store)->weight_count==count && (count>1 || gpu_weights_plan(store)->view_count==1));
     return store;
 }
 static id<MTLBuffer> shared(id<MTLDevice> dev,size_t bytes) {
@@ -176,15 +181,143 @@ static double quantile(const double *v,size_t n,double q) { /* numpy's linear ru
     return v[lo]+(at-(double)lo)*(hi-v[lo]);
 }
 /* Median and p10/p90 of the 20 measured runs; bytes = weights + x + y. */
-static void report(Request r,double *seconds,const float *y) {
-    for (size_t i=0;i<r.m*r.n;i++) assert(isfinite(y[i]));
+static void report(Request r,double *seconds,const float *y,const char *specs) {
+    for (size_t i=0;y && i<r.m*r.n;i++) assert(isfinite(y[i]));
     double *t=seconds+3; qsort(t,20,sizeof *t,ascending);
     for (size_t i=0;i<20;i++) t[i]/=(double)r.reps;
     double bytes=(double)(r.bytes+4*r.m*(r.logical+r.n)), median=quantile(t,20,0.5);
     printf("{\"mode\": \"%s\", \"type\": %u, \"n\": %zu, \"k\": %zu, \"m\": %zu, \"reps\": %zu, \"bytes\": %.0f, "
-           "\"median_us\": %.1f, \"p10_us\": %.1f, \"p90_us\": %.1f, \"gbps\": %.1f}\n",
+           "\"median_us\": %.1f, \"p10_us\": %.1f, \"p90_us\": %.1f, \"gbps\": %.1f%s%s%s}\n",
            r.mode,r.type,r.n,r.logical,r.m,r.reps,bytes,median*1e6,quantile(t,20,0.1)*1e6,quantile(t,20,0.9)*1e6,
-           bytes/median/1e9);
+           bytes/median/1e9,specs ? ", \"specs\": \"" : "",specs ? specs : "",specs ? "\"" : "");
+}
+
+/* Counts the dispatches a multi call encodes (forwarding as qwen38_profile.m). */
+@interface Q38DispatchCounter : NSProxy { @public id<MTLComputeCommandEncoder> target; uint32_t dispatches; }
+@end
+@implementation Q38DispatchCounter
+- (id)forwardingTargetForSelector:(SEL)s { (void)s; return target; }
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)s { return [(NSObject *)target methodSignatureForSelector:s]; }
+- (void)forwardInvocation:(NSInvocation *)i { [i invokeWithTarget:target]; }
+- (void)dispatchThreads:(MTLSize)n threadsPerThreadgroup:(MTLSize)g { dispatches++; [target dispatchThreads:n threadsPerThreadgroup:g]; }
+- (void)dispatchThreadgroups:(MTLSize)n threadsPerThreadgroup:(MTLSize)g { dispatches++; [target dispatchThreadgroups:n threadsPerThreadgroup:g]; }
+@end
+
+/* R1.4 multi-GEMV, one store of count tensors sharing x [m,K]:
+ *   multi m xpitch ypad offset type:physical:logical:n ...
+ * encodes q38_packed_encode_multi as the environment selects; stdin: the
+ * packed tensors back to back, then x; stdout: the number of dispatches it
+ * encoded (uint32), then y_0 [m,n_0], y_1, ... Views
+ * as above, y_i pitch n_i+ypad, each y_i in its own guarded buffer.
+ *   mbench <multi|single> m reps type:physical:logical:n ...
+ * times one multi call, or the fast single calls back to back (the graph
+ * before R1.4), each followed by one barrier, on synthetic data. */
+static int multi_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"mbench");
+    size_t first=timing ? 5 : 6, count=(size_t)argc-first;
+    assert((size_t)argc>first && count<=Q38_MULTI_MAX);
+    size_t xpitch=0, ypad=timing ? 0 : number(argv[4]), total=0, outputs=0, bytes=0;
+    Request p[Q38_MULTI_MAX], r={.mode=timing ? argv[2] : "multi",.m=number(argv[2+timing]),
+        .offset=timing ? 0 : number(argv[5]),.reps=timing ? number(argv[4]) : 1};
+    assert(!strcmp(r.mode,"multi") || !strcmp(r.mode,"single"));
+    char specs[512]="";
+    for (size_t i=0;i<count;i++) {
+        unsigned type; size_t physical,logical,n; int used=0;
+        assert(sscanf(argv[first+i],"%u:%zu:%zu:%zu%n",&type,&physical,&logical,&n,&used)==4 && !argv[first+i][(size_t)used]);
+        const GgufFormat *format=NULL;
+        assert(q38_b_format(type,&format)==Q38_OK && physical%format->block==0 && logical<=physical && n);
+        assert(!i || logical==r.logical); /* one x: every projection has the same K */
+        p[i]=(Request){.type=type,.physical=physical,.logical=logical,.n=n,.bytes=physical/format->block*format->bytes*n};
+        r.logical=logical; total+=p[i].bytes; outputs+=n; assert(total<=(1u<<30) && outputs<=(1u<<24));
+        snprintf(specs+strlen(specs),sizeof specs-strlen(specs),"%s%s",i ? " " : "",argv[first+i]);
+    }
+    xpitch=timing ? r.logical : number(argv[3]);
+    assert(r.m && r.m<=4096 && r.reps && r.reps<=1000 && xpitch>=r.logical && r.offset<=1u<<20 && ypad<=1u<<20);
+    unsigned char *raw=malloc(total); assert(raw);
+    uint64_t seed=3813;
+    for (size_t i=0;i<count;bytes+=p[i++].bytes)
+        if (timing) synthesize(raw+bytes,p[i].bytes,&seed,p[i].type); else assert(fread(raw+bytes,1,p[i].bytes,stdin)==p[i].bytes);
+    size_t initial=gpu_weights_live_mapped_bytes(), xw=floats(r,r.logical,xpitch)+8;
+    int status=0; uint32_t dispatches=0;
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error];
+        if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); abort(); }
+        Q38PackedGpu *ctx=NULL;
+        assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
+        Gguf g={0}; GgufTensor tensors[Q38_MULTI_MAX];
+        GpuWeightStore *store=make_store(dev,count,p,raw,&g,tensors);
+        const GgufBinding *bindings[Q38_MULTI_MAX]; Q38PackedLayout layouts[Q38_MULTI_MAX];
+        id<MTLBuffer> input=shared(dev,xw*4), output[Q38_MULTI_MAX], word=shared(dev,4);
+        Qwen38GpuF32 yv[Q38_MULTI_MAX];
+        float *x=(float *)input.contents+4;
+        for (size_t i=0;i<xw;i++) ((float *)input.contents)[i]=NAN; /* guards and gaps */
+        for (size_t i=0;i<r.m;i++) {
+            float *row=x+r.offset+i*xpitch;
+            if (!timing) assert(fread(row,4,r.logical,stdin)==r.logical);
+            else for (size_t k=0;k<r.logical;k++) row[k]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
+        }
+        assert(timing || fgetc(stdin)==EOF);
+        for (size_t i=0;i<count;i++) {
+            bindings[i]=&gpu_weights_plan(store)->weights[i];
+            assert(q38_packed_layout_init(&bindings[i]->tensor,r.logical,&layouts[i],NULL)==Q38_OK);
+            size_t pitch=p[i].n+ypad, yw=floats(r,p[i].n,pitch)+8;
+            output[i]=shared(dev,yw*4); memset(output[i].contents,0xa5,yw*4);
+            for (size_t m=0;m<r.m;m++)
+                for (size_t j=0;j<p[i].n;j++) ((float *)output[i].contents)[4+r.offset+m*pitch+j]=NAN;
+            yv[i]=matrix(output[i],r,p[i].n,pitch);
+        }
+        Qwen38GpuF32 xv=matrix(input,r,r.logical,xpitch);
+        uint32_t *flags=word.contents;
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        double seconds[23];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            flags[0]=0;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+            Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+            counter->target=encoder;
+            if (!timing) encoder=(id<MTLComputeCommandEncoder>)counter;
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            for (size_t rep=0;rep<r.reps && !status;rep++) {
+                Qwen38Error err={0};
+                if (!strcmp(r.mode,"multi")) {
+                    status=(int)q38_packed_encode_multi(ctx,&cmd,store,bindings,layouts,count,xv,yv,&err);
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                } else for (size_t i=0;i<count && !status;i++) {
+                    status=(int)q38_packed_encode_fast(ctx,&cmd,store,bindings[i],&layouts[i],0,xv,yv[i],&err);
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                }
+                if (status && status!=Q38_UNSUPPORTED) { fprintf(stderr,"encode: %d %s\n",status,err.detail); abort(); }
+            }
+            [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            assert(!timing || (!status && !flags[0]));
+            dispatches=counter->dispatches;
+        }
+        for (size_t i=0;i<count;i++) { /* no write outside any y */
+            const uint32_t *words=output[i].contents; size_t pitch=p[i].n+ypad, yw=floats(r,p[i].n,pitch)+8;
+            for (size_t w=0;w<yw;w++)
+                assert((w>=4 && w<yw-4 && in_view(r,p[i].n,pitch,w-4)) || words[w]==0xa5a5a5a5u);
+            for (size_t m=0;timing && m<r.m;m++)
+                for (size_t j=0;j<p[i].n;j++) assert(isfinite(((float *)output[i].contents)[4+r.offset+m*pitch+j]));
+        }
+        r.n=outputs; r.bytes=total; r.type=p[0].type;
+        if (timing) report(r,seconds,NULL,specs);
+        else if (!status && flags[0]) {
+            status=(flags[0]&Q38_GPU_NONFINITE) ? Q38_NONFINITE : Q38_GPU_ERROR;
+            fprintf(stderr,"qwen38 Metal: error bits %u\n",flags[0]);
+        } else if (!status) assert(fwrite(&dispatches,4,1,stdout)==1);
+        for (size_t i=0;!timing && !status && i<count;i++)
+            for (size_t m=0;m<r.m;m++)
+                assert(fwrite((float *)output[i].contents+4+r.offset+m*(p[i].n+ypad),4,p[i].n,stdout)==p[i].n);
+        q38_packed_gpu_free(ctx); gpu_weights_close(store); assert(close(g.fd)==0);
+    }
+    assert(gpu_weights_live_mapped_bytes()==initial);
+    free(raw);
+    return status;
 }
 
 int main(int argc,char **argv) {
@@ -193,6 +326,7 @@ int main(int argc,char **argv) {
     if (!lock || fcntl((int)number(lock),F_GETFD)<0 || !library) {
         fprintf(stderr,"run through tools/qwen38_gpu_lock.py with Q38_PACKED_LIBRARY set\n"); return 2;
     }
+    if (argc>1 && (!strcmp(argv[1],"multi") || !strcmp(argv[1],"mbench"))) return multi_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);
@@ -209,7 +343,7 @@ int main(int argc,char **argv) {
         Q38PackedGpu *ctx=NULL;
         assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
         Gguf g={0}; GgufTensor tensor;
-        GpuWeightStore *store=make_store(dev,r,raw,&g,&tensor);
+        GpuWeightStore *store=make_store(dev,1,&r,raw,&g,&tensor);
         const GgufBinding *binding=&gpu_weights_plan(store)->weights[0];
         id<MTLBuffer> input=shared(dev,xw*4),output=shared(dev,yw*4),word=shared(dev,4);
         float *x=(float *)input.contents+4, *y=(float *)output.contents+4;
@@ -241,7 +375,7 @@ int main(int argc,char **argv) {
         const uint32_t *words=output.contents; /* no write outside y */
         for (size_t i=0;i<yw;i++)
             assert((i>=4 && i<yw-4 && in_view(r,r.n,r.ypitch,i-4)) || words[i]==0xa5a5a5a5u);
-        if (timing) report(r,seconds,y);
+        if (timing) report(r,seconds,y,NULL);
         else if (!status && flags[0]) {
             status=(flags[0]&Q38_GPU_NONFINITE) ? Q38_NONFINITE : Q38_GPU_ERROR;
             fprintf(stderr,"qwen38 Metal: error bits %u\n",flags[0]);

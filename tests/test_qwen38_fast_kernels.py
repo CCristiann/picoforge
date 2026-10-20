@@ -172,6 +172,41 @@ def against_oracle(y, y_oracle, magnitude):
     return dict(max=float(scaled.max()), p99=float(np.percentile(scaled, 99)))
 
 
+MULTI_MAX, MULTI_NOUT = 8, (1, 4, 48, 128, 512, 640)  # Q38_MULTI_MAX; n_out of the multi test
+
+
+def run_multi(projections, x, env=None, view=None):
+    """One q38_packed_encode_multi call; projections [(kind, physical, n, packed)], view (xpitch, ypad, offset).
+    (exit code, [y_i [M, n_i]] or None, stderr without the validation banner, dispatches encoded)."""
+    (m, logical), lock = x.shape, os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    result = subprocess.run([str(NATIVE), "multi", str(m), *map(str, view or (logical, 0, 0)),
+                             *(f"{kind}:{physical}:{logical}:{n}" for kind, physical, n, _ in projections)],
+                            input=b"".join(p[3] for p in projections) + x.astype("<f4").tobytes(), capture_output=True,
+                            timeout=120, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr:
+        return result.returncode, None, stderr, None
+    values, sizes = np.frombuffer(result.stdout[4:], "<f4"), [m * p[2] for p in projections]
+    if values.size != sum(sizes):
+        raise AssertionError("invalid native transport")
+    dispatches = int(np.frombuffer(result.stdout[:4], "<u4")[0])
+    return 0, [v.reshape(m, -1) for v in np.split(values, np.cumsum(sizes)[:-1])], b"", dispatches
+
+
+def real_projections(kind, logical, names):
+    """The real slice rows of one format and K as projections, one per GGUF tensor whose name
+    contains one of `names` (3 rows each, as extracted by qwen38-test-assets)."""
+    tensors = {}
+    for directory in SLICES:
+        manifest = json.loads((directory / "manifest.json").read_text())
+        for record in manifest["records"]:
+            if (manifest["kind"] == kind and record["k_logical"] == logical == record["k_physical"] and
+                    any(name in record["tensor"] for name in names)):
+                tensors.setdefault(record["tensor"], []).append((directory / record["artifacts"]["packed"]["file"]).read_bytes())
+    return [(kind, logical, len(rows), b"".join(rows)) for rows in tensors.values()]
+
+
 class FastKernelTests(unittest.TestCase):
     def fast_case(self, label, kind, physical, logical, data, x, view=(), y_oracle=None, decoded=None):
         """Fast kernel on one case: supported, finite, (a) and (b); recorded in the corpus."""
@@ -325,6 +360,69 @@ class FastKernelTests(unittest.TestCase):
                     with self.subTest(kernel=name, view=view):
                         strided = self.fast_case(f"views:{name}:N{n}:K{k}:M{m}:{view}", kind, k, k, raw, x, view=view)
                         np.testing.assert_array_equal(strided.view("<u4"), plain.view("<u4"))
+
+    def assert_multi_matches_single(self, label, projections, x, view=None, env=None, mode="fast"):
+        """Every y_i of one multi call is bit-identical to the single `mode` call of projection i;
+        one dispatch per fast format, one per projection without a fast kernel or under the oracle."""
+        code, ys, stderr, dispatches = run_multi(projections, x, env, view)
+        self.assertEqual((code, stderr), (0, b""), label)
+        fast = {p[0] for p in projections if NAMES[p[0]] in FAST} if mode == "fast" else set()
+        self.assertEqual(dispatches, len(fast) + sum(p[0] not in fast for p in projections), label)
+        for i, ((kind, physical, n, data), y) in enumerate(zip(projections, ys, strict=True)):
+            single = mode if NAMES[kind] in FAST else "oracle"  # no fast kernel: q38_packed_encode's oracle
+            _, want, _ = native(single, kind, physical, x.shape[1], data, x)
+            np.testing.assert_array_equal(y.view("<u4"), want.view("<u4"), f"{label}: projection {i}")
+        return ys
+
+    def test_multi_bit_identical_to_single(self):
+        """R1.4: one multi call per format and mixed groups, against single calls, bit for bit."""
+        rng = np.random.default_rng(3820)
+        groups = []
+        for name, kind in sorted(KINDS.items()):  # counts 1, 2, 5 (QSA), max; rows 1, 4, 33; K with partial tails
+            for i, (count, physical, logical, m) in enumerate(((1, 640, 640, 1), (2, 2560, 2550, 4), (5, 2560, 2560, 33),
+                                                               (MULTI_MAX, 2560, 2560, 4))):
+                ns = [MULTI_NOUT[(i + j) % len(MULTI_NOUT)] for j in range(count)]
+                groups.append((f"{name}:x{count}:K{logical}:M{m}", m, logical,
+                               [(kind, physical, n, weight_rows(kind, physical, n, rng).tobytes()) for n in ns]))
+        f16_hc = [(1, 10240, n, weight_rows(1, 10240, n, rng).tobytes()) for n in (320, 4)]  # HC down + inject, S = 8
+        groups.append(("f16:hc:K10240:M4", 4, 10240, f16_hc))
+        gdn = [(8, 2560, n, weight_rows(8, 2560, n, rng).tobytes()) for n in (640, 512)] + \
+              [(0, 2560, 48, weight_rows(0, 2560, 48, rng).tobytes()) for _ in range(2)]
+        groups += [(f"gdn:q8_0+f32:M{m}", m, 2560, gdn) for m in (1, 4, 33)]
+        real = [("qsa", 8, 2560, ("attn_q.", "attn_k.", "attn_v.", "q_proj", "k_proj"), 5),
+                ("gdn", 8, 2560, ("attn_qkv",), 1), ("gdn", 0, 2560, ("ssm_alpha",), 1),
+                ("shared", 8, 2560, ("gate_shexp", "up_shexp"), 2), ("shared", 0, 2560, ("ffn_gate_inp",), 1),
+                ("hc", 1, 10240, ("hc_down", "hc_attn_inject"), 2)]
+        for group in dict.fromkeys(g[0] for g in real):  # the real call sites' tensors (slices of them)
+            projections = [p for g in real if g[0] == group for p in real_projections(*g[1:4])]
+            self.assertEqual(len(projections), sum(g[4] for g in real if g[0] == group), group)
+            groups.append((f"real:{group}", 4, projections[0][1], projections))
+        q2_k = (10, 2560, 4, packed.packed_fixture(10, 2560, 4, rng))  # no fast kernel: oracle, alone
+        groups.append(("q8_0+q2_k+f32", 4, 2560, [gdn[0], q2_k, gdn[2]]))
+        for label, m, logical, projections in groups:
+            self.assertLessEqual(len(projections), MULTI_MAX, label)
+            with self.subTest(group=label):
+                x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
+                ys = self.assert_multi_matches_single(label, projections, x)
+                if label.startswith(("q8_0:x5", "gdn", "real", "f16:hc")):  # views change no bit
+                    for view in ((logical + 12, 7, 37), (logical + 1, 1, 1)):
+                        _, strided, _, _ = run_multi(projections, x, view=view)
+                        for y, want in zip(strided, ys, strict=True):
+                            np.testing.assert_array_equal(y.view("<u4"), want.view("<u4"), f"{label} {view}")
+        with self.subTest(case="nonfinite"):  # one poisoned projection sets bit 1, whether weight or x
+            for kind, n, value in ((8, 512, np.nan), (0, 48, np.inf)):
+                bad = poison(kind, weight_rows(kind, 2560, n, rng), 7, 96, value)
+                projections = [gdn[0], (kind, 2560, n, bad.tobytes()), gdn[3]]
+                x = rng.uniform(-1, 1, (4, 2560)).astype(np.float32)
+                self.assertEqual(run_multi(projections, x)[:3], (NONFINITE, None, b"qwen38 Metal: error bits 1\n"))
+            x[2, 100] = np.nan
+            self.assertEqual(run_multi(gdn, x)[:3], (NONFINITE, None, b"qwen38 Metal: error bits 1\n"))
+        with self.subTest(case="reference"):  # Q38_REF_KERNELS=linear: the oracle per projection, bit for bit
+            x = rng.uniform(-1, 1, (4, 2560)).astype(np.float32)
+            oracle_ys = self.assert_multi_matches_single("ref", gdn, x, env={"Q38_REF_KERNELS": "linear"}, mode="oracle")
+            fast_ys = self.assert_multi_matches_single("default", gdn, x)
+            self.assertFalse(all(np.array_equal(a.view("<u4"), b.view("<u4")) for a, b in zip(oracle_ys, fast_ys)),
+                             "case does not separate the paths")
 
     def separating_case(self, kind):
         """A dense [33x2560] case whose fast and oracle bits differ (else the selector tests prove nothing)."""
