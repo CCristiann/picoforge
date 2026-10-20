@@ -305,3 +305,5 @@ kernel void name(device const uchar *weights [[buffer(0)]], device const float *
 }
 INDEXED_KERNEL(q38_matvec_indexed_iq2_xxs, Q38Iq2Xxs)
 INDEXED_KERNEL(q38_matvec_indexed_q2_k, Q38Q2K)
+INDEXED_KERNEL(q38_matvec_indexed_q4_k, Q38Q4K)
+INDEXED_KERNEL(q38_matvec_indexed_mxfp4, Q38Mxfp4)

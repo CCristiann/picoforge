@@ -9,8 +9,8 @@
  * q8_0, f16, f32: the cooperative matvecs of qwen38_matvec.metal, one per
  * format (q8_0 is the default linear path for Q8_0); multi: their multi-GEMV
  * entry points (Q8_0, F16, F32); indexed_fast: the indexed expert matvecs
- * (IQ2_XXS, Q2_K); each is NULL on a GPU whose simdgroups are not 32 wide. */
-enum { Q38_INDEXED_FAST = 2 };
+ * (IQ2_XXS, Q2_K, Q4_K, MXFP4); each is NULL on a GPU whose simdgroups are not 32 wide. */
+enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
                       *indexed_fast[Q38_INDEXED_FAST]; bool ref_linear, ref_indexed; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
@@ -19,7 +19,9 @@ struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f3
 enum { Q38_Q8_T = 4, Q38_DENSE_T = 4, Q38_DENSE_S = 8, Q38_SIMD = 32 };
 /* Indexed matvecs: IDX_SG in the kernel, simdgroups (one output each) per threadgroup. */
 enum { Q38_IDX_SG = 4 };
-static const uint32_t q38_indexed_types[Q38_INDEXED_FAST]={16,10};
+static const uint32_t q38_indexed_types[Q38_INDEXED_FAST]={16,10,12,39};
+/* R1.5b staging: the default path takes only these until Q4_K/MXFP4 are enabled. */
+static const bool q38_indexed_default[Q38_INDEXED_FAST]={true,true,false,false};
 /* Mirror of dense_split in qwen38_matvec.metal (the kernel checks the match):
  * simdgroups per output row from K alone, doubling while each lane keeps at
  * least 5 chunks of 8 columns. */
@@ -54,7 +56,8 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     static NSString *const multi_names[3]={@"q38_matvec_multi_q8_0",@"q38_matvec_multi_f16",@"q38_matvec_multi_f32"};
     id<MTLFunction> multi[3];
     for (size_t i=0;i<3;i++) multi[i]=[lib newFunctionWithName:multi_names[i]];
-    static NSString *const indexed_names[Q38_INDEXED_FAST]={@"q38_matvec_indexed_iq2_xxs",@"q38_matvec_indexed_q2_k"};
+    static NSString *const indexed_names[Q38_INDEXED_FAST]={@"q38_matvec_indexed_iq2_xxs",@"q38_matvec_indexed_q2_k",
+        @"q38_matvec_indexed_q4_k",@"q38_matvec_indexed_mxfp4"};
     id<MTLFunction> indexed_fn[Q38_INDEXED_FAST];
     bool present=true;
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) present=(indexed_fn[i]=[lib newFunctionWithName:indexed_names[i]])!=nil && present;
@@ -246,8 +249,9 @@ Qwen38Status q38_packed_encode_fast(Q38PackedGpu *ctx, const Qwen38GpuCommand *c
 }
 
 /* The indexed fast kernel of a format (R1.5); NULL: none. */
-static void *indexed_kernel(const Q38PackedGpu *ctx, uint32_t type) {
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++) if (q38_indexed_types[i]==type) return ctx->indexed_fast[i];
+static void *indexed_kernel(const Q38PackedGpu *ctx, uint32_t type, bool *by_default) {
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++)
+        if (q38_indexed_types[i]==type) { *by_default=q38_indexed_default[i]; return ctx->indexed_fast[i]; }
     return NULL;
 }
 /* One indexed encode for both entry points, validation first as in
@@ -273,8 +277,9 @@ static Qwen38Status encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
         gpu_alias(route,io,n,a.word,command->error_word.offset_bytes,4) ||
         gpu_alias(route,io,n,a.weights,wo,layout->tensor_bytes))
         return q38_b_result(err,Q38_INVALID_ARGUMENT,"expert IDs alias an output or weights");
-    void *kernel=indexed_kernel(ctx,layout->gguf_type);
-    bool fast=kernel && (force_fast || !ctx->ref_indexed);
+    bool by_default=false;
+    void *kernel=indexed_kernel(ctx,layout->gguf_type,&by_default);
+    bool fast=kernel && (force_fast || (by_default && !ctx->ref_indexed));
     if (force_fast && !fast) return q38_b_result(err,Q38_UNSUPPORTED,"no indexed fast kernel for this format");
     if (!y.dim[0]) return q38_b_result(err,Q38_OK,"");
     Q38PackedIndexedArgs args={.base=wire(layout,wo,wo+layout->tensor_bytes,y.dim[0],x,y,&a),

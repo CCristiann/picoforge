@@ -49,6 +49,22 @@
       "samples": 334889,
       "commit": "968e169",
       "note": "Indexed expert matvec (R1.5a). Every weight decodes to the oracle's exact FP32 value (test_q2_k_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 16-column scale group, then a lane's groups, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real down slices (640 of 768) the fast kernel is within 1.5e-8 of FP64 and the oracle within 1.2e-7. The max 3.6e-7 (6.0 u of S) is at N512 K640/768; 2^-22 = 2.4e-7 is below it."
+    },
+    "q4_k": {
+      "tol": 4.76837158203125e-07,
+      "max": 2.807887259048226e-07,
+      "p99": 9.0236440732542e-08,
+      "samples": 333647,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5b, layer 48 / MTP gate and up). Every weight decodes to the oracle's exact FP32 value (test_q4_k_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 32-column sub-block, then a lane's sub-blocks, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real gate/up slices (K 2560) the fast kernel is within 8.2e-9 of FP64 and the oracle within 8.8e-8. The max 2.8e-7 (4.7 u of S, u = 2^-24) is at N32768 K256; 2^-22 = 2.4e-7 is below it."
+    },
+    "mxfp4": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.748504299613388e-07,
+      "p99": 0.0,
+      "samples": 2488411,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5b, layer 48 / MTP down). Every weight is built as the oracle's exact FP32 bits (test_mxfp4_decode_matches_oracle, all 256 exponents x 16 codes); the 16 subnormal weights are flushed by the GPU multiply in both kernels, so the products w*x are the oracle's and only the summation order differs: each 32-column block, then a lane's blocks, then simd_sum over 32 lanes. On the real down slices (K 640) the fast kernel is within 1.4e-8 of FP64 and the oracle within 5.1e-8. The max 3.7e-7 (6.3 u of S) is at N33 K640/768 (views); 2^-22 = 2.4e-7 is below it. p99 is 0 because the N248320 K32 case (2.48M of the samples) is one block: the same serial order as the oracle, b = 0."
     }
   }
 }

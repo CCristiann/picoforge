@@ -71,6 +71,62 @@ struct Q38Q2K {
         for (uint i = 0; i < 16; i++) w[i] = dl * float((q[i] >> shift) & 3u) - ml;
     }
 };
+/* Q4_K (144-byte blocks of 256): fp16 d and dmin, 12 bytes of 6-bit scales
+ * and mins for 8 sub-blocks of 32 columns, 128 bytes of 4-bit codes (sub-blocks
+ * 2j and 2j+1 share 32 bytes: low and high nibbles). Chunk = one sub-block. */
+struct Q38Q4K {
+    static constant constexpr uint CHUNK = 32;
+    static inline void decode(device const uchar *row, uint c, thread float *w) {
+        device const uchar *b = row + ulong(c / 8) * 144, *sc = b + 4;
+        const uint g = c % 8;
+        const uint scale = g < 4 ? sc[g] & 63u : (sc[g + 4] & 15u) | ((sc[g - 4] & 192u) >> 2);
+        const uint minimum = g < 4 ? sc[g + 4] & 63u : (sc[g + 4] >> 4) | ((sc[g] & 192u) >> 2);
+        const float dl = q38_fp16(b) * float(scale), ml = q38_fp16(b + 2) * float(minimum);
+        device const uchar *q = b + 16 + (g / 2) * 32;
+        const uint shift = (g % 2) * 4;
+        for (uint i = 0; i < 32; i++) w[i] = dl * float((q[i] >> shift) & 15u) - ml;
+    }
+};
+/* One MXFP4 value: E2M1 code times 2^(e-127), built as exact FP32 bits as the
+ * oracle does (Metal arithmetic flushes subnormals; a power of two times an
+ * E2M1 value needs no rounding). Magnitudes 1..7 = 0.5, 1, 1.5, 2, 3, 4, 6:
+ * exponent field 126 + m/2, fraction 0.5 for the odd m above 1. e = 255 is
+ * the escape: Inf, or NaN for magnitude 0. */
+static inline float q38_mxfp4_value(uint e, uint code) {
+    const uint sign = (code & 8u) << 28, magnitude = code & 7u;
+    if (e == 255) return as_type<float>(sign | 0x7f800000u | (magnitude ? 0u : 0x400000u));
+    if (!magnitude) return as_type<float>(sign);
+    const uint fraction = magnitude > 1 ? (magnitude & 1u) << 22 : 0u;
+    const int exponent = int(126 + magnitude / 2) + int(e) - 127;
+    const uint bits = exponent <= 0 ? (0x800000u | fraction) >> uint(1 - exponent) :
+        exponent >= 255 ? 0x7f800000u : (uint(exponent) << 23) | fraction;
+    return as_type<float>(sign | bits);
+}
+/* MXFP4 (17-byte blocks of 32): the E8M0 exponent byte, then 16 bytes of codes
+ * (column i in the low nibble of byte i, column 16+i in the high one).
+ * Chunk = one block. A block whose every value is normal and finite (e in
+ * 2..252) takes a branch-free form of the same bits (95.7 vs 140.5 us on the
+ * down shape at 10 slots); the others go through q38_mxfp4_value. */
+struct Q38Mxfp4 {
+    static constant constexpr uint CHUNK = 32;
+    static inline void decode(device const uchar *row, uint c, thread float *w) {
+        device const uchar *b = row + ulong(c) * 17;
+        const uint e = b[0];
+        if (e >= 2 && e <= 252) { /* every code normal and finite: exponent field e - 1 + m/2 */
+            for (uint i = 0; i < 32; i++) {
+                const uint code = (b[1 + i % 16] >> (i / 16 * 4)) & 15u, m = code & 7u;
+                const uint bits = m ? ((e - 1 + m / 2) << 23) | (m > 1 ? (m & 1u) << 22 : 0u) : 0u;
+                w[i] = as_type<float>(((code & 8u) << 28) | bits);
+            }
+            return;
+        }
+        for (uint i = 0; i < 16; i++) {
+            const uint byte = b[1 + i];
+            w[i] = q38_mxfp4_value(e, byte & 15u);
+            w[16 + i] = q38_mxfp4_value(e, byte >> 4);
+        }
+    }
+};
 /* Dot of one packed row with x[0..k): columns past k are read neither from
  * the weights' sum nor from x (a partial last chunk sums only its first
  * columns). Every lane returns the same total. */

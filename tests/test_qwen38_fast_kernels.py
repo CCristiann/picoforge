@@ -34,7 +34,8 @@ SHAPES = [(1, 32, 1), (3, 640, 3), (33, 2560, 2), (512, 640, 1)]  # (N, K logica
 UNSUPPORTED, NONFINITE = 8, 16  # Q38_UNSUPPORTED (no fast kernel), Q38_NONFINITE (error bit 1)
 FAST = {"q8_0", "f16", "f32"}  # formats whose fast kernel exists: UNSUPPORTED is a failure for them
 KINDS = {name: kind for kind, name in NAMES.items() if name in FAST}
-INDEXED_FAST = {"iq2_xxs", "q2_k"}  # R1.5: formats with an indexed (routed expert) fast kernel
+INDEXED_FAST = {"iq2_xxs", "q2_k", "q4_k", "mxfp4"}  # R1.5: formats with an indexed (routed expert) fast kernel
+INDEXED_DEFAULT = {"iq2_xxs", "q2_k"}  # of those, the ones q38_packed_encode_indexed runs by default
 INDEXED_KINDS = {name: kind for kind, name in NAMES.items() if name in INDEXED_FAST}
 GPU_ERROR = 20  # Q38_GPU_ERROR: error word without bit 1 (bounds, bit 2)
 BANNER = re.compile(rb"(?m)^.*Metal API Validation Enabled\r?\n")
@@ -725,6 +726,8 @@ class FastKernelTests(unittest.TestCase):
         """R1.5: q38_packed_encode_indexed runs the indexed fast kernel unless `indexed` is
         selected, also on the real expert slices; a format without one (Q8_0) keeps the oracle."""
         for name, kind in sorted(INDEXED_KINDS.items()):
+            if name not in INDEXED_DEFAULT:
+                continue
             args, fast, _ = self.indexed_separating_case(kind)
             for env in ({}, {"Q38_REF_KERNELS": "0"}, {"Q38_REF_KERNELS": ""}, {"Q38_REF_KERNELS": "linear"},
                         {"Q38_REF_KERNELS": "linear,moe"}):
@@ -772,9 +775,19 @@ class FastKernelTests(unittest.TestCase):
         """Q2_K slices: ffn_down_exps (640 of 768) of layers 0, 23, 47."""
         self.indexed_real_within_tolerance(10)
 
-    def assert_decode_matches_oracle(self, kind, packed, columns, batch):
+    def test_q4_k_real_indexed_within_tolerance(self):
+        """Q4_K slices: ffn_gate/up_exps of the mixed layer 48 (and the MTP head)."""
+        self.indexed_real_within_tolerance(12)
+
+    def test_mxfp4_real_indexed_within_tolerance(self):
+        """MXFP4 slices: ffn_down_exps (K 640) of the mixed layer 48 (and the MTP head)."""
+        self.indexed_real_within_tolerance(39)
+
+    def assert_decode_matches_oracle(self, kind, packed, columns, batch, flush=False):
         """One-hot x through the indexed kernel: y[p, j] = w[j, p]. Fast equals the CPU decoder's
-        value (+0 == -0) and the oracle's bits; rows in batches the transport allows."""
+        value (+0 == -0) and the oracle's bits; rows in batches the transport allows. flush: the
+        GPU multiply flushes a subnormal operand (oracle and fast alike, even for x = 2^64), so a
+        weight below 2^-126 is expected as zero: no dot product can see more of it."""
         x, rows = np.eye(columns, dtype=np.float32), len(packed)
         for start in range(0, rows, batch):
             chunk = packed[start:start + batch]
@@ -784,7 +797,8 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual((code, stderr), (0, b""))
                 _, y_oracle, _, _ = run_indexed("oracle", kind, columns, columns, len(chunk), 1, chunk.tobytes(),
                                                 np.zeros(columns), x, 1)
-                np.testing.assert_array_equal(fast.T, decoded)
+                expected = np.where(np.abs(decoded) < 2.0**-126, 0, decoded) if flush else decoded
+                np.testing.assert_array_equal(fast.T, expected)
                 np.testing.assert_array_equal(fast.view("<u4"), y_oracle.view("<u4"))
 
     def assert_scale_nonfinite(self, kind, block):
@@ -828,6 +842,45 @@ class FastKernelTests(unittest.TestCase):
         packed[:, 82:84] = finite[(rows * 7919) % len(finite)].view(np.uint8).reshape(-1, 2)
         self.assert_decode_matches_oracle(10, packed, 256, 16384)
         self.assert_scale_nonfinite(10, packed[0])
+
+    def test_q4_k_decode_matches_oracle(self):
+        """Every 6-bit scale/min byte at every one of the 12 positions (so every scale and min of
+        the 8 sub-blocks, low and high bits), every code at every column, and every finite fp16
+        d and dmin (cycled over the rows): exact, the oracle's bits."""
+        finite = np.arange(65536, dtype=np.uint16)
+        finite = finite[(finite & 0x7C00) != 0x7C00]
+        rows = np.arange(65536)
+        packed = np.zeros((len(rows), 144), np.uint8)
+        packed[:, 0:2] = finite[rows % len(finite)].view(np.uint8).reshape(-1, 2)
+        packed[:, 2:4] = finite[(rows * 7919) % len(finite)].view(np.uint8).reshape(-1, 2)
+        packed[:, 4:16] = (rows[:, None] + 17 * np.arange(12)) % 256
+        packed[:, 16:144] = (rows[:, None] * 29 + 7 * np.arange(128)) % 256
+        self.assert_decode_matches_oracle(12, packed, 256, 16384)
+        self.assert_scale_nonfinite(12, packed[0])
+
+    def test_mxfp4_decode_matches_oracle(self):
+        """All 256 E8M0 exponents x 16 E2M1 codes, each code in both nibbles. Every finite value
+        (exponent field 126 + m/2 + e - 127 <= 254 for magnitude m; results below 2^-126
+        included) decodes exactly to the oracle's bits; the codes that overflow at e = 253
+        (m >= 6) and 254 (m >= 4) and every code of the 255 escape set bit 1. The 16 subnormal
+        weights (e = 0, m 1..3; e = 1, m 1) reach y as zero in both kernels (see flush)."""
+        nibble = np.arange(16, dtype=np.uint8)
+        packed = np.zeros((255, 17), np.uint8)
+        packed[:, 0], packed[:, 1:] = np.arange(255), nibble | nibble << 4
+        overflow = {253: (6, 7), 254: (4, 5, 6, 7)}
+        for exponent, big in overflow.items():  # their finite codes only, still in both nibbles
+            kept = np.array([c for c in range(16) if c & 7 not in big], np.uint8)
+            packed[exponent, 1:] = np.resize(kept | kept << 4, 16)
+        self.assert_decode_matches_oracle(39, packed, 32, 16384, flush=True)
+        x = np.ones((1, 32), np.float32)
+        nonfinite = [(e, c) for e, big in overflow.items() for c in range(16) if c & 7 in big] + [(255, c) for c in range(16)]
+        for exponent, code in nonfinite:
+            block = np.zeros((1, 17), np.uint8)
+            block[0, 0], block[0, 1] = exponent, code
+            with self.subTest(exponent=exponent, code=code):
+                for mode in ("oracle", "fast"):
+                    code_, _, _, stderr = run_indexed(mode, 39, 32, 32, 1, 1, block.tobytes(), [0], x, 1)
+                    self.assertEqual((code_, stderr), (NONFINITE, b"qwen38 Metal: error bits 1\n"), mode)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
