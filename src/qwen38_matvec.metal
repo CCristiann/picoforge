@@ -26,25 +26,25 @@ static_assert(sizeof(PackedArgs) == 80, "host/Metal wire record size");
  * block sums in block order, and simd_sum joins the 32 lanes. That order
  * depends only on K: never on how many rows of x or w the dispatch has, nor
  * on where a row sits in the tile, so chunk, decode and MTP agree bit for bit.
- * Each decoded block is reused for the tile's Q8_T rows of x. */
-kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
-        device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
-        device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
-        uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    const ulong n = group.x, m0 = ulong(group.y) * Q8_T;
-    if (n >= p.n_out || m0 >= p.rows) return;
+ * Each decoded block is reused for the tile's Q8_T rows of x.
+ * p: the x side (rows, x_stride, x_bytes, k_logical); o: output row n's
+ * tensor (n_out, weights, y). A single call passes its record twice. */
+static inline void q8_0_matvec(device const uchar *weights, device const float *x, device float *y,
+        device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile, uint lane) {
+    const ulong m0 = ulong(tile) * Q8_T;
+    if (n >= o.n_out || m0 >= p.rows) return;
     const uint mt = uint(min(ulong(Q8_T), p.rows - m0));
     /* Bounds as the oracle, once per row: a weight row, x row or y element
      * outside its extent sets bit 2 and the simdgroup reads and writes
      * nothing. Tile slots past the last row of x repeat row m0, unused. */
-    const ulong row = p.weight_offset + n * p.row_bytes;
-    bool inside = row <= p.weight_end && p.row_bytes <= p.weight_end - row;
+    const ulong row = o.weight_offset + n * o.row_bytes;
+    bool inside = row <= o.weight_end && o.row_bytes <= o.weight_end - row;
     ulong xi[Q8_T];
     for (uint t = 0; t < Q8_T; t++) {
         const ulong m = m0 + (t < mt ? t : 0);
         xi[t] = m * (p.x_stride / 4);
         inside = inside && xi[t] <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xi[t] &&
-                 m * (p.y_stride / 4) + n < p.y_bytes / 4;
+                 m * (o.y_stride / 4) + n < o.y_bytes / 4;
     }
     if (!inside) {
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
@@ -77,9 +77,15 @@ kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
     for (uint t = 0; t < Q8_T; t++) {
         const float v = simd_sum(acc[t]);
         if (lane || t >= mt) continue;
-        y[(m0 + t) * (p.y_stride / 4) + n] = v;
+        y[(m0 + t) * (o.y_stride / 4) + n] = v;
         if (!isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
     }
+}
+kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
+        device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
+        device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
+        uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    q8_0_matvec(weights, x, y, error, p, p, group.x, group.y, lane);
 }
 
 /* Dense formats (F16, F32): rows of x per threadgroup (mirrored by Q38_DENSE_T
@@ -130,23 +136,24 @@ static inline void dense_chunk(device const uchar *q, bool whole, thread float *
  * sums each chunk in column order and the chunk sums in chunk order;
  * simd_sum joins the 32 lanes of a simdgroup and the S partial sums are added
  * in simdgroup order. Every weight decodes exactly, so the products equal
- * the oracle's; only the order of the sum differs, and it depends only on K. */
+ * the oracle's; only the order of the sum differs, and it depends only on K.
+ * p and o as in q8_0_matvec. */
 template <uint TYPE>
 static inline void dense_matvec(device const uchar *weights, device const float *x, device float *y,
-        device atomic_uint *error, constant PackedArgs &p, uint2 group, uint lane, uint sg, uint sgs,
-        threadgroup float *part) {
+        device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile,
+        uint lane, uint sg, uint sgs, threadgroup float *part) {
     const uint E = TYPE == 1 ? 2 : 4, S = dense_split(p.k_logical); /* E: bytes per element */
-    const ulong n = group.x, m0 = ulong(group.y) * DENSE_T;
-    if (n >= p.n_out || m0 >= p.rows) return; /* uniform over the threadgroup, as every return below */
+    const ulong m0 = ulong(tile) * DENSE_T;
+    if (n >= o.n_out || m0 >= p.rows) return; /* uniform over the threadgroup, as every return below */
     const uint mt = uint(min(ulong(DENSE_T), p.rows - m0));
-    const ulong row = p.weight_offset + n * p.row_bytes;
-    bool inside = sgs == S && row <= p.weight_end && p.row_bytes <= p.weight_end - row;
+    const ulong row = o.weight_offset + n * o.row_bytes;
+    bool inside = sgs == S && row <= o.weight_end && o.row_bytes <= o.weight_end - row;
     ulong xi[DENSE_T];
     for (uint t = 0; t < DENSE_T; t++) {
         const ulong m = m0 + (t < mt ? t : 0);
         xi[t] = m * (p.x_stride / 4);
         inside = inside && xi[t] <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xi[t] &&
-                 m * (p.y_stride / 4) + n < p.y_bytes / 4;
+                 m * (o.y_stride / 4) + n < o.y_bytes / 4;
     }
     if (!inside) { /* also a dispatch whose simdgroups per row differ from dense_split(K) */
         if (!lane && !sg) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
@@ -188,7 +195,7 @@ static inline void dense_matvec(device const uchar *weights, device const float 
     if (lane) return;
     /* Finiteness on the output (bit 1), as in the Q8_0 kernel. */
     for (uint t = 0; t < mt; t++) {
-        y[(m0 + t) * (p.y_stride / 4) + n] = total[t];
+        y[(m0 + t) * (o.y_stride / 4) + n] = total[t];
         if (!isfinite(total[t])) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
     }
 }
@@ -198,7 +205,7 @@ kernel void q38_matvec_f16(device const uchar *weights [[buffer(0)]],
         uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
         uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]]) {
     threadgroup float part[DENSE_S * DENSE_T];
-    dense_matvec<1>(weights, x, y, error, p, group, lane, sg, sgs, part);
+    dense_matvec<1>(weights, x, y, error, p, p, group.x, group.y, lane, sg, sgs, part);
 }
 kernel void q38_matvec_f32(device const uchar *weights [[buffer(0)]],
         device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
@@ -206,5 +213,6 @@ kernel void q38_matvec_f32(device const uchar *weights [[buffer(0)]],
         uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
         uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]]) {
     threadgroup float part[DENSE_S * DENSE_T];
-    dense_matvec<0>(weights, x, y, error, p, group, lane, sg, sgs, part);
+    dense_matvec<0>(weights, x, y, error, p, p, group.x, group.y, lane, sg, sgs, part);
 }
+
