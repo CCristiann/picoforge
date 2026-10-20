@@ -706,6 +706,52 @@ class FastKernelTests(unittest.TestCase):
                     np.testing.assert_array_equal(y[~bad].view("<u4"), want[~bad].view("<u4"))
                     np.testing.assert_array_equal(y[bad].view("<u4"), np.full((3, n), np.nan, np.float32).view("<u4"))
 
+    INDEXED_SHAPE = {16: (2560, 2560, 10), 10: (768, 640, 1), 12: (2560, 2560, 10), 39: (640, 640, 1)}  # physical, logical, divisor
+
+    def indexed_separating_case(self, kind):
+        """A gate (x divisor 10) or down (divisor 1) case of 2 tokens x 10 slots whose fast and
+        oracle bits differ (else the selector tests prove nothing)."""
+        rng, (physical, logical, divisor) = seeded(3836, kind), self.INDEXED_SHAPE[kind]
+        n, experts = 33, 12
+        raw = quant_rows(kind, physical, experts * n, rng).tobytes()
+        ids = np.concatenate([rng.permutation(experts)[:10] for _ in range(2)])
+        x = rng.uniform(-1, 1, (20 // divisor, logical)).astype(np.float32)
+        args = (kind, physical, logical, n, experts, raw, ids, x, divisor)
+        fast, y_oracle = run_indexed("fast", *args)[1], run_indexed("oracle", *args)[1]
+        self.assertFalse(np.array_equal(fast.view("<u4"), y_oracle.view("<u4")), "case does not separate the paths")
+        return args, fast, y_oracle
+
+    def test_default_selects_fast_indexed(self):
+        """R1.5: q38_packed_encode_indexed runs the indexed fast kernel unless `indexed` is
+        selected, also on the real expert slices; a format without one (Q8_0) keeps the oracle."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            args, fast, _ = self.indexed_separating_case(kind)
+            for env in ({}, {"Q38_REF_KERNELS": "0"}, {"Q38_REF_KERNELS": ""}, {"Q38_REF_KERNELS": "linear"},
+                        {"Q38_REF_KERNELS": "linear,moe"}):
+                with self.subTest(kernel=name, env=env):
+                    np.testing.assert_array_equal(run_indexed("encode", *args, env=env)[1].view("<u4"), fast.view("<u4"))
+            for label, _, physical, logical, data, x, saved in [c for c in CASES if c[1] == kind and c[0].startswith("real:")]:
+                with self.subTest(case=label):
+                    ids = np.tile(np.arange(len(saved)), len(x))
+                    real = (kind, physical, logical, 1, len(saved), data, ids, x, len(saved))
+                    np.testing.assert_array_equal(run_indexed("encode", *real)[1].view("<u4"),
+                                                  run_indexed("fast", *real)[1].view("<u4"))
+        rng = np.random.default_rng(3837)
+        q8 = (8, 2560, 2560, 33, 3, packed.packed_fixture(8, 2560, 99, rng), [0, 2, 1, 2], rng.uniform(-1, 1, (4, 2560)).astype(np.float32), 1)
+        with self.subTest(kernel="q8_0 (no indexed fast kernel)"):
+            self.assertEqual(run_indexed("fast", *q8)[0], UNSUPPORTED)
+            np.testing.assert_array_equal(run_indexed("encode", *q8)[1].view("<u4"), run_indexed("oracle", *q8)[1].view("<u4"))
+
+    def test_reference_env_selects_oracle_indexed(self):
+        """Q38_REF_KERNELS naming `indexed` (or 1, all, or a typo: ruling R18) restores the
+        indexed oracle bit for bit."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            args, _, y_oracle = self.indexed_separating_case(kind)
+            for value in ("indexed", "1", "all", "linear,indexed", "indexd"):
+                with self.subTest(kernel=name, value=value):
+                    np.testing.assert_array_equal(run_indexed("encode", *args, env={"Q38_REF_KERNELS": value})[1].view("<u4"),
+                                                  y_oracle.view("<u4"))
+
     def indexed_real_within_tolerance(self, kind):
         """The real expert rows of one format, each its own expert (n_out 1), every saved and
         seeded x row against every expert as a gate dispatch (x divisor = experts)."""
