@@ -208,7 +208,8 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
 
 /* ---- Device-routed MoE (G2). Same stage order as moe_batch, without grouping:
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
-/* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up. */
+/* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up
+ * or down+reduce. */
 struct Q38FRouted { void *device, *route, *iota, *product, *reduce; bool ref_moe; };
 void q38f_routed_destroy(Q38FRouted *r) {
     if (!r) return;
@@ -280,7 +281,6 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
     [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5); run(enc,r->route,t);
-    at(enc,w->identity,0); run(enc,r->iota,p);
     /* R1.5b: gate+up+SwiGLU in one fused dispatch, act bit-identical to the
      * unfused fast sequence below; gate/up are then not written (nothing reads
      * them but ACT and MUL). Fused only when neither `moe` nor `indexed` is
@@ -292,14 +292,28 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     else if (fused!=Q38_UNSUPPORTED) return fused;
     else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
-    IDX(3,w->act,w->down,1);
     ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
     LIN(6,w->sact,w->shared);
     ACT(Q38_SIGMOID,w->slogit,w->ssig);
-    FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
-    at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
-    at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
-    at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
+    /* R1.5c: the routed down projection and q38f_reduce in one fused dispatch
+     * after the shared expert (it reads shared and ssig as q38f_reduce does);
+     * y and routed are bit-identical to the unfused fast sequence below and
+     * the down scratch is not written (only that sequence reads it). Same
+     * rule as gate+up: fused only when neither `moe` nor `indexed` is
+     * selected (B answers UNSUPPORTED under `indexed` or for a format without
+     * a row dot), else IDX down then q38f_reduce, as before R1.5c. */
+    const Q38DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed};
+    fused=r->ref_moe ? Q38_UNSUPPORTED : q38_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],w->ids,w->act,&dv,y,err);
+    if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    else if (fused!=Q38_UNSUPPORTED) return fused;
+    else { /* the identity map is read only by q38f_reduce */
+        at(enc,w->identity,0); run(enc,r->iota,p);
+        IDX(3,w->act,w->down,1);
+        FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
+        at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
+        at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
+        at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
+    }
 #undef LIN
 #undef IDX
 #undef ACT

@@ -16,6 +16,30 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.5c — Fused down + reduce
+
+After the gate+up+SwiGLU, each routed expert projects its act row back to the
+hidden size (down, 640 → 2560), and the token's output is
+y = Σ_s w_s·down_s + σ(z)·shared, summed in slot order 0..k−1. Before, this
+took two dispatches: an indexed down writing a [pairs, 2560] scratch (100 KiB
+per token), then `q38f_reduce` reading it back. Now `q38_moe_down_reduce`
+(in `qwen38_moe_fused.metal`) does both in one dispatch, after the shared
+expert. One simdgroup per (token, column) runs the same `q38_quant_row` per
+slot and accumulates with `q38f_reduce`'s expressions (contraction off in
+both files), so y and routed are bit-identical to the unfused sequence
+(kernel level, all four formats; graph, layers 0–3). Per MoE layer call, the
+identity map (`q38f_iota`), the indexed down and `q38f_reduce` (3 dispatches,
+3 barriers) become 1 dispatch and 1 barrier. `Q38_REF_KERNELS=moe` or `indexed`
+restores the sequence. Bench `bench/qwen38_r1_20261021/moe-down/`
+(512 experts, 10 slots):
+
+| µs, fused / sequence | 1 token | 4 | 32 | 128 |
+|---|---|---|---|---|
+| Q2_K 640/768→2560 | 75.3 / 81.7 | 282.9 / 311.3 | 2205 / 2471 | 8877 / 9995 |
+| MXFP4 (layer 48) | 94.4 / 101.4 | 354.5 / 383.3 | 2786 / 3027 | 11120 / 12124 |
+
+Measured (controller, ladder): pending.
+
 ### R1.5b — Fused gate+up+SwiGLU
 
 An expert's MLP starts with h = SiLU(g)·u, where g = gate·x and u = up·x
