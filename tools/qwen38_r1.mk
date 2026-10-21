@@ -122,6 +122,19 @@ Q38_R1_BENCH_INDEXED := $(call q38_ib_tokens,16:640:2560:2560,10) $(call q38_ib_
 q38_gb = $(foreach m,fused sequence,gbench:$(m):$(1):640:2560:2560:512:$(2):10:$(3))
 Q38_R1_BENCH_GATE_UP := $(foreach t,16 12,$(call q38_gb,$(t),10,20) $(call q38_gb,$(t),40,20) \
 	$(call q38_gb,$(t),320,1) $(call q38_gb,$(t),1280,1))
+# R1.5c fused down + weighted reduce (BENCH_OUT=.../moe-down): the fused kernel
+# vs the unfused fast sequence (indexed down, barrier, q38f_reduce) on the Q2_K
+# down (640 of 768 -> 2560) and the MXFP4 layer-48 down (640 -> 2560), 512
+# experts, 1, 4, 32, 128 tokens x 10 slots; then q38f_route alone (512
+# experts, top 10) at 1 and 32 tokens, the input of the Task 13b decision.
+# Specs dbench:mode:type:n:physical:logical:experts:tokens:slots:reps and
+# rbench:experts:slots:tokens:reps.
+# q38_db(type,physical:logical,tokens,reps): fused and sequence specs.
+q38_db = $(foreach m,fused sequence,dbench:$(m):$(1):2560:$(2):512:$(3):10:$(4))
+q38_db_tokens = $(call q38_db,$(1),$(2),1,20) $(call q38_db,$(1),$(2),4,20) \
+	$(call q38_db,$(1),$(2),32,1) $(call q38_db,$(1),$(2),128,1)
+Q38_R1_BENCH_DOWN := $(call q38_db_tokens,10,768:640) $(call q38_db_tokens,39,640:640) \
+	rbench:512:10:1:20 rbench:512:10:32:20
 Q38_R1_CONDITIONS := date -u +%Y-%m-%dT%H:%M:%SZ; pmset -g therm; pmset -g batt; sysctl vm.swapusage; ./build/qwen38-capabilities
 bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities $(METALLIB)
 	@case "$(BENCH_OUT)" in bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \
@@ -129,13 +142,14 @@ bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-multi) ;; \
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-indexed) ;; \
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-gate-up) ;; \
-	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32, .../matvec-multi, .../matvec-indexed or .../moe-gate-up (a new directory)" >&2; exit 2;; esac
+	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-down) ;; \
+	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32, .../matvec-multi, .../matvec-indexed, .../moe-gate-up or .../moe-down (a new directory)" >&2; exit 2;; esac
 	@mkdir -p "$(dir $(BENCH_OUT))" && mkdir "$(BENCH_OUT)" # an existing directory fails here: never overwritten
 	@{ git rev-parse HEAD; git status --porcelain; shasum -a 256 $< $(METALLIB); } > "$(BENCH_OUT)/manifest.txt"
 	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c '{ $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/before.txt" && \
-	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(if $(filter %/matvec-multi,$(BENCH_OUT)),$(Q38_R1_BENCH_MULTI),$(if $(filter %/matvec-indexed,$(BENCH_OUT)),$(Q38_R1_BENCH_INDEXED),$(if $(filter %/moe-gate-up,$(BENCH_OUT)),$(Q38_R1_BENCH_GATE_UP),$(Q38_R1_BENCH))))); do \
+	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(if $(filter %/matvec-multi,$(BENCH_OUT)),$(Q38_R1_BENCH_MULTI),$(if $(filter %/matvec-indexed,$(BENCH_OUT)),$(Q38_R1_BENCH_INDEXED),$(if $(filter %/moe-gate-up,$(BENCH_OUT)),$(Q38_R1_BENCH_GATE_UP),$(if $(filter %/moe-down,$(BENCH_OUT)),$(Q38_R1_BENCH_DOWN),$(Q38_R1_BENCH)))))); do \
 	    case $$spec in *@*) ./$< mbench $$(echo $$spec | tr @ " ") || exit 1;; \
-	    ibench:*|gbench:*) ./$< $$(echo $$spec | tr : " ") || exit 1;; \
+	    ibench:*|gbench:*|dbench:*|rbench:*) ./$< $$(echo $$spec | tr : " ") || exit 1;; \
 	    *) set -- $$(echo $$spec | tr : " "); ./$< bench $$1 $$2 $$3 $$4 $$5 $$6 || exit 1;; esac; done > "$(BENCH_OUT)/runs.jsonl" && \
 	  { $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/after.txt"'
 	@cat "$(BENCH_OUT)/runs.jsonl"; echo "bench: $(BENCH_OUT); add README.md from runs.jsonl"
