@@ -12,13 +12,16 @@
  * (IQ2_XXS, Q2_K, Q4_K, MXFP4); each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST]; bool ref_linear, ref_indexed; };
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST]; bool ref_linear, ref_indexed; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
  * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
 enum { Q38_Q8_T = 4, Q38_DENSE_T = 4, Q38_DENSE_S = 8, Q38_SIMD = 32 };
 /* Indexed matvecs: IDX_SG in the kernel, simdgroups (one output each) per threadgroup. */
 enum { Q38_IDX_SG = 4 };
+/* Fused gate+up (qwen38_moe_fused.metal): simdgroups (one output each) per
+ * threadgroup; the kernel reads the count from the dispatch. */
+enum { Q38_GATE_UP_SG = 4 };
 static const uint32_t q38_indexed_types[Q38_INDEXED_FAST]={16,10,12,39};
 /* Mirror of dense_split in qwen38_matvec.metal (the kernel checks the match):
  * simdgroups per output row from K alone, doubling while each lane keeps at
@@ -56,9 +59,14 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     for (size_t i=0;i<3;i++) multi[i]=[lib newFunctionWithName:multi_names[i]];
     static NSString *const indexed_names[Q38_INDEXED_FAST]={@"q38_matvec_indexed_iq2_xxs",@"q38_matvec_indexed_q2_k",
         @"q38_matvec_indexed_q4_k",@"q38_matvec_indexed_mxfp4"};
-    id<MTLFunction> indexed_fn[Q38_INDEXED_FAST];
+    static NSString *const gate_up_names[Q38_INDEXED_FAST]={@"q38_moe_gate_up_iq2_xxs",@"q38_moe_gate_up_q2_k",
+        @"q38_moe_gate_up_q4_k",@"q38_moe_gate_up_mxfp4"};
+    id<MTLFunction> indexed_fn[Q38_INDEXED_FAST], gate_up_fn[Q38_INDEXED_FAST];
     bool present=true;
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++) present=(indexed_fn[i]=[lib newFunctionWithName:indexed_names[i]])!=nil && present;
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
+        present=(indexed_fn[i]=[lib newFunctionWithName:indexed_names[i]])!=nil && present;
+        present=(gate_up_fn[i]=[lib newFunctionWithName:gate_up_names[i]])!=nil && present;
+    }
     if (!function || !gather || !lookup || !q8 || !f16 || !f32 || !multi[0] || !multi[1] || !multi[2] || !present)
         return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
     NSError *failure=nil;
@@ -70,9 +78,11 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLComputePipelineState> matvec_f32=[dev newComputePipelineStateWithFunction:f32 error:&failure];
     id<MTLComputePipelineState> matvec_multi[3];
     for (size_t i=0;i<3;i++) matvec_multi[i]=[dev newComputePipelineStateWithFunction:multi[i] error:&failure];
-    id<MTLComputePipelineState> matvec_indexed[Q38_INDEXED_FAST];
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++)
+    id<MTLComputePipelineState> matvec_indexed[Q38_INDEXED_FAST], gate_up[Q38_INDEXED_FAST];
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         present=(matvec_indexed[i]=[dev newComputePipelineStateWithFunction:indexed_fn[i] error:&failure])!=nil && present;
+        present=(gate_up[i]=[dev newComputePipelineStateWithFunction:gate_up_fn[i] error:&failure])!=nil && present;
+    }
     if (!pipeline || !indexed || !embedding || !matvec_q8 || !matvec_f16 || !matvec_f32 ||
         !matvec_multi[0] || !matvec_multi[1] || !matvec_multi[2] || !present)
         return q38_b_result(err,Q38_GPU_ERROR,"cannot create packed pipeline");
@@ -86,7 +96,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
     ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
     for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? Q38_DENSE_S : 1);
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++) ctx->indexed_fast[i]=fast_pipeline(matvec_indexed[i],Q38_IDX_SG);
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
+        ctx->indexed_fast[i]=fast_pipeline(matvec_indexed[i],Q38_IDX_SG);
+        ctx->gate_up[i]=fast_pipeline(gate_up[i],Q38_GATE_UP_SG);
+    }
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
     *out=ctx;
@@ -99,7 +112,10 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->f16) CFRelease(ctx->f16);
     if (ctx->f32) CFRelease(ctx->f32);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++) if (ctx->indexed_fast[i]) CFRelease(ctx->indexed_fast[i]);
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
+        if (ctx->indexed_fast[i]) CFRelease(ctx->indexed_fast[i]);
+        if (ctx->gate_up[i]) CFRelease(ctx->gate_up[i]);
+    }
     CFRelease(ctx->device); free(ctx);
 }
 /* Tests force the choice regardless of the environment read at creation. */
@@ -246,10 +262,29 @@ Qwen38Status q38_packed_encode_fast(Q38PackedGpu *ctx, const Qwen38GpuCommand *c
     return encode_linear(ctx,command,store,binding,layout,expert,x,y,true,err);
 }
 
-/* The indexed fast kernel of a format (R1.5); NULL: none. */
-static void *indexed_kernel(const Q38PackedGpu *ctx, uint32_t type) {
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++) if (q38_indexed_types[i]==type) return ctx->indexed_fast[i];
+/* The indexed fast (or fused gate+up) kernel of a format (R1.5); NULL: none. */
+static void *indexed_kernel(void *const kernels[Q38_INDEXED_FAST], uint32_t type) {
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++) if (q38_indexed_types[i]==type) return kernels[i];
     return NULL;
+}
+/* Admission of one indexed projection (both indexed entry points and each
+ * half of the fused gate+up): the divisor, admit() and the expert-ID span. */
+static Qwen38Status admit_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
+        Qwen38GpuSpan ids, size_t divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Admitted *a,
+        id<MTLBuffer> __strong *route, Qwen38Error *err) {
+    if (!divisor || divisor>UINT32_MAX || y.dim[0]%divisor)
+        return q38_b_result(err,Q38_SHAPE,"output rows must be a multiple of the input divisor");
+    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0]/divisor,a,err);
+    if (status) return status;
+    status=gpu_span((__bridge id<MTLDevice>)ctx->device,ids,y.dim[0]*4,route);
+    if (status) return q38_b_result(err,status,"invalid GPU expert-ID span");
+    size_t io=ids.offset_bytes, n=y.dim[0]*4;
+    if (gpu_alias(*route,io,n,a->output,y.span.offset_bytes,a->yb) ||
+        gpu_alias(*route,io,n,a->word,command->error_word.offset_bytes,4) ||
+        gpu_alias(*route,io,n,a->weights,binding->offset,layout->tensor_bytes))
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"expert IDs alias an output or weights");
+    return Q38_OK;
 }
 /* One indexed encode for both entry points, validation first as in
  * encode_linear. Fast by default for the formats with an indexed kernel
@@ -261,20 +296,11 @@ static void *indexed_kernel(const Q38PackedGpu *ctx, uint32_t type) {
 static Qwen38Status encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
         Qwen38GpuSpan ids, size_t divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, bool force_fast, Qwen38Error *err) {
-    if (!divisor || divisor>UINT32_MAX || y.dim[0]%divisor)
-        return q38_b_result(err,Q38_SHAPE,"output rows must be a multiple of the input divisor");
-    Admitted a;
-    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0]/divisor,&a,err);
+    Admitted a; id<MTLBuffer> route=nil;
+    Qwen38Status status=admit_indexed(ctx,command,store,binding,layout,ids,divisor,x,y,&a,&route,err);
     if (status) return status;
-    id<MTLBuffer> route=nil;
-    status=gpu_span((__bridge id<MTLDevice>)ctx->device,ids,y.dim[0]*4,&route);
-    if (status) return q38_b_result(err,status,"invalid GPU expert-ID span");
-    size_t wo=binding->offset, io=ids.offset_bytes, n=y.dim[0]*4;
-    if (gpu_alias(route,io,n,a.output,y.span.offset_bytes,a.yb) ||
-        gpu_alias(route,io,n,a.word,command->error_word.offset_bytes,4) ||
-        gpu_alias(route,io,n,a.weights,wo,layout->tensor_bytes))
-        return q38_b_result(err,Q38_INVALID_ARGUMENT,"expert IDs alias an output or weights");
-    void *kernel=indexed_kernel(ctx,layout->gguf_type);
+    size_t wo=binding->offset, io=ids.offset_bytes;
+    void *kernel=indexed_kernel(ctx->indexed_fast,layout->gguf_type);
     bool fast=kernel && (force_fast || !ctx->ref_indexed);
     if (force_fast && !fast) return q38_b_result(err,Q38_UNSUPPORTED,"no indexed fast kernel for this format");
     if (!y.dim[0]) return q38_b_result(err,Q38_OK,"");
@@ -304,6 +330,41 @@ Qwen38Status q38_packed_encode_indexed_fast(Q38PackedGpu *ctx, const Qwen38GpuCo
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
         Qwen38GpuSpan ids, size_t divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
     return encode_indexed(ctx,command,store,binding,layout,ids,divisor,x,y,true,err);
+}
+/* R1.5b fused gate+up+SwiGLU (qwen38_b_internal.h): each projection admitted
+ * as q38_packed_encode_indexed with act as its output, then the choice. */
+Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *gate, const Q38PackedLayout *gl,
+        const GgufBinding *up, const Q38PackedLayout *ul, Qwen38GpuSpan ids, size_t divisor,
+        Qwen38GpuF32 x, Qwen38GpuF32 act, Qwen38Error *err) {
+    Admitted a, b; id<MTLBuffer> route=nil;
+    Qwen38Status status=admit_indexed(ctx,command,store,gate,gl,ids,divisor,x,act,&a,&route,err);
+    if (!status) status=admit_indexed(ctx,command,store,up,ul,ids,divisor,x,act,&b,&route,err);
+    if (status) return status;
+    if (gl->n_experts!=ul->n_experts) return q38_b_result(err,Q38_SHAPE,"gate and up expert counts differ");
+    void *kernel=indexed_kernel(ctx->gate_up,gl->gguf_type);
+    if (!kernel || gl->gguf_type!=ul->gguf_type || ctx->ref_indexed)
+        return q38_b_result(err,Q38_UNSUPPORTED,"no fused gate+up for this format or selection");
+    if (!act.dim[0]) return q38_b_result(err,Q38_OK,"");
+    size_t go=gate->offset, uo=up->offset;
+    Q38PackedIndexedArgs args[2]={
+        {.base=wire(gl,go,go+gl->tensor_bytes,act.dim[0],x,act,&a),.expert_bytes=gl->expert_bytes,
+         .experts=(uint32_t)gl->n_experts,.x_divisor=(uint32_t)divisor},
+        {.base=wire(ul,uo,uo+ul->tensor_bytes,act.dim[0],x,act,&b),.expert_bytes=ul->expert_bytes,
+         .experts=(uint32_t)ul->n_experts,.x_divisor=(uint32_t)divisor}};
+    _Static_assert(sizeof args==192,"gate/up Metal argument layout");
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:b.weights offset:0 atIndex:1];
+    [encoder setBuffer:a.input offset:x.span.offset_bytes atIndex:2];
+    [encoder setBuffer:a.output offset:act.span.offset_bytes atIndex:3];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:4];
+    [encoder setBytes:args length:sizeof args atIndex:5];
+    [encoder setBuffer:route offset:ids.offset_bytes atIndex:6];
+    MTLSize groups=MTLSizeMake((gl->n_out+Q38_GATE_UP_SG-1)/Q38_GATE_UP_SG,act.dim[0],1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_GATE_UP_SG,1,1)];
+    return q38_b_result(err,Q38_OK,"");
 }
 
 Qwen38Status q38_packed_lookup(Q38PackedGpu *ctx,const Qwen38GpuCommand *cmd,

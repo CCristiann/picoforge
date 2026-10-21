@@ -20,6 +20,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "qwen38_b_internal.h"
+#include "qwen38_c_internal.h"
 #include "qwen38_ref.h"
 #include <assert.h>
 #include <errno.h>
@@ -342,11 +343,43 @@ static int multi_main(int argc,char **argv,const char *library) {
  * Views as above (x has rows/divisor rows, y has rows).
  *   ibench <oracle|fast> type n physical logical experts rows divisor reps
  * synthetic tensor, ids distinct within each run of 10 rows (a token's
- * slots), 3 warm-ups + 20 measured command buffers of reps encodes each. */
+ * slots), 3 warm-ups + 20 measured command buffers of reps encodes each.
+ * R1.5b fused gate+up+SwiGLU, same arguments with type = gate[/up] type:
+ *   gateup <fused|sequence|oracle> ...   gbench <fused|sequence> ...
+ * fused = q38_packed_encode_gate_up (exit 8, no output: UNSUPPORTED);
+ * sequence = q38f_routed_encode's unfused sequence with the indexed fast
+ * kernels (gate, up, q38c ACT SILU, q38f_product, a barrier after each);
+ * oracle = the same with the indexed oracle. stdin: the gate then the up
+ * tensor, ids, x; stdout: act [rows, n], then the decoded gate and up rows. */
+static Qwen38Status sequence(Q38PackedGpu *ctx,Q38CGpu *ops,id<MTLComputePipelineState> product,Qwen38GpuCommand cmd,
+        const GpuWeightStore *store,const GgufBinding *const *b,const Q38PackedLayout *l,Qwen38GpuSpan ids,size_t divisor,
+        Qwen38GpuF32 x,Qwen38GpuF32 gate,Qwen38GpuF32 up,Qwen38GpuF32 act,bool fast,Qwen38Error *err) {
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    Qwen38GpuF32 out[2]={gate,up};
+    for (size_t i=0;i<2;i++) {
+        Qwen38Status status=fast ? q38_packed_encode_indexed_fast(ctx,&cmd,store,b[i],&l[i],ids,divisor,x,out[i],err) :
+            q38_packed_encode_indexed(ctx,&cmd,store,b[i],&l[i],ids,divisor,x,out[i],err);
+        if (status) return status;
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    Q38CGpuSpec spec={.activation=Q38_SILU}; Qwen38GpuF32 views[]={gate,act};
+    Qwen38Status status=q38c_gpu_encode(ops,cmd,Q38C_ACT,&spec,views,2,err);
+    if (status) return status;
+    [encoder setComputePipelineState:product];
+    [encoder setBuffer:(__bridge id<MTLBuffer>)act.span.buffer offset:act.span.offset_bytes atIndex:0];
+    [encoder setBuffer:(__bridge id<MTLBuffer>)up.span.buffer offset:up.span.offset_bytes atIndex:1];
+    [encoder setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:2];
+    [encoder dispatchThreads:MTLSizeMake(act.dim[0]*act.dim[1],1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+    return Q38_OK;
+}
 static int indexed_main(int argc,char **argv,const char *library) {
-    bool timing=!strcmp(argv[1],"ibench");
+    bool timing=!strcmp(argv[1],"ibench") || !strcmp(argv[1],"gbench"), pair=argv[1][0]=='g';
     assert(timing ? argc==11 : argc==10 || argc==13);
-    Request r={.mode=argv[2],.type=(uint32_t)number(argv[3])};
+    unsigned types[2]={0,0}; int parsed=0;
+    int fields=sscanf(argv[3],"%u%n/%u%n",&types[0],&parsed,&types[1],&parsed);
+    assert((fields==1 || (pair && fields==2)) && !argv[3][(size_t)parsed]);
+    if (fields==1) types[1]=types[0];
+    Request r={.mode=argv[2],.type=types[0]};
     size_t at=4;
     if (timing) { r.n=number(argv[at++]); r.physical=number(argv[at++]); }
     else { r.physical=number(argv[at++]); r.logical=number(argv[at++]); r.n=number(argv[at++]); }
@@ -354,9 +387,8 @@ static int indexed_main(int argc,char **argv,const char *library) {
     r.experts=number(argv[at++]);
     size_t rows=number(argv[at++]), divisor=number(argv[at++]);
     r.reps=timing ? number(argv[at++]) : 1;
-    assert(!strcmp(r.mode,"oracle") || !strcmp(r.mode,"fast") || (!timing && !strcmp(r.mode,"encode")));
-    const GgufFormat *format=NULL;
-    assert(q38_b_format(r.type,&format)==Q38_OK && r.physical%format->block==0 && r.logical && r.logical<=r.physical);
+    assert(pair ? !strcmp(r.mode,"fused") || !strcmp(r.mode,"sequence") || (!timing && !strcmp(r.mode,"oracle")) :
+           !strcmp(r.mode,"oracle") || !strcmp(r.mode,"fast") || (!timing && !strcmp(r.mode,"encode")));
     assert(r.n && r.experts && rows && divisor && rows%divisor==0 && r.reps && r.reps<=1000);
     r.m=rows/divisor;
     r.xpitch=argc==13 ? number(argv[10]) : r.logical;
@@ -364,21 +396,31 @@ static int indexed_main(int argc,char **argv,const char *library) {
     r.offset=argc==13 ? number(argv[12]) : 0;
     const size_t limit=timing ? 1024u*1024u*1024u : 32u*1024u*1024u;
     assert(r.xpitch>=r.logical && r.ypitch>=r.n && r.offset<=limit/4 && r.m<=limit/4/r.xpitch && rows<=limit/4/r.ypitch);
-    assert(r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts));
-    r.bytes=r.physical/format->block*format->bytes*r.n*r.experts;
-    assert(r.bytes<=limit);
+    assert(r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts/(1+pair)));
+    assert(!pair || !strcmp(r.mode,"fused") || r.ypitch==r.n); /* q38f_product needs a dense act */
+    Request t[2]={r,r};
+    size_t total=0;
+    for (size_t i=0;i<1+pair;i++) {
+        const GgufFormat *format=NULL;
+        t[i].type=types[i];
+        assert(q38_b_format(t[i].type,&format)==Q38_OK && r.physical%format->block==0 && r.logical && r.logical<=r.physical);
+        t[i].bytes=r.physical/format->block*format->bytes*r.n*r.experts;
+        total+=t[i].bytes;
+    }
+    assert(total<=limit);
+    r.bytes=t[0].bytes;
     Request ry=r; ry.m=rows; /* the y view's rows */
-    unsigned char *raw=malloc(r.bytes); assert(raw);
+    unsigned char *raw=malloc(total); assert(raw);
     uint32_t *ids=malloc(rows*4); assert(ids);
     uint64_t seed=3813;
     if (timing) {
-        synthesize(raw,r.bytes,&seed,r.type);
+        for (size_t i=0;i<1+pair;i++) synthesize(raw+(i ? t[0].bytes : 0),t[i].bytes,&seed,t[i].type);
         for (size_t p=0;p<rows;p++) /* distinct within a token's 10 slots */
             for (bool again=true;again;) {
                 ids[p]=(uint32_t)(mix(&seed)%r.experts); again=false;
                 for (size_t q=p/10*10;q<p && r.experts>=10;q++) again=again || ids[q]==ids[p];
             }
-    } else assert(fread(raw,1,r.bytes,stdin)==r.bytes && fread(ids,4,rows,stdin)==rows);
+    } else assert(fread(raw,1,total,stdin)==total && fread(ids,4,rows,stdin)==rows);
     size_t initial=gpu_weights_live_mapped_bytes();
     size_t xw=floats(r,r.logical,r.xpitch)+8, yw=floats(ry,r.n,r.ypitch)+8;
     int status=0;
@@ -387,14 +429,18 @@ static int indexed_main(int argc,char **argv,const char *library) {
         NSError *error=nil;
         id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error];
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); abort(); }
-        Q38PackedGpu *ctx=NULL;
+        Q38PackedGpu *ctx=NULL; Q38CGpu *ops=NULL;
         assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
-        Gguf g={0}; GgufTensor tensor;
-        GpuWeightStore *store=make_store(dev,1,&r,raw,&g,&tensor);
-        const GgufBinding *binding=&gpu_weights_plan(store)->weights[0];
-        Q38PackedLayout layout;
-        assert(q38_packed_layout_init(&binding->tensor,r.logical,&layout,NULL)==Q38_OK);
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        id<MTLComputePipelineState> product=[dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"q38f_product"] error:&error];
+        assert(product);
+        Gguf g={0}; GgufTensor tensors[2];
+        GpuWeightStore *store=make_store(dev,1+pair,t,raw,&g,tensors);
+        const GgufBinding *bindings[2]={&gpu_weights_plan(store)->weights[0],&gpu_weights_plan(store)->weights[pair]};
+        Q38PackedLayout layouts[2];
+        for (size_t i=0;i<2;i++) assert(q38_packed_layout_init(&bindings[i]->tensor,r.logical,&layouts[i],NULL)==Q38_OK);
         id<MTLBuffer> input=shared(dev,xw*4),output=shared(dev,yw*4),word=shared(dev,4),route=shared(dev,rows*4);
+        id<MTLBuffer> scratch[2]={shared(dev,rows*r.n*4),shared(dev,rows*r.n*4)}; /* the sequence's gate and up */
         memcpy(route.contents,ids,rows*4);
         float *x=(float *)input.contents+4, *y=(float *)output.contents+4;
         for (size_t i=0;i<xw;i++) ((float *)input.contents)[i]=NAN; /* guards and gaps */
@@ -407,7 +453,8 @@ static int indexed_main(int argc,char **argv,const char *library) {
         memset(output.contents,0xa5,yw*4);
         for (size_t i=0;i<rows;i++)
             for (size_t j=0;j<r.n;j++) y[r.offset+i*r.ypitch+j]=NAN; /* an unwritten output cannot pass */
-        Qwen38GpuF32 xv=matrix(input,r,r.logical,r.xpitch), yv=matrix(output,ry,r.n,r.ypitch);
+        Qwen38GpuF32 xv=matrix(input,r,r.logical,r.xpitch), yv=matrix(output,ry,r.n,r.ypitch), sv[2];
+        for (size_t i=0;i<2;i++) sv[i]=(Qwen38GpuF32){{(__bridge void *)scratch[i],0,rows*r.n*4},2,{rows,r.n,1,1},{r.n*4,4,0,0}};
         Qwen38GpuSpan span={(__bridge void *)route,0,rows*4};
         uint32_t *flags=word.contents;
         if (!strcmp(r.mode,"oracle")) q38_packed_gpu_set_reference(ctx,true,true);
@@ -420,9 +467,14 @@ static int indexed_main(int argc,char **argv,const char *library) {
             Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
             for (size_t rep=0;rep<r.reps && !status;rep++) {
                 Qwen38Error err={0};
-                status=(int)(!strcmp(r.mode,"fast") ?
-                    q38_packed_encode_indexed_fast(ctx,&cmd,store,binding,&layout,span,divisor,xv,yv,&err) :
-                    q38_packed_encode_indexed(ctx,&cmd,store,binding,&layout,span,divisor,xv,yv,&err));
+                if (!pair) status=(int)(!strcmp(r.mode,"fast") ?
+                    q38_packed_encode_indexed_fast(ctx,&cmd,store,bindings[0],&layouts[0],span,divisor,xv,yv,&err) :
+                    q38_packed_encode_indexed(ctx,&cmd,store,bindings[0],&layouts[0],span,divisor,xv,yv,&err));
+                else if (!strcmp(r.mode,"fused"))
+                    status=(int)q38_packed_encode_gate_up(ctx,&cmd,store,bindings[0],&layouts[0],bindings[1],&layouts[1],
+                                                         span,divisor,xv,yv,&err);
+                else status=(int)sequence(ctx,ops,product,cmd,store,bindings,layouts,span,divisor,xv,sv[0],sv[1],yv,
+                                          !strcmp(r.mode,"sequence"),&err);
                 if (status && status!=Q38_UNSUPPORTED) { fprintf(stderr,"encode: %d %s\n",status,err.detail); abort(); }
                 [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
             }
@@ -435,19 +487,19 @@ static int indexed_main(int argc,char **argv,const char *library) {
         for (size_t i=0;i<yw;i++)
             assert((i>=4 && i<yw-4 && in_view(ry,r.n,r.ypitch,i-4)) || words[i]==0xa5a5a5a5u);
         if (timing) {
-            size_t distinct=0; /* bytes actually read: each distinct expert once, x and y */
+            size_t distinct=0; /* bytes actually read: each distinct expert once (per tensor), x and y */
             for (size_t e=0;e<r.experts;e++) { bool used=false; for (size_t p=0;p<rows && !used;p++) used=ids[p]==e; distinct+=used; }
-            Request t=ry; /* report() adds 4*rows*(logical+n): keep x at its rows/divisor rows (modular size_t) */
-            t.bytes=distinct*layout.expert_bytes+4*r.m*r.logical-4*rows*r.logical;
-            report(t,seconds,NULL,NULL);
+            Request tr=ry; /* report() adds 4*rows*(logical+n): keep x at its rows/divisor rows (modular size_t) */
+            tr.bytes=distinct*(layouts[0].expert_bytes+(pair ? layouts[1].expert_bytes : 0))+4*r.m*r.logical-4*rows*r.logical;
+            report(tr,seconds,NULL,NULL);
         } else if (!status) {
             for (size_t i=0;i<rows;i++) assert(fwrite(y+r.offset+i*r.ypitch,4,r.n,stdout)==r.n);
             if (flags[0]) {
                 status=(flags[0]&Q38_GPU_NONFINITE) ? Q38_NONFINITE : Q38_GPU_ERROR;
                 fprintf(stderr,"qwen38 Metal: error bits %u\n",flags[0]);
-            } else write_decoded(store,binding,r);
+            } else for (size_t i=0;i<1+pair;i++) write_decoded(store,bindings[i],t[i]);
         }
-        q38_packed_gpu_free(ctx); gpu_weights_close(store); assert(close(g.fd)==0);
+        q38_packed_gpu_free(ctx); q38c_gpu_destroy(ops); gpu_weights_close(store); assert(close(g.fd)==0);
     }
     assert(gpu_weights_live_mapped_bytes()==initial);
     free(raw); free(ids);
@@ -461,7 +513,8 @@ int main(int argc,char **argv) {
         fprintf(stderr,"run through tools/qwen38_gpu_lock.py with Q38_PACKED_LIBRARY set\n"); return 2;
     }
     if (argc>1 && (!strcmp(argv[1],"multi") || !strcmp(argv[1],"mbench"))) return multi_main(argc,argv,library);
-    if (argc>2 && (!strcmp(argv[1],"indexed") || !strcmp(argv[1],"ibench"))) return indexed_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"indexed") || !strcmp(argv[1],"ibench") || !strcmp(argv[1],"gateup") ||
+                   !strcmp(argv[1],"gbench"))) return indexed_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

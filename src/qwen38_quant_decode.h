@@ -148,5 +148,31 @@ static inline float q38_quant_row(device const uchar *row, device const float *x
     }
     return metal::simd_sum(acc);
 }
+/* Two rows of one format against the same x (an expert's gate and up rows,
+ * R1.5b): each x chunk is loaded once for both, and each accumulator follows
+ * exactly q38_quant_row's order, so *a and *b are bit-identical to two
+ * q38_quant_row calls (test_fused_gate_up_bit_identical_to_sequence). */
+template <typename F>
+static inline void q38_quant_row_pair(device const uchar *ra, device const uchar *rb, device const float *x,
+        uint k, uint lane, thread float &a, thread float &b) {
+    float acc_a = 0.0f, acc_b = 0.0f;
+    const uint chunks = (k + F::CHUNK - 1) / F::CHUNK;
+    for (uint c = lane; c < chunks; c += 32) {
+        const uint cols = metal::min(F::CHUNK, k - c * F::CHUNK);
+        float wa[F::CHUNK], wb[F::CHUNK];
+        F::decode(ra, c, wa);
+        F::decode(rb, c, wb);
+        device const float *xb = x + c * F::CHUNK;
+        float sa = 0.0f, sb = 0.0f;
+        if (cols == F::CHUNK)
+            for (uint i = 0; i < F::CHUNK; i++) { const float v = xb[i]; sa += wa[i] * v; sb += wb[i] * v; }
+        else
+            for (uint i = 0; i < cols; i++) { const float v = xb[i]; sa += wa[i] * v; sb += wb[i] * v; }
+        acc_a += sa;
+        acc_b += sb;
+    }
+    a = metal::simd_sum(acc_a);
+    b = metal::simd_sum(acc_b);
+}
 
 #endif

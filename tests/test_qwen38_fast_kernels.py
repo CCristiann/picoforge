@@ -272,6 +272,52 @@ def poison_block(kind, raw, row, column, value):
 
 
 
+def run_gate_up(mode, kinds, physical, logical, n, experts, gate, up, ids, x, divisor, env=None, view=()):
+    """One fused gate+up+SwiGLU call (fused) or the unfused sequence (sequence: indexed fast
+    kernels; oracle: indexed oracle), kinds = gate kind or (gate, up): (exit code, act [rows, n]
+    or None, CPU-decoded gate rows, up rows (or None), stderr). act is also returned when the
+    error word is set (an element the kernel did not write is still NaN)."""
+    kinds = kinds if isinstance(kinds, tuple) else (kinds, kinds)
+    kind = str(kinds[0]) if kinds[0] == kinds[1] else f"{kinds[0]}/{kinds[1]}"
+    rows, lock = len(ids), os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    result = subprocess.run([str(NATIVE), "gateup", mode, kind, str(physical), str(logical), str(n), str(experts),
+                             str(rows), str(divisor), *map(str, view)],
+                            input=gate + up + np.asarray(ids, "<u4").tobytes() + x.astype("<f4").tobytes(),
+                            capture_output=True, timeout=120, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr, values = BANNER.sub(b"", result.stderr), np.frombuffer(result.stdout, "<f4")
+    if result.returncode == UNSUPPORTED and not values.size:
+        return UNSUPPORTED, None, None, None, stderr
+    if values.size not in (rows * n, rows * n + 2 * experts * n * physical):
+        raise AssertionError(f"gateup {mode} kind {kind}: exit {result.returncode}, {stderr!r}")
+    decoded = values[rows * n:].reshape(2, experts * n, physical) if values.size > rows * n else (None, None)
+    return result.returncode, values[:rows * n].reshape(rows, n), decoded[0], decoded[1], stderr
+
+
+def gate_up_fp64(gate, up, ids, x, divisor, logical, n):
+    """FP64 act = silu(g) * u; its scale S = |silu'(g)| S_g |u| + |silu(g)| S_u, the first-order
+    effect of the gate and up dot errors (each bounded by its S), the S of conditions (a) and (b);
+    and the GPU's flush below 2^-126: exp(g) for g below about -87 (silu off by up to |g| 2^-126),
+    then the product: 2^-126 ((|g| + 1) |u| + 1)."""
+    g, sg = indexed_fp64(gate, ids, x, divisor, logical, n)
+    u, su = indexed_fp64(up, ids, x, divisor, logical, n)
+    sigma = 1 / (1 + np.exp(np.minimum(-g, 700)))  # g < -700: sigma 1e-304, not an overflow
+    silu, slope = g * sigma, sigma * (1 + g * (1 - sigma))
+    return silu * u, np.abs(slope) * sg * np.abs(u) + np.abs(silu) * su, 2.0**-126 * ((np.abs(g) + 1) * np.abs(u) + 1)
+
+
+def gate_up_against_fp64(act, ref, magnitude, flush, logical):
+    """Condition (a) for act: gamma(2K+8) S + 8 ulp32(r) + flush. S covers the two dots, the
+    8 ulp silu's exp and division and the product's rounding, flush the GPU's subnormal flush."""
+    n, u = 2 * logical + 8, 2.0**-24
+    bound = n * u / (1 - n * u) * magnitude + 8 * np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64)
+    bound += flush
+    delta = np.abs(act.astype(np.float64) - ref)
+    return dict(outputs=int(act.size), finite=bool(np.isfinite(act).all()), condition_a=bool((delta <= bound).all()),
+                max_rel=float((delta / np.maximum(magnitude, 2.0**-126)).max()),
+                max_bound_fraction=float((delta / bound).max()))
+
+
 class FastKernelTests(unittest.TestCase):
     def fast_case(self, label, kind, physical, logical, data, x, view=(), y_oracle=None, decoded=None):
         """Fast kernel on one case: supported, finite, (a) and (b); recorded in the corpus."""
@@ -878,6 +924,176 @@ class FastKernelTests(unittest.TestCase):
                 for mode in ("oracle", "fast"):
                     code_, _, _, stderr = run_indexed(mode, 39, 32, 32, 1, 1, block.tobytes(), [0], x, 1)
                     self.assertEqual((code_, stderr), (NONFINITE, b"qwen38 Metal: error bits 1\n"), mode)
+
+    # ---- R1.5b fused gate+up+SwiGLU (q38_packed_encode_gate_up) ----
+
+    def gate_up_case(self, label, kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=(), decoded=None):
+        """Fused kernel on one case: supported, bit-identical to the unfused fast sequence (when
+        act is dense), finite, (a) against FP64 and (b) against the oracle sequence."""
+        code, fused, dg, du, stderr = run_gate_up("fused", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=view)
+        self.assertNotEqual(code, UNSUPPORTED, f"{label}: {NAMES[kind]} has no fused gate+up")
+        self.assertEqual((code, stderr), (0, b""), label)
+        dense = view[1:2] in ((), (n,))
+        plain = view[:1] + (n,) + view[2:] if view else ()
+        if dense:
+            code, sequence, _, _, stderr = run_gate_up("sequence", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=plain)
+            self.assertEqual((code, stderr), (0, b""), label)
+            np.testing.assert_array_equal(fused.view("<u4"), sequence.view("<u4"), label)
+        code, y_oracle, _, _, stderr = run_gate_up("oracle", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=plain)
+        self.assertEqual((code, stderr), (0, b""), label)
+        dg, du = (dg, du) if decoded is None else decoded
+        ref, magnitude, flush = gate_up_fp64(dg, du, ids, x, divisor, logical, n)
+        stats = gate_up_against_fp64(fused, ref, magnitude, flush, logical) | dict(vs_oracle=against_oracle(fused, y_oracle, magnitude))
+        RESULTS.setdefault(label, {})["fused"] = stats
+        CORPUS.setdefault("moe_gate_up", {})[label] = scaled_difference(fused, y_oracle, magnitude).ravel()
+        tol = TOLERANCES["kernels"].get("moe_gate_up", {}).get("tol")
+        self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+        self.assertIsNotNone(tol, "moe_gate_up: fused kernel without a measured tolerance")
+        self.assertLessEqual(stats["vs_oracle"]["max"], tol, label)
+        return fused
+
+    def test_fused_gate_up_bit_identical_to_sequence(self):
+        """Fused act has the bits of the unfused fast sequence (IDX gate, IDX up, ACT SILU, MUL):
+        the gate layer's K 2560 (n 160: the decoded rows cross stdout) at 1 and 3 tokens x 10 slots
+        (x divisor 10), and shapes
+        off the tile and chunk (Review Focus 1), every format with a row dot."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3840, kind), oracle.FORMATS[kind][0]
+            shapes = [(160, 2560, 2560, 10, 1, 10), (160, 2560, 2560, 10, 3, 10), (1, block, block, 1, 2, 3),
+                      (33, 768, 600, 2, 3, 3), (3, 2560 if block == 256 else 64, 2560 if block == 256 else 40, 10, 1, 10)]
+            for n, physical, logical, slots, tokens, experts in shapes:
+                with self.subTest(kernel=name, n=n, physical=physical, logical=logical, slots=slots, tokens=tokens):
+                    ids = np.concatenate([rng.permutation(experts)[:slots] for _ in range(tokens)])
+                    x = rng.uniform(-2, 2, (tokens, logical)).astype(np.float32)
+                    gate, up = (quant_rows(kind, physical, experts * n, rng).tobytes() for _ in range(2))
+                    self.gate_up_case(f"gate-up:{name}:N{n}:K{logical}/{physical}:T{tokens}x{slots}", kind, physical,
+                                      logical, n, experts, gate, up, ids, x, slots)
+
+    def test_fused_gate_up_real_within_tolerance(self):
+        """The real IQ2_XXS and Q4_K gate/up rows (layers 0, 23, 47, 48, MTP): each row an expert's
+        gate, the next row its up, every saved and seeded x row against every expert."""
+        for kind in (16, 12):
+            real = [case for case in CASES if case[1] == kind and case[0].startswith("real:")]
+            self.assertTrue(real, f"no real {NAMES[kind]} slices")
+            for label, _, physical, logical, data, x, saved in real:
+                experts = len(saved)
+                up = np.roll(np.frombuffer(data, np.uint8).reshape(experts, -1), 1, axis=0).tobytes()
+                with self.subTest(case=label):
+                    self.gate_up_case(f"gate-up-{label}", kind, physical, logical, 1, experts, data, up,
+                                      np.tile(np.arange(experts), len(x)), x, experts)
+
+    def test_logical_k_padding_gate_up(self):
+        """Review Focus 2 (gate+up): poisoned padding past k_logical (the 256-column
+        formats: K 600 of 1024, the block 768..1023 wholly padded, a partial chunk at 600) never
+        reaches act and x is never read past k_logical (NaN there)."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3841, kind), oracle.FORMATS[kind][0]
+            physical, logical, n, rows = 768 if block == 32 else 1024, 600, 33, 4
+            clean = [quant_rows(kind, physical, 2 * n, rng) for _ in range(2)]
+            raw = clean
+            for column in range(-(-logical // block) * block, physical, block):
+                raw = [poison_block(kind, r, slice(None), column, np.inf) for r in raw]
+            ids, x = rng.integers(0, 2, rows), rng.uniform(-1, 1, (rows, logical)).astype(np.float32)
+            _, _, dg, du, _ = run_gate_up("fused", kind, physical, logical, n, 2, clean[0].tobytes(), clean[1].tobytes(), ids, x, 1)
+            with self.subTest(kernel=name):
+                self.gate_up_case(f"gate-up-padding:{name}:N{n}:K{logical}/{physical}", kind, physical, logical, n, 2,
+                                  raw[0].tobytes(), raw[1].tobytes(), ids, x, 1, view=(logical + 1, n, 0), decoded=(dg, du))
+
+    def test_nonfinite_sets_error_word_gate_up(self):
+        """Review Focus 3 (gate+up): NaN/Inf in x, a nonfinite gate or up block scale, and a finite
+        g and u whose product overflows (act = Inf) each set bit 1."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3842, kind)
+            gate, up = (quant_rows(kind, 2560, 2 * 33, rng) for _ in range(2))
+            x, ids = rng.uniform(-1, 1, (3, 2560)).astype(np.float32), [1, 0, 1]
+            cases = [("x nan", gate, up, np.nan), ("x inf", gate, up, np.inf),
+                     ("gate scale", poison_block(kind, gate, 33 + 5, 96, np.inf), up, None),
+                     ("up scale", gate, poison_block(kind, up, 33 + 5, 96, np.nan), None), ("overflow", gate, up, 1e22)]
+            for label, g, u, value in cases:
+                xs = x.copy()
+                if value is not None:
+                    xs[1] = value if label == "overflow" else xs[1]
+                    xs[1, 100] = value
+                with self.subTest(kernel=name, poison=label):
+                    code, act, _, _, stderr = run_gate_up("fused", kind, 2560, 2560, 33, 2, g.tobytes(), u.tobytes(), ids, xs, 1)
+                    self.assertEqual((code, stderr), (NONFINITE, b"qwen38 Metal: error bits 1\n"))
+                    if label == "overflow":
+                        self.assertFalse(np.isfinite(act[1]).all())
+
+    def test_rows_bit_independent_gate_up(self):
+        """Review Focus 4 (gate+up): an act element's bits depend neither on the number of tokens or
+        slots, nor on its slot, nor on its n_out position, nor on the expert id."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3843, kind)
+            n, k, tokens, slots, experts = 37, 2560, 4, 5, 8
+            gate, up = (quant_rows(kind, k, experts * n, rng) for _ in range(2))
+            x, ids = rng.uniform(-1, 1, (tokens, k)).astype(np.float32), rng.integers(0, experts, tokens * slots)
+            fused = lambda g, u, i, xs, d, nn=n: run_gate_up("fused", kind, k, k, nn, experts, g.tobytes(), u.tobytes(), i, xs, d)[1]
+            with self.subTest(kernel=name):
+                full = self.gate_up_case(f"gate-up-rows:{name}:N{n}:T{tokens}x{slots}", kind, k, k, n, experts,
+                                         gate.tobytes(), up.tobytes(), ids, x, slots)
+                for t in ([0], [3], [1, 2], [3, 2, 1, 0]):  # token subsets and order
+                    rows = (np.array(t)[:, None] * slots + np.arange(slots)).ravel()
+                    np.testing.assert_array_equal(fused(gate, up, ids[rows], x[t], slots).view("<u4"), full[rows].view("<u4"))
+                np.testing.assert_array_equal(fused(gate, up, ids, np.repeat(x, slots, 0), 1).view("<u4"), full.view("<u4"))
+                order = np.arange(slots)[::-1]  # slots reversed within each token
+                rows = (np.arange(tokens)[:, None] * slots + order).ravel()
+                np.testing.assert_array_equal(fused(gate, up, ids[rows], x, slots).view("<u4"), full[rows].view("<u4"))
+                shift = lambda w: w.reshape(experts, n, -1)[:, 1:].copy()  # weight row j+1 becomes row j
+                np.testing.assert_array_equal(fused(shift(gate), shift(up), ids, x, slots, n - 1).view("<u4"), full[:, 1:].view("<u4"))
+                flip = lambda w: w.reshape(experts, n, -1)[::-1].copy()  # expert e becomes experts-1-e
+                np.testing.assert_array_equal(fused(flip(gate), flip(up), experts - 1 - ids, x, slots).view("<u4"), full.view("<u4"))
+
+    def test_strided_offset_views_gate_up(self):
+        """Review Focus 5 (gate+up): pitches above K*4 and n*4 and nonzero offsets change no bit."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3844, kind)
+            n, k, rows, experts = 33, 768, 6, 3
+            gate, up = (quant_rows(kind, k, experts * n, rng).tobytes() for _ in range(2))
+            ids, x = rng.integers(0, experts, rows), rng.uniform(-1, 1, (rows // 2, 640)).astype(np.float32)
+            with self.subTest(kernel=name):
+                plain = self.gate_up_case(f"gate-up-views:{name}", kind, k, 640, n, experts, gate, up, ids, x, 2)
+                for view in ((640 + 12, n + 7, 37), (640, n, 5 * 640), (640 + 1, n + 1, 1)):
+                    with self.subTest(kernel=name, view=view):
+                        strided = self.gate_up_case(f"gate-up-views:{name}:{view}", kind, k, 640, n, experts, gate, up,
+                                                    ids, x, 2, view=view)
+                        np.testing.assert_array_equal(strided.view("<u4"), plain.view("<u4"))
+
+    def test_expert_id_bounds_gate_up(self):
+        """Review Focus 5 (gate+up): an expert id >= n_experts sets bit 2 and leaves its act row
+        unwritten (still NaN); the other rows are unchanged."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3845, kind)
+            n, experts = 33, 3
+            gate, up = (quant_rows(kind, 768, experts * n, rng).tobytes() for _ in range(2))
+            x = rng.uniform(-1, 1, (6, 640)).astype(np.float32)
+            ids, bad = np.array([0, 1, 3, 2, 7, 0xFFFFFFFF]), np.array([False, False, True, False, True, True])
+            with self.subTest(kernel=name):
+                code, act, _, _, stderr = run_gate_up("fused", kind, 768, 640, n, experts, gate, up, ids, x, 1)
+                self.assertEqual((code, stderr), (GPU_ERROR, b"qwen38 Metal: error bits 2\n"))
+                want = run_gate_up("fused", kind, 768, 640, n, experts, gate, up, np.where(bad, 0, ids), x, 1)[1]
+                np.testing.assert_array_equal(act[~bad].view("<u4"), want[~bad].view("<u4"))
+                np.testing.assert_array_equal(act[bad].view("<u4"), np.full((3, n), np.nan, np.float32).view("<u4"))
+
+    def test_gate_up_selection(self):
+        """q38_packed_encode_gate_up answers UNSUPPORTED (the caller runs the unfused sequence) for
+        a format without a row dot (Q8_0), gate and up formats that differ, and whenever the
+        indexed oracle is selected (indexed, 1, all, a typo: R18); otherwise it fuses."""
+        rng = np.random.default_rng(3846)
+        x, ids = rng.uniform(-1, 1, (1, 2560)).astype(np.float32), [0, 2]
+        rows = {kind: quant_rows(kind, 2560, 3 * 4, rng).tobytes() for kind in (16, 12)}
+        args = lambda kinds, g, u: (kinds, 2560, 2560, 4, 3, g, u, ids, x, 2)
+        for env in ({}, {"Q38_REF_KERNELS": "0"}, {"Q38_REF_KERNELS": "linear"}, {"Q38_REF_KERNELS": "moe"}):
+            with self.subTest(env=env):
+                self.assertEqual(run_gate_up("fused", *args(16, rows[16], rows[16]), env=env)[0], 0)
+        for value in ("indexed", "1", "all", "linear,indexed", "indexd"):
+            with self.subTest(value=value):
+                self.assertEqual(run_gate_up("fused", *args(16, rows[16], rows[16]), env={"Q38_REF_KERNELS": value})[0], UNSUPPORTED)
+        with self.subTest(case="gate IQ2_XXS, up Q4_K"):
+            self.assertEqual(run_gate_up("fused", *args((16, 12), rows[16], rows[12]))[0], UNSUPPORTED)
+        q8 = packed.packed_fixture(8, 2560, 12, rng)
+        with self.subTest(case="q8_0"):
+            self.assertEqual(run_gate_up("fused", *args(8, q8, q8))[0], UNSUPPORTED)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

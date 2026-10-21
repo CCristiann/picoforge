@@ -91,6 +91,18 @@ Qwen38Status q38_packed_encode_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
 Qwen38Status q38_packed_encode_indexed_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
     Qwen38GpuSpan expert_ids, size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
+/* R1.5b fused gate+up+SwiGLU of the routed experts (qwen38_moe_fused.metal):
+ * act[p, n] = silu(gate_e[n] . x) * (up_e[n] . x), e = ids[p], x row
+ * p / x_divisor, bit-identical to the unfused fast sequence (indexed fast gate
+ * and up, q38c_activate SILU, q38f_product). gate and up are each admitted as
+ * q38_packed_encode_indexed with act as their output. Q38_UNSUPPORTED, nothing
+ * encoded: gate and up formats differ, the format has no fused kernel, or the
+ * indexed oracle is selected (its sequence is not the fused kernel's): the
+ * caller encodes the unfused sequence. No barrier after the dispatch. */
+Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *gate, const Q38PackedLayout *gate_layout,
+    const GgufBinding *up, const Q38PackedLayout *up_layout, Qwen38GpuSpan expert_ids,
+    size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 act, Qwen38Error *);
 /* R1.4 multi-GEMV: count (1..Q38_MULTI_MAX) projections of the same x, each
  * with q38_packed_encode's admission (expert 0). One dispatch per format;
  * every y[i] is bit-identical to q38_packed_encode_fast(bindings[i], x, y[i]).

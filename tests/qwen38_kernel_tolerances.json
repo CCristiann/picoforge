@@ -65,6 +65,14 @@
       "samples": 2488411,
       "commit": "968e169",
       "note": "Indexed expert matvec (R1.5b, layer 48 / MTP down). Every weight is built as the oracle's exact FP32 bits (test_mxfp4_decode_matches_oracle, all 256 exponents x 16 codes); the 16 subnormal weights are flushed by the GPU multiply in both kernels, so the products w*x are the oracle's and only the summation order differs: each 32-column block, then a lane's blocks, then simd_sum over 32 lanes. On the real down slices (K 640) the fast kernel is within 1.4e-8 of FP64 and the oracle within 5.1e-8. The max 3.7e-7 (6.3 u of S) is at N33 K640/768 (views); 2^-22 = 2.4e-7 is below it. p99 is 0 because the N248320 K32 case (2.48M of the samples) is one block: the same serial order as the oracle, b = 0."
+    },
+    "moe_gate_up": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.5294206928898585e-07,
+      "p99": 1.0288685287638119e-07,
+      "samples": 43112,
+      "commit": "5925829 (base), measured with the harness of the Task 12 kernel commit",
+      "note": "Fused gate+up+SwiGLU (R1.5b), act = silu(g)*u, against the oracle sequence (indexed oracle gate and up, q38c_activate SILU, q38f_product). The fused act is bit-identical to the unfused fast sequence (test_fused_gate_up_bit_identical_to_sequence), so (b) measures the indexed fast dots' order against the oracle's serial one, carried through silu and the product. S = |silu'(g)| S_g |u| + |silu(g)| S_u (first-order effect of the two dot errors). On the real IQ2_XXS/Q4_K gate/up rows and the synthetic shapes the max 3.5e-7 (5.9 u of S) is at MXFP4 N160 K2560; 2^-22 = 2.4e-7 is below it. Condition (a) adds 8 ulp32(r) (exp, division, product) and the GPU's flush below 2^-126 (exp(g) for g below about -87, then the product)."
     }
   }
 }
