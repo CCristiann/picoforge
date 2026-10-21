@@ -9,19 +9,21 @@
  * q8_0, f16, f32: the cooperative matvecs of qwen38_matvec.metal, one per
  * format (q8_0 is the default linear path for Q8_0); multi: their multi-GEMV
  * entry points (Q8_0, F16, F32); indexed_fast: the indexed expert matvecs
- * (IQ2_XXS, Q2_K, Q4_K, MXFP4); each is NULL on a GPU whose simdgroups are not 32 wide. */
+ * (IQ2_XXS, Q2_K, Q4_K, MXFP4), gate_up and down_reduce the fused MoE kernels
+ * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST]; bool ref_linear, ref_indexed; };
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST];
+                      bool ref_linear, ref_indexed; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
  * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
 enum { Q38_Q8_T = 4, Q38_DENSE_T = 4, Q38_DENSE_S = 8, Q38_SIMD = 32 };
 /* Indexed matvecs: IDX_SG in the kernel, simdgroups (one output each) per threadgroup. */
 enum { Q38_IDX_SG = 4 };
-/* Fused gate+up (qwen38_moe_fused.metal): simdgroups (one output each) per
- * threadgroup; the kernel reads the count from the dispatch. */
-enum { Q38_GATE_UP_SG = 4 };
+/* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
+ * output each) per threadgroup; the kernels read the count from the dispatch. */
+enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4 };
 static const uint32_t q38_indexed_types[Q38_INDEXED_FAST]={16,10,12,39};
 /* Mirror of dense_split in qwen38_matvec.metal (the kernel checks the match):
  * simdgroups per output row from K alone, doubling while each lane keeps at
@@ -61,11 +63,14 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         @"q38_matvec_indexed_q4_k",@"q38_matvec_indexed_mxfp4"};
     static NSString *const gate_up_names[Q38_INDEXED_FAST]={@"q38_moe_gate_up_iq2_xxs",@"q38_moe_gate_up_q2_k",
         @"q38_moe_gate_up_q4_k",@"q38_moe_gate_up_mxfp4"};
-    id<MTLFunction> indexed_fn[Q38_INDEXED_FAST], gate_up_fn[Q38_INDEXED_FAST];
+    static NSString *const down_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_iq2_xxs",@"q38_moe_down_reduce_q2_k",
+        @"q38_moe_down_reduce_q4_k",@"q38_moe_down_reduce_mxfp4"};
+    id<MTLFunction> indexed_fn[Q38_INDEXED_FAST], gate_up_fn[Q38_INDEXED_FAST], down_fn[Q38_INDEXED_FAST];
     bool present=true;
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         present=(indexed_fn[i]=[lib newFunctionWithName:indexed_names[i]])!=nil && present;
         present=(gate_up_fn[i]=[lib newFunctionWithName:gate_up_names[i]])!=nil && present;
+        present=(down_fn[i]=[lib newFunctionWithName:down_names[i]])!=nil && present;
     }
     if (!function || !gather || !lookup || !q8 || !f16 || !f32 || !multi[0] || !multi[1] || !multi[2] || !present)
         return q38_b_result(err,Q38_MISSING,"packed kernel absent from library");
@@ -78,10 +83,11 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLComputePipelineState> matvec_f32=[dev newComputePipelineStateWithFunction:f32 error:&failure];
     id<MTLComputePipelineState> matvec_multi[3];
     for (size_t i=0;i<3;i++) matvec_multi[i]=[dev newComputePipelineStateWithFunction:multi[i] error:&failure];
-    id<MTLComputePipelineState> matvec_indexed[Q38_INDEXED_FAST], gate_up[Q38_INDEXED_FAST];
+    id<MTLComputePipelineState> matvec_indexed[Q38_INDEXED_FAST], gate_up[Q38_INDEXED_FAST], down[Q38_INDEXED_FAST];
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         present=(matvec_indexed[i]=[dev newComputePipelineStateWithFunction:indexed_fn[i] error:&failure])!=nil && present;
         present=(gate_up[i]=[dev newComputePipelineStateWithFunction:gate_up_fn[i] error:&failure])!=nil && present;
+        present=(down[i]=[dev newComputePipelineStateWithFunction:down_fn[i] error:&failure])!=nil && present;
     }
     if (!pipeline || !indexed || !embedding || !matvec_q8 || !matvec_f16 || !matvec_f32 ||
         !matvec_multi[0] || !matvec_multi[1] || !matvec_multi[2] || !present)
@@ -99,6 +105,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         ctx->indexed_fast[i]=fast_pipeline(matvec_indexed[i],Q38_IDX_SG);
         ctx->gate_up[i]=fast_pipeline(gate_up[i],Q38_GATE_UP_SG);
+        ctx->down_reduce[i]=fast_pipeline(down[i],Q38_DOWN_REDUCE_SG);
     }
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
@@ -115,6 +122,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         if (ctx->indexed_fast[i]) CFRelease(ctx->indexed_fast[i]);
         if (ctx->gate_up[i]) CFRelease(ctx->gate_up[i]);
+        if (ctx->down_reduce[i]) CFRelease(ctx->down_reduce[i]);
     }
     CFRelease(ctx->device); free(ctx);
 }
@@ -364,6 +372,72 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
     [encoder setBuffer:route offset:ids.offset_bytes atIndex:6];
     MTLSize groups=MTLSizeMake((gl->n_out+Q38_GATE_UP_SG-1)/Q38_GATE_UP_SG,act.dim[0],1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_GATE_UP_SG,1,1)];
+    return q38_b_result(err,Q38_OK,"");
+}
+
+/* A dense [rows, cols] operand of the fused down+reduce: shape, then span. */
+static Qwen38Status dense_operand(id<MTLDevice> dev, Qwen38GpuF32 v, size_t rows, size_t cols, size_t *bytes,
+                                  id<MTLBuffer> __strong *out) {
+    if (v.rank!=2 || v.dim[0]!=rows || v.dim[1]!=cols) return Q38_SHAPE;
+    Qwen38Status status=q38_b_matrix(v.rank,v.dim,v.stride_bytes,v.span.bytes,bytes);
+    if (status) return status;
+    if (v.stride_bytes[0]!=cols*4) return Q38_STRIDE;
+    return gpu_span(dev,v.span,*bytes,out);
+}
+/* R1.5c fused down+reduce (qwen38_b_internal.h): the down projection admitted
+ * as q38_packed_encode with x = act and y, then the dense operands, the IDs and
+ * the aliases of the two outputs, then the choice. */
+Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
+        Qwen38GpuSpan ids, Qwen38GpuF32 act, const Q38DownReduceViews *v, Qwen38GpuF32 y, Qwen38Error *err) {
+    if (!v) return q38_b_result(err,Q38_INVALID_ARGUMENT,"missing down+reduce views");
+    Admitted a;
+    Qwen38Status status=admit(ctx,command,store,binding,layout,act,y,act.dim[0],&a,err);
+    if (status) return status;
+    size_t t=y.dim[0], k=v->scores.dim[1], n=layout->n_out;
+    if (v->scores.rank!=2 || !k || t>UINT32_MAX/k || act.dim[0]!=t*k)
+        return q38_b_result(err,Q38_SHAPE,"act rows must be tokens x slots");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    const Qwen38GpuF32 views[4]={v->shared,v->sigmoid,v->scores,v->routed}; /* buffers 2, 3, 4, 6 */
+    const size_t cols[4]={n,1,k,n};
+    id<MTLBuffer> buffer[6]; size_t offset[6], bytes[6];
+    for (size_t i=0;i<4 && !status;i++) {
+        status=dense_operand(dev,views[i],t,cols[i],&bytes[i],&buffer[i]);
+        offset[i]=views[i].span.offset_bytes;
+    }
+    if (status) return q38_b_result(err,status,"invalid down+reduce operand");
+    status=gpu_span(dev,ids,t*k*4,&buffer[4]);
+    if (status) return q38_b_result(err,status,"invalid GPU expert-ID span");
+    offset[4]=ids.offset_bytes; bytes[4]=t*k*4;
+    buffer[5]=a.input; offset[5]=act.span.offset_bytes; bytes[5]=a.xb;
+    /* routed (3) aliases nothing; y was checked against act, weights and word by admit(). */
+    for (size_t i=0;i<6;i++)
+        if ((i!=3 && gpu_alias(buffer[3],offset[3],bytes[3],buffer[i],offset[i],bytes[i])) ||
+            (i<5 && gpu_alias(a.output,y.span.offset_bytes,a.yb,buffer[i],offset[i],bytes[i])))
+            return q38_b_result(err,Q38_INVALID_ARGUMENT,"down+reduce outputs alias an operand");
+    if (gpu_alias(buffer[3],offset[3],bytes[3],a.weights,binding->offset,layout->tensor_bytes) ||
+        gpu_alias(buffer[3],offset[3],bytes[3],a.word,command->error_word.offset_bytes,4))
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"down+reduce outputs alias an operand");
+    void *kernel=indexed_kernel(ctx->down_reduce,layout->gguf_type);
+    if (!kernel || ctx->ref_indexed)
+        return q38_b_result(err,Q38_UNSUPPORTED,"no fused down+reduce for this format or selection");
+    if (!t) return q38_b_result(err,Q38_OK,"");
+    size_t wo=binding->offset;
+    Q38DownReduceArgs args={{.base=wire(layout,wo,wo+layout->tensor_bytes,t*k,act,y,&a),
+        .expert_bytes=layout->expert_bytes,.experts=(uint32_t)layout->n_experts,.x_divisor=1},
+        (uint32_t)t,(uint32_t)k};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:a.input offset:act.span.offset_bytes atIndex:1];
+    for (size_t i=0;i<3;i++) [encoder setBuffer:buffer[i] offset:offset[i] atIndex:2+i];
+    [encoder setBuffer:buffer[4] offset:offset[4] atIndex:5];
+    [encoder setBuffer:buffer[3] offset:offset[3] atIndex:6];
+    [encoder setBuffer:a.output offset:y.span.offset_bytes atIndex:7];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
+    [encoder setBytes:&args length:sizeof args atIndex:9];
+    MTLSize groups=MTLSizeMake((n+Q38_DOWN_REDUCE_SG-1)/Q38_DOWN_REDUCE_SG,t,1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_DOWN_REDUCE_SG,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
 

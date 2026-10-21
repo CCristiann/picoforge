@@ -1,5 +1,6 @@
-/* Fused MoE kernels of the R1 fast path (R1.5b): gate + up + SwiGLU of the
- * routed experts in one dispatch. FP32 activations and accumulators; no
+/* Fused MoE kernels of the R1 fast path: gate + up + SwiGLU of the routed
+ * experts in one dispatch (R1.5b), their down projection and the weighted
+ * reduce in another (R1.5c). FP32 activations and accumulators; no
  * fast-math, no FMA contraction (also -ffp-contract=off in the build). */
 #include <metal_stdlib>
 #include "qwen38_quant_decode.h"
@@ -80,3 +81,72 @@ GATE_UP_KERNEL(q38_moe_gate_up_iq2_xxs, Q38Iq2Xxs)
 GATE_UP_KERNEL(q38_moe_gate_up_q2_k, Q38Q2K)
 GATE_UP_KERNEL(q38_moe_gate_up_q4_k, Q38Q4K)
 GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
+
+/* R1.5c: the routed down projection and q38f_reduce in one pass.
+ * DownReduceArgs mirrors Q38DownReduceArgs (qwen38_b_internal.h): the down
+ * projection as one indexed call over the tokens x slots pairs (x = act, its
+ * y extent and pitch are y's), then the token and slot counts. */
+struct DownReduceArgs { IndexedArgs down; uint tokens, slots; };
+static_assert(sizeof(DownReduceArgs) == 104, "down+reduce wire record size");
+/* y[t, n] = sum_s scores[t, s] (down_e[n] . act[t*k+s]) + sigmoid[t] shared[t, n],
+ * e = ids[t*k+s], and routed[t, n] = the sum before the shared term: IDX down
+ * (divisor 1) then q38f_reduce with the identity map, without writing the
+ * [pairs, n] down scratch. One simdgroup per output (t, n); each down dot is
+ * q38_quant_row (the indexed fast kernel's order), accumulated in slot order
+ * 0..k-1 with q38f_reduce's expressions (contraction off in both files), so
+ * y and routed are bit-identical to that sequence and independent of the
+ * number of tokens, n's position and the expert ids. scores, shared, sigmoid
+ * and routed are dense [t, k], [t, n], [t], [t, n], their extents checked by
+ * the host. An expert id past the tensor, a down row, act row or y element
+ * outside its extent sets bit 2 and (t, n) is not written; a nonfinite dot
+ * or y sets bit 1. (Idea of a fused down + weighted reduce: ds4 fc80bd6, MIT,
+ * metal/qwen4.metal: kernel_qwen4_moe_down, kernel_qwen4_moe_reduce.) */
+template <typename F>
+static inline void down_reduce(device const uchar *w, device const float *act, device const float *shared,
+        device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
+        device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
+        uint lane) {
+    constant PackedArgs &p = a.down.base;
+    const ulong n = ulong(group.x) * sgs + sg;
+    const uint t = group.y;
+    if (n >= p.n_out || t >= a.tokens) return; /* uniform over the simdgroup, as every return below */
+    const ulong yi = ulong(t) * (p.y_stride / 4) + n, ri = ulong(t) * p.n_out + n;
+    if (yi >= p.y_bytes / 4) {
+        if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    float sum = 0.0f;
+    bool finite = true;
+    for (uint s = 0; s < a.slots; s++) {
+        const uint pair = t * a.slots + s, expert = ids[pair];
+        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n * p.row_bytes;
+        const ulong xi = ulong(pair) * (p.x_stride / 4);
+        if (expert >= a.down.experts || row > p.weight_end || p.row_bytes > p.weight_end - row ||
+            xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi) {
+            if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+            return;
+        }
+        const float d = q38_quant_row<F>(w + row, act + xi, p.k_logical, lane);
+        finite = finite && isfinite(d);
+        sum += scores[pair] * d;
+    }
+    if (lane) return;
+    routed[ri] = sum;
+    sum += sigmoid[t] * shared[ri];
+    if (!finite || !isfinite(sum)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    y[yi] = sum;
+}
+#define DOWN_REDUCE_KERNEL(name, F) \
+kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[buffer(1)]], \
+        device const float *shared [[buffer(2)]], device const float *sigmoid [[buffer(3)]], \
+        device const float *scores [[buffer(4)]], device const uint *ids [[buffer(5)]], \
+        device float *routed [[buffer(6)]], device float *y [[buffer(7)]], device atomic_uint *error [[buffer(8)]], \
+        constant DownReduceArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]], \
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]], \
+        uint lane [[thread_index_in_simdgroup]]) { \
+    down_reduce<F>(w, act, shared, sigmoid, scores, ids, routed, y, error, a, group, sg, sgs, lane); \
+}
+DOWN_REDUCE_KERNEL(q38_moe_down_reduce_iq2_xxs, Q38Iq2Xxs)
+DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q2_k, Q38Q2K)
+DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q4_k, Q38Q4K)
+DOWN_REDUCE_KERNEL(q38_moe_down_reduce_mxfp4, Q38Mxfp4)
