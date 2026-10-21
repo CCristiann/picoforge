@@ -71,7 +71,7 @@
       "max": 3.5294206928898585e-07,
       "p99": 1.0288685287638119e-07,
       "samples": 43112,
-      "commit": "5925829 (base), measured with the harness of the Task 12 kernel commit",
+      "commit": "0b6ef53",
       "note": "Fused gate+up+SwiGLU (R1.5b), act = silu(g)*u, against the oracle sequence (indexed oracle gate and up, q38c_activate SILU, q38f_product). The fused act is bit-identical to the unfused fast sequence (test_fused_gate_up_bit_identical_to_sequence), so (b) measures the indexed fast dots' order against the oracle's serial one, carried through silu and the product. S = |silu'(g)| S_g |u| + |silu(g)| S_u (first-order effect of the two dot errors). On the real IQ2_XXS/Q4_K gate/up rows and the synthetic shapes the max 3.5e-7 (5.9 u of S) is at MXFP4 N160 K2560; 2^-22 = 2.4e-7 is below it. Condition (a) adds 8 ulp32(r) (exp, division, product) and the GPU's flush below 2^-126 (exp(g) for g below about -87, then the product)."
     }
   }

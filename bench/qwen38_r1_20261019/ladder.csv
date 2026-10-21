@@ -3,3 +3,4 @@ R0 baseline,44d04bf,2026-10-17,short,picoforge,3,20,1.0641,1.0619,1.0663,935.62,
 R1.2b Q8_0 matvec by default (Task 8),ef69335,2026-10-19,short,picoforge,3,20,1.3765,1.3758,1.3769,722.38,8.45,2986,3033,0.0416,bench/qwen38_r1_20261019/ladder-t8 + profile-t8
 R1.3 F16 and F32 matvecs by default (Task 9),4faeaac,2026-10-20,short,picoforge,3,20,3.9565,3.9523,3.9617,248.45,24.57,2986,3033,0.1196,bench/qwen38_r1_20261020/ladder-t9 + profile-t9
 R1.4 multi-GEMV (Task 10),fe0f74f,2026-10-20,short,picoforge,,,,,,248.60,24.56,2770,2733,,bench/qwen38_r1_20261020/profile-t10 (quick closure R24)
+R1.5 indexed experts + fused gate+up (Tasks 11-12),407bbda,2026-10-21,short,picoforge,,,,,,160.59,38.02,2578,2541,,bench/qwen38_r1_20261021/profile-t12 (combined quick closure R24/R27)

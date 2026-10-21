@@ -36,7 +36,10 @@ the fused kernel does not match) restores the four dispatches. Protocol bench
 | IQ2_XXS 2560→640 (gate+up) | 67.7 / 81.7 | 261.1 / 294.1 | 2088 / 2361 | 8279 / 9463 |
 | Q4_K (layer 48) | 87.2 / 101.5 | 340.8 / 372.0 | 2704 / 2981 | 10656 / 11713 |
 
-Measured (controller, ladder): pending.
+Measured (controller, quick closure for Tasks 11+12, 8-token profile, AC): GPU
+160.6 ms/token (Task 10 248.6, -35%); the MoE group 159.4 → 70.7 ms (17.2 GB/s,
+now 44% of the token); dispatches 2770 → 2578. G3 scaled 9.1e-7;
+`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261021/profile-t12`).
 
 ### R1.5a — Indexed experts
 
@@ -61,7 +64,8 @@ Fast is faster at every row count, so there is no threshold. Protocol bench
 | gate Q4_K (layer 48) | 46.9 / 1069.6 | | 1463 / 17799 | |
 | down MXFP4 (layer 48) | 95.4 / 372.5 | | 3008 / 10545 | |
 
-Measured (controller, ladder): pending.
+Measured (controller): with Task 12, in one quick closure — see R1.5b
+(`bench/qwen38_r1_20261021/profile-t12`).
 
 ### R1.4 — Multi-GEMV
 
