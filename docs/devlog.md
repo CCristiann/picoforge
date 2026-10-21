@@ -28,13 +28,13 @@ applies q38c_activate's SILU formula. Each dot keeps `q38_quant_row`'s order,
 so act is bit-identical to the four-dispatch sequence: at kernel level for
 all four formats, and in the graph, where y is bit-identical too. gate/up are
 no longer written. `Q38_REF_KERNELS=moe` (or `indexed`, whose oracle sequence
-the fused kernel does not match) restores the four dispatches. Exploration
-runs (on battery, not protocol evidence; 512 experts, 10 slots per token):
+the fused kernel does not match) restores the four dispatches. Protocol bench
+`bench/qwen38_r1_20261021/moe-gate-up/` (512 experts, 10 slots per token):
 
 | µs, fused / 4 dispatches | 1 token | 4 | 32 | 128 |
 |---|---|---|---|---|
-| IQ2_XXS 2560→640 (gate+up) | 67.7 / 81.5 | 260.9 / 294.1 | 2087 / 2360 | 8280 / 9416 |
-| Q4_K (layer 48) | 87.0 / 100.9 | | | |
+| IQ2_XXS 2560→640 (gate+up) | 67.7 / 81.7 | 261.1 / 294.1 | 2088 / 2361 | 8279 / 9463 |
+| Q4_K (layer 48) | 87.2 / 101.5 | 340.8 / 372.0 | 2704 / 2981 | 10656 / 11713 |
 
 Measured (controller, ladder): pending.
 
@@ -47,21 +47,19 @@ one 32-lane simdgroup: lane l decodes chunks l, l+32, ... of the row (an
 IQ2_XXS group or Q4_K sub-block of 32 columns, a Q2_K scale group of 16, an
 MXFP4 block of 32), sums each chunk in column order, then its chunks, then
 `simd_sum`. The order depends on K and the format only. The row dot
-(`q38_quant_row`) lives in `qwen38_quant_decode.h`, so the fused MoE kernels
-that come next can call the same code. Every weight decodes to the oracle's FP32
-value, so only the summation order differs: `tol = 2^-21` for all four
-formats (max 2.8–3.7e-7). One exception: the GPU multiply flushes the 16
-subnormal MXFP4 weights to zero, in the oracle and the fast kernel alike.
-`Q38_REF_KERNELS=indexed` restores the oracle. Exploration runs (512
-synthetic experts, 10 slots per token, 20 encodes per buffer at 1 token; not
-yet protocol evidence):
+(`q38_quant_row`, in `qwen38_quant_decode.h`) is shared with the fused MoE
+kernels. Weights decode to the oracle's FP32 values, so only the order differs:
+`tol = 2^-21` for all four formats (the GPU flushes the 16 subnormal MXFP4
+weights, oracle and fast alike). `Q38_REF_KERNELS=indexed` restores the oracle.
+Fast is faster at every row count, so there is no threshold. Protocol bench
+`bench/qwen38_r1_20261021/matvec-indexed/` (512 experts, 10 slots per token):
 
 | µs, fast / oracle | 1 token | 4 | 32 | 128 |
 |---|---|---|---|---|
-| gate IQ2_XXS 2560→640 | 37.2 / 708.9 | 143.6 / 1842.8 | 1162 / 13333 | 4773 / 129461 |
-| down Q2_K 640/768→2560 | 78.5 / 547.4 | 423 / 1959 | 2488 / 14984 | 26110 / 138072 |
-| gate Q4_K (layer 48) | 86.6 / 1071.9 | | 1459 / 17828 | |
-| down MXFP4 (layer 48) | 95.7 / 374.9 | | 3015 / 10544 | |
+| gate IQ2_XXS 2560→640 | 37.2 / 704.9 | 141.4 / 1799.3 | 1162 / 13055 | 4643 / 51443 |
+| down Q2_K 640/768→2560 | 78.1 / 543.6 | 307.3 / 1916.5 | 2465 / 14619 | 9885 / 58415 |
+| gate Q4_K (layer 48) | 46.9 / 1069.6 | | 1463 / 17799 | |
+| down MXFP4 (layer 48) | 95.4 / 372.5 | | 3008 / 10545 | |
 
 Measured (controller, ladder): pending.
 
