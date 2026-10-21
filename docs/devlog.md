@@ -16,6 +16,33 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.5a — Indexed experts
+
+After R1.3 the routed experts were 64% of the decode token: 10 experts per
+token, each a gate, up and down matvec through `q38_packed_linear_indexed`,
+one thread per output row walking K serially (7.6 GB/s). Now each output gets
+one 32-lane simdgroup: lane l decodes chunks l, l+32, ... of the row (an
+IQ2_XXS group or Q4_K sub-block of 32 columns, a Q2_K scale group of 16, an
+MXFP4 block of 32), sums each chunk in column order, then its chunks, then
+`simd_sum`. The order depends on K and the format only. The row dot
+(`q38_quant_row`) lives in `qwen38_quant_decode.h`, so the fused MoE kernels
+that come next can call the same code. Every weight decodes to the oracle's FP32
+value, so only the summation order differs: `tol = 2^-21` for all four
+formats (max 2.8–3.7e-7). One exception: the GPU multiply flushes the 16
+subnormal MXFP4 weights to zero, in the oracle and the fast kernel alike.
+`Q38_REF_KERNELS=indexed` restores the oracle. Exploration runs (512
+synthetic experts, 10 slots per token, 20 encodes per buffer at 1 token; not
+yet protocol evidence):
+
+| µs, fast / oracle | 1 token | 4 | 32 | 128 |
+|---|---|---|---|---|
+| gate IQ2_XXS 2560→640 | 37.2 / 708.9 | 143.6 / 1842.8 | 1162 / 13333 | 4773 / 129461 |
+| down Q2_K 640/768→2560 | 78.5 / 547.4 | 423 / 1959 | 2488 / 14984 | 26110 / 138072 |
+| gate Q4_K (layer 48) | 86.6 / 1071.9 | | 1459 / 17828 | |
+| down MXFP4 (layer 48) | 95.7 / 374.9 | | 3015 / 10544 | |
+
+Measured (controller, ladder): pending.
+
 ### R1.4 — Multi-GEMV
 
 Several projections often read the same x: QSA's five (qg, k, v, iq, ik), GDN's
