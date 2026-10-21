@@ -372,6 +372,16 @@ static Qwen38Status sequence(Q38PackedGpu *ctx,Q38CGpu *ops,id<MTLComputePipelin
     [encoder dispatchThreads:MTLSizeMake(act.dim[0]*act.dim[1],1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)];
     return Q38_OK;
 }
+/* Weight bytes of one row the indexed kernels read for k logical columns:
+ * whole blocks, and of a partial Q2_K block (the 640-of-768 down) only its
+ * scale bytes, the 32-byte code halves it touches and d/dmin; another format's
+ * partial block counts whole. */
+static size_t read_bytes(uint32_t type,size_t k) {
+    const GgufFormat *f=gguf_format(type);
+    size_t whole=k/f->block*f->bytes, c=k%f->block;
+    if (!c) return whole;
+    return whole+(type==10 ? (c+15)/16+32*((c+127)/128)+4 : f->bytes);
+}
 static int indexed_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"ibench") || !strcmp(argv[1],"gbench"), pair=argv[1][0]=='g';
     assert(timing ? argc==11 : argc==10 || argc==13);
@@ -490,7 +500,7 @@ static int indexed_main(int argc,char **argv,const char *library) {
             size_t distinct=0; /* bytes actually read: each distinct expert once (per tensor), x and y */
             for (size_t e=0;e<r.experts;e++) { bool used=false; for (size_t p=0;p<rows && !used;p++) used=ids[p]==e; distinct+=used; }
             Request tr=ry; /* report() adds 4*rows*(logical+n): keep x at its rows/divisor rows (modular size_t) */
-            tr.bytes=distinct*(layouts[0].expert_bytes+(pair ? layouts[1].expert_bytes : 0))+4*r.m*r.logical-4*rows*r.logical;
+            tr.bytes=distinct*r.n*(read_bytes(t[0].type,r.logical)+(pair ? read_bytes(t[1].type,r.logical) : 0))+4*r.m*r.logical-4*rows*r.logical;
             report(tr,seconds,NULL,NULL);
         } else if (!status) {
             for (size_t i=0;i<rows;i++) assert(fwrite(y+r.offset+i*r.ypitch,4,r.n,stdout)==r.n);
