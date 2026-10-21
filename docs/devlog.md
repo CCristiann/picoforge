@@ -16,6 +16,28 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.5b — Fused gate+up+SwiGLU
+
+An expert's MLP starts with h = SiLU(g)·u, where g = gate·x and u = up·x
+(SwiGLU: the gate decides how much of u passes). R1.5a did this in four
+dispatches: an indexed gate, an indexed up, ACT, MUL, each one writing to
+memory and followed by a barrier. Now `q38_moe_gate_up` (in
+`qwen38_moe_fused.metal`) does it in one. For each (slot, row), one simdgroup
+decodes the gate and up chunks, multiplies each x value it loads by both, and
+applies q38c_activate's SILU formula. Each dot keeps `q38_quant_row`'s order,
+so act is bit-identical to the four-dispatch sequence: at kernel level for
+all four formats, and in the graph, where y is bit-identical too. gate/up are
+no longer written. `Q38_REF_KERNELS=moe` (or `indexed`, whose oracle sequence
+the fused kernel does not match) restores the four dispatches. Exploration
+runs (on battery, not protocol evidence; 512 experts, 10 slots per token):
+
+| µs, fused / 4 dispatches | 1 token | 4 | 32 | 128 |
+|---|---|---|---|---|
+| IQ2_XXS 2560→640 (gate+up) | 67.7 / 81.5 | 260.9 / 294.1 | 2087 / 2360 | 8280 / 9416 |
+| Q4_K (layer 48) | 87.0 / 100.9 | | | |
+
+Measured (controller, ladder): pending.
+
 ### R1.5a — Indexed experts
 
 After R1.3 the routed experts were 64% of the decode token: 10 experts per

@@ -127,22 +127,44 @@ static void check_moe(uint32_t layer, size_t t) {
         gview(bg,0,p,i), gview(bu,0,p,i), gview(ba,0,p,i), gview(bd,0,p,h), gview(sg,0,t,s), gview(su,0,t,s),
         gview(sa,0,t,s), gview(sh,0,t,h), gview(sl,0,t,1), gview(ss,0,t,1), gview(br,0,t,h),
         {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}};
-    Q38FRouted *routed; Q38PackedGpu *b; Q38CGpu *ops;
-    ok(q38f_routed_create((__bridge void *)device, (__bridge void *)library, &routed, &e), &e, "routed");
-    ok(q38_packed_gpu_create((__bridge void *)device, (__bridge void *)library, &b, &e), &e, "B gpu");
-    ok(q38c_gpu_create((__bridge void *)device, (__bridge void *)library, &ops, &e), &e, "C gpu");
-    __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
-    const GgufBinding *const *gbp = gb; const Q38PackedLayout *glp = gl;
-    ok(command(t, @[by, bl, bp, bw, bg, bu, ba, bd, sg, su, sa, sh, sl, ss, br, bi, bm], @[bx], ^(Qwen38GpuCommand cmd) {
-        rc = q38f_routed_encode(routed, b, ops, cmd, c, store, gbp, glp, gview(bx,0,t,h), gview(by,0,t,h), &rwk, &inner);
-        return rc;
-    }, &e), &e, "moe command");
-    ok(rc, &inner, "moe encode");
-    bool same_ids = !memcmp(bi.contents, ids, p*4);
-    report("moe_route_ids", layer, same_ids ? 0 : 1, 0, same_ids);
-    compare("moe_route_weights",layer,bw.contents,rw,p,2e-6);
-    compare("moe_y",layer,by.contents,y,x_n,5e-4);
-    q38f_routed_destroy(routed); q38_packed_gpu_free(b); q38c_gpu_destroy(ops);
+    /* R1.5b selection (Q38_REF_KERNELS read at creation): by default gate+up+SwiGLU
+     * is fused (the gate/up scratch is never written) and y has the bits of the
+     * unfused fast sequence (`moe`); `indexed` runs the unfused indexed oracle. */
+    static const char *const envs[] = {NULL, "moe", "indexed"};
+    float *fused = malloc(x_n * 4);
+    for (size_t r = 0; r < 3; ++r) {
+        if (envs[r]) assert(setenv("Q38_REF_KERNELS", envs[r], 1) == 0);
+        Q38FRouted *routed; Q38PackedGpu *b; Q38CGpu *ops;
+        ok(q38f_routed_create((__bridge void *)device, (__bridge void *)library, &routed, &e), &e, "routed");
+        ok(q38_packed_gpu_create((__bridge void *)device, (__bridge void *)library, &b, &e), &e, "B gpu");
+        ok(q38c_gpu_create((__bridge void *)device, (__bridge void *)library, &ops, &e), &e, "C gpu");
+        assert(unsetenv("Q38_REF_KERNELS") == 0);
+        memset(bg.contents, 0xa5, p*i*4); memset(bu.contents, 0xa5, p*i*4);
+        __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
+        const GgufBinding *const *gbp = gb; const Q38PackedLayout *glp = gl;
+        ok(command(t, @[by, bl, bp, bw, bg, bu, ba, bd, sg, su, sa, sh, sl, ss, br, bi, bm], @[bx], ^(Qwen38GpuCommand cmd) {
+            rc = q38f_routed_encode(routed, b, ops, cmd, c, store, gbp, glp, gview(bx,0,t,h), gview(by,0,t,h), &rwk, &inner);
+            return rc;
+        }, &e), &e, "moe command");
+        ok(rc, &inner, "moe encode");
+        bool untouched = true;
+        for (size_t j = 0; j < p*i; ++j)
+            untouched = untouched && ((uint32_t *)bg.contents)[j] == 0xa5a5a5a5u && ((uint32_t *)bu.contents)[j] == 0xa5a5a5a5u;
+        static const char *const names[] = {"moe_fused_selected", "moe_ref_moe_unfused", "moe_ref_indexed_unfused"};
+        report(names[r], layer, untouched == !r ? 0 : 1, 0, untouched);
+        compare("moe_y",layer,by.contents,y,x_n,5e-4);
+        if (!r) {
+            bool same_ids = !memcmp(bi.contents, ids, p*4);
+            report("moe_route_ids", layer, same_ids ? 0 : 1, 0, same_ids);
+            compare("moe_route_weights",layer,bw.contents,rw,p,2e-6);
+            memcpy(fused, by.contents, x_n*4);
+        } else if (r == 1) {
+            bool same = !memcmp(fused, by.contents, x_n*4);
+            report("moe_fused_bits_match_unfused", layer, same ? 0 : 1, 0, same);
+        }
+        q38f_routed_destroy(routed); q38_packed_gpu_free(b); q38c_gpu_destroy(ops);
+    }
+    free(fused);
     qwen38_moe_work_destroy(work); qwen38_moe_destroy(moe); free(x); free(y); free(rw); free(ids);
 }
 

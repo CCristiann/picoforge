@@ -3,6 +3,7 @@
 #include "qwen38_f_internal.h"
 #include "qwen38_c_internal.h"
 #include "qwen38_b_internal.h"
+#include "qwen38_ref.h"
 #include <stdlib.h>
 enum { GX,GD,GG,GU,GA,GS,GSL,GSA,GR2P,GP2R,GWEIGHT,GROUTED,GBUFFERS };
 struct Q38FMoeGpu {
@@ -207,7 +208,8 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
 
 /* ---- Device-routed MoE (G2). Same stage order as moe_batch, without grouping:
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
-struct Q38FRouted { void *device, *route, *iota, *product, *reduce; };
+/* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up. */
+struct Q38FRouted { void *device, *route, *iota, *product, *reduce; bool ref_moe; };
 void q38f_routed_destroy(Q38FRouted *r) {
     if (!r) return;
     void *all[]={r->route,r->iota,r->product,r->reduce,r->device};
@@ -220,6 +222,7 @@ Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen
     id<MTLDevice> dev=(__bridge id<MTLDevice>)device; id<MTLLibrary> lib=(__bridge id<MTLLibrary>)library;
     Q38FRouted *r=calloc(1,sizeof *r); if (!r) return q38c_error(err,Q38_OOM,"routed MoE context");
     r->device=(__bridge_retained void *)dev;
+    r->ref_moe=q38_ref_kernels("moe");
     NSArray *names=@[@"q38f_route",@"q38f_iota",@"q38f_product",@"q38f_reduce"];
     void **slots[]={&r->route,&r->iota,&r->product,&r->reduce};
     for (size_t j=0;j<4;j++) {
@@ -278,8 +281,17 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
     [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5); run(enc,r->route,t);
     at(enc,w->identity,0); run(enc,r->iota,p);
-    IDX(1,x,w->gate,k); IDX(2,x,w->up,k);
-    ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i);
+    /* R1.5b: gate+up+SwiGLU in one fused dispatch, act bit-identical to the
+     * unfused fast sequence below; gate/up are then not written (nothing reads
+     * them but ACT and MUL). Fused only when neither `moe` nor `indexed` is
+     * selected: under `indexed` B answers UNSUPPORTED, since the fused act
+     * would not match the oracle indexed sequence; so does a format without a
+     * row dot. Then the unfused sequence. */
+    Qwen38Status fused=r->ref_moe ? Q38_UNSUPPORTED :
+        q38_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->ids,k,x,w->act,err);
+    if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    else if (fused!=Q38_UNSUPPORTED) return fused;
+    else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
     IDX(3,w->act,w->down,1);
     ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
     LIN(6,w->sact,w->shared);
