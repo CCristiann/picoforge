@@ -20,8 +20,6 @@ enum { Q38_Q8_T = 4, Q38_DENSE_T = 4, Q38_DENSE_S = 8, Q38_SIMD = 32 };
 /* Indexed matvecs: IDX_SG in the kernel, simdgroups (one output each) per threadgroup. */
 enum { Q38_IDX_SG = 4 };
 static const uint32_t q38_indexed_types[Q38_INDEXED_FAST]={16,10,12,39};
-/* R1.5b staging: the default path takes only these until Q4_K/MXFP4 are enabled. */
-static const bool q38_indexed_default[Q38_INDEXED_FAST]={true,true,false,false};
 /* Mirror of dense_split in qwen38_matvec.metal (the kernel checks the match):
  * simdgroups per output row from K alone, doubling while each lane keeps at
  * least 5 chunks of 8 columns. */
@@ -249,17 +247,16 @@ Qwen38Status q38_packed_encode_fast(Q38PackedGpu *ctx, const Qwen38GpuCommand *c
 }
 
 /* The indexed fast kernel of a format (R1.5); NULL: none. */
-static void *indexed_kernel(const Q38PackedGpu *ctx, uint32_t type, bool *by_default) {
-    for (size_t i=0;i<Q38_INDEXED_FAST;i++)
-        if (q38_indexed_types[i]==type) { *by_default=q38_indexed_default[i]; return ctx->indexed_fast[i]; }
+static void *indexed_kernel(const Q38PackedGpu *ctx, uint32_t type) {
+    for (size_t i=0;i<Q38_INDEXED_FAST;i++) if (q38_indexed_types[i]==type) return ctx->indexed_fast[i];
     return NULL;
 }
 /* One indexed encode for both entry points, validation first as in
  * encode_linear. Fast by default for the formats with an indexed kernel
- * (R1.5: IQ2_XXS, Q2_K), at any number of rows (measured faster than the
- * oracle at 1..128 tokens of 10 slots). Not bit-identical to the oracle (the
- * order inside a row differs): Q38_REF_KERNELS=indexed (or 1) restores the
- * oracle bit for bit. force_fast: q38_packed_encode_indexed_fast, UNSUPPORTED
+ * (R1.5: IQ2_XXS, Q2_K, Q4_K, MXFP4), at any number of rows (faster than the
+ * oracle at every bench row count, 1..128 tokens of 10 slots). Not
+ * bit-identical to the oracle (the order inside a row differs):
+ * Q38_REF_KERNELS=indexed (or 1) restores the oracle bit for bit. force_fast: q38_packed_encode_indexed_fast, UNSUPPORTED
  * for a format without an indexed fast kernel. */
 static Qwen38Status encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const Q38PackedLayout *layout,
@@ -277,9 +274,8 @@ static Qwen38Status encode_indexed(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
         gpu_alias(route,io,n,a.word,command->error_word.offset_bytes,4) ||
         gpu_alias(route,io,n,a.weights,wo,layout->tensor_bytes))
         return q38_b_result(err,Q38_INVALID_ARGUMENT,"expert IDs alias an output or weights");
-    bool by_default=false;
-    void *kernel=indexed_kernel(ctx,layout->gguf_type,&by_default);
-    bool fast=kernel && (force_fast || (by_default && !ctx->ref_indexed));
+    void *kernel=indexed_kernel(ctx,layout->gguf_type);
+    bool fast=kernel && (force_fast || !ctx->ref_indexed);
     if (force_fast && !fast) return q38_b_result(err,Q38_UNSUPPORTED,"no indexed fast kernel for this format");
     if (!y.dim[0]) return q38_b_result(err,Q38_OK,"");
     Q38PackedIndexedArgs args={.base=wire(layout,wo,wo+layout->tensor_bytes,y.dim[0],x,y,&a),

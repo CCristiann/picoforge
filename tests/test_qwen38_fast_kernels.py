@@ -35,7 +35,6 @@ UNSUPPORTED, NONFINITE = 8, 16  # Q38_UNSUPPORTED (no fast kernel), Q38_NONFINIT
 FAST = {"q8_0", "f16", "f32"}  # formats whose fast kernel exists: UNSUPPORTED is a failure for them
 KINDS = {name: kind for kind, name in NAMES.items() if name in FAST}
 INDEXED_FAST = {"iq2_xxs", "q2_k", "q4_k", "mxfp4"}  # R1.5: formats with an indexed (routed expert) fast kernel
-INDEXED_DEFAULT = {"iq2_xxs", "q2_k"}  # of those, the ones q38_packed_encode_indexed runs by default
 INDEXED_KINDS = {name: kind for kind, name in NAMES.items() if name in INDEXED_FAST}
 GPU_ERROR = 20  # Q38_GPU_ERROR: error word without bit 1 (bounds, bit 2)
 BANNER = re.compile(rb"(?m)^.*Metal API Validation Enabled\r?\n")
@@ -726,8 +725,6 @@ class FastKernelTests(unittest.TestCase):
         """R1.5: q38_packed_encode_indexed runs the indexed fast kernel unless `indexed` is
         selected, also on the real expert slices; a format without one (Q8_0) keeps the oracle."""
         for name, kind in sorted(INDEXED_KINDS.items()):
-            if name not in INDEXED_DEFAULT:
-                continue
             args, fast, _ = self.indexed_separating_case(kind)
             for env in ({}, {"Q38_REF_KERNELS": "0"}, {"Q38_REF_KERNELS": ""}, {"Q38_REF_KERNELS": "linear"},
                         {"Q38_REF_KERNELS": "linear,moe"}):
