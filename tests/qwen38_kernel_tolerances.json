@@ -73,6 +73,14 @@
       "samples": 43112,
       "commit": "0b6ef53",
       "note": "Fused gate+up+SwiGLU (R1.5b), act = silu(g)*u, against the oracle sequence (indexed oracle gate and up, q38c_activate SILU, q38f_product). The fused act is bit-identical to the unfused fast sequence (test_fused_gate_up_bit_identical_to_sequence), so (b) measures the indexed fast dots' order against the oracle's serial one, carried through silu and the product. S = |silu'(g)| S_g |u| + |silu(g)| S_u (first-order effect of the two dot errors). On the real IQ2_XXS/Q4_K gate/up rows and the synthetic shapes the max 3.5e-7 (5.9 u of S) is at MXFP4 N160 K2560; 2^-22 = 2.4e-7 is below it. Condition (a) adds 8 ulp32(r) (exp, division, product) and the GPU's flush below 2^-126 (exp(g) for g below about -87, then the product)."
+    },
+    "moe_down_reduce": {
+      "tol": 2.384185791015625e-07,
+      "max": 2.303485580920677e-07,
+      "p99": 9.01935074734253e-08,
+      "samples": 11060,
+      "commit": "9d9a0da",
+      "note": "Fused routed down + weighted reduce (R1.5c), y and routed against the oracle sequence (indexed oracle down, q38f_reduce). Both are bit-identical to the unfused fast sequence (test_fused_down_bit_identical_to_sequence), so (b) measures the indexed fast down dots' order against the oracle's serial one, carried through the slot sum. S = sum_s |w_s| S_s (+ |sigmoid shared| for y). Max 2.3e-7 (3.9 u of S) at IQ2_XXS N33 K600/768 T3x2 (routed), over the real Q2_K/MXFP4 down rows and the synthetic shapes. Condition (a): gamma(2K+8+2k+2) S + 2 ulp32(r) + 2 sum_s |w_s| ulp32(d_s); worst 0.74% of the bound."
     }
   }
 }

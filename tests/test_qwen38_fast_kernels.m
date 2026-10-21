@@ -516,6 +516,198 @@ static int indexed_main(int argc,char **argv,const char *library) {
     return status;
 }
 
+/* R1.5c fused routed down + weighted reduce (q38_packed_encode_down_reduce):
+ *   downreduce <fused|sequence|oracle> type physical logical n experts tokens slots [xpitch ypitch offset]
+ * stdin: the packed [experts, n, physical] tensor, ids uint32 [tokens*slots],
+ * act [tokens*slots, logical], scores [tokens, slots], shared [tokens, n],
+ * sigmoid [tokens]. stdout: y [tokens, n] and routed [tokens, n] (also with
+ * the error word set: unwritten elements stay NaN), then, with a clean word,
+ * the CPU-decoded rows. fused = q38_packed_encode_down_reduce (exit 8, no
+ * output: UNSUPPORTED); sequence = q38f_routed_encode's unfused tail: indexed
+ * fast down into a [pairs, n] scratch, barrier, q38f_reduce with the identity
+ * map; oracle = the same with the indexed oracle. Views: act pitch xpitch, y
+ * pitch ypitch, both `offset` floats past the guard; the rest dense.
+ *   dbench <fused|sequence> type n physical logical experts tokens slots reps
+ * synthetic data as ibench; bytes = the fused pass's: distinct experts' rows
+ * read, act, shared, y and routed (the same count for both modes).
+ *   rbench experts slots tokens reps
+ * times q38f_route alone (one thread per token, as the graph dispatches it). */
+static int down_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"dbench"), route=!strcmp(argv[1],"rbench");
+    assert(route ? argc==6 : timing ? argc==11 : argc==10 || argc==13);
+    Request r={.mode=route ? "route" : argv[2]};
+    size_t at=route ? 2 : 3, tokens, slots;
+    if (!route) r.type=(uint32_t)number(argv[at++]);
+    if (timing) { r.n=number(argv[at++]); r.physical=number(argv[at++]); r.logical=number(argv[at++]); }
+    else if (!route) { r.physical=number(argv[at++]); r.logical=number(argv[at++]); r.n=number(argv[at++]); }
+    r.experts=number(argv[at++]);
+    if (route) { slots=number(argv[at++]); tokens=number(argv[at++]); }
+    else { tokens=number(argv[at++]); slots=number(argv[at++]); }
+    r.reps=timing || route ? number(argv[at++]) : 1;
+    assert(tokens && slots && r.experts && r.reps<=1000 && r.reps && tokens<=4096 && slots<=64);
+    size_t pairs=tokens*slots;
+    uint64_t seed=3813;
+    if (route) {
+        assert(slots<=r.experts && r.experts<=65536);
+        r.n=slots; r.logical=r.experts; r.m=tokens; r.bytes=4*tokens*r.experts; /* + logits and ids in report() */
+        double seconds[23];
+        @autoreleasepool {
+            id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+            NSError *error=nil;
+            id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+            id<MTLComputePipelineState> p=[dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"q38f_route"] error:&error];
+            assert(p);
+            id<MTLBuffer> logits=shared(dev,4*tokens*r.experts),probs=shared(dev,4*tokens*r.experts),ids=shared(dev,4*pairs),
+                weights=shared(dev,4*pairs),word=shared(dev,4);
+            for (size_t i=0;i<tokens*r.experts;i++) ((float *)logits.contents)[i]=(float)(mix(&seed)>>40)*0x1p-21f-4.0f;
+            struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)tokens,(uint32_t)r.experts,(uint32_t)slots,1,(uint32_t)r.experts};
+            id<MTLCommandQueue> queue=[dev newCommandQueue];
+            for (int run=0;run<23;run++) {
+                ((uint32_t *)word.contents)[0]=0;
+                id<MTLCommandBuffer> command=[queue commandBuffer];
+                id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+                for (size_t rep=0;rep<r.reps;rep++) { /* as q38f_routed_encode's run(): 64-thread groups, a barrier */
+                    [encoder setComputePipelineState:p];
+                    [encoder setBuffer:logits offset:0 atIndex:0]; [encoder setBuffer:probs offset:0 atIndex:1];
+                    [encoder setBuffer:ids offset:0 atIndex:2]; [encoder setBuffer:weights offset:0 atIndex:3];
+                    [encoder setBytes:&ra length:sizeof ra atIndex:4]; [encoder setBuffer:word offset:0 atIndex:5];
+                    [encoder dispatchThreads:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,p.maxTotalThreadsPerThreadgroup),1,1)];
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                }
+                [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+                assert(command.status==MTLCommandBufferStatusCompleted && !command.error && !((uint32_t *)word.contents)[0]);
+                seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            }
+        }
+        report(r,seconds,NULL,NULL);
+        return 0;
+    }
+    assert(timing ? !strcmp(r.mode,"fused") || !strcmp(r.mode,"sequence") :
+           !strcmp(r.mode,"fused") || !strcmp(r.mode,"sequence") || !strcmp(r.mode,"oracle"));
+    r.m=pairs;
+    r.xpitch=argc==13 ? number(argv[10]) : r.logical;
+    r.ypitch=argc==13 ? number(argv[11]) : r.n;
+    r.offset=argc==13 ? number(argv[12]) : 0;
+    const size_t limit=timing ? 1024u*1024u*1024u : 32u*1024u*1024u;
+    const GgufFormat *format=NULL;
+    assert(q38_b_format(r.type,&format)==Q38_OK && r.physical%format->block==0 && r.logical && r.logical<=r.physical);
+    assert(r.xpitch>=r.logical && r.ypitch>=r.n && r.offset<=limit/4 && pairs<=limit/4/r.xpitch && tokens<=limit/4/r.ypitch);
+    assert(r.n<=limit/4/pairs && r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts));
+    r.bytes=r.physical/format->block*format->bytes*r.n*r.experts;
+    Request ry=r; ry.m=tokens;
+    unsigned char *raw=malloc(r.bytes); assert(raw);
+    uint32_t *ids=malloc(pairs*4); float *aux=malloc(4*tokens*(slots+r.n+1)); assert(ids && aux);
+    if (timing) {
+        synthesize(raw,r.bytes,&seed,r.type);
+        for (size_t p=0;p<pairs;p++) /* distinct within a token's slots */
+            for (bool again=true;again;) {
+                ids[p]=(uint32_t)(mix(&seed)%r.experts); again=false;
+                for (size_t q=p/slots*slots;q<p && r.experts>=slots;q++) again=again || ids[q]==ids[p];
+            }
+        for (size_t i=0;i<tokens*(slots+r.n+1);i++) aux[i]=(float)(mix(&seed)>>40)*0x1p-24f;
+    } else assert(fread(raw,1,r.bytes,stdin)==r.bytes && fread(ids,4,pairs,stdin)==pairs);
+    size_t initial=gpu_weights_live_mapped_bytes();
+    size_t xw=floats(r,r.logical,r.xpitch)+8, yw=floats(ry,r.n,r.ypitch)+8;
+    int status=0;
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error];
+        if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); abort(); }
+        Q38PackedGpu *ctx=NULL;
+        assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
+        id<MTLComputePipelineState> reduce=[dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"q38f_reduce"] error:&error];
+        assert(reduce);
+        Gguf g={0}; GgufTensor tensor;
+        GpuWeightStore *store=make_store(dev,1,&r,raw,&g,&tensor);
+        const GgufBinding *binding=&gpu_weights_plan(store)->weights[0];
+        Q38PackedLayout layout;
+        assert(q38_packed_layout_init(&binding->tensor,r.logical,&layout,NULL)==Q38_OK);
+        id<MTLBuffer> input=shared(dev,xw*4),output=shared(dev,yw*4),word=shared(dev,4),route_ids=shared(dev,pairs*4),
+            scores=shared(dev,tokens*slots*4),sh=shared(dev,tokens*r.n*4),sig=shared(dev,tokens*4),
+            routed=shared(dev,tokens*r.n*4),down=shared(dev,pairs*r.n*4),identity=shared(dev,pairs*4);
+        memcpy(route_ids.contents,ids,pairs*4);
+        for (size_t p=0;p<pairs;p++) ((uint32_t *)identity.contents)[p]=(uint32_t)p;
+        float *x=(float *)input.contents+4, *y=(float *)output.contents+4;
+        for (size_t i=0;i<xw;i++) ((float *)input.contents)[i]=NAN; /* guards and gaps */
+        for (size_t i=0;i<pairs;i++) {
+            float *row=x+r.offset+i*r.xpitch;
+            if (!timing) assert(fread(row,4,r.logical,stdin)==r.logical);
+            else for (size_t k=0;k<r.logical;k++) row[k]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
+        }
+        if (!timing) assert(fread(aux,4,tokens*(slots+r.n+1),stdin)==tokens*(slots+r.n+1) && fgetc(stdin)==EOF);
+        memcpy(scores.contents,aux,tokens*slots*4);
+        memcpy(sh.contents,aux+tokens*slots,tokens*r.n*4);
+        memcpy(sig.contents,aux+tokens*(slots+r.n),tokens*4);
+        memset(output.contents,0xa5,yw*4);
+        for (size_t i=0;i<tokens;i++)
+            for (size_t j=0;j<r.n;j++) y[r.offset+i*r.ypitch+j]=NAN; /* an unwritten output cannot pass */
+        for (size_t i=0;i<tokens*r.n;i++) ((float *)routed.contents)[i]=NAN;
+        Qwen38GpuF32 xv=matrix(input,r,r.logical,r.xpitch), yv=matrix(output,ry,r.n,r.ypitch);
+        Qwen38GpuF32 dv={{(__bridge void *)down,0,pairs*r.n*4},2,{pairs,r.n,1,1},{r.n*4,4,0,0}};
+        Q38DownReduceViews views={{{(__bridge void *)scores,0,tokens*slots*4},2,{tokens,slots,1,1},{slots*4,4,0,0}},
+            {{(__bridge void *)sh,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}},
+            {{(__bridge void *)sig,0,tokens*4},2,{tokens,1,1,1},{4,4,0,0}},
+            {{(__bridge void *)routed,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}}};
+        Qwen38GpuSpan span={(__bridge void *)route_ids,0,pairs*4};
+        uint32_t *flags=word.contents;
+        bool fused=!strcmp(r.mode,"fused"), fast=!strcmp(r.mode,"sequence");
+        if (!strcmp(r.mode,"oracle")) q38_packed_gpu_set_reference(ctx,true,true);
+        struct { uint32_t t,h,k,xpitch,ypitch; } fa={(uint32_t)tokens,(uint32_t)r.n,(uint32_t)slots,(uint32_t)r.n,(uint32_t)r.ypitch};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        double seconds[23];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            flags[0]=0;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            for (size_t rep=0;rep<r.reps && !status;rep++) {
+                Qwen38Error err={0};
+                if (fused) status=(int)q38_packed_encode_down_reduce(ctx,&cmd,store,binding,&layout,span,xv,&views,yv,&err);
+                else {
+                    status=(int)(fast ? q38_packed_encode_indexed_fast(ctx,&cmd,store,binding,&layout,span,1,xv,dv,&err) :
+                                 q38_packed_encode_indexed(ctx,&cmd,store,binding,&layout,span,1,xv,dv,&err));
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                    id<MTLBuffer> in[]={down,sh,sig,scores,identity};
+                    [encoder setComputePipelineState:reduce];
+                    for (NSUInteger i=0;i<5;i++) [encoder setBuffer:in[i] offset:0 atIndex:i];
+                    [encoder setBuffer:output offset:yv.span.offset_bytes atIndex:5];
+                    [encoder setBytes:&fa length:sizeof fa atIndex:6];
+                    [encoder setBuffer:word offset:0 atIndex:7]; [encoder setBuffer:routed offset:0 atIndex:8];
+                    [encoder dispatchThreads:MTLSizeMake(tokens*r.n,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,reduce.maxTotalThreadsPerThreadgroup),1,1)];
+                }
+                if (status && status!=Q38_UNSUPPORTED) { fprintf(stderr,"encode: %d %s\n",status,err.detail); abort(); }
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            assert(!timing || (!status && !flags[0]));
+        }
+        const uint32_t *words=output.contents; /* no write outside y */
+        for (size_t i=0;i<yw;i++)
+            assert((i>=4 && i<yw-4 && in_view(ry,r.n,r.ypitch,i-4)) || words[i]==0xa5a5a5a5u);
+        if (timing) {
+            size_t distinct=0;
+            for (size_t e=0;e<r.experts;e++) { bool used=false; for (size_t p=0;p<pairs && !used;p++) used=ids[p]==e; distinct+=used; }
+            Request tr=r; /* report() adds 4*pairs*(logical+n): keep act, count shared, y and routed */
+            tr.bytes=distinct*r.n*read_bytes(r.type,r.logical)+4*3*tokens*r.n-4*pairs*r.n;
+            report(tr,seconds,NULL,NULL);
+        } else if (!status) {
+            for (size_t i=0;i<tokens;i++) assert(fwrite(y+r.offset+i*r.ypitch,4,r.n,stdout)==r.n);
+            assert(fwrite(routed.contents,4,tokens*r.n,stdout)==tokens*r.n);
+            if (flags[0]) {
+                status=(flags[0]&Q38_GPU_NONFINITE) ? Q38_NONFINITE : Q38_GPU_ERROR;
+                fprintf(stderr,"qwen38 Metal: error bits %u\n",flags[0]);
+            } else write_decoded(store,binding,r);
+        }
+        q38_packed_gpu_free(ctx); gpu_weights_close(store); assert(close(g.fd)==0);
+    }
+    assert(gpu_weights_live_mapped_bytes()==initial);
+    free(raw); free(ids); free(aux);
+    return status;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -525,6 +717,8 @@ int main(int argc,char **argv) {
     if (argc>1 && (!strcmp(argv[1],"multi") || !strcmp(argv[1],"mbench"))) return multi_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"indexed") || !strcmp(argv[1],"ibench") || !strcmp(argv[1],"gateup") ||
                    !strcmp(argv[1],"gbench"))) return indexed_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"downreduce") || !strcmp(argv[1],"dbench") || !strcmp(argv[1],"rbench")))
+        return down_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

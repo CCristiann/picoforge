@@ -318,6 +318,60 @@ def gate_up_against_fp64(act, ref, magnitude, flush, logical):
                 max_bound_fraction=float((delta / bound).max()))
 
 
+def run_down_reduce(mode, kind, physical, logical, n, experts, data, ids, act, scores, shared, sigmoid, env=None, view=()):
+    """One fused down+reduce call (fused) or the unfused sequence (sequence: indexed fast down, then
+    q38f_reduce; oracle: indexed oracle down): (exit code, y [t, n] or None, routed [t, n] or None,
+    CPU-decoded rows or None, stderr). y and routed are also returned when the error word is set
+    (an element the kernel did not write is still NaN). Q38_REF_KERNELS is never inherited."""
+    (tokens, slots), lock = scores.shape, os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    payload = [data, np.asarray(ids, "<u4").tobytes()] + [np.asarray(a, "<f4").tobytes() for a in (act, scores, shared, sigmoid)]
+    result = subprocess.run([str(NATIVE), "downreduce", mode, str(kind), str(physical), str(logical), str(n), str(experts),
+                             str(tokens), str(slots), *map(str, view)], input=b"".join(payload),
+                            capture_output=True, timeout=120, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr, values = BANNER.sub(b"", result.stderr), np.frombuffer(result.stdout, "<f4")
+    if result.returncode == UNSUPPORTED and not values.size:
+        return UNSUPPORTED, None, None, None, stderr
+    out = 2 * tokens * n
+    if values.size not in (out, out + experts * n * physical):
+        raise AssertionError(f"downreduce {mode} kind {kind}: exit {result.returncode}, {stderr!r}")
+    decoded = values[out:].reshape(experts * n, physical) if values.size > out else None
+    return result.returncode, values[:out // 2].reshape(tokens, n), values[out // 2:out].reshape(tokens, n), decoded, stderr
+
+
+def down_reduce_fp64(decoded, ids, act, scores, shared, sigmoid, logical, n):
+    """FP64 routed = sum_s w_s d_s and y = routed + sigma shared, d_s the down dot of pair t*k+s;
+    their S (sum_s |w_s| S_s, plus |sigma shared| for y) and the per-dot ulp term
+    2 sum_s |w_s| ulp32(d_s) of condition (a)."""
+    tokens, slots = scores.shape
+    d, sd = indexed_fp64(decoded, ids, act, 1, logical, n)
+    w = scores.astype(np.float64)[..., None]
+    d, sd = d.reshape(tokens, slots, n), sd.reshape(tokens, slots, n)
+    routed, s_routed = (w * d).sum(1), (np.abs(w) * sd).sum(1)
+    term = sigmoid.astype(np.float64)[:, None] * shared.astype(np.float64)
+    ulps = 2 * (np.abs(w) * np.spacing(np.abs(d.astype(np.float32))).astype(np.float64)).sum(1)
+    return (routed, s_routed, ulps), (routed + term, s_routed + np.abs(term), ulps)
+
+
+def down_reduce_against_fp64(y, ref, magnitude, ulps, logical, slots):
+    """Condition (a) for routed or y: each dot within gamma(2K+8) S_s + 2 ulp32(d_s) (B's bound),
+    then k+1 products and sums: gamma(2K+8+2k+2) S + 2 ulp32(r) + the dots' ulp terms."""
+    m, u = 2 * logical + 8 + 2 * slots + 2, 2.0**-24
+    bound = m * u / (1 - m * u) * magnitude + 2 * np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64) + ulps
+    delta = np.abs(y.astype(np.float64) - ref)
+    return dict(outputs=int(y.size), finite=bool(np.isfinite(y).all()), condition_a=bool((delta <= bound).all()),
+                max_rel=float((delta / np.maximum(magnitude, 2.0**-126)).max()),
+                max_bound_fraction=float((delta / bound).max()))
+
+
+def down_inputs(rng, tokens, slots, logical, n, scale=1.0):
+    """act [t*k, logical], scores [t, k] (positive, normalized per token), shared [t, n], sigmoid [t]."""
+    scores = rng.uniform(0.05, 1, (tokens, slots))
+    return (rng.uniform(-scale, scale, (tokens * slots, logical)).astype(np.float32),
+            (scores / scores.sum(1, keepdims=True)).astype(np.float32),
+            rng.uniform(-1, 1, (tokens, n)).astype(np.float32), rng.uniform(0, 1, tokens).astype(np.float32))
+
+
 class FastKernelTests(unittest.TestCase):
     def fast_case(self, label, kind, physical, logical, data, x, view=(), y_oracle=None, decoded=None):
         """Fast kernel on one case: supported, finite, (a) and (b); recorded in the corpus."""
@@ -1094,6 +1148,190 @@ class FastKernelTests(unittest.TestCase):
         q8 = packed.packed_fixture(8, 2560, 12, rng)
         with self.subTest(case="q8_0"):
             self.assertEqual(run_gate_up("fused", *args(8, q8, q8))[0], UNSUPPORTED)
+
+    # ---- R1.5c fused routed down + weighted reduce (q38_packed_encode_down_reduce) ----
+
+    def down_case(self, label, kind, physical, logical, n, experts, data, ids, inputs, view=(), decoded=None):
+        """Fused kernel on one case: supported, y AND routed bit-identical to the unfused fast
+        sequence (IDX down + q38f_reduce, same views), finite, (a) against FP64 and (b) against
+        the oracle sequence (indexed oracle down + q38f_reduce)."""
+        run = lambda mode: run_down_reduce(mode, kind, physical, logical, n, experts, data, ids, *inputs, view=view)
+        code, y, routed, cpu, stderr = run("fused")
+        self.assertNotEqual(code, UNSUPPORTED, f"{label}: {NAMES[kind]} has no fused down+reduce")
+        self.assertEqual((code, stderr), (0, b""), label)
+        code, y_seq, routed_seq, _, stderr = run("sequence")
+        self.assertEqual((code, stderr), (0, b""), label)
+        np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
+        np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
+        code, y_oracle, routed_oracle, _, stderr = run("oracle")
+        self.assertEqual((code, stderr), (0, b""), label)
+        refs = down_reduce_fp64(cpu if decoded is None else decoded, ids, *inputs, logical, n)
+        slots, tol = inputs[1].shape[1], TOLERANCES["kernels"].get("moe_down_reduce", {}).get("tol")
+        for name, out, out_oracle, (ref, magnitude, ulps) in (("routed", routed, routed_oracle, refs[0]), ("y", y, y_oracle, refs[1])):
+            stats = down_reduce_against_fp64(out, ref, magnitude, ulps, logical, slots) | dict(
+                vs_oracle=against_oracle(out, out_oracle, magnitude))
+            RESULTS.setdefault(label, {})[name] = stats
+            CORPUS.setdefault("moe_down_reduce", {})[f"{label}:{name}"] = scaled_difference(out, out_oracle, magnitude).ravel()
+            self.assertTrue(stats["finite"] and stats["condition_a"], (label, name, stats))
+            self.assertIsNotNone(tol, "moe_down_reduce: fused kernel without a measured tolerance")
+            self.assertLessEqual(stats["vs_oracle"]["max"], tol, (label, name))
+        return y, routed
+
+    def test_fused_down_bit_identical_to_sequence(self):
+        """Fused y and routed have the bits of the unfused fast sequence (IDX down, q38f_reduce): the
+        down layer's K 640 of 768 (MXFP4: 640; n 160: the decoded rows cross stdout) at 1 and 3
+        tokens x 10 slots, and shapes off the tile and chunk (Review Focus 1), every format with a
+        row dot."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3850, kind), oracle.FORMATS[kind][0]
+            down = (640, 640) if block == 32 else (768, 640)
+            shapes = [(160, *down, 10, 1, 10), (160, *down, 10, 3, 10), (1, block, block, 1, 2, 3),
+                      (33, 768, 600, 2, 3, 3), (3, 2560 if block == 256 else 64, 2560 if block == 256 else 40, 10, 1, 10)]
+            for n, physical, logical, slots, tokens, experts in shapes:
+                with self.subTest(kernel=name, n=n, physical=physical, logical=logical, slots=slots, tokens=tokens):
+                    ids = np.concatenate([rng.permutation(experts)[:slots] for _ in range(tokens)])
+                    data = quant_rows(kind, physical, experts * n, rng).tobytes()
+                    self.down_case(f"down-reduce:{name}:N{n}:K{logical}/{physical}:T{tokens}x{slots}", kind, physical,
+                                   logical, n, experts, data, ids, down_inputs(rng, tokens, slots, logical, n, 2.0))
+
+    def test_fused_down_real_within_tolerance(self):
+        """The real Q2_K and MXFP4 down rows (layers 0, 23, 47, 48, MTP): each row an expert (n 1),
+        every saved and seeded x row a token whose slots are all those experts."""
+        for kind in (10, 39):
+            real = [case for case in CASES if case[1] == kind and case[0].startswith("real:")]
+            self.assertTrue(real, f"no real {NAMES[kind]} slices")
+            rng = seeded(3851, kind)
+            for label, _, physical, logical, data, x, saved in real:
+                experts = len(saved)
+                _, scores, shared, sigmoid = down_inputs(rng, len(x), experts, logical, 1)
+                with self.subTest(case=label):
+                    self.down_case(f"down-reduce-{label}", kind, physical, logical, 1, experts, data,
+                                   np.tile(np.arange(experts), len(x)), (np.repeat(x, experts, 0), scores, shared, sigmoid))
+
+    def test_logical_k_padding_down_reduce(self):
+        """Review Focus 2 (down+reduce): poisoned padding past k_logical (K 600 of 768 or 1024, a
+        partial chunk at 600, whole padded blocks) never reaches y or routed, and act is never
+        read past k_logical (NaN in the gap of a pitch-601 view)."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3852, kind), oracle.FORMATS[kind][0]
+            physical, logical, n, tokens, slots = 768 if block == 32 else 1024, 600, 33, 2, 3
+            clean = quant_rows(kind, physical, 3 * n, rng)
+            raw = clean
+            for column in range(-(-logical // block) * block, physical, block):
+                raw = poison_block(kind, raw, slice(None), column, np.inf)
+            ids, inputs = rng.integers(0, 3, tokens * slots), down_inputs(rng, tokens, slots, logical, n)
+            decoded = run_down_reduce("fused", kind, physical, logical, n, 3, clean.tobytes(), ids, *inputs)[3]
+            with self.subTest(kernel=name):
+                self.down_case(f"down-reduce-padding:{name}:N{n}:K{logical}/{physical}", kind, physical, logical, n, 3,
+                               raw.tobytes(), ids, inputs, view=(logical + 1, n, 0), decoded=decoded)
+
+    def test_nonfinite_sets_error_word_down_reduce(self):
+        """Review Focus 3 (down+reduce): NaN/Inf in act, a nonfinite down block scale, Inf in shared,
+        NaN in sigmoid, and finite dots whose y overflows (shared at FLT_MAX) each set bit 1."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3853, kind)
+            raw, ids = quant_rows(kind, 2560, 2 * 33, rng), [1, 0, 1, 0]
+            act, scores, shared, sigmoid = down_inputs(rng, 2, 2, 2560, 33)
+            big = np.full_like(shared, np.finfo(np.float32).max)
+            cases = [("act nan", "act", np.nan), ("act inf", "act", np.inf), ("down scale", "raw", None),
+                     ("shared inf", "shared", np.inf), ("sigmoid nan", "sigmoid", np.nan), ("overflow", "big", None)]
+            for label, target, value in cases:
+                a, w, sh, sg = act.copy(), raw, shared, sigmoid.copy()
+                if target == "act":
+                    a[2, 100] = value
+                elif target == "raw":
+                    w = poison_block(kind, raw, 33 + 5, 96, np.inf)
+                elif target == "shared":
+                    sh = shared.copy(); sh[1, 7] = value
+                elif target == "sigmoid":
+                    sg[1] = value
+                else:
+                    a, sh, sg = act * 1e33, big, np.ones_like(sigmoid)
+                with self.subTest(kernel=name, poison=label):
+                    code, y, routed, _, stderr = run_down_reduce("fused", kind, 2560, 2560, 33, 2, w.tobytes(), ids,
+                                                                 a, scores, sh, sg)
+                    self.assertEqual((code, stderr), (NONFINITE, b"qwen38 Metal: error bits 1\n"))
+                    if label == "overflow":
+                        self.assertTrue(np.isfinite(routed).all() and not np.isfinite(y).all())
+
+    def test_rows_bit_independent_down_reduce(self):
+        """Review Focus 4 (down+reduce): a token's y and routed bits depend neither on the number
+        or order of the tokens in the dispatch, nor on n's position, nor on the expert ids."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3854, kind)
+            n, k, tokens, slots, experts = 37, 2560, 4, 5, 8
+            raw = quant_rows(kind, k, experts * n, rng)
+            ids, (act, scores, shared, sigmoid) = rng.integers(0, experts, tokens * slots), down_inputs(rng, tokens, slots, k, n)
+            fused = lambda w, i, t, nn=n, cols=slice(None): run_down_reduce(
+                "fused", kind, k, k, nn, experts, w.tobytes(), i, act[(np.array(t)[:, None] * slots + np.arange(slots)).ravel()],
+                scores[t], shared[t][:, cols], sigmoid[t])[1:3]
+            with self.subTest(kernel=name):
+                full = self.down_case(f"down-reduce-rows:{name}:N{n}:T{tokens}x{slots}", kind, k, k, n, experts,
+                                      raw.tobytes(), ids, (act, scores, shared, sigmoid))
+                pick = lambda t: ids[(np.array(t)[:, None] * slots + np.arange(slots)).ravel()]
+                for t in ([0], [3], [1, 2], [3, 2, 1, 0]):  # token subsets and order
+                    for got, want in zip(fused(raw, pick(t), t), full):
+                        np.testing.assert_array_equal(got.view("<u4"), want[t].view("<u4"))
+                every = list(range(tokens))
+                shift = raw.reshape(experts, n, -1)[:, 1:].copy()  # weight row j+1 becomes row j
+                for got, want in zip(fused(shift, ids, every, n - 1, slice(1, None)), full):
+                    np.testing.assert_array_equal(got.view("<u4"), want[:, 1:].view("<u4"))
+                flip = raw.reshape(experts, n, -1)[::-1].copy()  # expert e becomes experts-1-e
+                for got, want in zip(fused(flip, experts - 1 - ids, every), full):
+                    np.testing.assert_array_equal(got.view("<u4"), want.view("<u4"))
+
+    def test_strided_offset_views_down_reduce(self):
+        """Review Focus 5 (down+reduce): act and y pitches above K*4 and n*4 and nonzero offsets
+        change no bit of y or routed (the sequence runs on the same views)."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3855, kind)
+            n, k, tokens, slots, experts = 33, 768, 3, 2, 3
+            raw = quant_rows(kind, k, experts * n, rng).tobytes()
+            ids, inputs = rng.integers(0, experts, tokens * slots), down_inputs(rng, tokens, slots, 640, n)
+            with self.subTest(kernel=name):
+                plain = self.down_case(f"down-reduce-views:{name}", kind, k, 640, n, experts, raw, ids, inputs)
+                for view in ((640 + 12, n + 7, 37), (640, n, 5 * 640), (640 + 1, n + 1, 1)):
+                    with self.subTest(kernel=name, view=view):
+                        strided = self.down_case(f"down-reduce-views:{name}:{view}", kind, k, 640, n, experts, raw, ids,
+                                                 inputs, view=view)
+                        for got, want in zip(strided, plain):
+                            np.testing.assert_array_equal(got.view("<u4"), want.view("<u4"))
+
+    def test_expert_id_bounds_down_reduce(self):
+        """Review Focus 5 (down+reduce): an expert id >= n_experts in any slot of a token sets bit 2
+        (that token's y is unspecified); the other tokens' y and routed are unchanged."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng = seeded(3856, kind)
+            n, experts, slots = 33, 3, 2
+            raw = quant_rows(kind, 768, experts * n, rng).tobytes()
+            inputs = down_inputs(rng, 4, slots, 640, n)
+            ids, bad = np.array([0, 1, 2, 3, 1, 2, 0xFFFFFFFF, 0]), np.array([False, True, False, True])
+            with self.subTest(kernel=name):
+                code, y, routed, _, stderr = run_down_reduce("fused", kind, 768, 640, n, experts, raw, ids, *inputs)
+                self.assertEqual((code, stderr), (GPU_ERROR, b"qwen38 Metal: error bits 2\n"))
+                _, y_ok, routed_ok, _, _ = run_down_reduce("fused", kind, 768, 640, n, experts, raw, np.where(ids >= experts, 0, ids),
+                                                           *inputs)
+                np.testing.assert_array_equal(y[~bad].view("<u4"), y_ok[~bad].view("<u4"))
+                np.testing.assert_array_equal(routed[~bad].view("<u4"), routed_ok[~bad].view("<u4"))
+
+    def test_down_reduce_selection(self):
+        """q38_packed_encode_down_reduce answers UNSUPPORTED (the caller runs the unfused sequence) for
+        a format without a row dot (Q8_0) and whenever the indexed oracle is selected (indexed, 1,
+        all, a typo: R18); otherwise (unset, 0, linear, moe: set explicitly) it fuses."""
+        rng = np.random.default_rng(3857)
+        inputs, ids = down_inputs(rng, 1, 2, 2560, 4), [0, 2]
+        q2 = quant_rows(10, 2560, 3 * 4, rng).tobytes()
+        for env in ({}, {"Q38_REF_KERNELS": "0"}, {"Q38_REF_KERNELS": "linear"}, {"Q38_REF_KERNELS": "moe"}):
+            with self.subTest(env=env):
+                self.assertEqual(run_down_reduce("fused", 10, 2560, 2560, 4, 3, q2, ids, *inputs, env=env)[0], 0)
+        for value in ("indexed", "1", "all", "linear,indexed", "indexd"):
+            with self.subTest(value=value):
+                self.assertEqual(run_down_reduce("fused", 10, 2560, 2560, 4, 3, q2, ids, *inputs,
+                                                 env={"Q38_REF_KERNELS": value})[0], UNSUPPORTED)
+        with self.subTest(case="q8_0"):
+            q8 = packed.packed_fixture(8, 2560, 12, rng)
+            self.assertEqual(run_down_reduce("fused", 8, 2560, 2560, 4, 3, q8, ids, *inputs)[0], UNSUPPORTED)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
