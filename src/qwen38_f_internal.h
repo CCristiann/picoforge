@@ -42,8 +42,16 @@ typedef struct {
     Qwen38GpuSpan ids, identity;                  /* uint32 [P] each */
 } Q38FRoutedWork;
 typedef struct Q38FRouted Q38FRouted;
+/* R1.5d parallel router (q38_moe_route_fast): one threadgroup of this many
+ * threads per token, for at most this many experts (the kernel mirrors the
+ * capacity); a larger E, k > E, or `moe` selected keeps the one-thread
+ * q38f_route. */
+#define Q38F_ROUTE_THREADS 256
+#define Q38F_ROUTE_MAX_EXPERTS 1024
 Qwen38Status q38f_routed_create(void *device, void *library, Q38FRouted **, Qwen38Error *);
 void q38f_routed_destroy(Q38FRouted *);
+/* True iff q38f_routed_encode routes [E experts, top K] with the parallel kernel. */
+bool q38f_routed_fast_route(const Q38FRouted *, size_t experts, size_t slots);
 /* weights/layouts in Qwen38MoeWeights order: router, gate, up, down,
  * shared gate, shared up, shared down, shared router. */
 Qwen38Status q38f_routed_encode(Q38FRouted *, Q38PackedGpu *, Q38CGpu *, Qwen38GpuCommand,

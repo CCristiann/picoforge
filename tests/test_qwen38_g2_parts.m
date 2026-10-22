@@ -134,6 +134,10 @@ static void check_moe(uint32_t layer, size_t t) {
      * `indexed` runs the unfused indexed oracle. */
     static const char *const envs[] = {NULL, "moe", "indexed"};
     float *fused = malloc(x_n * 4), *fused_routed = malloc(x_n * 4);
+    /* R1.5d router: the parallel kernel is the default and `moe` selects q38f_route; ids, weights
+     * and probs have the same bits either way. */
+    float *route_probs = malloc(t*c->experts*4), *route_weights = malloc(p*4);
+    uint32_t *route_ids = malloc(p*4);
     for (size_t r = 0; r < 3; ++r) {
         assert(envs[r] ? setenv("Q38_REF_KERNELS", envs[r], 1) == 0 : unsetenv("Q38_REF_KERNELS") == 0);
         Q38FRouted *routed; Q38PackedGpu *b; Q38CGpu *ops;
@@ -142,6 +146,7 @@ static void check_moe(uint32_t layer, size_t t) {
         ok(q38c_gpu_create((__bridge void *)device, (__bridge void *)library, &ops, &e), &e, "C gpu");
         assert(unsetenv("Q38_REF_KERNELS") == 0);
         memset(bg.contents, 0xa5, p*i*4); memset(bu.contents, 0xa5, p*i*4); memset(bd.contents, 0xa5, p*h*4);
+        memset(bp.contents, 0xa5, t*c->experts*4); memset(bw.contents, 0xa5, p*4); memset(bi.contents, 0xa5, p*4);
         __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
         const GgufBinding *const *gbp = gb; const Q38PackedLayout *glp = gl;
         ok(command(t, @[by, bl, bp, bw, bg, bu, ba, bd, sg, su, sa, sh, sl, ss, br, bi, bm], @[bx], ^(Qwen38GpuCommand cmd) {
@@ -160,6 +165,19 @@ static void check_moe(uint32_t layer, size_t t) {
                                                   "moe_ref_indexed_down_unfused"};
         report(down_names[r], layer, down_untouched == !r ? 0 : 1, 0, down_untouched);
         compare("moe_y",layer,by.contents,y,x_n,5e-4);
+        bool fast_route = q38f_routed_fast_route(routed, c->experts, k);
+        static const char *const route_names[] = {"moe_route_fast_selected", "moe_ref_moe_route_oracle", "moe_ref_indexed_route_fast"};
+        report(route_names[r], layer, fast_route == (r != 1) ? 0 : 1, 0, fast_route);
+        if (!r) { /* shapes the parallel kernel does not take keep q38f_route */
+            bool shapes = q38f_routed_fast_route(routed, 1024, 10) && !q38f_routed_fast_route(routed, 1025, 10) &&
+                !q38f_routed_fast_route(routed, 4, 5) && q38f_routed_fast_route(routed, 1, 1) && !q38f_routed_fast_route(routed, 0, 0);
+            report("moe_route_fast_shapes", layer, shapes ? 0 : 1, 0, shapes);
+            memcpy(route_probs, bp.contents, t*c->experts*4); memcpy(route_weights, bw.contents, p*4); memcpy(route_ids, bi.contents, p*4);
+        } else if (r == 1) {
+            bool same = !memcmp(route_probs, bp.contents, t*c->experts*4) && !memcmp(route_weights, bw.contents, p*4) &&
+                !memcmp(route_ids, bi.contents, p*4);
+            report("moe_route_fast_bits_match_oracle", layer, same ? 0 : 1, 0, same);
+        }
         if (!r) {
             bool same_ids = !memcmp(bi.contents, ids, p*4);
             report("moe_route_ids", layer, same_ids ? 0 : 1, 0, same_ids);
@@ -172,7 +190,7 @@ static void check_moe(uint32_t layer, size_t t) {
         }
         q38f_routed_destroy(routed); q38_packed_gpu_free(b); q38c_gpu_destroy(ops);
     }
-    free(fused); free(fused_routed);
+    free(fused); free(fused_routed); free(route_probs); free(route_weights); free(route_ids);
     qwen38_moe_work_destroy(work); qwen38_moe_destroy(moe); free(x); free(y); free(rw); free(ids);
 }
 

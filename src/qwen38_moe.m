@@ -210,11 +210,11 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
 /* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up
  * or down+reduce. */
-struct Q38FRouted { void *device, *route, *iota, *product, *reduce; bool ref_moe; };
+struct Q38FRouted { void *device, *route, *iota, *product, *reduce, *route_fast; bool ref_moe; };
 void q38f_routed_destroy(Q38FRouted *r) {
     if (!r) return;
-    void *all[]={r->route,r->iota,r->product,r->reduce,r->device};
-    for (size_t i=0;i<5;i++) if (all[i]) CFRelease(all[i]);
+    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->device};
+    for (size_t i=0;i<6;i++) if (all[i]) CFRelease(all[i]);
     free(r);
 }
 Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen38Error *err) {
@@ -232,7 +232,16 @@ Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen
         if (!p) { q38f_routed_destroy(r); return q38c_error(err,Q38_GPU_ERROR,"routed MoE pipeline"); }
         *slots[j]=(__bridge_retained void *)p;
     }
+    { /* R1.5d: optional; without a 32-wide simdgroup or 256 threads q38f_route stays */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_route_fast"];
+        id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
+        if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38F_ROUTE_THREADS)
+            r->route_fast=(__bridge_retained void *)p;
+    }
     *out=r; return q38c_error(err,Q38_OK,NULL);
+}
+bool q38f_routed_fast_route(const Q38FRouted *r,size_t experts,size_t slots) {
+    return r && r->route_fast && !r->ref_moe && experts && experts<=Q38F_ROUTE_MAX_EXPERTS && slots && slots<=experts;
 }
 static void run(id<MTLComputeCommandEncoder> enc,void *pipeline,size_t count) {
     id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)pipeline;
@@ -280,7 +289,12 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     }
     struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
-    [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5); run(enc,r->route,t);
+    [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5);
+    if (q38f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)r->route_fast];
+        [enc dispatchThreadgroups:MTLSizeMake(t,1,1) threadsPerThreadgroup:MTLSizeMake(Q38F_ROUTE_THREADS,1,1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    } else run(enc,r->route,t);
     /* R1.5b: gate+up+SwiGLU in one fused dispatch, act bit-identical to the
      * unfused fast sequence below; gate/up are then not written (nothing reads
      * them but ACT and MUL). Fused only when neither `moe` nor `indexed` is
