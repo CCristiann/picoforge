@@ -150,12 +150,12 @@ bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-indexed) ;; \
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-gate-up) ;; \
 	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-down) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route) ;; \
-	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32, .../matvec-multi, .../matvec-indexed, .../moe-gate-up, .../moe-down or .../moe-route (a new directory)" >&2; exit 2;; esac
+	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route|bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route-*) ;; \
+	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32, .../matvec-multi, .../matvec-indexed, .../moe-gate-up, .../moe-down or .../moe-route or .../moe-route-<suffix> (a new directory)" >&2; exit 2;; esac
 	@mkdir -p "$(dir $(BENCH_OUT))" && mkdir "$(BENCH_OUT)" # an existing directory fails here: never overwritten
 	@{ git rev-parse HEAD; git status --porcelain; shasum -a 256 $< $(METALLIB); } > "$(BENCH_OUT)/manifest.txt"
 	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c '{ $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/before.txt" && \
-	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(if $(filter %/matvec-multi,$(BENCH_OUT)),$(Q38_R1_BENCH_MULTI),$(if $(filter %/matvec-indexed,$(BENCH_OUT)),$(Q38_R1_BENCH_INDEXED),$(if $(filter %/moe-gate-up,$(BENCH_OUT)),$(Q38_R1_BENCH_GATE_UP),$(if $(filter %/moe-down,$(BENCH_OUT)),$(Q38_R1_BENCH_DOWN),$(if $(filter %/moe-route,$(BENCH_OUT)),$(Q38_R1_BENCH_ROUTE),$(Q38_R1_BENCH))))))); do \
+	  for spec in $(if $(filter %/matvec-f16-f32,$(BENCH_OUT)),$(Q38_R1_BENCH_DENSE),$(if $(filter %/matvec-multi,$(BENCH_OUT)),$(Q38_R1_BENCH_MULTI),$(if $(filter %/matvec-indexed,$(BENCH_OUT)),$(Q38_R1_BENCH_INDEXED),$(if $(filter %/moe-gate-up,$(BENCH_OUT)),$(Q38_R1_BENCH_GATE_UP),$(if $(filter %/moe-down,$(BENCH_OUT)),$(Q38_R1_BENCH_DOWN),$(if $(findstring /moe-route,$(BENCH_OUT)),$(Q38_R1_BENCH_ROUTE),$(Q38_R1_BENCH))))))); do \
 	    case $$spec in *@*) ./$< mbench $$(echo $$spec | tr @ " ") || exit 1;; \
 	    ibench:*|gbench:*|dbench:*|rbench:*|rtbench:*) ./$< $$(echo $$spec | tr : " ") || exit 1;; \
 	    *) set -- $$(echo $$spec | tr : " "); ./$< bench $$1 $$2 $$3 $$4 $$5 $$6 || exit 1;; esac; done > "$(BENCH_OUT)/runs.jsonl" && \
