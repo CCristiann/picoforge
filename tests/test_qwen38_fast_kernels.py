@@ -372,6 +372,69 @@ def down_inputs(rng, tokens, slots, logical, n, scale=1.0):
             rng.uniform(-1, 1, (tokens, n)).astype(np.float32), rng.uniform(0, 1, tokens).astype(np.float32))
 
 
+def run_route(mode, logits, slots, norm, experts=None, env=None):
+    """q38_moe_route_fast (fast) or q38f_route (oracle) on logits [tokens, pitch], the first `experts`
+    (default: all) columns being the router row: (error word, ids [t, k], weights [t, k], probs [t, e]).
+    Q38_REF_KERNELS is never inherited (set it through env)."""
+    (tokens, pitch), lock = logits.shape, os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    experts = pitch if experts is None else experts
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    result = subprocess.run([str(NATIVE), "route", mode, str(experts), str(slots), str(tokens), str(norm), str(pitch)],
+                            input=logits.astype("<f4").tobytes(), capture_output=True, timeout=120,
+                            pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    pairs, out = tokens * slots, result.stdout
+    if result.returncode or stderr or len(out) != 4 * (1 + 2 * pairs + tokens * experts):
+        raise AssertionError(f"route {mode}: exit {result.returncode}, {stderr!r}")
+    word = int(np.frombuffer(out[:4], "<u4")[0])
+    ids = np.frombuffer(out[4:4 + 4 * pairs], "<u4").reshape(tokens, slots)
+    weights = np.frombuffer(out[4 + 4 * pairs:4 + 8 * pairs], "<f4").reshape(tokens, slots)
+    return word, ids, weights, np.frombuffer(out[4 + 8 * pairs:], "<f4").reshape(tokens, experts)
+
+
+ROUTE_PAD = 5  # columns of NaN past the experts in a padded router row (pitch = experts + ROUTE_PAD)
+ROUTE_KINDS = 11  # row shapes of route_logits
+
+
+def route_logits(rng, tokens, experts, offset=0):
+    """Router logits [tokens, experts] FP32: row i has shape (i + offset) % ROUTE_KINDS, the first ones plain
+    normals, the rest built to make exact ties of p (the (larger p, smaller id) rule) common."""
+    rows = []
+    for i in range(tokens):
+        kind, z = (i + offset) % ROUTE_KINDS, rng.normal(0, 1, experts)
+        pick = rng.permutation(experts)
+        if kind == 1:
+            z = z * 10                                   # wide: exp underflows for most ids
+        elif kind == 2:
+            z = np.round(z * 2) / 2                      # a few distinct values: ties everywhere
+        elif kind == 3:
+            z = np.full(experts, 0.5)                    # all equal
+        elif kind == 4:
+            z = np.where(rng.random(experts) < 0.5, -0.0, 0.0)  # +0 / -0 mixed
+        elif kind == 5:                                  # 9 distinct leaders, then 12 equal ones across the k-th place
+            z = np.full(experts, -2.0)
+            z[pick[:9]] = 3 + np.arange(len(pick[:9]))
+            z[pick[9:21]] = 2.0
+        elif kind == 6:
+            z[pick[:5]] = z.max() + 1                    # the maximum duplicated across ids
+        elif kind == 7:
+            z = np.full(experts, -1e30)                  # p = 0 for all but 3: the rest are exact zero ties
+            z[pick[:3]] = rng.normal(0, 1, min(3, experts))
+        elif kind == 8:
+            z = np.arange(experts) * 0.01                # ramp up (max last)
+        elif kind == 9:
+            z = -np.arange(experts) * 0.01               # ramp down (max first)
+        elif kind == 10:                                 # neighbours in ULPs of 1.0
+            z = np.float32(1.0) + rng.integers(-2, 3, experts) * np.float32(2 ** -23)
+        rows.append(z.astype(np.float32))
+    return np.stack(rows)
+
+
+def route_reference_ids(probs, slots):
+    """The oracle's rule on given probabilities: larger p first, equal p by smaller id."""
+    return np.stack([np.lexsort((np.arange(len(p)), -p.astype(np.float64)))[:slots] for p in probs]).astype("<u4")
+
+
 class FastKernelTests(unittest.TestCase):
     def fast_case(self, label, kind, physical, logical, data, x, view=(), y_oracle=None, decoded=None):
         """Fast kernel on one case: supported, finite, (a) and (b); recorded in the corpus."""
@@ -1331,6 +1394,79 @@ class FastKernelTests(unittest.TestCase):
         with self.subTest(case="q8_0"):
             q8 = packed.packed_fixture(8, 2560, 12, rng)
             self.assertEqual(run_down_reduce("fused", 8, 2560, 2560, 4, 3, q8, ids, *inputs)[0], UNSUPPORTED)
+
+
+    def assert_route_identical(self, label, logits, slots, norm, experts=None):
+        """q38_moe_route_fast has the bits of q38f_route in ids, weights, probs and error word."""
+        fast, oracle = (run_route(m, logits, slots, norm, experts) for m in ("fast", "oracle"))
+        for name, got, want in zip(("error word", "ids", "weights", "probs"), fast, oracle):
+            self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes(), f"{label}: {name}")
+        return oracle
+
+    def test_route_fast_bit_identical(self):
+        """Bit identity with q38f_route over tokens x experts x slots x norm, row shapes cycling (random,
+        wide, ties, equal, +-0, ties across the k-th place, p = 0 ties, ramps, ULP neighbours). The ids also
+        follow the (larger p, smaller id) rule computed independently from the returned probabilities."""
+        rng = np.random.default_rng(3911)
+        for tokens in (1, 3, 32, 128):
+            for experts, slots in ((512, 1), (512, 10), (33, 1), (33, 10), (1, 1)):
+                for norm in (0, 1):
+                    with self.subTest(tokens=tokens, experts=experts, slots=slots, norm=norm):
+                        logits = route_logits(rng, tokens, experts, offset=tokens + experts + slots)
+                        word, ids, weights, probs = self.assert_route_identical("route", logits, slots, norm)
+                        self.assertEqual(word, 0)
+                        np.testing.assert_array_equal(ids, route_reference_ids(probs, slots))
+
+    def test_route_fast_every_row_shape(self):
+        """Every row shape on its own row (one token: no neighbour hides a wrong tie), at the boundary sizes."""
+        rng = np.random.default_rng(3913)
+        for experts, slots in ((512, 10), (33, 10), (10, 10), (1024, 10)):
+            for offset in range(ROUTE_KINDS):
+                with self.subTest(experts=experts, offset=offset):
+                    logits = route_logits(rng, 1, experts, offset)
+                    word, ids, _, probs = self.assert_route_identical("shape", logits, slots, offset % 2)
+                    self.assertEqual(word, 0)
+                    np.testing.assert_array_equal(ids, route_reference_ids(probs, slots))
+
+    def test_route_fast_pitch(self):
+        """A router row pitch past the expert count (NaN in the gap) is respected, as the oracle does."""
+        rng = np.random.default_rng(3917)
+        logits = route_logits(rng, 5, 512, 3)
+        padded = np.full((5, 512 + ROUTE_PAD), np.nan, np.float32)
+        padded[:, :512] = logits
+        word, ids, weights, probs = self.assert_route_identical("pitch", padded, 10, 1, 512)
+        self.assertEqual(word, 0)
+        for a, b in zip(run_route("fast", logits, 10, 1), (word, ids, weights, probs)):
+            np.testing.assert_array_equal(a, b)
+
+    def test_route_fast_nonfinite_row(self):
+        """A NaN, +Inf or -Inf logit sets bit 1 and gives that row ids 0..k-1, zero weights and untouched
+        probs (the oracle's fallback), the finite rows around it unchanged: bit for bit."""
+        rng = np.random.default_rng(3919)
+        logits = route_logits(rng, 7, 512, 1)
+        for row, value in ((1, np.nan), (3, np.inf), (4, -np.inf), (6, np.nan)):
+            logits[row, int(rng.integers(512))] = value
+        for slots in (1, 10):
+            with self.subTest(slots=slots):
+                word, ids, weights, probs = self.assert_route_identical("nonfinite", logits, slots, 1)
+                self.assertEqual(word, 1)
+                for row in (1, 3, 4, 6):
+                    np.testing.assert_array_equal(ids[row], np.arange(slots))
+                    self.assertEqual(weights[row].tobytes(), bytes(4 * slots))
+                    self.assertEqual(probs[row].tobytes(), b"\xa5" * (4 * 512))
+                for row in (0, 2, 5):
+                    self.assertTrue(np.isfinite(probs[row]).all() and abs(float(probs[row].sum()) - 1) < 1e-4)
+
+    def test_route_fast_capacity_guard(self):
+        """Beyond the kernel's 1024 experts, or with k > E, the kernel writes nothing and sets bit 2 (the
+        host keeps q38f_route there; this is the kernel's own guard)."""
+        rng = np.random.default_rng(3923)
+        for experts, slots in ((2048, 10), (4, 6)):
+            with self.subTest(experts=experts, slots=slots):
+                word, ids, weights, probs = run_route("fast", route_logits(rng, 2, experts), slots, 1)
+                self.assertEqual(word, 2)
+                for part in (ids, weights, probs):
+                    self.assertEqual(part.tobytes(), b"\xa5" * part.nbytes)
 
 
 if __name__ == "__main__":

@@ -708,6 +708,76 @@ static int down_main(int argc,char **argv,const char *library) {
     return status;
 }
 
+/* R1.5d parallel router top-k (q38_moe_route_fast) against q38f_route:
+ *   route <fast|oracle> experts slots tokens norm pitch
+ * stdin: logits [tokens, pitch] FP32 (the floats past `experts` in a row are
+ * not read). stdout: the error word (uint32), ids uint32 [tokens*slots], weights
+ * FP32 [tokens*slots], probs FP32 [tokens*experts]; ids, weights and probs are
+ * pre-filled with 0xa5 so a missing write shows. fast = the new kernel, one
+ * threadgroup of ROUTE_THREADS per token (the host's dispatch in
+ * q38f_routed_encode, which also falls back above 1024 experts: here the
+ * kernel runs regardless, to check its own guard); oracle = q38f_route, 64-thread
+ * groups. Always exit 0 (the word says what happened).
+ *   rtbench <fast|oracle> experts slots tokens reps
+ * the same dispatch on synthetic logits, 20 timed per command buffer (rbench's). */
+#define ROUTE_THREADS 256 /* Q38F_ROUTE_THREADS of qwen38_f_internal.h */
+static int route_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"rtbench");
+    assert(argc==(timing ? 7 : 8) &&(!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle")));
+    bool fast=!strcmp(argv[2],"fast");
+    size_t experts=number(argv[3]), slots=number(argv[4]), tokens=number(argv[5]);
+    size_t reps=timing ? number(argv[6]) : 1, norm=timing ? 1 : number(argv[6]), pitch=timing ? experts : number(argv[7]);
+    assert(experts && experts<=65536 && slots && slots<=64 && tokens && tokens<=4096 && reps && reps<=1000);
+    size_t pairs=tokens*slots;
+    float *input=calloc(tokens*pitch,4); assert(input);
+    if (timing) {
+        uint64_t seed=3813; /* rbench's synthetic logits */
+        for (size_t i=0;i<tokens*experts;i++) input[i]=(float)(mix(&seed)>>40)*0x1p-21f-4.0f;
+    } else assert(pitch>=experts && fread(input,4,tokens*pitch,stdin)==tokens*pitch && fgetc(stdin)==EOF);
+    double seconds[23];
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        id<MTLComputePipelineState> p=[dev newComputePipelineStateWithFunction:
+            [lib newFunctionWithName:fast ? @"q38_moe_route_fast" : @"q38f_route"] error:&error];
+        assert(p && (!fast || (p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=ROUTE_THREADS)));
+        id<MTLBuffer> logits=shared(dev,4*tokens*pitch),probs=shared(dev,4*tokens*experts),ids=shared(dev,4*pairs),
+            weights=shared(dev,4*pairs),word=shared(dev,4);
+        memcpy(logits.contents,input,4*tokens*pitch);
+        memset(probs.contents,0xa5,4*tokens*experts); memset(ids.contents,0xa5,4*pairs); memset(weights.contents,0xa5,4*pairs);
+        struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)tokens,(uint32_t)experts,(uint32_t)slots,(uint32_t)norm,(uint32_t)pitch};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            ((uint32_t *)word.contents)[0]=0;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+            for (size_t rep=0;rep<reps;rep++) {
+                [encoder setComputePipelineState:p];
+                [encoder setBuffer:logits offset:0 atIndex:0]; [encoder setBuffer:probs offset:0 atIndex:1];
+                [encoder setBuffer:ids offset:0 atIndex:2]; [encoder setBuffer:weights offset:0 atIndex:3];
+                [encoder setBytes:&ra length:sizeof ra atIndex:4]; [encoder setBuffer:word offset:0 atIndex:5];
+                if (fast) [encoder dispatchThreadgroups:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(ROUTE_THREADS,1,1)];
+                else [encoder dispatchThreads:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,p.maxTotalThreadsPerThreadgroup),1,1)];
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+            [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            assert(!timing || !((uint32_t *)word.contents)[0]);
+        }
+        if (timing) {
+            Request r={.mode=argv[2],.n=slots,.logical=experts,.m=tokens,.reps=reps,.bytes=4*tokens*experts};
+            report(r,seconds,NULL,NULL);
+        } else {
+            assert(fwrite(word.contents,4,1,stdout)==1 && fwrite(ids.contents,4,pairs,stdout)==pairs &&
+                   fwrite(weights.contents,4,pairs,stdout)==pairs && fwrite(probs.contents,4,tokens*experts,stdout)==tokens*experts);
+        }
+    }
+    free(input);
+    return 0;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -719,6 +789,7 @@ int main(int argc,char **argv) {
                    !strcmp(argv[1],"gbench"))) return indexed_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"downreduce") || !strcmp(argv[1],"dbench") || !strcmp(argv[1],"rbench")))
         return down_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"route") || !strcmp(argv[1],"rtbench"))) return route_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

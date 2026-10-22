@@ -150,3 +150,77 @@ DOWN_REDUCE_KERNEL(q38_moe_down_reduce_iq2_xxs, Q38Iq2Xxs)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q2_k, Q38Q2K)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q4_k, Q38Q4K)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_mxfp4, Q38Mxfp4)
+
+/* R1.5d router softmax + top-k, one threadgroup per token: bit-identical to
+ * q38f_route (qwen38_moe.metal) in ids, weights and probs, which ran ONE thread
+ * per token (512 exp, a serial sum, then k scans of all experts: 59 ms per
+ * decode token). What is parallel is exact in any order: the maximum (only
+ * z - maximum is used, and exp(+-0) = 1), exp and the divide per element, and
+ * each selection round, an arg-max over (larger p, then smaller id) -- the
+ * oracle's strict > scan in ascending id. What is NOT reordered: the exp sum
+ * (thread 0, e = 0..E-1, the order of the oracle: a tree sum would change the
+ * bits of every probability) and `selected` (serial in s). A chosen expert is
+ * masked with -1 (below every p >= 0) in threadgroup memory by the thread that
+ * owns it, so no used-id rescan and no barrier for the mask. The threadgroup
+ * width is the host's (a multiple of 32, at most 1024). (Idea of a parallel
+ * router top-k: ds4 fc80bd6, MIT, metal/qwen4.metal: kernel_qwen4_router_topk.)
+ * Capacity Q38F_ROUTE_MAX_EXPERTS mirrors qwen38_f_internal.h; beyond it, or
+ * k > e, the host keeps q38f_route and this kernel only sets bit 2. */
+#define Q38F_ROUTE_MAX_EXPERTS 1024
+struct RouteArgs { uint t, e, k, norm, pitch; };
+kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device float *probs [[buffer(1)]],
+        device uint *ids [[buffer(2)]], device float *weights [[buffer(3)]], constant RouteArgs &a [[buffer(4)]],
+        device atomic_uint *error [[buffer(5)]], uint token [[threadgroup_position_in_grid]],
+        uint tid [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]],
+        uint nsg [[simdgroups_per_threadgroup]]) {
+    threadgroup float work[Q38F_ROUTE_MAX_EXPERTS];  /* p, then p with the chosen experts at -1 */
+    threadgroup float sg_value[2][32];               /* per-simdgroup (max z | best p) */
+    threadgroup uint sg_flag[2][32];                 /* per-simdgroup (nonfinite | best id) */
+    threadgroup float sum_all;
+    if (token >= a.t) return;
+    if (a.e == 0 || a.e > Q38F_ROUTE_MAX_EXPERTS || a.k == 0 || a.k > a.e) {
+        if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    device const float *z = logits + ulong(token) * a.pitch;
+    device float *p = probs + ulong(token) * a.e;
+    device uint *id = ids + ulong(token) * a.k;
+    device float *w = weights + ulong(token) * a.k;
+    float local = -INFINITY; uint bad = 0;
+    for (uint e = tid; e < a.e; e += tn) { float v = z[e]; bad |= !isfinite(v); local = v > local ? v : local; }
+    float group = simd_max(local); uint group_bad = simd_max(bad);
+    if (!lane) { sg_value[0][sg] = group; sg_flag[0][sg] = group_bad; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float maximum = -INFINITY; uint any_bad = 0;
+    for (uint g = 0; g < nsg; g++) { maximum = max(maximum, sg_value[0][g]); any_bad |= sg_flag[0][g]; }
+    if (any_bad) { /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
+        if (!tid) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        for (uint s = tid; s < a.k; s += tn) { id[s] = s; w[s] = 0.0f; }
+        return;
+    }
+    for (uint e = tid; e < a.e; e += tn) work[e] = exp(z[e] - maximum);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!tid) { float sum = 0.0f; for (uint e = 0; e < a.e; e++) sum += work[e]; sum_all = sum; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float sum = sum_all;
+    for (uint e = tid; e < a.e; e += tn) { float v = work[e] / sum; work[e] = v; p[e] = v; }
+    float selected = 0.0f;
+    for (uint s = 0; s < a.k; s++) {
+        float best = -2.0f; uint at = 0xffffffffu; /* this thread's elements ascend: first strict > = smallest id */
+        for (uint e = tid; e < a.e; e += tn) if (work[e] > best) { best = work[e]; at = e; }
+        float top = simd_max(best);
+        uint first = simd_min(best == top ? at : 0xffffffffu), slot = s & 1; /* two slots: no barrier before reuse */
+        if (!lane) { sg_value[slot][sg] = top; sg_flag[slot][sg] = first; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float value = -3.0f; uint chosen = 0xffffffffu;
+        for (uint g = 0; g < nsg; g++) {
+            float v = sg_value[slot][g]; uint i = sg_flag[slot][g];
+            if (v > value || (v == value && i < chosen)) { value = v; chosen = i; }
+        }
+        if (chosen % tn == tid) work[chosen] = -1.0f; /* only the owner touches its element */
+        if (!tid) { id[s] = chosen; w[s] = value; }
+        selected += value; /* serial in s, as the oracle (every thread tracks the same sum) */
+    }
+    if (a.norm && !tid) for (uint s = 0; s < a.k; s++) w[s] /= selected;
+}
