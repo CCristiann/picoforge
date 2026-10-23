@@ -1,0 +1,5 @@
+ee67690b1decbd34523929055cf80c8f584f3f5e
+ M docs/devlog.md
+?? bench/qwen38_r1_20261023/
+e139589a75184a38f1c22ab296bedb7660d4f064ec9137489445fc82b24c64aa  build/qwen38-r1/test_fast_kernels
+0695b6edfb0284a1957dfbebbff21cd8ee14fcea7a560348201173af4cf790b8  picoforge.metallib
