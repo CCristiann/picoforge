@@ -16,6 +16,39 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.5d — Parallel router top-k
+
+The router turns 512 logits into probabilities p = softmax(z) and keeps the 10
+largest as the token's experts, with weights p renormalized to sum 1.
+`q38f_route` did it in ONE GPU thread per token (512 exp, a serial sum, then
+10 scans of 512 experts): 1232 µs per layer, 59 ms per decoded token over 48
+layers, 37% of the post-R1.5c token. `q38_moe_route_fast`
+(`qwen38_moe_fused.metal`) uses one 256-thread threadgroup per token. Exact in
+any order, so parallel: the maximum, exp and divide per element, and each
+selection round, an arg-max over (larger p, then smaller id) = the oracle's
+strict `>` scan; a chosen expert is masked with −1 in threadgroup memory by
+its owner thread. Float addition is not associative, so two sums keep the
+oracle's order: the exp sum (thread 0, e = 0..511; a tree sum changes every
+probability) and the sum of the 10 weights. Ids, weights and probs are
+bit-identical to `q38f_route` (5 kernel tests; graph layers 0–3);
+`Q38_REF_KERNELS=moe` (or 1), E > 1024 or k > E dispatch the oracle. Idea:
+ds4 fc80bd6 (MIT) `kernel_qwen4_router_topk`, nothing copied.
+
+| tokens | q38f_route µs | q38_moe_route_fast µs |
+|---|---|---|
+| 1 | 1227.3 | 23.9 (p10 23.8, p90 24.7) |
+| 4 | 1230.6 | 24.0 |
+| 32 | 1294.8 | 24.6 |
+| 128 | 1310.6 | 38.7 |
+
+Protocol bench on AC (`bench/qwen38_r1_20261023/moe-route`, ee67690, 3 warm-ups + 20
+measures, synthetic logits; an earlier exploration run on battery gave the same
+order of magnitude). At one token, 48 layers: 58.9 ms → 1.15 ms per token
+(estimate from the per-dispatch time, not measured end to end). Faster at 32 and
+128 tokens too, so no prefill threshold.
+
+Measured (controller, ladder): pending.
+
 ### R1.5c — Fused down + reduce
 
 After the gate+up+SwiGLU, each routed expert projects its act row back to the
