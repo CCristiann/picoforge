@@ -18,34 +18,28 @@ gate, argmax and ordered top-5 12/12.
 
 ### R1.5d — Parallel router top-k
 
-The router turns 512 logits into probabilities p = softmax(z) and keeps the 10
-largest as the token's experts, with weights p renormalized to sum 1.
-`q38f_route` did it in ONE GPU thread per token (512 exp, a serial sum, then
-10 scans of 512 experts): 1232 µs per layer, 59 ms per decoded token over 48
-layers, 37% of the post-R1.5c token. `q38_moe_route_fast`
-(`qwen38_moe_fused.metal`) uses one 256-thread threadgroup per token. Exact in
-any order, so parallel: the maximum, exp and divide per element, and each
-selection round, an arg-max over (larger p, then smaller id) = the oracle's
-strict `>` scan; a chosen expert is masked with −1 in threadgroup memory by
-its owner thread. Float addition is not associative, so two sums keep the
-oracle's order: the exp sum (thread 0, e = 0..511; a tree sum changes every
-probability) and the sum of the 10 weights. Ids, weights and probs are
+The router turns 512 logits into p = softmax(z) and keeps the 10 largest as the
+token's experts, weights p renormalized to sum 1. `q38f_route` did it in ONE GPU
+thread per token (512 exp, a serial sum, 10 scans): 1227.3 µs per layer, 58.9 ms
+per decoded token over 48 layers (36.7% of the 160.6 ms post-Task-12 token).
+`q38_moe_route_fast` (`qwen38_moe_fused.metal`): one 256-thread threadgroup per
+token. Max, exp, divide and each selection round (arg-max over larger p, then
+smaller id = the oracle's strict `>`; chosen experts masked in threadgroup memory)
+are exact in any order. Float addition is not, so the exp sum (thread 0, e = 0..511)
+and the sum of the 10 weights keep the oracle's order. Ids, weights and probs are
 bit-identical to `q38f_route` (5 kernel tests; graph layers 0–3);
-`Q38_REF_KERNELS=moe` (or 1), E > 1024 or k > E dispatch the oracle. Idea:
-ds4 fc80bd6 (MIT) `kernel_qwen4_router_topk`, nothing copied.
+`Q38_REF_KERNELS=moe` (or 1), E > 1024 or k > E dispatch the oracle. Idea: ds4
+fc80bd6 (MIT) `kernel_qwen4_router_topk`, nothing copied. Protocol bench on AC
+(`bench/qwen38_r1_20261023/moe-route`, ee67690, synthetic logits, µs median):
 
-| tokens | q38f_route µs | q38_moe_route_fast µs |
+| tokens | q38f_route (p10/p90) | q38_moe_route_fast (p10/p90) |
 |---|---|---|
-| 1 | 1227.3 | 23.9 (p10 23.8, p90 24.7) |
-| 4 | 1230.6 | 24.0 |
-| 32 | 1294.8 | 24.6 |
-| 128 | 1310.6 | 38.7 |
+| 1 | 1227.3 (1224.7/1229.6) | 23.9 (23.8/24.7) |
+| 4 | 1230.6 (1228.5/1232.3) | 24.0 (23.9/24.0) |
+| 32 | 1294.8 (1294.0/1295.4) | 24.6 (24.6/25.0) |
+| 128 | 1310.6 (1310.5/1311.1) | 38.7 (38.7/38.7) |
 
-Protocol bench on AC (`bench/qwen38_r1_20261023/moe-route`, ee67690, 3 warm-ups + 20
-measures, synthetic logits; an earlier exploration run on battery gave the same
-order of magnitude). At one token, 48 layers: 58.9 ms → 1.15 ms per token
-(estimate from the per-dispatch time, not measured end to end). Faster at 32 and
-128 tokens too, so no prefill threshold.
+t = 1, 48 layers: 58.9 → 1.15 ms per token (estimate); faster at 32/128 too: no threshold.
 
 Measured (controller, ladder): pending.
 

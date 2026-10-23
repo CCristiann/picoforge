@@ -27,22 +27,25 @@ Per decoded token (48 MoE layers, t = 1; an estimate from the per-dispatch time,
 end-to-end measurement): 48 x 1227.3 = 58.91 ms with the oracle, 48 x 23.9 = 1.15 ms with the
 fast kernel (48 x 23.8 = 1.14 ms by the p10, 48 x 24.7 = 1.19 ms by the p90).
 
-Prefill: no slowdown. The fast kernel is faster at every measured token count, including
+Prefill: no slowdown of the router dispatch (synthetic logits, not a prefill run). The fast kernel is faster at every measured token count, including
 32 and 128 (24.6 and 38.7 µs against 1294.8 and 1310.6 µs), so it is the default with no
 threshold; the oracle stays selectable with `Q38_REF_KERNELS=moe` (or `1`).
 
 ## runs.jsonl
 
 One JSON line per spec, in execution order. `mode`: `oracle` or `fast`. `n`: top-k slots
-(10). `k`: experts (512). `m`: tokens. `type`: 0 (not used by this mode). `reps`: dispatches
-per command buffer (20). `bytes`: logits bytes read (4 x tokens x experts). `median_us`,
-`p10_us`, `p90_us`: per-dispatch GPU time over the 20 measured buffers. `gbps`: `bytes` /
-median, logits only (the kernel is not bandwidth-bound at these sizes).
+(10). `k`: experts (512). `m`: tokens. `type`: always 0 (the route mode does not set it).
+`reps`: dispatches per command buffer (20). `bytes`: the harness's nominal traffic,
+4 x tokens x (2 x experts + slots) (4136 at 1 token): logits and probabilities counted once
+each, plus ids and weights; not a measured byte count. `median_us`, `p10_us`, `p90_us`:
+per-dispatch GPU time over the 20 measured buffers. `gbps`: `bytes` / median; at these sizes
+the kernel is not bandwidth-bound, so it is not a bandwidth result.
 
 ## Reproduce
 
 On AC power, with the Python venv of the main checkout:
 `caffeinate -i make bench-qwen38-matvec BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/moe-route PYTHON=<venv>/bin/python`
-(a new folder every time; an existing one fails). `make -n` shows the 8 `rtbench` specs.
+(a new folder every time; an existing one fails). `make -n` with the same arguments lists
+the 8 `rtbench` specs (checked).
 The bit-identity of the fast kernel with `q38f_route` is checked by
 `make test-qwen38-fast-kernels`, not by this bench.
