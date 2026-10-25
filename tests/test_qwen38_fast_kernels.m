@@ -207,12 +207,13 @@ static void report(Request r,double *seconds,const float *y,const char *specs) {
 }
 
 /* Counts the dispatches a multi call encodes (forwarding as qwen38_profile.m). */
-@interface Q38DispatchCounter : NSProxy { @public id<MTLComputeCommandEncoder> target; uint32_t dispatches; }
+@interface Q38DispatchCounter : NSProxy { @public id<MTLComputeCommandEncoder> target; uint32_t dispatches, barriers; }
 @end
 @implementation Q38DispatchCounter
 - (id)forwardingTargetForSelector:(SEL)s { (void)s; return target; }
 - (NSMethodSignature *)methodSignatureForSelector:(SEL)s { return [(NSObject *)target methodSignatureForSelector:s]; }
 - (void)forwardInvocation:(NSInvocation *)i { [i invokeWithTarget:target]; }
+- (void)memoryBarrierWithScope:(MTLBarrierScope)s { barriers++; [target memoryBarrierWithScope:s]; }
 - (void)dispatchThreads:(MTLSize)n threadsPerThreadgroup:(MTLSize)g { dispatches++; [target dispatchThreads:n threadsPerThreadgroup:g]; }
 - (void)dispatchThreadgroups:(MTLSize)n threadsPerThreadgroup:(MTLSize)g { dispatches++; [target dispatchThreadgroups:n threadsPerThreadgroup:g]; }
 @end
@@ -778,6 +779,88 @@ static int route_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R1.6a RMSNorm through q38c_gpu_encode (op 0 Q38C_RMS, 1 Q38C_GDN_NORM):
+ *   rms <oracle|fast|encode> op t groups width gain_rank pitch offset inplace initial
+ * oracle/fast force the choice (q38c_gpu_set_reference), encode keeps what
+ * Q38_REF_KERNELS selected at creation. x, z (and y unless inplace): [t,groups,
+ * width] views, row pitch `pitch` floats, `offset` floats past a 16-byte guard,
+ * NaN in every gap; gain [width] (rank 1) or [groups,width]; the error word
+ * starts at `initial`. stdin: x, gain, z (op 1), packed. stdout: error word,
+ * dispatches, barriers (uint32), then y packed [t,groups,width]; every y float
+ * outside the view keeps its 0xa5 bytes. Exit 0 whenever the encode succeeds.
+ *   rmsbench <oracle|fast> t groups width reps
+ * synthetic x and gain, 3 warm-ups + 20 measured command buffers of reps
+ * encodes each (check and barriers included, as in the graph). */
+static int rms_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"rmsbench"), fast=!strcmp(argv[2],"fast");
+    assert(argc==(timing ? 7 : 12) && (fast || !strcmp(argv[2],"oracle") || (!timing && !strcmp(argv[2],"encode"))));
+    size_t op=timing ? 0 : number(argv[3]), t=number(argv[3+!timing]), groups=number(argv[4+!timing]),
+           width=number(argv[5+!timing]), reps=timing ? number(argv[6]) : 1, gain_rank=timing ? 1 : number(argv[7]),
+           pitch=timing ? width : number(argv[8]), offset=timing ? 0 : number(argv[9]), inplace=timing ? 0 : number(argv[10]);
+    uint32_t initial=timing ? 0 : (uint32_t)number(argv[11]);
+    assert(op<=1 && t && t<=4096 && groups && width && groups*width<=1u<<20 && (gain_rank==1 || gain_rank==2) &&
+           pitch>=width && offset<=64 && inplace<=1 && reps && reps<=1000);
+    size_t rows=t*groups, words=4+offset+(rows-1)*pitch+width+4, gains=(gain_rank==1 ? 1 : groups)*width;
+    float *data=malloc(4*(2*rows*width+gains)); assert(data);
+    uint64_t seed=3931;
+    if (timing) for (size_t i=0;i<rows*width+gains;i++) data[i]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
+    else assert(fread(data,4,rows*width*(1+op)+gains,stdin)==rows*width*(1+op)+gains && fgetc(stdin)==EOF);
+    double seconds[23];
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38CGpu *ops=NULL;
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        if (strcmp(argv[2],"encode")) q38c_gpu_set_reference(ops,!fast);
+        id<MTLBuffer> buf[4]={shared(dev,4*words),shared(dev,4*(gains+8)),shared(dev,4*words),shared(dev,4*words)},
+            word=shared(dev,4);
+        for (size_t b=0;b<4;b++) for (size_t i=0;i<(b==1 ? gains+8 : words);i++) ((float *)buf[b].contents)[i]=NAN;
+        memset(buf[2].contents,0xa5,4*words);
+        const float *src[]={data,data+rows*width+gains};
+        for (size_t r=0;r<rows;r++) for (size_t j=0;j<width;j++) {
+            ((float *)buf[0].contents)[4+offset+r*pitch+j]=src[0][r*width+j];
+            if (op) ((float *)buf[3].contents)[4+offset+r*pitch+j]=src[1][r*width+j];
+        }
+        memcpy((float *)buf[1].contents+4,data+rows*width,4*gains);
+        Qwen38GpuF32 v[4];
+        for (size_t b=0;b<4;b++) v[b]=(Qwen38GpuF32){{(__bridge void *)buf[b],16+4*offset,4*((rows-1)*pitch+width)},3,
+            {t,groups,width,1},{groups*pitch*4,pitch*4,4,0}};
+        v[1]=gain_rank==1 ? (Qwen38GpuF32){{(__bridge void *)buf[1],16,4*gains},1,{width,1,1,1},{4,0,0,0}} :
+            (Qwen38GpuF32){{(__bridge void *)buf[1],16,4*gains},2,{groups,width,1,1},{width*4,4,0,0}};
+        if (inplace) v[2]=v[0];
+        Q38CGpuSpec spec={.eps=1e-6f,.gdn={.key_heads=1,.value_heads=groups,.key_dim=1,.value_dim=width,.rms_eps=1e-6f,.l2_eps=1e-6f}};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            ((uint32_t *)word.contents)[0]=initial;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4}};
+            for (size_t rep=0;rep<reps;rep++)
+                assert(q38c_gpu_encode(ops,cmd,op ? Q38C_GDN_NORM : Q38C_RMS,&spec,v,3+op,NULL)==Q38_OK);
+            [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            assert(!timing || !((uint32_t *)word.contents)[0]);
+        }
+        const uint32_t *raw=buf[inplace ? 0 : 2].contents;
+        for (size_t i=0;!inplace && i<words;i++) /* no write outside y */
+            assert((i>=4+offset && (i-4-offset)%pitch<width && (i-4-offset)/pitch<rows) || raw[i]==0xa5a5a5a5u);
+        if (timing) {
+            Request r={.mode=argv[2],.n=width,.logical=width,.m=rows,.reps=reps,.bytes=4*gains};
+            report(r,seconds,NULL,NULL);
+        } else {
+            uint32_t head[3]={((uint32_t *)word.contents)[0],counter->dispatches,counter->barriers};
+            assert(fwrite(head,4,3,stdout)==3);
+            for (size_t r=0;r<rows;r++) assert(fwrite(raw+4+offset+r*pitch,4,width,stdout)==width);
+        }
+        q38c_gpu_destroy(ops);
+    }
+    free(data);
+    return 0;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -790,6 +873,7 @@ int main(int argc,char **argv) {
     if (argc>2 && (!strcmp(argv[1],"downreduce") || !strcmp(argv[1],"dbench") || !strcmp(argv[1],"rbench")))
         return down_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"route") || !strcmp(argv[1],"rtbench"))) return route_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"rms") || !strcmp(argv[1],"rmsbench"))) return rms_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

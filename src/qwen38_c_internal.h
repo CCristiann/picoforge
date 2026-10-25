@@ -238,6 +238,10 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Erro
 void q38c_gpu_destroy(Q38CGpu *);
 Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,
     const Q38CGpuSpec *, const Qwen38GpuF32 *, size_t count, Qwen38Error *);
+/* R1.6a: true = RMS and GDN_NORM run check + q38c_rms (the oracle), false =
+ * q38c_rms_fast with the check folded in. Tests only; the graph keeps the
+ * choice made at creation. */
+void q38c_gpu_set_reference(Q38CGpu *, bool fuse);
 /* C4 raw-buffer composition, deliberately private. On ANY encode failure,
  * discard the unsubmitted command. On completion error discard/reset both
  * histories and replay. No lifecycle/epoch/position ABI is introduced here. */
@@ -256,6 +260,8 @@ typedef uint Q38CUint;
  * Slot numbers and operation parameters are private to these kernels/glue. */
 typedef struct { Q38CUint dim[4], stride[4], rank, count; } Q38CGpuView;
 typedef struct { Q38CGpuView v[8]; Q38CUint p[6], read_mask; float eps; } Q38CGpuArgs;
+/* q38c_rms_fast: one threadgroup of this many threads per row (32-lane simdgroups). */
+#define Q38C_RMS_THREADS 256u
 #ifndef __METAL_VERSION__
 _Static_assert(sizeof(Q38CGpuView)==40 && sizeof(Q38CGpuArgs)==352, "Metal argument ABI");
 _Static_assert(offsetof(Q38CGpuArgs,p)==320 && offsetof(Q38CGpuArgs,eps)==348, "Metal offsets");

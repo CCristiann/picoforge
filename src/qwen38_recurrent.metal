@@ -63,6 +63,52 @@ kernel void q38c_rms(Q38C_BUFFERS) {
         v2[yi+j]=y;
     }
 }
+/* R1.6a: q38c_rms with one Q38C_RMS_THREADS threadgroup per row instead of
+ * one thread (at one token the HC norm was one thread over 10240 floats).
+ * The sum order depends only on width, never on rows or position: thread tid
+ * adds x[j]^2 for j = tid, tid+256, ... in ascending j, simd_sum joins its 32
+ * lanes, thread 0 adds the 8 simdgroup sums in ascending order. Variance,
+ * scale, y and the GDN gate are q38c_rms's expressions. The input check is
+ * folded in: each row reads all its x (and z) and a whole gain row, the rows
+ * together every element, so a nonfinite input sets bit 1 as q38c_check does,
+ * even when the word is already set; the op's own bits (sum, variance, y)
+ * and the writes are skipped when the word was set before, as in q38c_rms.
+ * Idea (threadgroup per row, strided squares, simd_sum, ordered simdgroup
+ * combine): ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_hc_norm. */
+kernel void q38c_rms_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+        device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]],
+        constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+        uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[Q38C_RMS_THREADS/32+1]; /* simdgroup sums, then the row's sum */
+    uint width=a.v[0].dim[2], groups=a.v[0].dim[1];
+    if (row>=a.v[0].count/width) return; /* whole threadgroups only: no barrier is skipped by part of one */
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0, bad=false;
+    uint xi=at(a.v[0],row*width), yi=at(a.v[2],row*width), zi=a.p[0] ? at(a.v[3],row*width) : 0;
+    uint wi=a.v[1].rank==1 ? 0 : (row%groups)*a.v[1].stride[0];
+    float sum=0;
+    for (uint j=tid;j<width;j+=Q38C_RMS_THREADS) { float x=v0[xi+j]; bad|=!isfinite(x); sum+=x*x; }
+    sum=simd_sum(sum);
+    if (!lane) partial[sg]=sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup); /* also: every x of the row is read before any y */
+    if (!tid) { float s=0; for (uint k=0;k<Q38C_RMS_THREADS/32;++k) s+=partial[k]; partial[Q38C_RMS_THREADS/32]=s; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total=partial[Q38C_RMS_THREADS/32];
+    float variance=total/float(width)+a.eps;
+    bool ok=!skip && isfinite(total) && isfinite(variance);
+    if (!skip && !tid && !ok) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    float scale=1.0f/sqrt(variance);
+    for (uint j=tid;j<width;j+=Q38C_RMS_THREADS) {
+        float g=v1[wi+j], z=a.p[0] ? v3[zi+j] : 0.0f;
+        bad|=!isfinite(g) || !isfinite(z);
+        float y=(v0[xi+j]*scale)*g;
+        if (!ok) continue;
+        if (!valid(y,error)) continue;
+        if (a.p[0]) y*=sigmoid(z);
+        v2[yi+j]=y;
+    }
+    if (bad) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+}
 kernel void q38c_hc_read(Q38C_BUFFERS) {
     if (i>=a.v[2].count || atomic_load_explicit(error,memory_order_relaxed)) return;
     uint width=a.v[0].dim[2], h=a.v[0].dim[1], t=i/width, j=i%width; float sum=0;

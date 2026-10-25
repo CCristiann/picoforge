@@ -81,6 +81,14 @@
       "samples": 11060,
       "commit": "9d9a0da",
       "note": "Fused routed down + weighted reduce (R1.5c), y and routed against the oracle sequence (indexed oracle down, q38f_reduce). Both are bit-identical to the unfused fast sequence (test_fused_down_bit_identical_to_sequence), so (b) measures the indexed fast down dots' order against the oracle's serial one, carried through the slot sum. S = sum_s |w_s| S_s (+ |sigmoid shared| for y). Max 2.3e-7 (3.9 u of S) at IQ2_XXS N33 K600/768 T3x2 (routed), over the real Q2_K/MXFP4 down rows and the synthetic shapes. Condition (a): gamma(2K+8+2k+2) S + 2 ulp32(r) + 2 sum_s |w_s| ulp32(d_s); worst 0.74% of the bound."
+    },
+    "rms_fast": {
+      "tol": 3.814697265625e-06,
+      "max": 2.0990693529800715e-06,
+      "p99": 1.8433146119156047e-06,
+      "samples": 1451824,
+      "commit": "this commit (the R1.6a kernel commit)",
+      "note": "Parallel RMSNorm (R1.6a), RMS and the gated GDN norm, against check + q38c_rms. Here S = |r| (the FP64 output): one scale per row, so (b) is the relative error of that row's scale and every element of a row has nearly the same ratio (p99 close to max). Squares, mean, eps, sqrt, products and the gate are the oracle's expressions; only the order of the sum of squares differs: the oracle adds width squares serially, the fast kernel per thread (stride 256), then simd_sum over 32 lanes, then the 8 simdgroup sums in order. So (b) mostly measures the oracle's serial rounding: on the HC width (10240, real hc_attn_norm gain) the fast kernel is within 2.7e-7 of FP64 and the oracle within 1.9e-6. The max 2.1e-6 (35 u, u = 2^-24) is at HC 32 tokens; 2^-19 = 1.9e-6 is below it, so tol is 2^-18. Width 1 (one square) gives b = 0. Condition (a): gamma(width+16) S + 2 ulp32(r) (+16 gated); worst 10.8% of the bound (width 1), 0.3% at 10240."
     }
   }
 }

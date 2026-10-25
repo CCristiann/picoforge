@@ -12,6 +12,8 @@ tests (constraints.md 1-5) and the scale-decode test exercise them directly.
 R1.5: the formats in INDEXED_FAST have an indexed (routed expert) fast kernel,
 measured against q38_packed_linear_indexed by the *_indexed Review Focus
 tests, test_expert_id_bounds and test_<format>_decode_matches_oracle.
+R1.6a: q38c_rms_fast (RMS and the gated GDN norm, input check folded in)
+against check + q38c_rms through q38c_gpu_encode, tolerance entry rms_fast.
 """
 import argparse
 import json
@@ -433,6 +435,76 @@ def route_logits(rng, tokens, experts, offset=0):
 def route_reference_ids(probs, slots):
     """The oracle's rule on given probabilities: larger p first, equal p by smaller id."""
     return np.stack([np.lexsort((np.arange(len(p)), -p.astype(np.float64)))[:slots] for p in probs]).astype("<u4")
+
+
+# ---- R1.6a parallel RMSNorm: q38c_rms_fast against check + q38c_rms, through q38c_gpu_encode ----
+RMS_EPS = float(np.float32(1e-6))  # the harness's spec.eps and gdn.rms_eps (an FP32 value)
+RMS_DISPATCHES = {"oracle": (2, 2), "fast": (1, 1)}  # (dispatches, barriers) of one encode
+
+
+def run_rms(mode, x, gain, z=None, pitch=None, offset=0, inplace=False, initial=0, env=None):
+    """RMS (z None) or GDN_NORM on x [t, groups, width], gain [width] or [groups, width]:
+    (error word, dispatches, barriers, y [t, groups, width]); y is returned even with the word set."""
+    t, groups, width = x.shape
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    data = b"".join(np.ascontiguousarray(a, "<f4").tobytes() for a in (x, gain, z) if a is not None)
+    result = subprocess.run([str(NATIVE), "rms", mode, str(int(z is not None)), str(t), str(groups), str(width),
+                             str(gain.ndim), str(pitch or width), str(offset), str(int(inplace)), str(initial)],
+                            input=data, capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (),
+                            env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr or len(result.stdout) != 12 + 4 * x.size:
+        raise AssertionError(f"rms {mode}: exit {result.returncode}, {stderr!r}")
+    word, dispatches, barriers = (int(v) for v in np.frombuffer(result.stdout[:12], "<u4"))
+    return word, dispatches, barriers, np.frombuffer(result.stdout[12:], "<f4").reshape(x.shape)
+
+
+def rms_fp64(x, gain, z=None):
+    """FP64 r = x / sqrt(sum(x^2) / width + eps) * gain (* sigmoid(z)) and S = |r|."""
+    a, g = x.astype(np.float64), gain.astype(np.float64)
+    r = a / np.sqrt((a * a).sum(-1, keepdims=True) / a.shape[-1] + RMS_EPS) * g
+    if z is not None:
+        r = r / (1 + np.exp(-z.astype(np.float64)))
+    return r, np.abs(r)
+
+
+def rms_against_fp64(y, ref, magnitude, gated):
+    """Condition (a) for RMS: |y - r| <= gamma(width + c) S + 2 ulp32(r), S = |r|. Any order of the width
+    nonnegative squares and their sum is within gamma(width) of the exact sum; mean and eps add 2 roundings,
+    sqrt halves the relative error, 1/sqrt and the two products add a few more: c = 16 covers them with
+    margin (a few ulp of sqrt/division); gated (GDN), sigmoid(z) via exp (MSL precise: 4 ulp), 1 + e and
+    the division add c = 16 more."""
+    n, u = y.shape[-1] + (32 if gated else 16), 2.0**-24
+    bound = n * u / (1 - n * u) * magnitude + 2 * np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64)
+    delta = np.abs(y.astype(np.float64) - ref)
+    return dict(outputs=int(y.size), finite=bool(np.isfinite(y).all()), condition_a=bool((delta <= bound).all()),
+                max_rel=float((delta / np.maximum(magnitude, 2.0**-126)).max()),
+                max_bound_fraction=float((delta / bound).max()))
+
+
+RMS_ROW_SCALES = (1.0, 1e-10, 30.0, 1e-20, 1e3)  # plain, below eps, wide, squares that flush, large
+
+
+def rms_inputs(rng, t, groups, width, gain_rank=1, gated=False, gain=None):
+    """x [t, groups, width] (row r scaled by RMS_ROW_SCALES[r % 5], one outlier x100 in every third row),
+    gain (the given real one, else N(1, 0.3)) and, gated, z ~ N(0, 3)."""
+    rows = t * groups
+    x = rng.normal(0, 1, (rows, width)) * np.array(RMS_ROW_SCALES)[np.arange(rows) % 5][:, None]
+    x[::3, rng.integers(width)] *= 100
+    if gain is None:
+        gain = rng.normal(1, 0.3, width if gain_rank == 1 else (groups, width))
+    z = rng.normal(0, 3, (t, groups, width)).astype(np.float32) if gated else None
+    return x.reshape(t, groups, width).astype(np.float32), np.asarray(gain, np.float32), z
+
+
+def real_gain(name):
+    """A real F32 norm gain from the --slices folders (the decoded row of `name`)."""
+    for directory in SLICES:
+        for record in json.loads((directory / "manifest.json").read_text())["records"]:
+            if record["tensor"] == name:
+                return np.fromfile(directory / record["artifacts"]["decoded.f32"]["file"], "<f4")
+    raise AssertionError(f"{name}: no slice (run qwen38-test-assets)")
 
 
 class FastKernelTests(unittest.TestCase):
@@ -1467,6 +1539,113 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual(word, 2)
                 for part in (ids, weights, probs):
                     self.assertEqual(part.tobytes(), b"\xa5" * part.nbytes)
+
+    # ---- R1.6a parallel RMSNorm (q38c_rms_fast, family fuse) ----
+    def rms_case(self, label, x, gain, z=None, **view):
+        """Fast and oracle on one case: clean error word, the expected dispatches, (a) for both, (b) for the
+        fast kernel; recorded in the corpus. Returns the fast y."""
+        word, dispatches, barriers, y = run_rms("fast", x, gain, z, **view)
+        self.assertEqual((word, dispatches, barriers), (0, *RMS_DISPATCHES["fast"]), label)
+        word, dispatches, barriers, y_oracle = run_rms("oracle", x, gain, z, **view)
+        self.assertEqual((word, dispatches, barriers), (0, *RMS_DISPATCHES["oracle"]), label)
+        ref, magnitude = rms_fp64(x, gain, z)
+        stats, oracle_stats = (rms_against_fp64(out, ref, magnitude, z is not None) for out in (y, y_oracle))
+        stats["vs_oracle"] = against_oracle(y, y_oracle, magnitude)
+        RESULTS.setdefault(label, {}).update(fast=stats, oracle=oracle_stats)
+        CORPUS.setdefault("rms_fast", {})[label] = scaled_difference(y, y_oracle, magnitude).ravel()
+        self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+        self.assertTrue(oracle_stats["finite"] and oracle_stats["condition_a"], (label, oracle_stats))
+        tol = TOLERANCES["kernels"].get("rms_fast", {}).get("tol")
+        self.assertIsNotNone(tol, "rms_fast: fast kernel without a measured tolerance")
+        self.assertLessEqual(stats["vs_oracle"]["max"], tol, label)
+        return y
+
+    def test_rms_fast_against_oracle_and_fp64(self):
+        """The graph's widths: HC and final RMS (4 x 2560 = 10240, real hc_attn_norm gain), MTP (2560),
+        QSA q/k norms (24 and 2 heads x 256), indexer (128, real q_norm gain), PLE (160), GDN norm gated
+        (48 x 128); 1, 3 and 32 tokens."""
+        rng = np.random.default_rng(3929)
+        hc, index = real_gain("blk.0.hc_attn_norm.weight"), real_gain("blk.3.indexer.q_norm.weight")
+        shapes = [(f"hc{t}", t, 1, 10240, dict(gain=hc)) for t in (1, 3, 32)] + [
+            ("mtp", 3, 1, 2560, {}), ("q_norm", 3, 24, 256, {}), ("k_norm", 32, 2, 256, {}),
+            ("indexer", 3, 8, 128, dict(gain=index)), ("ple", 3, 8, 160, {})] + [
+            (f"gdn{t}", t, 48, 128, dict(gated=True)) for t in (1, 3, 32)]
+        for name, t, groups, width, extra in shapes:
+            with self.subTest(case=name):
+                self.rms_case(f"rms:{name}", *rms_inputs(rng, t, groups, width, **extra))
+
+    def test_rms_fast_widths_not_multiple_of_threadgroup(self):
+        """Widths around and below the 256-thread group (1, 33, 255, 257, 1000, 4097), 1, 3 and 32 tokens,
+        one group with a [width] gain and three groups with a [groups, width] gain."""
+        rng = np.random.default_rng(3931)
+        for width in (1, 33, 255, 257, 1000, 4097):
+            for t in (1, 3, 32):
+                for groups, rank in ((1, 1), (3, 2)):
+                    with self.subTest(width=width, t=t, groups=groups):
+                        self.rms_case(f"rms:w{width}t{t}g{groups}", *rms_inputs(rng, t, groups, width, rank))
+
+    def test_rms_fast_rows_bit_independent(self):
+        """Review Focus 4: a row's bits depend neither on the number of tokens in the dispatch nor on the
+        token's position (chunk, decode and MTP stay bit-identical among fast paths)."""
+        rng = np.random.default_rng(3937)
+        for groups, width, rank, gated in ((1, 10240, 1, False), (3, 33, 2, False), (48, 128, 1, True)):
+            with self.subTest(groups=groups, width=width):
+                x, gain, z = rms_inputs(rng, 32, groups, width, rank, gated)
+                y = run_rms("fast", x, gain, z)[3]
+                for lo, hi in ((0, 1), (17, 18), (31, 32), (5, 8), (29, 32)):
+                    part = run_rms("fast", x[lo:hi], gain, None if z is None else z[lo:hi])
+                    self.assertEqual(part[:3], (0, *RMS_DISPATCHES["fast"]))
+                    np.testing.assert_array_equal(part[3].view("<u4"), y[lo:hi].view("<u4"), (lo, hi))
+
+    def test_rms_fast_nonfinite_sets_error_word(self):
+        """Review Focus 3 with the check folded into the kernel: NaN/Inf in x, gain or z at the first, a
+        middle or the last element, and a finite x whose sum of squares overflows, give the error word of
+        check + q38c_rms (bit 1); with bit 4 already set, a nonfinite input still adds bit 1 (the check
+        always runs) and an overflow adds nothing (q38c_rms exits early)."""
+        rng = np.random.default_rng(3941)
+        x, gain, z = rms_inputs(rng, 3, 48, 128, 2, True)
+        last = (x.shape[0] - 1, x.shape[1] - 1, x.shape[2] - 1)
+        for part, where, value in (("x", (0, 0, 0), np.nan), ("x", (1, 20, 77), np.inf), ("x", last, -np.inf),
+                                   ("gain", (0, 0), np.nan), ("gain", (47, 127), np.inf), ("gain", (13, 5), -np.inf),
+                                   ("z", (0, 0, 0), np.nan), ("z", last, np.inf), ("x", (2, 3, 9), 3e38)):
+            for gated in (False, True):
+                if part == "z" and not gated:
+                    continue
+                # GDN_NORM takes a [width] gain: its row 0 (the [groups, width] gain's last index there)
+                inputs = dict(x=x.copy(), gain=gain[0].copy() if gated else gain.copy(), z=z.copy() if gated else None)
+                inputs[part][where[1:] if part == "gain" and gated else where] = value
+                for initial, want in ((0, 1), (4, 4 if np.isfinite(value) else 5)):
+                    with self.subTest(part=part, where=where, value=value, gated=gated, initial=initial):
+                        words = [run_rms(mode, inputs["x"], inputs["gain"], inputs["z"], initial=initial)[0]
+                                 for mode in ("fast", "oracle")]
+                        self.assertEqual(words, [want, want])
+        with self.subTest(case="clean with bit 4 set"):
+            self.assertEqual([run_rms(m, x, gain, initial=4)[0] for m in ("fast", "oracle")], [4, 4])
+
+    def test_rms_fast_strided_offset_views(self):
+        """Review Focus 5: a row pitch past the width (NaN in the gap: a read there would set bit 1) and a
+        nonzero offset change no bit of y; no float outside the y view is written (the harness checks)."""
+        rng = np.random.default_rng(3943)
+        for groups, width, rank, gated in ((1, 10240, 1, False), (3, 33, 2, False), (48, 128, 1, True), (2, 1, 2, False)):
+            with self.subTest(groups=groups, width=width):
+                x, gain, z = rms_inputs(rng, 3, groups, width, rank, gated)
+                y = run_rms("fast", x, gain, z)[3]
+                for pitch, offset in ((width + 5, 3), (width + 64, 0), (width, 7)):
+                    word, dispatches, barriers, strided = run_rms("fast", x, gain, z, pitch=pitch, offset=offset)
+                    self.assertEqual((word, dispatches, barriers), (0, *RMS_DISPATCHES["fast"]))
+                    np.testing.assert_array_equal(strided.view("<u4"), y.view("<u4"), (pitch, offset))
+
+    def test_rms_fast_inplace(self):
+        """y over x (the admitted RMS alias): the fast kernel reads the whole row before any thread writes,
+        so the bits equal the out-of-place run; the oracle's in-place run equals its own out-of-place one."""
+        rng = np.random.default_rng(3947)
+        for groups, width, rank in ((1, 10240, 1), (3, 257, 2)):
+            x, gain, _ = rms_inputs(rng, 3, groups, width, rank)
+            for mode in ("fast", "oracle"):
+                with self.subTest(mode=mode, width=width):
+                    out, same = run_rms(mode, x, gain), run_rms(mode, x, gain, pitch=width + 2, offset=1, inplace=True)
+                    self.assertEqual(same[:3], out[:3])
+                    np.testing.assert_array_equal(same[3].view("<u4"), out[3].view("<u4"))
 
 
 if __name__ == "__main__":
