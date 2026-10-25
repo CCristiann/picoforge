@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #include "qwen38_c_internal.h"
 #include "qwen38_b_internal.h"
+#include "qwen38_ref.h"
 #include <stdlib.h>
 /* rms_fast: q38c_rms_fast or NULL (no 32-wide simdgroup / 256 threads: the
  * oracle stays). ref_fuse: RMS and GDN_NORM run check + q38c_rms (R1.6a). */
@@ -41,7 +42,7 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
     id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
     if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
         g->rms_fast=(__bridge_retained void *)p;
-    g->ref_fuse=true; /* R1.6a step 1: the fast kernel only through q38c_gpu_set_reference */
+    g->ref_fuse=q38_ref_kernels("fuse"); /* once per context, never per token */
     *out=g; return q38c_error(e,Q38_OK,NULL);
 }
 static Qwen38Status gpu_span(Qwen38GpuSpan s, id<MTLDevice> dev, Qwen38Error *e) {

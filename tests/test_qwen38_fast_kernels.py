@@ -1647,6 +1647,21 @@ class FastKernelTests(unittest.TestCase):
                     self.assertEqual(same[:3], out[:3])
                     np.testing.assert_array_equal(same[3].view("<u4"), out[3].view("<u4"))
 
+    def test_rms_selection(self):
+        """q38c_gpu_encode runs q38c_rms_fast (1 dispatch, 1 barrier, the fast bits) unless Q38_REF_KERNELS
+        selects fuse at creation (fuse, 1, all, a list with fuse, a typo: R18), then exactly check + barrier
+        + q38c_rms + barrier with the oracle's bits; RMS and GDN_NORM alike."""
+        rng = np.random.default_rng(3949)
+        for gated in (False, True):
+            x, gain, z = rms_inputs(rng, 3, 48, 128, 1, gated)
+            want = {mode: run_rms(mode, x, gain, z) for mode in ("fast", "oracle")}
+            for value in (None, "", "0", "linear", "moe,indexed", "fuse", "1", "all", "linear,fuse", "fuze"):
+                mode = "oracle" if value in ("fuse", "1", "all", "linear,fuse", "fuze") else "fast"
+                with self.subTest(gated=gated, value=value):
+                    got = run_rms("encode", x, gain, z, env={} if value is None else {"Q38_REF_KERNELS": value})
+                    self.assertEqual(got[:3], (0, *RMS_DISPATCHES[mode]))
+                    np.testing.assert_array_equal(got[3].view("<u4"), want[mode][3].view("<u4"))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

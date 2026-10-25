@@ -239,8 +239,8 @@ void q38c_gpu_destroy(Q38CGpu *);
 Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,
     const Q38CGpuSpec *, const Qwen38GpuF32 *, size_t count, Qwen38Error *);
 /* R1.6a: true = RMS and GDN_NORM run check + q38c_rms (the oracle), false =
- * q38c_rms_fast with the check folded in. Tests only; the graph keeps the
- * choice made at creation. */
+ * q38c_rms_fast with the check folded in. q38c_gpu_create sets it from
+ * Q38_REF_KERNELS (family fuse); this override is for tests only. */
 void q38c_gpu_set_reference(Q38CGpu *, bool fuse);
 /* C4 raw-buffer composition, deliberately private. On ANY encode failure,
  * discard the unsubmitted command. On completion error discard/reset both
