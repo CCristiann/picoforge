@@ -1,0 +1,8 @@
+{"mode": "oracle", "type": 0, "n": 10240, "k": 10240, "m": 1, "reps": 20, "bytes": 122880, "median_us": 1151.4, "p10_us": 1141.5, "p90_us": 1168.5, "gbps": 0.1}
+{"mode": "fast", "type": 0, "n": 10240, "k": 10240, "m": 1, "reps": 20, "bytes": 122880, "median_us": 28.2, "p10_us": 20.7, "p90_us": 54.4, "gbps": 4.4}
+{"mode": "fast", "type": 0, "n": 10240, "k": 10240, "m": 4, "reps": 20, "bytes": 368640, "median_us": 29.0, "p10_us": 28.7, "p90_us": 69.4, "gbps": 12.7}
+{"mode": "oracle", "type": 0, "n": 10240, "k": 10240, "m": 4, "reps": 20, "bytes": 368640, "median_us": 1134.0, "p10_us": 1131.3, "p90_us": 1137.2, "gbps": 0.3}
+{"mode": "oracle", "type": 0, "n": 10240, "k": 10240, "m": 32, "reps": 20, "bytes": 2662400, "median_us": 1288.1, "p10_us": 1288.0, "p90_us": 1288.2, "gbps": 2.1}
+{"mode": "fast", "type": 0, "n": 10240, "k": 10240, "m": 32, "reps": 20, "bytes": 2662400, "median_us": 16.7, "p10_us": 15.1, "p90_us": 70.4, "gbps": 159.8}
+{"mode": "fast", "type": 0, "n": 10240, "k": 10240, "m": 128, "reps": 20, "bytes": 10526720, "median_us": 42.3, "p10_us": 42.2, "p90_us": 59.2, "gbps": 248.8}
+{"mode": "oracle", "type": 0, "n": 10240, "k": 10240, "m": 128, "reps": 20, "bytes": 10526720, "median_us": 1610.8, "p10_us": 1609.8, "p90_us": 1615.3, "gbps": 6.5}
