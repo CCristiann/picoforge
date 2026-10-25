@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.6a — Parallel RMSNorm
+
+RMSNorm: y = x / sqrt(sum(x²)/width + eps) * gain (GDN norm: then * sigmoid(z)).
+`q38c_rms` used ONE thread per row, so at one token each HC norm (1 row of
+4 x 2560 = 10240 floats) was one GPU thread: 17.7 ms per token over 61 norms (t12 profile).
+`q38c_rms_fast` uses one 256-thread threadgroup per row: strided squares per thread,
+`simd_sum`, then the 8 simdgroup sums in order, so the order depends only on the width;
+the expressions are the oracle's. Only the sum order differs: at width 10240 the fast
+kernel is within 2.7e-7 of FP64, the oracle within 1.9e-6; tolerance `rms_fast` 2^-18
+(max measured 2.1e-6). It folds in the input check (1 dispatch + 1 barrier instead of 2 + 2)
+with the same error word. All RMS and GDN norms use it; `Q38_REF_KERNELS=fuse` (or 1)
+keeps check + `q38c_rms`. Idea: ds4 fc80bd6 (MIT) `kernel_qwen4_hc_norm`, nothing copied.
+Bench at t = 1 on battery (exploration only, `bench/qwen38_r1_20261025/rms-battery`):
+1151.4 µs oracle, 28.2 µs fast per HC norm; the AC protocol run is still to do.
+Measured (controller, ladder): pending.
+
 ### R1.5d — Parallel router top-k
 
 The router turns 512 logits into p = softmax(z) and keeps the 10 largest as the
