@@ -1561,15 +1561,17 @@ class FastKernelTests(unittest.TestCase):
         return y
 
     def test_rms_fast_against_oracle_and_fp64(self):
-        """The graph's widths: HC and final RMS (4 x 2560 = 10240, real hc_attn_norm gain), MTP (2560),
-        QSA q/k norms (24 and 2 heads x 256), indexer (128, real q_norm gain), PLE (160), GDN norm gated
-        (48 x 128); 1, 3 and 32 tokens."""
+        """The graph's shapes: HC, final, GDN-block and PLE RMS [t, 4, 2560] with the real [4, 2560]
+        hc_attn_norm gain (per stream, forward_gpu.m hc_read), the MTP h-norm [t, 1, 10240] (same gain
+        flattened) and e-norm [t, 1, 2560], QSA q/k norms (24 and 2 heads x 256), indexer [t, 4, 128]
+        (real q_norm gain), pooled [t, 1, 128], a 160 width, GDN norm gated (48 x 128); 1, 3, 32 tokens."""
         rng = np.random.default_rng(3929)
         hc, index = real_gain("blk.0.hc_attn_norm.weight"), real_gain("blk.3.indexer.q_norm.weight")
-        shapes = [(f"hc{t}", t, 1, 10240, dict(gain=hc)) for t in (1, 3, 32)] + [
-            ("mtp", 3, 1, 2560, {}), ("q_norm", 3, 24, 256, {}), ("k_norm", 32, 2, 256, {}),
-            ("indexer", 3, 8, 128, dict(gain=index)), ("ple", 3, 8, 160, {})] + [
-            (f"gdn{t}", t, 48, 128, dict(gated=True)) for t in (1, 3, 32)]
+        shapes = [(f"hc{t}", t, 4, 2560, dict(gain=hc.reshape(4, 2560))) for t in (1, 3, 32)] + [
+            (f"mtp_h{t}", t, 1, 10240, dict(gain=hc)) for t in (1, 3, 32)] + [
+            ("mtp_e", 3, 1, 2560, {}), ("q_norm", 3, 24, 256, {}), ("k_norm", 32, 2, 256, {}),
+            ("indexer", 3, 4, 128, dict(gain=index)), ("pooled", 3, 1, 128, dict(gain=index)),
+            ("w160", 3, 8, 160, {})] + [(f"gdn{t}", t, 48, 128, dict(gated=True)) for t in (1, 3, 32)]
         for name, t, groups, width, extra in shapes:
             with self.subTest(case=name):
                 self.rms_case(f"rms:{name}", *rms_inputs(rng, t, groups, width, **extra))
@@ -1588,7 +1590,7 @@ class FastKernelTests(unittest.TestCase):
         """Review Focus 4: a row's bits depend neither on the number of tokens in the dispatch nor on the
         token's position (chunk, decode and MTP stay bit-identical among fast paths)."""
         rng = np.random.default_rng(3937)
-        for groups, width, rank, gated in ((1, 10240, 1, False), (3, 33, 2, False), (48, 128, 1, True)):
+        for groups, width, rank, gated in ((4, 2560, 2, False), (1, 10240, 1, False), (3, 33, 2, False), (48, 128, 1, True)):
             with self.subTest(groups=groups, width=width):
                 x, gain, z = rms_inputs(rng, 32, groups, width, rank, gated)
                 y = run_rms("fast", x, gain, z)[3]
@@ -1626,7 +1628,8 @@ class FastKernelTests(unittest.TestCase):
         """Review Focus 5: a row pitch past the width (NaN in the gap: a read there would set bit 1) and a
         nonzero offset change no bit of y; no float outside the y view is written (the harness checks)."""
         rng = np.random.default_rng(3943)
-        for groups, width, rank, gated in ((1, 10240, 1, False), (3, 33, 2, False), (48, 128, 1, True), (2, 1, 2, False)):
+        for groups, width, rank, gated in ((4, 2560, 2, False), (1, 10240, 1, False), (3, 33, 2, False), (48, 128, 1, True),
+                                           (2, 1, 2, False)):
             with self.subTest(groups=groups, width=width):
                 x, gain, z = rms_inputs(rng, 3, groups, width, rank, gated)
                 y = run_rms("fast", x, gain, z)[3]

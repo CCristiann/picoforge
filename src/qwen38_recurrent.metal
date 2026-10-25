@@ -64,7 +64,8 @@ kernel void q38c_rms(Q38C_BUFFERS) {
     }
 }
 /* R1.6a: q38c_rms with one Q38C_RMS_THREADS threadgroup per row instead of
- * one thread (at one token the HC norm was one thread over 10240 floats).
+ * one thread (at one token the HC norm [1,4,2560] was 4 threads, each a
+ * serial pass over 2560 floats).
  * The sum order depends only on width, never on rows or position: thread tid
  * adds x[j]^2 for j = tid, tid+256, ... in ascending j, simd_sum joins its 32
  * lanes, thread 0 adds the 8 simdgroup sums in ascending order. Variance,
@@ -73,6 +74,11 @@ kernel void q38c_rms(Q38C_BUFFERS) {
  * together every element, so a nonfinite input sets bit 1 as q38c_check does,
  * even when the word is already set; the op's own bits (sum, variance, y)
  * and the writes are skipped when the word was set before, as in q38c_rms.
+ * Outputs are unspecified when the word ends nonzero (a nonfinite input: the
+ * oracle writes nothing, this kernel may write other rows and elements); the
+ * session then discards the command. The sum order differs from q38c_rms, so
+ * the two can disagree on overflow (bit 1) only when the sum of squares is
+ * within about width*2^-24 (relative) of FLT_MAX; y has a 1-ulp-of-scale band.
  * Idea (threadgroup per row, strided squares, simd_sum, ordered simdgroup
  * combine): ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_hc_norm. */
 kernel void q38c_rms_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
