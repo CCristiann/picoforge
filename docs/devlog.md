@@ -30,7 +30,8 @@ that are not a multiple of 1024, NaN/Inf, and decode/chunked appends in the grap
 greedy reads just the id (`qwen38_gpu_forward_argmax`); `--logits`, MTP and the gate paths
 still read logits. `Q38_REF_KERNELS=argmax` (or 1) keeps the logits readback and CPU scan.
 Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_argmax; no code copied.
-Measured (controller, ladder): pending.
+Measured (controller): not exercised by the teacher-forced quick-closure profile (no greedy
+step); the greedy gain is measured by the Task 17 ladder.
 
 ### R1.7a — Session-wide weight claims
 
@@ -47,7 +48,10 @@ skipped, with a stderr line, unless views + 4 GiB fit 85% of the recommended wor
 it logs its allocatedSize; weights only, no numeric effect. `Q38_REF_KERNELS=claim` (or 1) restores per-command claims and no
 residency set. Claim cost per token with 1500 weights + 60 scratch (g0 micro-benchmark,
 `Q38_CLAIM_BENCH=1`, ASan build): 1.57 ms -> 0.009 ms.
-Measured (controller, ladder): pending.
+Measured (controller, quick closure t15, 8-token teacher-forced profile, AC): host encode
+5.2 → 4.7 ms/token, wall decode 77.8 → 77.1 ms/token. On the real store the residency set is
+skipped by its gate (42720 MiB + 4096 MiB > 85% of 53084 MiB). `Q38_REF_KERNELS=1` bit-identical;
+G3 scaled 4.2e-7 (`bench/qwen38_r1_20261026/profile-t15`).
 
 ### R1.6b — Concurrent encoder
 
