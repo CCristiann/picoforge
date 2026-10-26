@@ -30,7 +30,10 @@ barrier after the MoE block. A failed check then no longer stops its op, so on a
 command the error bits may differ from the serial ones (bit 1 still set; the status is the
 contract). Fake graph, one decode token: 211 dispatches either way, barriers 207 → 165.
 Logits and traces bit-identical over 3 runs per mode.
-Measured (controller, ladder): pending.
+Measured (controller, quick closure, 8-token profile, AC): GPU 68.8 ms/token (Task 14b
+75.6, -9%; normal-mode decode 62.3 ms); barriers 2270 → 1788, dispatches 2307. Default logits
+bit-identical over 3 runs and to the serial Task 14b run; `Q38_REF_KERNELS=1` bit-identical;
+G3 scaled 4.2e-7 (`bench/qwen38_r1_20261026/profile-t14a`).
 
 ### R1.6a — Parallel RMSNorm
 
