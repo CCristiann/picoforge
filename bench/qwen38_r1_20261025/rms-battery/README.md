@@ -47,3 +47,5 @@ time over the 20 measured buffers. `gbps`: `bytes` / median.
 `caffeinate -i make bench-qwen38-matvec BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/rms PYTHON=<venv>/bin/python`
 (a new folder every time; an existing one fails). `make -n` with the same arguments lists the 8
 `rmsbench` specs. The numerical checks of the fast kernel are in `make test-qwen38-fast-kernels`.
+
+Superseded: wrong shape [t,1,10240]; see bench/qwen38_r1_20261026/rms-battery2/.
