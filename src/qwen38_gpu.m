@@ -196,12 +196,12 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *g, const void *model,
         *t = (Qwen38GpuTicket){0};
         return report(e, Q38_GPU_ERROR);
     }
-    *(uint32_t *)word_of(g).contents = 0;   /* the only reset of the error word */
-    /* The empty, preallocated list cannot refuse this: nothing may alias the word. */
-    (void)add_claim(g, (Qwen38GpuSpan){g->error_word, 0, 4}, Q38_GPU_USE_WRITE, NULL);
+    memset(word_of(g).contents, 0, 8);    /* the only reset of both error words */
+    /* The empty, preallocated list cannot refuse this: nothing may alias the words. */
+    (void)add_claim(g, (Qwen38GpuSpan){g->error_word, 0, 8}, Q38_GPU_USE_WRITE, NULL);
     g->command = (__bridge_retained void *)cb;
     g->encoder = (__bridge_retained void *)enc;
-    *cmd = (Qwen38GpuCommand){g->device, g->encoder, {g->error_word, 0, 4}};
+    *cmd = (Qwen38GpuCommand){g->device, g->encoder, {g->error_word, 0, 4}, g->concurrent};
     return report(e, Q38_OK);
 }
 Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
@@ -243,7 +243,8 @@ Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *g, const Qwen38GpuTicke
         if (ok && cb.GPUStartTime>0 && cb.GPUEndTime>=cb.GPUStartTime)
             g->gpu_seconds=cb.GPUEndTime-cb.GPUStartTime;
         why = cb.error.localizedDescription;
-        bits = *(const volatile uint32_t *)word_of(g).contents;
+        const volatile uint32_t *w = word_of(g).contents;
+        bits = w[0] | w[1];                 /* w[1]: checks of a concurrent command */
     }
     Qwen38Status s = qwen38_gpu_ledger_complete(&g->ledger, t, ok, bits, e);
     if (s == Q38_OK || s == Q38_GPU_ERROR) {

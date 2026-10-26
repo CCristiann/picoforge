@@ -412,7 +412,8 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
         W(sgate,n); W(sup,n); W(sact,n); W(shared,n); W(slogit,n); W(ssig,n); W(routed,n);
 #undef W
         TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&mc,f->store,l->fb,l->fl,
-            slice(f->mixed,start,n),slice(f->block,start,n),&w,e)); barrier(cmd);
+            slice(f->mixed,start,n),slice(f->block,start,n),&w,e));
+        if (!cmd.concurrent) barrier(cmd);   /* R1.6b: routed_encode already ends with one */
     }
     return Q38_OK;
 }

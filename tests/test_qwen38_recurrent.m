@@ -64,7 +64,7 @@ static Qwen38GpuCommand begin(uint32_t initial_error) {
     command=[queue commandBuffer]; assert(command.retainedReferences);
     encoder=[command computeCommandEncoder];
     return (Qwen38GpuCommand){(__bridge void *)device,(__bridge void *)encoder,
-        {(__bridge void *)error_buffer,0,4}};
+        {(__bridge void *)error_buffer,0,4},false};
 }
 static void finish(uint32_t expected_error) {
     [encoder endEncoding]; [command commit]; [command waitUntilCompleted];

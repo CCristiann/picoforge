@@ -294,7 +294,7 @@ static int multi_main(int argc,char **argv,const char *library) {
             Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
             counter->target=encoder;
             if (!timing) encoder=(id<MTLComputeCommandEncoder>)counter;
-            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4},false};
             for (size_t rep=0;rep<r.reps && !status;rep++) {
                 Qwen38Error err={0};
                 if (!strcmp(r.mode,"multi")) {
@@ -475,7 +475,7 @@ static int indexed_main(int argc,char **argv,const char *library) {
             flags[0]=0;
             id<MTLCommandBuffer> command=[queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4},false};
             for (size_t rep=0;rep<r.reps && !status;rep++) {
                 Qwen38Error err={0};
                 if (!pair) status=(int)(!strcmp(r.mode,"fast") ?
@@ -661,7 +661,7 @@ static int down_main(int argc,char **argv,const char *library) {
             flags[0]=0;
             id<MTLCommandBuffer> command=[queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4},false};
             for (size_t rep=0;rep<r.reps && !status;rep++) {
                 Qwen38Error err={0};
                 if (fused) status=(int)q38_packed_encode_down_reduce(ctx,&cmd,store,binding,&layout,span,xv,&views,yv,&err);
@@ -836,7 +836,7 @@ static int rms_main(int argc,char **argv,const char *library) {
             ((uint32_t *)word.contents)[0]=initial;
             id<MTLCommandBuffer> command=[queue commandBuffer];
             counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
-            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4}};
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
             for (size_t rep=0;rep<reps;rep++)
                 assert(q38c_gpu_encode(ops,cmd,op ? Q38C_GDN_NORM : Q38C_RMS,&spec,v,3+op,NULL)==Q38_OK);
             [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
@@ -914,7 +914,7 @@ int main(int argc,char **argv) {
             flags[0]=0;
             id<MTLCommandBuffer> command=[queue commandBuffer];
             id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4}};
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4},false};
             for (size_t rep=0;rep<r.reps && !status;rep++) status=(int)encode(ctx,r,cmd,store,binding,xv,yv);
             [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
             assert(command.status==MTLCommandBufferStatusCompleted && !command.error);

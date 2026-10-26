@@ -2,6 +2,7 @@
 import csv
 from pathlib import Path
 import re
+import os
 import subprocess
 import tempfile
 import unittest
@@ -79,6 +80,24 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(bytes_of('prefill', '0', 'gdn'), bytes_of('decode', '5', 'gdn'))
             for big, small in zip(bytes_of('prefill', '0', 'moe'), bytes_of('decode', '5', 'moe'), strict=True):
                 self.assertGreater(big, small)
+
+    def test_concurrent_encoder_drops_only_barriers(self):
+        """R1.6b: same dispatches and logits as the serial barrier oracle, fewer barriers."""
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
+            p, rows = Path(directory), {}
+            for name, mode in (('fast', ''), ('barrier', 'barrier')):
+                done = subprocess.run(BASE+['--logits', str(p/f'{name}.f32'), '--profile', str(p/f'{name}.csv')],
+                                      cwd=ROOT, capture_output=True, env={**os.environ, 'Q38_REF_KERNELS': mode})
+                self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                rows[name] = read_rows(p/f'{name}.csv')
+            self.assertEqual((p/'fast.f32').read_bytes(), (p/'barrier.f32').read_bytes())
+            total = {m: sum(int(r['barriers']) for r in rows[m] if (r['phase'], r['token']) == ('decode', '5'))
+                     for m in rows}
+            print(f"\n  decode token barriers: concurrent {total['fast']}, serial oracle {total['barrier']}")
+            self.assertLess(total['fast'], total['barrier'])
+            for fast, ref in zip(rows['fast'], rows['barrier'], strict=True):
+                self.assertEqual([fast[k] for k in HEADER[:7]], [ref[k] for k in HEADER[:7]])
+                self.assertLessEqual(int(fast['barriers']), int(ref['barriers']), fast)
 
     def test_profile_skips_warmup(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:

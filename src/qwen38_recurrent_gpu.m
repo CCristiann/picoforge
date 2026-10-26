@@ -220,8 +220,17 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         return q38c_error(e,Q38_OK,NULL);
     }
+    /* R1.6b: on a concurrent command the check ORs into the second word, which
+     * the op never reads, so the two may overlap unless the op writes memory
+     * the check reads (in-place HC_ADD, CONV history, GDN state, aliases). */
+    bool overlap=cmd.concurrent;
+    for (size_t i=0;i<count;++i) for (size_t j=0;j<count && overlap;++j)
+        if ((writes&(1u<<i)) && (a.read_mask&(1u<<j)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j]))
+            overlap=false;
+    if (overlap) [enc setBuffer:error offset:cmd.error_word.offset_bytes+4 atIndex:9];
     dispatch(enc,g->check,check_count);
-    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    if (overlap) [enc setBuffer:error offset:cmd.error_word.offset_bytes atIndex:9];
+    else [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     dispatch(enc,g->pipeline[op],work);
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     if (op==Q38C_CONV && a.v[3].count) {

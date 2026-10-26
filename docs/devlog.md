@@ -16,6 +16,20 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.6b — Concurrent encoder
+
+A serial Metal encoder runs dispatch N+1 only after N has finished, even when N+1 does not
+need N's results. A concurrent encoder (`MTLDispatchTypeConcurrent`) lets them overlap and
+orders only at explicit memory barriers, so every write → read (or read → write) pair needs
+a barrier: a missing one is a race. The session now opens concurrent encoders; with
+`Q38_REF_KERNELS=barrier` (or 1) it keeps the serial encoder and today's barriers. An audit of
+every dispatch path showed only two kinds of removable barrier: check → op inside a C op
+(the check now ORs into a second error word that no kernel reads, `finish()` ORs both; kept
+when the op writes what the check reads: HC_ADD, CONV, GDN_SCAN) and the graph's duplicate
+barrier after the MoE block. Fake graph, one decode token: 211 dispatches either way,
+barriers 207 → 165. Logits and traces bit-identical over 3 runs per mode.
+Measured (controller, ladder): pending.
+
 ### R1.6a — Parallel RMSNorm
 
 RMSNorm: y = x / sqrt(sum(x²)/width + eps) * gain (GDN norm: then * sigmoid(z)).

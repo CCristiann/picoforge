@@ -92,7 +92,7 @@ static Qwen38Status metal_forward(const Qwen38MoeConfig *c,const Qwen38MoeWeight
             if (getenv("Q38_F_GPU_NONFINITE")) ((float *)xb.contents)[4]=NAN;
             *(uint32_t *)word.contents=0;
             id<MTLCommandBuffer> cb=[queue commandBuffer]; id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder];
-            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)enc,{(__bridge void *)word,0,4}};
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)enc,{(__bridge void *)word,0,4},false};
             Qwen38MoeRoutes r=*routes;
             r.ids.data+=start*(r.ids.row_stride_bytes/4); r.ids.capacity_bytes-=start*r.ids.row_stride_bytes; r.ids.rows=n;
             r.weights.data+=start*(r.weights.stride_bytes[0]/4); r.weights.capacity_bytes-=start*r.weights.stride_bytes[0]; r.weights.dim[0]=n;

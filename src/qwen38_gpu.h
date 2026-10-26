@@ -13,6 +13,12 @@ typedef struct {
 typedef struct {
     void *device, *compute_encoder; /* borrowed, same device as every resource */
     Qwen38GpuSpan error_word;       /* aligned uint32, zero before command */
+    /* R1.6b, set only by the session: the encoder is concurrent (only explicit
+     * barriers order dispatches) and the uint32 right after error_word is a
+     * second, zeroed word that finish() ORs in. Input checks may write it
+     * instead of error_word: no kernel reads it, so a check needs no barrier
+     * before an op that does not write what the check reads. */
+    bool concurrent;
 } Qwen38GpuCommand;
 enum {
     Q38_GPU_NONFINITE = 1u,

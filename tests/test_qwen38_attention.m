@@ -64,7 +64,7 @@ int main(int argc,char **argv) { @autoreleasepool {
     id<MTLCommandQueue> queue=[device newCommandQueue];
     id<MTLCommandBuffer> command=[queue commandBuffer]; assert(command.retainedReferences);
     id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-    Qwen38GpuCommand cmd={(__bridge void *)device,(__bridge void *)encoder,err};
+    Qwen38GpuCommand cmd={(__bridge void *)device,(__bridge void *)encoder,err,false};
     nocopy(gpu,cmd);
     uint32_t dims[4]; read_value(dims,sizeof(dims));
     for (size_t i=0;i<4;++i) assert(dims[i]<=32768);
