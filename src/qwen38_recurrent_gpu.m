@@ -189,9 +189,10 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     if (op==Q38C_GDN_SCAN) expected_count=5;
     if (count!=expected_count) return q38c_error(e,Q38_SHAPE,"wrong GPU view count");
     Q38CGpuArgs a={0}; size_t span[8]={0};
+    bool two_words=cmd.concurrent && cmd.error_word.bytes>=8;   /* R1.6b: see Qwen38GpuCommand */
     for (size_t j=0;j<count;++j) {
         Q38C_TRY(gpu_view(v[j],dev,&a.v[j],&span[j],e));
-        if (gpu_overlap(v[j].span,span[j],cmd.error_word,4))
+        if (gpu_overlap(v[j].span,span[j],cmd.error_word,two_words ? 8 : 4))
             return q38c_error(e,Q38_INVALID_ARGUMENT,"view aliases GPU error word");
     }
     size_t work, check_count=0; uint32_t writes; uint64_t inplace;
@@ -222,8 +223,9 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     }
     /* R1.6b: on a concurrent command the check ORs into the second word, which
      * the op never reads, so the two may overlap unless the op writes memory
-     * the check reads (in-place HC_ADD, CONV history, GDN state, aliases). */
-    bool overlap=cmd.concurrent;
+     * the check reads (in-place HC_ADD, CONV history, GDN state, aliases).
+     * A failed check then no longer stops the op: failure bits are diagnostic. */
+    bool overlap=two_words;
     for (size_t i=0;i<count;++i) for (size_t j=0;j<count && overlap;++j)
         if ((writes&(1u<<i)) && (a.read_mask&(1u<<j)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j]))
             overlap=false;

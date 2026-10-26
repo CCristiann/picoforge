@@ -26,8 +26,10 @@ a barrier: a missing one is a race. The session now opens concurrent encoders; w
 every dispatch path showed only two kinds of removable barrier: check → op inside a C op
 (the check now ORs into a second error word that no kernel reads, `finish()` ORs both; kept
 when the op writes what the check reads: HC_ADD, CONV, GDN_SCAN) and the graph's duplicate
-barrier after the MoE block. Fake graph, one decode token: 211 dispatches either way,
-barriers 207 → 165. Logits and traces bit-identical over 3 runs per mode.
+barrier after the MoE block. A failed check then no longer stops its op, so on a failed
+command the error bits may differ from the serial ones (bit 1 still set; the status is the
+contract). Fake graph, one decode token: 211 dispatches either way, barriers 207 → 165.
+Logits and traces bit-identical over 3 runs per mode.
 Measured (controller, ladder): pending.
 
 ### R1.6a — Parallel RMSNorm

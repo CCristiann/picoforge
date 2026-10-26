@@ -201,7 +201,7 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *g, const void *model,
     (void)add_claim(g, (Qwen38GpuSpan){g->error_word, 0, 8}, Q38_GPU_USE_WRITE, NULL);
     g->command = (__bridge_retained void *)cb;
     g->encoder = (__bridge_retained void *)enc;
-    *cmd = (Qwen38GpuCommand){g->device, g->encoder, {g->error_word, 0, 4}, g->concurrent};
+    *cmd = (Qwen38GpuCommand){g->device, g->encoder, {g->error_word, 0, g->concurrent ? 8 : 4}, g->concurrent};
     return report(e, Q38_OK);
 }
 Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *g, const Qwen38GpuTicket *t,

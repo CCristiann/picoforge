@@ -2,6 +2,7 @@
  * qwen38_gpu_lock.py (make test-qwen38-g0); a missing lock is a failure, not a skip. */
 #import <Metal/Metal.h>
 #include "qwen38_gpu.h"
+#include "qwen38_ref.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -156,6 +157,18 @@ static void session_publishes_only_clean_commands(void) {
     IS(qwen38_gpu_session_info(s).next_pos == 4);
     EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK);
 }
+/* R1.6b: a concurrent session hands out both words and reports a bit set only in word 1. */
+static void session_reports_second_word(void) {
+    Qwen38GpuSession *s = session(); Qwen38Error e; Qwen38GpuTicket t; Qwen38GpuCommand c;
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 4, &t, &c, NULL), Q38_OK);
+    IS(c.concurrent == !q38_ref_kernels("barrier") && c.error_word.bytes == (c.concurrent ? 8u : 4u));
+    if (c.concurrent) c.error_word.offset_bytes += 4;            /* write only word 1, as a check does */
+    encode(c, Q38_GPU_NONFINITE);
+    EXPECT(qwen38_gpu_session_submit(s, &t, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_finish(s, &t, &e), Q38_GPU_ERROR);
+    IS(strstr(e.detail, "error_bits=0x1"));
+    EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK);
+}
 static void session_failure_before_submit(void) {
     Qwen38GpuSession *s = session(); Qwen38GpuTicket t; Qwen38GpuCommand c;
     EXPECT(gpu_run(s, 0, 2, 0, NULL), Q38_OK);
@@ -281,10 +294,10 @@ int main(void) {
         if (!lib) { fprintf(stderr, "%s\n", err.localizedDescription.UTF8String); return 1; }
         pso = [dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"write_then_flag"] error:&err];
         state_buf = [dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; IS(pso && state_buf);
-        session_publishes_only_clean_commands(); session_failure_before_submit();
+        session_publishes_only_clean_commands(); session_reports_second_word(); session_failure_before_submit();
         session_tickets_busy_and_owner(); session_claims_refuse_aliases();
         session_retains_buffers_until_completion();
     }
-    puts("qwen38 gpu lifecycle: 6 ledger + 5 session groups passed");
+    puts("qwen38 gpu lifecycle: 6 ledger + 6 session groups passed");
     return 0;
 }

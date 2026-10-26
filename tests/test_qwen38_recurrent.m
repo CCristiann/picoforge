@@ -97,6 +97,24 @@ static void activations(void) {
     assert(q38c_gpu_encode(gpu,cmd,Q38C_ACT,&s,v,2,NULL)==Q38_CAPACITY); finish(0);
     release_view(x); release_view(y);
 }
+/* R1.6b: on a concurrent command (8-byte word) the input check ORs into word 1,
+ * unless the op writes what the check reads; then word 0 and the barrier stay. */
+static void concurrent_words(void) {
+    uint32_t *w=(uint32_t *)error_buffer.contents;
+    View x=view(1,(size_t[]){3},0), y=view(1,(size_t[]){3},0); pattern(x,1); x.cpu.data[2]=-INFINITY;
+    Q38CGpuSpec s={.activation=Q38_SIGMOID}; Qwen38GpuF32 v[]={x.gpu,y.gpu};
+    Qwen38GpuCommand cmd=begin(0); cmd.error_word.bytes=8; cmd.concurrent=true; w[1]=0;
+    assert(q38c_gpu_encode(gpu,cmd,Q38C_ACT,&s,v,2,NULL)==Q38_OK); finish(0);
+    assert(w[1]==Q38_GPU_NONFINITE && y.cpu.data[2]==0);   /* sigmoid(-inf)=0: the op is not stopped */
+    release_view(x); release_view(y);
+    Q38CGpuSpec hs={.hc={1,33,17,1e-6f}};
+    View r=view(3,(size_t[]){1,1,33},0), m=view(2,(size_t[]){1,33},0), j=view(2,(size_t[]){1,1},0);
+    pattern(r,2); pattern(m,2); pattern(j,2); r.cpu.data[0]=NAN; float kept=r.cpu.data[1];
+    Qwen38GpuF32 rv[]={r.gpu,m.gpu,j.gpu}; cmd=begin(0); cmd.error_word.bytes=8; cmd.concurrent=true; w[1]=0;
+    assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_ADD,&hs,rv,3,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
+    assert(w[1]==0 && r.cpu.data[1]==kept);                /* in place: word 0, the op skipped */
+    release_view(r); release_view(m); release_view(j);
+}
 static void norms(void) {
     size_t widths[]={1,3,128,2560};
     for (size_t k=0;k<4;++k) for (size_t grouped=0;grouped<2;++grouped) for (size_t inplace=0;inplace<2;++inplace) {
@@ -497,11 +515,11 @@ int main(int argc, char **argv) {
         id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(argv[1])] error:&error];
         if (!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 1; }
         assert(q38c_gpu_create((__bridge void *)device,(__bridge void *)lib,&gpu,NULL)==Q38_OK);
-        error_buffer=[device newBufferWithLength:4 options:MTLResourceStorageModeShared];
+        error_buffer=[device newBufferWithLength:8 options:MTLResourceStorageModeShared];
         if (argc==9) composed(lib,argv[3],(uint32_t)strtoul(argv[4],NULL,10),argv[5],argv[6],
             strtoul(argv[7],NULL,10),strtoul(argv[8],NULL,10));
         else {
-        shared_aliases(); activations(); norms(); hc(); convolutions(); gdn_preparation(); gdn_scans(); admission(); state_errors();
+        shared_aliases(); activations(); concurrent_words(); norms(); hc(); convolutions(); gdn_preparation(); gdn_scans(); admission(); state_errors();
         printf("PASS: Metal C stages; max scaled error %.9g; observed Metal allocation peak %zu bytes\n",maximum_error,peak_metal_bytes);
         }
         q38c_gpu_destroy(gpu); error_buffer=nil; queue=nil; device=nil;

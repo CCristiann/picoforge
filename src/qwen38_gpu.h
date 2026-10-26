@@ -14,10 +14,14 @@ typedef struct {
     void *device, *compute_encoder; /* borrowed, same device as every resource */
     Qwen38GpuSpan error_word;       /* aligned uint32, zero before command */
     /* R1.6b, set only by the session: the encoder is concurrent (only explicit
-     * barriers order dispatches) and the uint32 right after error_word is a
-     * second, zeroed word that finish() ORs in. Input checks may write it
-     * instead of error_word: no kernel reads it, so a check needs no barrier
-     * before an op that does not write what the check reads. */
+     * barriers order dispatches) and error_word spans 8 bytes: word 0, read by
+     * the kernels' early exits, then a second zeroed word that finish() ORs in.
+     * Input checks may write word 1 instead: no kernel reads it, so a check
+     * needs no barrier before an op that does not write what the check reads.
+     * Then a failed check stops neither its op nor the later kernels: the
+     * failure bits differ from the serial check+oracle pattern (deterministic,
+     * bit 1 still set for non-finite inputs, but not a superset). The contract
+     * is the status: Q38_GPU_ERROR and an INVALID session. */
     bool concurrent;
 } Qwen38GpuCommand;
 enum {
