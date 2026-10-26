@@ -27,9 +27,11 @@ the width), the oracle's expressions. At [t, 4, 2560] it is within 2.6e-7 of FP6
 1.2e-6; tolerance `rms_fast` 2^-18 (max 3.4e-6, MTP h-norm). The input check is folded in
 (1 dispatch + 1 barrier instead of 2 + 2, same error word). All RMS and GDN norms use it;
 `Q38_REF_KERNELS=fuse` (or 1) keeps check + `q38c_rms`. Idea: ds4 fc80bd6 (MIT)
-`kernel_qwen4_hc_norm`, nothing copied. Battery exploration, not protocol
-(`bench/qwen38_r1_20261026/rms-battery2`): 288.1 → 25.9 µs per HC norm at t = 1, all norms
-32.1 → 3.8 ms per token (estimate); the AC protocol run is still to do.
+`kernel_qwen4_hc_norm`, nothing copied. AC protocol bench
+(`bench/qwen38_r1_20261026/rms`): HC norm at t = 1 286.6 → 25.9 µs (11.1x), t = 32 378.3 →
+12.8 µs; small widths at t = 1 are faster too (GDN gated 61.5 → 4.5 µs). Per token, counting
+100 HC-shaped norms (61 in the profile's rms groups + 36 GDN block + 3 PLE) and the small
+widths: 32.0 → 3.3 ms (estimate from per-dispatch time, not end-to-end).
 Measured (controller, ladder): pending.
 
 ### R1.5d — Parallel router top-k
