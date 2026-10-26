@@ -32,7 +32,9 @@ the width), the oracle's expressions. At [t, 4, 2560] it is within 2.6e-7 of FP6
 12.8 µs; small widths at t = 1 are faster too (GDN gated 61.5 → 4.5 µs). Per token, counting
 100 HC-shaped norms (61 in the profile's rms groups + 36 GDN block + 3 PLE) and the small
 widths: 32.0 → 3.3 ms (estimate from per-dispatch time, not end-to-end).
-Measured (controller, ladder): pending.
+Measured (controller, quick closure, 8-token profile, AC): GPU 75.6 ms/token (Task 13b
+105.7, -28%); rms groups 17.9 → 0.63 ms, gdn 56.3 → 44.4 ms (its 36 norms); dispatches 2307.
+G3 scaled 4.2e-7; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261026/profile-t14b`).
 
 ### R1.5d — Parallel router top-k
 
