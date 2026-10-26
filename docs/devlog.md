@@ -24,10 +24,11 @@ GPU got anything. The weights are read-only and live as long as the session, so 
 now registers them once (`qwen38_gpu_session_pin_read`, sorted ranges with a running max of
 the end address, one binary search per later claim). Semantics are unchanged: a WRITE over a
 pinned READ is still refused, READ/READ overlap is allowed, no-copy aliases are still found by
-address. Per token the graph now claims only its ~60 scratch buffers. R1.7b adds an
-`MTLResidencySet` (macOS 15+, probe `residency_set`) with the weight views on each session's
-queue, so Metal keeps them resident instead of re-establishing it per command buffer; weights
-only, no numeric effect. `Q38_REF_KERNELS=claim` (or 1) restores per-command claims and no
+address. Per token the graph now claims only its ~60 scratch buffers. R1.7a also adds one
+`MTLResidencySet` (macOS 15+, probe `residency_set`) with the weight views, shared by the main
+and MTP queues, intended to keep them resident across command buffers (not measured); it is
+skipped, with a stderr line, unless views + 4 GiB fit 85% of the recommended working set, and
+it logs its allocatedSize; weights only, no numeric effect. `Q38_REF_KERNELS=claim` (or 1) restores per-command claims and no
 residency set. Claim cost per token with 1500 weights + 60 scratch (g0 micro-benchmark,
 `Q38_CLAIM_BENCH=1`, ASan build): 1.57 ms -> 0.009 ms.
 Measured (controller, ladder): pending.

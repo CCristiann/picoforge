@@ -116,7 +116,7 @@ struct Qwen38GpuSession {
      * ident, so "does anything overlap [lo,hi)" is one binary search. */
     Claim *pins; uintptr_t *pin_hi;
     size_t pin_count, pin_capacity;
-    bool pins_sorted, pins_enabled;
+    bool pins_sorted, pins_enabled, pins_sealed;
     void *residency;                   /* R1.7b: MTLResidencySet on the queue, or NULL */
     double gpu_seconds;
     /* R1.6b: concurrent encoders unless Q38_REF_KERNELS selects `barrier`.
@@ -225,35 +225,77 @@ Qwen38Status qwen38_gpu_session_pin_read(Qwen38GpuSession *g, const Qwen38GpuTic
     g->pins[g->pin_count++] = c; g->pins_sorted = false;
     return report(e, Q38_OK);
 }
-/* R1.7b: keep these buffers resident for every command of this session's queue,
- * instead of Metal re-establishing residency per command buffer. Weights only; no
- * effect on numerics. Signatures checked against MTLResidencySet.h / MTLCommandQueue.h
- * of the macOS 26 SDK (addResidencySet: is macOS 15+). */
+/* R1.7b: keep these buffers resident on this session's queue. Weights only; no effect
+ * on numerics. Signatures checked against MTLResidencySet.h / MTLCommandQueue.h of the
+ * macOS 26 SDK (addResidencySet: is macOS 15+). Never requestResidency: nothing is wired
+ * at load. Gated: the set is skipped (and the skip logged) unless the buffers plus the
+ * caller's headroom fit 85% of the recommended working set, because a set larger than
+ * that risks the memory pressure that froze this Mac. One set serves several queues. */
+static Qwen38Status attach(Qwen38GpuSession *g, id set) {
+    if (@available(macOS 15.0, *)) {
+        id<MTLCommandQueue> q = (__bridge id<MTLCommandQueue>)g->queue;
+        if (![q respondsToSelector:@selector(addResidencySet:)]) return Q38_UNSUPPORTED;
+        [q addResidencySet:set];
+        g->residency = (__bridge_retained void *)set;
+        return Q38_OK;
+    }
+    return Q38_UNSUPPORTED;
+}
 Qwen38Status qwen38_gpu_session_use_residency(Qwen38GpuSession *g, void *const *buffers,
-    size_t count, Qwen38Error *e) {
+    size_t count, uint64_t headroom_bytes, Qwen38Error *e) {
     if (!g || !buffers || !count) return report(e, Q38_INVALID_ARGUMENT);
     if (!g->pins_enabled || g->residency) return report(e, Q38_UNSUPPORTED);   /* `claim` oracle */
     if (busy(&g->ledger)) return report(e, Q38_BUSY);
     id<MTLDevice> dev = (__bridge id<MTLDevice>)g->device;
-    id<MTLCommandQueue> q = (__bridge id<MTLCommandQueue>)g->queue;
     if (@available(macOS 15.0, *)) {
-        if (![dev respondsToSelector:@selector(newResidencySetWithDescriptor:error:)] ||
-            ![q respondsToSelector:@selector(addResidencySet:)]) return report(e, Q38_UNSUPPORTED);
-        MTLResidencySetDescriptor *d = [MTLResidencySetDescriptor new];
-        d.initialCapacity = count; d.label = @"picoforge_weights";
-        id<MTLResidencySet> set = [dev newResidencySetWithDescriptor:d error:NULL];
-        if (!set) return report(e, Q38_UNSUPPORTED);
+        if (![dev respondsToSelector:@selector(newResidencySetWithDescriptor:error:)])
+            return report(e, Q38_UNSUPPORTED);
+        uint64_t bytes = 0;
         for (size_t i = 0; i < count; i++) {
             id<MTLBuffer> b = (__bridge id<MTLBuffer>)buffers[i];
             if (!b || b.device != dev) return report(e, Q38_OWNER);
-            [set addAllocation:b];
+            bytes += b.length;
         }
+        double limit = 0.85 * (double)dev.recommendedMaxWorkingSetSize;
+        if ((double)(bytes + headroom_bytes) > limit) {
+            fprintf(stderr, "picoforge: residency set skipped: %.1f MiB + %.1f MiB headroom > 85%% of "
+                "%.1f MiB recommended working set\n", (double)bytes / 1048576, (double)headroom_bytes / 1048576,
+                (double)dev.recommendedMaxWorkingSetSize / 1048576);
+            return report(e, Q38_UNSUPPORTED);
+        }
+        MTLResidencySetDescriptor *d = [MTLResidencySetDescriptor new];
+        d.initialCapacity = count; d.label = @"picoforge_weights";
+        NSError *err = nil;
+        id<MTLResidencySet> set = [dev newResidencySetWithDescriptor:d error:&err];
+        if (!set) {
+            fprintf(stderr, "picoforge: residency set not created: %s\n",
+                err ? err.localizedDescription.UTF8String : "unknown");
+            return report(e, Q38_UNSUPPORTED);
+        }
+        for (size_t i = 0; i < count; i++) [set addAllocation:(__bridge id<MTLBuffer>)buffers[i]];
         [set commit];                      /* additions take effect only at commit */
-        [q addResidencySet:set];
-        g->residency = (__bridge_retained void *)set;
-        return report(e, Q38_OK);
+        Qwen38Status s = attach(g, set);
+        if (!s) fprintf(stderr, "picoforge: residency set attached: %zu allocations, allocatedSize %.1f MiB\n",
+            count, (double)set.allocatedSize / 1048576);
+        return report(e, s);
     }
     return report(e, Q38_UNSUPPORTED);
+}
+/* The same set on another session's queue (the MTP session shares the weights). */
+void *qwen38_gpu_session_residency(const Qwen38GpuSession *g) { return g ? g->residency : NULL; }
+Qwen38Status qwen38_gpu_session_share_residency(Qwen38GpuSession *g, void *set, Qwen38Error *e) {
+    if (!g || !set) return report(e, Q38_INVALID_ARGUMENT);
+    if (!g->pins_enabled || g->residency) return report(e, Q38_UNSUPPORTED);
+    if (busy(&g->ledger)) return report(e, Q38_BUSY);
+    return report(e, attach(g, (__bridge id)set));
+}
+/* Pins are all-or-nothing: the caller seals a complete set, and clears a partial one. */
+void qwen38_gpu_session_pins_seal(Qwen38GpuSession *g) { if (g) g->pins_sealed = true; }
+bool qwen38_gpu_session_pins_sealed(const Qwen38GpuSession *g) { return g && g->pins_sealed; }
+void qwen38_gpu_session_pins_clear(Qwen38GpuSession *g) {
+    if (!g) return;
+    for (size_t i = 0; i < g->pin_count; i++) drop(&g->pins[i].buffer);
+    g->pin_count = 0; g->pins_sorted = false; g->pins_sealed = false;
 }
 bool qwen38_gpu_session_pins_enabled(const Qwen38GpuSession *g) { return g && g->pins_enabled; }
 size_t qwen38_gpu_session_pin_count(const Qwen38GpuSession *g) { return g ? g->pin_count : 0; }
@@ -409,7 +451,7 @@ Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
     }
     drop(&g->queue); drop(&g->device);
     release_claims(g); free(g->claims);
-    for (size_t i = 0; i < g->pin_count; i++) drop(&g->pins[i].buffer);
+    qwen38_gpu_session_pins_clear(g);
     free(g->pins); free(g->pin_hi); free(g);
     return report(e, Q38_OK);
 }

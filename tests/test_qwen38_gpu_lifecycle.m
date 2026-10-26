@@ -347,19 +347,49 @@ static void session_pinned_reads(void) {
     IS(!weak);                                      /* ... and releases it at destroy */
     free(mem);
 }
+/* R1.7a: a failed pin pass is cleared, so a later command is fully covered. */
+static void session_partial_pins_recover(void) {
+    Qwen38GpuSession *s = session(); Qwen38GpuTicket t; Qwen38GpuCommand c;
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    void *mem; IS(posix_memalign(&mem, page, 4 * page) == 0);
+    id<MTLBuffer> w = no_copy(mem, 4 * page);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
+    if (!qwen38_gpu_session_pins_enabled(s)) {
+        EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+        EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK); free(mem); return;
+    }
+    PIN(s, t, span(w, 0, page), Q38_OK);                                /* first half of a pass ... */
+    PIN(s, t, span(w, 2, 4), Q38_STRIDE);                               /* ... fails */
+    qwen38_gpu_session_pins_clear(s);
+    IS(qwen38_gpu_session_pin_count(s) == 0 && !qwen38_gpu_session_pins_sealed(s));
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
+    CLAIM(s, t, span(w, 0, 64), Q38_GPU_USE_WRITE, Q38_OK);             /* nothing stale is pinned */
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
+    PIN(s, t, span(w, 0, page), Q38_OK); PIN(s, t, span(w, page, page), Q38_OK);   /* the retry pass */
+    qwen38_gpu_session_pins_seal(s);
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    IS(qwen38_gpu_session_pins_sealed(s) && qwen38_gpu_session_pin_count(s) == 2);
+    EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);   /* sealed: fully covered */
+    CLAIM(s, t, span(w, 0, 64), Q38_GPU_USE_WRITE, Q38_INVALID_ARGUMENT);
+    CLAIM(s, t, span(w, page + 8, 64), Q38_GPU_USE_WRITE, Q38_INVALID_ARGUMENT);
+    EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
+    EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK); free(mem);
+}
 /* R1.7b: a residency set on the queue changes nothing about a command's result. */
 static void session_residency_set(void) {
     Qwen38GpuSession *s = session(); Qwen38GpuTicket t; Qwen38GpuCommand c;
     id<MTLBuffer> w = [dev newBufferWithLength:4096 options:MTLResourceStorageModeShared];
     void *list[1] = {(__bridge void *)w};
-    EXPECT(qwen38_gpu_session_use_residency(s, NULL, 1, NULL), Q38_INVALID_ARGUMENT);
+    EXPECT(qwen38_gpu_session_use_residency(s, NULL, 1, 0, NULL), Q38_INVALID_ARGUMENT);
     EXPECT(qwen38_gpu_session_begin(s, &model_a, 0, 1, &t, &c, NULL), Q38_OK);
-    EXPECT(qwen38_gpu_session_use_residency(s, list, 1, NULL),
+    EXPECT(qwen38_gpu_session_use_residency(s, list, 1, 0, NULL),
         qwen38_gpu_session_pins_enabled(s) ? Q38_BUSY : Q38_UNSUPPORTED);
     EXPECT(qwen38_gpu_session_abort(s, &t, false, NULL), Q38_OK);
     Qwen38Status want = qwen38_gpu_session_pins_enabled(s) ? Q38_OK : Q38_UNSUPPORTED;
-    EXPECT(qwen38_gpu_session_use_residency(s, list, 1, NULL), want);
-    if (want == Q38_OK) EXPECT(qwen38_gpu_session_use_residency(s, list, 1, NULL), Q38_UNSUPPORTED);  /* once */
+    EXPECT(qwen38_gpu_session_use_residency(s, list, 1, 0, NULL), want);
+    if (want == Q38_OK) EXPECT(qwen38_gpu_session_use_residency(s, list, 1, 0, NULL), Q38_UNSUPPORTED);  /* once */
     memset(state(), 0, 16); EXPECT(gpu_run(s, 0, 4, 0, NULL), Q38_OK);   /* commands run with the set attached */
     IS(state()[3] == 45);
     EXPECT(qwen38_gpu_session_destroy(s, NULL), Q38_OK);
@@ -407,11 +437,11 @@ int main(void) {
         state_buf = [dev newBufferWithLength:16 options:MTLResourceStorageModeShared]; IS(pso && state_buf);
         session_publishes_only_clean_commands(); session_reports_second_word(); session_failure_before_submit();
         session_tickets_busy_and_owner(); session_claims_refuse_aliases();
-        session_retains_buffers_until_completion(); session_pinned_reads(); session_residency_set();
+        session_retains_buffers_until_completion(); session_pinned_reads(); session_residency_set(); session_partial_pins_recover();
         if (getenv("Q38_CLAIM_BENCH"))
             printf("claims per token, 1500 weights + 60 scratch: per-command %.3f ms, pinned %.3f ms\n",
                 1e3 * claims_seconds(true, 1500), 1e3 * claims_seconds(false, 1500));
     }
-    puts("qwen38 gpu lifecycle: 6 ledger + 8 session groups passed");
+    puts("qwen38 gpu lifecycle: 6 ledger + 9 session groups passed");
     return 0;
 }

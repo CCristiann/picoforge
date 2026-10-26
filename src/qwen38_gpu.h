@@ -102,10 +102,18 @@ Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *, const Qwen38GpuTicket 
 Qwen38Status qwen38_gpu_session_pin_read(Qwen38GpuSession *, const Qwen38GpuTicket *,
     Qwen38GpuSpan, Qwen38Error *);
 /* R1.7b: attach a residency set of these MTLBuffers to the session's queue (not while
- * busy, once). Q38_UNSUPPORTED if the OS lacks MTLResidencySet or the `claim` oracle
- * is selected: callers ignore that status, the session works without it. */
+ * busy, once). Skipped with Q38_UNSUPPORTED (and a stderr line) unless buffers plus
+ * headroom_bytes <= 85% of the recommended working set; also UNSUPPORTED on an old OS or
+ * with the `claim` oracle. Callers ignore UNSUPPORTED: the session works without it.
+ * share_residency puts an existing set (residency() of another session) on this queue. */
 Qwen38Status qwen38_gpu_session_use_residency(Qwen38GpuSession *, void *const *buffers,
-    size_t count, Qwen38Error *);
+    size_t count, uint64_t headroom_bytes, Qwen38Error *);
+void *qwen38_gpu_session_residency(const Qwen38GpuSession *);   /* borrowed, or NULL */
+Qwen38Status qwen38_gpu_session_share_residency(Qwen38GpuSession *, void *set, Qwen38Error *);
+/* Pins are all-or-nothing: seal a complete set; clear (and unseal) after a failed pass. */
+void qwen38_gpu_session_pins_seal(Qwen38GpuSession *);
+bool qwen38_gpu_session_pins_sealed(const Qwen38GpuSession *);
+void qwen38_gpu_session_pins_clear(Qwen38GpuSession *);
 bool qwen38_gpu_session_pins_enabled(const Qwen38GpuSession *);
 size_t qwen38_gpu_session_pin_count(const Qwen38GpuSession *);
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *, const Qwen38GpuTicket *,
