@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.7b — GPU argmax
+
+Greedy decode needs one number per token, the id of the largest logit, yet every token copied
+the whole 248320-float row (~1 MB) to the host and scanned it on the CPU. Now one threadgroup
+of 1024 threads reduces the row on the GPU right after the LM head (after an explicit barrier,
+the encoder is concurrent): each thread keeps the first maximum of its strided slice, then a
+tree keeps the larger value and, on a tie, the smaller index, so the answer is the FIRST
+maximum whatever the split. Non-finite logits never compete and set error bit 1 (the session
+turns it into Q38_GPU_ERROR). The result is an integer, so the test is exact equality with
+the CPU scan: random rows, ties across and inside a thread's slice, all-equal, -0/+0, sizes
+that are not a multiple of 1024, NaN/Inf, and decode/chunked appends in the graph. Only plain
+greedy reads just the id (`qwen38_gpu_forward_argmax`); `--logits`, MTP and the gate paths
+still read logits. `Q38_REF_KERNELS=argmax` (or 1) keeps the logits readback and CPU scan.
+Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_argmax; no code copied.
+Measured (controller, ladder): pending.
+
 ### R1.7a — Session-wide weight claims
 
 Every command used to declare (claim) every weight tensor, and each claim was checked

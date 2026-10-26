@@ -280,11 +280,15 @@ int qwen38_cli(int argc,char **argv) {
         size_t proposed=0,accepted=0,target_appends=0,rollback_count=0,verified_tokens=0;
         double mtp_prefill_s=0,draft_s=0,verify_s=0,snapshot_s=0,replay_s=0;
         size_t residual_offset=0; bool queued=false,catchup=false; int32_t catchup_id=0;
+        /* T15c: plain greedy reads back only the id (GPU argmax). Logits rows stay for --logits
+         * and MTP, which verify against them. */
+        const bool use_id=!mtp && !logits_path; int32_t next_id=0;
         double prefill_start=now();
         for (size_t start=0;start<count && !stopped;start+=current_chunk) {
             size_t n=MIN((size_t)current_chunk,count-start); y.dim[0]=start+n==count ? 1 : 0;
             q38_profile_begin_append(profile,"prefill",start);
-            check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);
+            if (use_id && start+n==count) check(qwen38_gpu_forward_argmax(graph,tokens+start,n,c->trunk_blocks,&next_id,&e),&e);
+            else check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);
             accumulate(&prefill_stats,graph);
             residual_offset=n-1;
             if (mtp && !stopped) {
@@ -315,16 +319,17 @@ int qwen38_cli(int argc,char **argv) {
             }
             for (uint32_t i=0;i<forced && !stopped;i++) {
                 q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
-                check(qwen38_gpu_forward(graph,tokens+count+i,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
+                if (use_id) check(qwen38_gpu_forward_argmax(graph,tokens+count+i,1,c->trunk_blocks,&next_id,&e),&e);
+                else check(qwen38_gpu_forward(graph,tokens+count+i,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
                 target_appends++; accumulate(&decode_stats,graph);
                 if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
-                generated[got++]=greedy(logits,c->vocab_size);
+                generated[got++]=use_id ? next_id : greedy(logits,c->vocab_size);
             }
         } else for (uint32_t step=0;step<MAX(max_new,1u) && !stopped;step++) {
             if (got==stop_after) { reason="cancelled"; break; }
             if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
             if (!max_new) break;
-            int32_t id=greedy(logits,c->vocab_size);
+            int32_t id=use_id ? next_id : greedy(logits,c->vocab_size);
             generated[got++]=id;
             if (qwen38_token_is_stop(tok,id)) reason="stop";
             else emit(decoder,&id,session);
@@ -371,7 +376,8 @@ int qwen38_cli(int argc,char **argv) {
                     } else residual_offset=0;
                 } else {
                     q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
-                    check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
+                    if (use_id) check(qwen38_gpu_forward_argmax(graph,&id,1,c->trunk_blocks,&next_id,&e),&e);
+                    else check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
                     target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
                 }
             }

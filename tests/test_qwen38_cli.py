@@ -1,5 +1,6 @@
 """Qwen3.8 ordinary CLI against the independent CPU graph at each greedy step."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -128,6 +129,31 @@ class CliTests(unittest.TestCase):
                 self.assertEqual((r['prompt_tokens'], r['position'], r['stop_reason']), (len(prompt), len(prompt)+k-1, 'length'))
                 self.assertGreater(r['decode_s'], 0)
                 self.assertGreaterEqual(r['request_s'], r['prefill_s']+r['decode_s'])
+
+    def test_id_only_greedy_matches_logits_path(self):
+        # T15c: without --logits/--mtp only the GPU argmax id is read back. It must give the
+        # ids of the logits path (CPU scan) in default mode and with Q38_REF_KERNELS=argmax,
+        # for chunked prefill, decode and teacher-forced runs.
+        prompt, k = [5, 17, 300, 9, 44], 6
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
+            p = Path(directory)
+            for chunk in ('1', '2', '5'):
+                base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32', '--chunk', chunk,
+                        '--tokens', ','.join(map(str, prompt)), '--max-new', str(k)]
+                self.run_cli(base+['--logits', str(p/'l.f32'), '--token-ids', str(p/'logits.json')])
+                want = json.loads((p/'logits.json').read_text())['generated_ids']
+                self.assertEqual(len(want), k)
+                for mode in ('', 'argmax'):
+                    env = {**os.environ, 'Q38_REF_KERNELS': mode}
+                    done = subprocess.run(base+['--token-ids', str(p/'ids.json')], cwd=ROOT, capture_output=True, env=env)
+                    self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                    self.assertEqual(json.loads((p/'ids.json').read_text())['generated_ids'], want, f'{chunk=} {mode=}')
+                    forced = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32', '--chunk', chunk,
+                              '--tokens', ','.join(map(str, prompt+want[:k-1])), '--teacher-forced', str(k-1),
+                              '--token-ids', str(p/'forced.json')]
+                    done = subprocess.run(forced, cwd=ROOT, capture_output=True, env=env)
+                    self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                    self.assertEqual(json.loads((p/'forced.json').read_text())['generated_ids'], want[1:], f'{chunk=} {mode=}')
 
     def test_teacher_forced_admission(self):
         base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32']
