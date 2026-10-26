@@ -142,14 +142,20 @@ Q38_R1_BENCH_DOWN := $(call q38_db_tokens,10,768:640) $(call q38_db_tokens,39,64
 q38_rt = rtbench:$(1):512:10:$(3):20 rtbench:$(2):512:10:$(3):20
 Q38_R1_BENCH_ROUTE := $(call q38_rt,oracle,fast,1) $(call q38_rt,fast,oracle,4) \
 	$(call q38_rt,oracle,fast,32) $(call q38_rt,fast,oracle,128)
-# R1.6a parallel RMSNorm (BENCH_OUT=.../rms): one q38c_gpu_encode of RMS at the
-# HC width (1 x 10240, as hc_attn/hc_ffn/final), fast (q38c_rms_fast, check folded)
-# vs oracle (check + q38c_rms, barriers included), 1, 4, 32, 128 tokens, 20 per
-# command buffer as in the graph, the order alternating between token counts.
-# Specs rmsbench:mode:tokens:groups:width:reps.
-q38_rms = rmsbench:$(1):$(3):1:10240:20 rmsbench:$(2):$(3):1:10240:20
-Q38_R1_BENCH_RMS := $(call q38_rms,oracle,fast,1) $(call q38_rms,fast,oracle,4) \
-	$(call q38_rms,oracle,fast,32) $(call q38_rms,fast,oracle,128)
+# R1.6a parallel RMSNorm (BENCH_OUT=.../rms): one q38c_gpu_encode, fast
+# (q38c_rms_fast, check folded) vs oracle (check + q38c_rms, barriers included),
+# 20 per command buffer as in the graph, the order alternating. The HC shape
+# [t, 4, 2560] with a [4, 2560] gain (hc_attn/hc_ffn/final, GDN block, PLE) at 1,
+# 4, 32, 128 tokens; then at 1 token the small widths the fast path also takes:
+# GDN norm [48, 128] gated, QSA q [24, 256] and k [2, 256], indexer [4, 128],
+# pooled [1, 128]. Specs rmsbench:mode:op:tokens:groups:width:gain_rank:reps.
+q38_rms = rmsbench:$(1):$(4):20 rmsbench:$(2):$(4):20
+q38_rms_hc = $(call q38_rms,$(1),$(2),,0:$(3):4:2560:2)
+Q38_R1_BENCH_RMS := $(call q38_rms_hc,oracle,fast,1) $(call q38_rms_hc,fast,oracle,4) \
+	$(call q38_rms_hc,oracle,fast,32) $(call q38_rms_hc,fast,oracle,128) \
+	$(call q38_rms,oracle,fast,,1:1:48:128:1) $(call q38_rms,fast,oracle,,0:1:24:256:1) \
+	$(call q38_rms,oracle,fast,,0:1:2:256:1) $(call q38_rms,fast,oracle,,0:1:4:128:1) \
+	$(call q38_rms,oracle,fast,,0:1:1:128:1)
 Q38_R1_CONDITIONS := date -u +%Y-%m-%dT%H:%M:%SZ; pmset -g therm; pmset -g batt; sysctl vm.swapusage; ./build/qwen38-capabilities
 bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities $(METALLIB)
 	@case "$(BENCH_OUT)" in bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \

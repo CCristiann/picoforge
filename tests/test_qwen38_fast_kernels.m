@@ -788,22 +788,22 @@ static int route_main(int argc,char **argv,const char *library) {
  * starts at `initial`. stdin: x, gain, z (op 1), packed. stdout: error word,
  * dispatches, barriers (uint32), then y packed [t,groups,width]; every y float
  * outside the view keeps its 0xa5 bytes. Exit 0 whenever the encode succeeds.
- *   rmsbench <oracle|fast> t groups width reps
- * synthetic x and gain, 3 warm-ups + 20 measured command buffers of reps
+ *   rmsbench <oracle|fast> op t groups width gain_rank reps
+ * synthetic x, gain and z, 3 warm-ups + 20 measured command buffers of reps
  * encodes each (check and barriers included, as in the graph). */
 static int rms_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"rmsbench"), fast=!strcmp(argv[2],"fast");
-    assert(argc==(timing ? 7 : 12) && (fast || !strcmp(argv[2],"oracle") || (!timing && !strcmp(argv[2],"encode"))));
-    size_t op=timing ? 0 : number(argv[3]), t=number(argv[3+!timing]), groups=number(argv[4+!timing]),
-           width=number(argv[5+!timing]), reps=timing ? number(argv[6]) : 1, gain_rank=timing ? 1 : number(argv[7]),
-           pitch=timing ? width : number(argv[8]), offset=timing ? 0 : number(argv[9]), inplace=timing ? 0 : number(argv[10]);
+    assert(argc==(timing ? 9 : 12) && (fast || !strcmp(argv[2],"oracle") || (!timing && !strcmp(argv[2],"encode"))));
+    size_t op=number(argv[3]), t=number(argv[4]), groups=number(argv[5]), width=number(argv[6]), gain_rank=number(argv[7]),
+           reps=timing ? number(argv[8]) : 1, pitch=timing ? width : number(argv[8]), offset=timing ? 0 : number(argv[9]),
+           inplace=timing ? 0 : number(argv[10]);
     uint32_t initial=timing ? 0 : (uint32_t)number(argv[11]);
     assert(op<=1 && t && t<=4096 && groups && width && groups*width<=1u<<20 && (gain_rank==1 || gain_rank==2) &&
            pitch>=width && offset<=64 && inplace<=1 && reps && reps<=1000);
     size_t rows=t*groups, words=4+offset+(rows-1)*pitch+width+4, gains=(gain_rank==1 ? 1 : groups)*width;
     float *data=malloc(4*(2*rows*width+gains)); assert(data);
     uint64_t seed=3931;
-    if (timing) for (size_t i=0;i<rows*width+gains;i++) data[i]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
+    if (timing) for (size_t i=0;i<rows*width*(1+op)+gains;i++) data[i]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
     else assert(fread(data,4,rows*width*(1+op)+gains,stdin)==rows*width*(1+op)+gains && fgetc(stdin)==EOF);
     double seconds[23];
     @autoreleasepool {
@@ -848,8 +848,10 @@ static int rms_main(int argc,char **argv,const char *library) {
         for (size_t i=0;!inplace && i<words;i++) /* no write outside y */
             assert((i>=4+offset && (i-4-offset)%pitch<width && (i-4-offset)/pitch<rows) || raw[i]==0xa5a5a5a5u);
         if (timing) {
-            Request r={.mode=argv[2],.n=width,.logical=width,.m=rows,.reps=reps,.bytes=4*gains};
-            report(r,seconds,NULL,NULL);
+            Request r={.mode=argv[2],.n=width,.logical=width,.m=rows,.reps=reps,.bytes=4*(gains+op*rows*width)};
+            char specs[96];
+            snprintf(specs,sizeof specs,"op %zu tokens %zu groups %zu width %zu gain_rank %zu",op,t,groups,width,gain_rank);
+            report(r,seconds,NULL,specs);
         } else {
             uint32_t head[3]={((uint32_t *)word.contents)[0],counter->dispatches,counter->barriers};
             assert(fwrite(head,4,3,stdout)==3);
