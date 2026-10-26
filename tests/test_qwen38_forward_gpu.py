@@ -23,6 +23,27 @@ class DeviceGraphTests(unittest.TestCase):
         finally:
             os.environ.pop('Q38_G2_STATE_CHECKS', None)
 
+    def test_concurrent_encoder_is_deterministic(self):
+        """R1.6b: the concurrent encoder (default) and the serial one with a
+        barrier after every op (Q38_REF_KERNELS=barrier) give the same bits,
+        logits and every traced stage, on 3 runs each: a missing barrier is a
+        race and shows up here as run-to-run or mode-to-mode drift."""
+        saved = os.environ.get('Q38_REF_KERNELS')
+        try:
+            for chunk in (1, 7):  # decode appends; prefill chunks with a tail
+                runs = []
+                for mode in ('', 'barrier'):
+                    os.environ['Q38_REF_KERNELS'] = mode
+                    runs += [(mode, gate.run_native(4, chunk)[1]) for _ in range(3)]
+                first = runs[0][1]
+                for mode, trace in runs[1:]:
+                    self.assertEqual(sorted(trace), sorted(first))
+                    for key in first:
+                        self.assertEqual(trace[key].tobytes(), first[key].tobytes(), f'{chunk=} {mode=} {key}')
+        finally:
+            if saved is None: os.environ.pop('Q38_REF_KERNELS', None)
+            else: os.environ['Q38_REF_KERNELS'] = saved
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', type=Path, required=True)

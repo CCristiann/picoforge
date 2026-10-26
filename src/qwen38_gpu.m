@@ -2,6 +2,7 @@
  * adds the Metal queue, command buffer and error word it protects. */
 #import <Metal/Metal.h>
 #include "qwen38_gpu.h"
+#include "qwen38_ref.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -111,6 +112,10 @@ struct Qwen38GpuSession {
     Claim *claims;
     size_t claim_count, claim_capacity;
     double gpu_seconds;
+    /* R1.6b: concurrent encoders unless Q38_REF_KERNELS selects `barrier`.
+     * A concurrent encoder orders nothing by itself: every dependency must be
+     * an explicit memory barrier, so this needs the barrier audit of R1.6b. */
+    bool concurrent;
 };
 static void drop(void **p) {
     if (*p) { (void)(__bridge_transfer id)*p; *p = NULL; }
@@ -161,6 +166,7 @@ Qwen38Status qwen38_gpu_session_create(void *device, const void *model,
     g->claim_capacity = 64;
     g->claims = calloc(g->claim_capacity, sizeof(*g->claims));
     if (!g->claims) { free(g); return report(e, Q38_OOM); }
+    g->concurrent = !q38_ref_kernels("barrier");   /* once per session, never per token */
     Qwen38Status s = qwen38_gpu_ledger_init(&g->ledger, model, capacity, e);
     id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
     id<MTLCommandQueue> queue = s ? nil : [dev newCommandQueue];
@@ -172,6 +178,9 @@ Qwen38Status qwen38_gpu_session_create(void *device, const void *model,
     *out = g;
     return report(e, Q38_OK);
 }
+static MTLDispatchType dispatch_type(const Qwen38GpuSession *g) {
+    return g->concurrent ? MTLDispatchTypeConcurrent : MTLDispatchTypeSerial;
+}
 Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *g, const void *model,
     uint64_t start_pos, uint64_t count, Qwen38GpuTicket *t, Qwen38GpuCommand *cmd,
     Qwen38Error *e) {
@@ -181,7 +190,7 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *g, const void *model,
     if (s) return s;
     g->gpu_seconds=0;
     id<MTLCommandBuffer> cb = [(__bridge id<MTLCommandQueue>)g->queue commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+    id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:dispatch_type(g)];
     if (!enc) {                         /* nothing was touched: the session stays valid */
         qwen38_gpu_ledger_abort(&g->ledger, t, false, NULL);
         *t = (Qwen38GpuTicket){0};
@@ -277,8 +286,9 @@ Qwen38Status q38g_session_split(Qwen38GpuSession *g, const Qwen38GpuTicket *t, v
     if (s) return s;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)g->command;
     [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding]; drop(&g->encoder);
+    if (pass) ((__bridge MTLComputePassDescriptor *)pass).dispatchType = dispatch_type(g);
     id<MTLComputeCommandEncoder> enc = pass ? [cb computeCommandEncoderWithDescriptor:
-        (__bridge MTLComputePassDescriptor *)pass] : [cb computeCommandEncoder];
+        (__bridge MTLComputePassDescriptor *)pass] : [cb computeCommandEncoderWithDispatchType:dispatch_type(g)];
     cmd->compute_encoder = g->encoder = enc ? (__bridge_retained void *)enc : NULL;
     return report(e, enc ? Q38_OK : Q38_GPU_ERROR);   /* nil: the caller must abort */
 }
