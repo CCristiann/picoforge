@@ -111,6 +111,13 @@ struct Qwen38GpuSession {
     void *command, *encoder;           /* alive only from begin to finish/abort */
     Claim *claims;
     size_t claim_count, claim_capacity;
+    /* R1.7a: READ spans registered once per session (weights). Sorted lazily by
+     * (ident, lo); pin_hi[i] is the largest hi among pins[0..i] of the same
+     * ident, so "does anything overlap [lo,hi)" is one binary search. */
+    Claim *pins; uintptr_t *pin_hi;
+    size_t pin_count, pin_capacity;
+    bool pins_sorted, pins_enabled;
+    void *residency;                   /* R1.7b: MTLResidencySet on the queue, or NULL */
     double gpu_seconds;
     /* R1.6b: concurrent encoders unless Q38_REF_KERNELS selects `barrier`.
      * A concurrent encoder orders nothing by itself: every dependency must be
@@ -124,8 +131,34 @@ static void release_claims(Qwen38GpuSession *g) {
     for (size_t i = 0; i < g->claim_count; i++) drop(&g->claims[i].buffer);
     g->claim_count = 0;
 }
-static Qwen38Status add_claim(Qwen38GpuSession *g, Qwen38GpuSpan span, Qwen38GpuUse use,
-    Qwen38Error *e) {
+static int pin_cmp(const void *a, const void *b) {
+    const Claim *x = a, *y = b;
+    if (x->ident != y->ident) return (uintptr_t)x->ident < (uintptr_t)y->ident ? -1 : 1;
+    return x->lo < y->lo ? -1 : x->lo > y->lo;
+}
+/* True iff c overlaps any pinned span. Pinned spans are READ, so only a WRITE asks. */
+static bool overlaps_pin(Qwen38GpuSession *g, const Claim *c) {
+    if (!g->pin_count) return false;
+    if (!g->pins_sorted) {
+        qsort(g->pins, g->pin_count, sizeof *g->pins, pin_cmp);
+        for (size_t i = 0; i < g->pin_count; i++) {
+            bool same = i && g->pins[i - 1].ident == g->pins[i].ident;
+            g->pin_hi[i] = same && g->pin_hi[i - 1] > g->pins[i].hi ? g->pin_hi[i - 1] : g->pins[i].hi;
+        }
+        g->pins_sorted = true;
+    }
+    /* First pin at or after (ident, c->hi): every pin before it starts below c->hi. */
+    Claim key = {.ident = c->ident, .lo = c->hi};
+    size_t lo = 0, hi = g->pin_count;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (pin_cmp(&g->pins[mid], &key) < 0) lo = mid + 1; else hi = mid;
+    }
+    return lo && g->pins[lo - 1].ident == c->ident && g->pin_hi[lo - 1] > c->lo;
+}
+/* Validates a span and resolves it to an address range; retains nothing. */
+static Qwen38Status resolve(Qwen38GpuSession *g, Qwen38GpuSpan span, Qwen38GpuUse use,
+    Claim *out, Qwen38Error *e) {
     if (!span.buffer || !span.bytes) return report(e, Q38_INVALID_ARGUMENT);
     id<MTLBuffer> b = (__bridge id<MTLBuffer>)span.buffer;
     if (b.device != (__bridge id<MTLDevice>)g->device) return report(e, Q38_OWNER);
@@ -139,6 +172,15 @@ static Qwen38Status add_claim(Qwen38GpuSession *g, Qwen38GpuSpan span, Qwen38Gpu
     uintptr_t base = b.storageMode == MTLStorageModeShared ? (uintptr_t)b.contents : 0;
     Claim c = {.ident = base ? NULL : span.buffer, .write = use == Q38_GPU_USE_WRITE};
     c.lo = base + span.offset_bytes; c.hi = c.lo + span.bytes;
+    *out = c;
+    return Q38_OK;
+}
+static Qwen38Status add_claim(Qwen38GpuSession *g, Qwen38GpuSpan span, Qwen38GpuUse use,
+    Qwen38Error *e) {
+    Claim c; Qwen38Status s = resolve(g, span, use, &c, e);
+    if (s) return s;
+    id<MTLBuffer> b = (__bridge id<MTLBuffer>)span.buffer;
+    if (c.write && overlaps_pin(g, &c)) return report(e, Q38_INVALID_ARGUMENT);
     for (size_t i = 0; i < g->claim_count; i++) {
         const Claim *o = &g->claims[i];
         if (o->ident == c.ident && c.lo < o->hi && o->lo < c.hi && (c.write || o->write))
@@ -153,6 +195,68 @@ static Qwen38Status add_claim(Qwen38GpuSession *g, Qwen38GpuSpan span, Qwen38Gpu
     g->claims[g->claim_count++] = c;
     return report(e, Q38_OK);
 }
+/* R1.7a: register a READ span for the session's whole life, so a command no longer
+ * re-claims every weight. A WRITE overlapping it is still refused (add_claim).
+ * Idea only, nothing copied: ds4 fc80bd6, MIT, ds4_metal.m: model buffers are set
+ * up once, not per token. */
+Qwen38Status qwen38_gpu_session_pin_read(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
+    Qwen38GpuSpan span, Qwen38Error *e) {
+    if (!g) return report(e, Q38_INVALID_ARGUMENT);
+    if (!g->pins_enabled) return report(e, Q38_UNSUPPORTED);
+    Qwen38Status s = qwen38_gpu_ledger_check(&g->ledger, t, Q38_SESSION_ENCODING, e);
+    if (s) return s;
+    Claim c; s = resolve(g, span, Q38_GPU_USE_READ, &c, e);
+    if (s) return s;
+    for (size_t i = 0; i < g->claim_count; i++) {      /* a WRITE already claimed */
+        const Claim *o = &g->claims[i];
+        if (o->ident == c.ident && c.lo < o->hi && o->lo < c.hi && o->write)
+            return report(e, Q38_INVALID_ARGUMENT);
+    }
+    if (g->pin_count == g->pin_capacity) {
+        size_t cap = g->pin_capacity ? 2 * g->pin_capacity : 256;
+        Claim *p = realloc(g->pins, cap * sizeof *p);
+        if (p) g->pins = p;
+        uintptr_t *h = p ? realloc(g->pin_hi, cap * sizeof *h) : NULL;
+        if (h) g->pin_hi = h;
+        if (!h) return report(e, Q38_OOM);
+        g->pin_capacity = cap;
+    }
+    c.buffer = (__bridge_retained void *)(__bridge id<MTLBuffer>)span.buffer;
+    g->pins[g->pin_count++] = c; g->pins_sorted = false;
+    return report(e, Q38_OK);
+}
+/* R1.7b: keep these buffers resident for every command of this session's queue,
+ * instead of Metal re-establishing residency per command buffer. Weights only; no
+ * effect on numerics. Signatures checked against MTLResidencySet.h / MTLCommandQueue.h
+ * of the macOS 26 SDK (addResidencySet: is macOS 15+). */
+Qwen38Status qwen38_gpu_session_use_residency(Qwen38GpuSession *g, void *const *buffers,
+    size_t count, Qwen38Error *e) {
+    if (!g || !buffers || !count) return report(e, Q38_INVALID_ARGUMENT);
+    if (!g->pins_enabled || g->residency) return report(e, Q38_UNSUPPORTED);   /* `claim` oracle */
+    if (busy(&g->ledger)) return report(e, Q38_BUSY);
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)g->device;
+    id<MTLCommandQueue> q = (__bridge id<MTLCommandQueue>)g->queue;
+    if (@available(macOS 15.0, *)) {
+        if (![dev respondsToSelector:@selector(newResidencySetWithDescriptor:error:)] ||
+            ![q respondsToSelector:@selector(addResidencySet:)]) return report(e, Q38_UNSUPPORTED);
+        MTLResidencySetDescriptor *d = [MTLResidencySetDescriptor new];
+        d.initialCapacity = count; d.label = @"picoforge_weights";
+        id<MTLResidencySet> set = [dev newResidencySetWithDescriptor:d error:NULL];
+        if (!set) return report(e, Q38_UNSUPPORTED);
+        for (size_t i = 0; i < count; i++) {
+            id<MTLBuffer> b = (__bridge id<MTLBuffer>)buffers[i];
+            if (!b || b.device != dev) return report(e, Q38_OWNER);
+            [set addAllocation:b];
+        }
+        [set commit];                      /* additions take effect only at commit */
+        [q addResidencySet:set];
+        g->residency = (__bridge_retained void *)set;
+        return report(e, Q38_OK);
+    }
+    return report(e, Q38_UNSUPPORTED);
+}
+bool qwen38_gpu_session_pins_enabled(const Qwen38GpuSession *g) { return g && g->pins_enabled; }
+size_t qwen38_gpu_session_pin_count(const Qwen38GpuSession *g) { return g ? g->pin_count : 0; }
 static id<MTLBuffer> word_of(const Qwen38GpuSession *g) {
     return (__bridge id<MTLBuffer>)g->error_word;
 }
@@ -166,6 +270,7 @@ Qwen38Status qwen38_gpu_session_create(void *device, const void *model,
     g->claim_capacity = 64;
     g->claims = calloc(g->claim_capacity, sizeof(*g->claims));
     if (!g->claims) { free(g); return report(e, Q38_OOM); }
+    g->pins_enabled = !q38_ref_kernels("claim");   /* R1.7a oracle: per-command claims */
     g->concurrent = !q38_ref_kernels("barrier");   /* once per session, never per token */
     Qwen38Status s = qwen38_gpu_ledger_init(&g->ledger, model, capacity, e);
     id<MTLDevice> dev = (__bridge id<MTLDevice>)device;
@@ -297,7 +402,14 @@ Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
     if (!g) return report(e, Q38_INVALID_ARGUMENT);
     if (qwen38_gpu_ledger_info(&g->ledger).busy) return report(e, Q38_BUSY);
     drop(&g->command); drop(&g->encoder); drop(&g->error_word);
+    if (g->residency) {
+        if (@available(macOS 15.0, *))
+            [(__bridge id<MTLCommandQueue>)g->queue removeResidencySet:(__bridge id<MTLResidencySet>)g->residency];
+        drop(&g->residency);
+    }
     drop(&g->queue); drop(&g->device);
-    release_claims(g); free(g->claims); free(g);
+    release_claims(g); free(g->claims);
+    for (size_t i = 0; i < g->pin_count; i++) drop(&g->pins[i].buffer);
+    free(g->pins); free(g->pin_hi); free(g);
     return report(e, Q38_OK);
 }

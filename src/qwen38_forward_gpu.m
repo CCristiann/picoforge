@@ -201,8 +201,23 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     ALLOC(ids,false,p); ALLOC(keep,false,p); f->fw.ids=ids.span; f->fw.identity=keep.span;
     return Q38_OK;
 }
+/* R1.7b: weights stay resident on the session's queue. UNSUPPORTED (old OS, `claim`
+ * oracle) is not an error: the engine runs the same without it. */
+static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,Qwen38Error *e) {
+    const GgufPlan *plan=gpu_weights_plan(f->store);
+    void **views=calloc(plan->view_count,sizeof *views); if (!views) return fail(e,Q38_OOM,"residency list");
+    size_t n=0;
+    for (size_t i=0;i<plan->weight_count;i++) {     /* one buffer per view, however many tensors */
+        void *b=gpu_weights_buffer(f->store,&plan->weights[i]); bool seen=false;
+        for (size_t k=0;k<n&&!seen;k++) seen=views[k]==b;
+        if (!seen) views[n++]=b;
+    }
+    Qwen38Status rc=n ? qwen38_gpu_session_use_residency(session,views,n,e) : Q38_OK; free(views);
+    return rc==Q38_UNSUPPORTED ? Q38_OK : rc;
+}
 static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
     TRY(qwen38_gpu_session_create(f->device,f->config,f->capacity,&f->session,e));
+    TRY(residency(f,f->session,e));
     TRY(q38_packed_gpu_create(f->device,library,&f->b,e)); TRY(q38c_gpu_create(f->device,library,&f->ops,e));
     TRY(q38d_gpu_create(f->device,library,&f->d,e)); TRY(q38e_gpu_create(f->device,library,&f->e,e));
     TRY(q38f_routed_create(f->device,library,&f->moe,e));
@@ -486,9 +501,14 @@ static Qwen38Status claim(Qwen38GpuForward *f,Qwen38GpuSession *session,const Qw
         TRY(qwen38_gpu_session_claim(session,ticket,(Qwen38GpuSpan){(__bridge void *)b,0,b.length},Q38_GPU_USE_WRITE,e));
     if (f->trace_span.buffer) TRY(qwen38_gpu_session_claim(session,ticket,f->trace_span,Q38_GPU_USE_WRITE,e));
     const GgufPlan *plan=gpu_weights_plan(f->store);
+    /* R1.7a: weights are registered once per session; `claim` oracle: every command.
+     * A partial earlier pass re-pins everything (duplicate READs are harmless). */
+    bool pin=qwen38_gpu_session_pins_enabled(session);
+    if (pin && qwen38_gpu_session_pin_count(session)>=plan->weight_count) return Q38_OK;
     for (size_t i=0;i<plan->weight_count;i++) {
         const GgufBinding *w=&plan->weights[i];
-        TRY(qwen38_gpu_session_claim(session,ticket,(Qwen38GpuSpan){gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes},Q38_GPU_USE_READ,e));
+        Qwen38GpuSpan span={gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes};
+        TRY(pin ? qwen38_gpu_session_pin_read(session,ticket,span,e) : qwen38_gpu_session_claim(session,ticket,span,Q38_GPU_USE_READ,e));
     }
     return Q38_OK;
 }
@@ -576,6 +596,7 @@ static Qwen38Status mtp_create(Qwen38GpuForward *f,Qwen38Error *e) {
     f->layer[i].kind=*kind;
     if (kind->kind!=Q38_LAYER_QSA || kind->has_ple) return fail(e,Q38_UNSUPPORTED,"MTP requires QSA without PLE");
     TRY(qwen38_gpu_session_create(f->device,f->config,f->capacity,&f->mtp_session,e));
+    TRY(residency(f,f->mtp_session,e));
     TRY(create_qsa(f,i,e)); TRY(hc_bind(f,i,ffn_roles,&f->layer[i].ffn,e));
     const Qwen38Role roles[]={Q38_MOE_ROUTER,Q38_MOE_GATE,Q38_MOE_UP,Q38_MOE_DOWN,Q38_SHARED_GATE,Q38_SHARED_UP,Q38_SHARED_DOWN,Q38_SHARED_ROUTER};
     for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); f->layer[i].fb[j]=w.binding; f->layer[i].fl[j]=w.layout; }

@@ -94,6 +94,20 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *, const void *model,
 typedef enum { Q38_GPU_USE_READ, Q38_GPU_USE_WRITE } Qwen38GpuUse;
 Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *, const Qwen38GpuTicket *,
     Qwen38GpuSpan, Qwen38GpuUse, Qwen38Error *);
+/* R1.7a: a READ span registered once for the session's life (retained until
+ * destroy, kept across commands and reset). Later WRITE claims overlapping it are
+ * refused as before; the per-command cost is a binary search, not a scan. Like claim,
+ * only while ENCODING. Q38_UNSUPPORTED when Q38_REF_KERNELS selects `claim`
+ * (today's per-command claims). */
+Qwen38Status qwen38_gpu_session_pin_read(Qwen38GpuSession *, const Qwen38GpuTicket *,
+    Qwen38GpuSpan, Qwen38Error *);
+/* R1.7b: attach a residency set of these MTLBuffers to the session's queue (not while
+ * busy, once). Q38_UNSUPPORTED if the OS lacks MTLResidencySet or the `claim` oracle
+ * is selected: callers ignore that status, the session works without it. */
+Qwen38Status qwen38_gpu_session_use_residency(Qwen38GpuSession *, void *const *buffers,
+    size_t count, Qwen38Error *);
+bool qwen38_gpu_session_pins_enabled(const Qwen38GpuSession *);
+size_t qwen38_gpu_session_pin_count(const Qwen38GpuSession *);
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *, const Qwen38GpuTicket *,
     Qwen38Error *);
 Qwen38Status qwen38_gpu_session_abort(Qwen38GpuSession *, const Qwen38GpuTicket *,

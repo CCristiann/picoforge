@@ -16,6 +16,22 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.7a — Session-wide weight claims
+
+Every command used to declare (claim) every weight tensor, and each claim was checked
+against all earlier ones: O(n^2) work and a buffer retain per tensor, per token, before the
+GPU got anything. The weights are read-only and live as long as the session, so the session
+now registers them once (`qwen38_gpu_session_pin_read`, sorted ranges with a running max of
+the end address, one binary search per later claim). Semantics are unchanged: a WRITE over a
+pinned READ is still refused, READ/READ overlap is allowed, no-copy aliases are still found by
+address. Per token the graph now claims only its ~60 scratch buffers. R1.7b adds an
+`MTLResidencySet` (macOS 15+, probe `residency_set`) with the weight views on each session's
+queue, so Metal keeps them resident instead of re-establishing it per command buffer; weights
+only, no numeric effect. `Q38_REF_KERNELS=claim` (or 1) restores per-command claims and no
+residency set. Claim cost per token with 1500 weights + 60 scratch (g0 micro-benchmark,
+`Q38_CLAIM_BENCH=1`, ASan build): 1.57 ms -> 0.009 ms.
+Measured (controller, ladder): pending.
+
 ### R1.6b — Concurrent encoder
 
 A serial Metal encoder runs dispatch N+1 only after N has finished, even when N+1 does not
