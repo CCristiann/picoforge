@@ -19,17 +19,17 @@ gate, argmax and ordered top-5 12/12.
 ### R1.6a — Parallel RMSNorm
 
 RMSNorm: y = x / sqrt(sum(x²)/width + eps) * gain (GDN norm: then * sigmoid(z)).
-`q38c_rms` used ONE thread per row, so at one token each HC norm (1 row of
-4 x 2560 = 10240 floats) was one GPU thread: 17.7 ms per token over 61 norms (t12 profile).
-`q38c_rms_fast` uses one 256-thread threadgroup per row: strided squares per thread,
-`simd_sum`, then the 8 simdgroup sums in order, so the order depends only on the width;
-the expressions are the oracle's. Only the sum order differs: at width 10240 the fast
-kernel is within 2.7e-7 of FP64, the oracle within 1.9e-6; tolerance `rms_fast` 2^-18
-(max measured 2.1e-6). It folds in the input check (1 dispatch + 1 barrier instead of 2 + 2)
-with the same error word. All RMS and GDN norms use it; `Q38_REF_KERNELS=fuse` (or 1)
-keeps check + `q38c_rms`. Idea: ds4 fc80bd6 (MIT) `kernel_qwen4_hc_norm`, nothing copied.
-Bench at t = 1 on battery (exploration only, `bench/qwen38_r1_20261025/rms-battery`):
-1151.4 µs oracle, 28.2 µs fast per HC norm; the AC protocol run is still to do.
+`q38c_rms` used ONE thread per row: at one token each HC norm [1, 4, 2560] (per stream)
+was 4 threads, each a serial pass over 2560 floats, 290 µs (61 calls = 17.7 ms in the t12
+profile; 39 more inside the GDN block and PLE). `q38c_rms_fast`: one 256-thread threadgroup
+per row, strided squares, `simd_sum`, the 8 simdgroup sums in order (order depends only on
+the width), the oracle's expressions. At [t, 4, 2560] it is within 2.6e-7 of FP64, the oracle
+1.2e-6; tolerance `rms_fast` 2^-18 (max 3.4e-6, MTP h-norm). The input check is folded in
+(1 dispatch + 1 barrier instead of 2 + 2, same error word). All RMS and GDN norms use it;
+`Q38_REF_KERNELS=fuse` (or 1) keeps check + `q38c_rms`. Idea: ds4 fc80bd6 (MIT)
+`kernel_qwen4_hc_norm`, nothing copied. Battery exploration, not protocol
+(`bench/qwen38_r1_20261026/rms-battery2`): 288.1 → 25.9 µs per HC norm at t = 1, all norms
+32.1 → 3.8 ms per token (estimate); the AC protocol run is still to do.
 Measured (controller, ladder): pending.
 
 ### R1.5d — Parallel router top-k
