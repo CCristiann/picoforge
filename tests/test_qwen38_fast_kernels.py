@@ -14,6 +14,8 @@ measured against q38_packed_linear_indexed by the *_indexed Review Focus
 tests, test_expert_id_bounds and test_<format>_decode_matches_oracle.
 R1.6a: q38c_rms_fast (RMS and the gated GDN norm, input check folded in)
 against check + q38c_rms through q38c_gpu_encode, tolerance entry rms_fast.
+R1.8: q38c_gdn_prepare_fast (L2 norms, value copy, gates, input check folded
+in) against check + q38c_gdn_prepare, tolerance entry gdn_prepare_fast.
 """
 import argparse
 import json
@@ -505,6 +507,51 @@ def real_gain(name):
             if record["tensor"] == name:
                 return np.fromfile(directory / record["artifacts"]["decoded.f32"]["file"], "<f4")
     raise AssertionError(f"{name}: no slice (run qwen38-test-assets)")
+
+
+# ---- R1.8 parallel GDN prepare: q38c_gdn_prepare_fast against check + q38c_gdn_prepare ----
+L2_EPS = float(np.float32(1e-6))  # the harness's gdn.l2_eps
+GDN_REAL = (16, 48, 128, 128)  # (hk, hv, dk, dv): ssm.group_count, ssm.time_step_rank, ssm.state_size (docs/specs/qwen38/C.md)
+
+
+def run_prep(mode, inputs, dims, gap=0, offset=0, inplace=False, initial=0, env=None):
+    """inputs = (qkv [t, C], alpha [t, hv], br [t, hv], A [hv], dt [hv]), dims = (hk, hv, dk, dv):
+    (error word, dispatches, barriers, prepared, log_g, beta); outputs are returned even with the word set."""
+    qkv = inputs[0]
+    t, hv = qkv.shape[0], dims[1]
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "prep", mode, str(t), *map(str, dims), str(gap), str(offset),
+                             str(int(inplace)), str(initial)],
+                            input=b"".join(np.ascontiguousarray(a, "<f4").tobytes() for a in inputs),
+                            capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr or len(result.stdout) != 12 + 4 * (qkv.size + 2 * t * hv):
+        raise AssertionError(f"prep {mode}: exit {result.returncode}, {stderr!r}")
+    word, dispatches, barriers = (int(v) for v in np.frombuffer(result.stdout[:12], "<u4"))
+    out = np.frombuffer(result.stdout[12:], "<f4")
+    return (word, dispatches, barriers, out[:qkv.size].reshape(qkv.shape),
+            out[qkv.size:qkv.size + t * hv].reshape(t, hv), out[qkv.size + t * hv:].reshape(t, hv))
+
+
+def prep_inputs(rng, t, dims):
+    """qkv: head row r (q heads then k heads, all tokens) scaled by RMS_ROW_SCALES[r % 5], one outlier x100 in
+    every third row; values, alpha, br ~ N(0, 3); A = -exp(N(0, 1)) (nonpositive, as ssm_a); dt ~ N(0, 1)."""
+    hk, hv, dk, dv = dims
+    heads = rng.normal(0, 1, (t * 2 * hk, dk)) * np.array(RMS_ROW_SCALES)[np.arange(t * 2 * hk) % 5][:, None]
+    heads[::3, rng.integers(dk)] *= 100
+    qkv = np.concatenate([heads.reshape(t, 2 * hk * dk), rng.normal(0, 3, (t, hv * dv))], 1)
+    return tuple(a.astype(np.float32) for a in (qkv, rng.normal(0, 3, (t, hv)), rng.normal(0, 3, (t, hv)),
+                                                -np.exp(rng.normal(0, 1, hv)), rng.normal(0, 1, hv)))
+
+
+def prep_fp64(qkv, dims):
+    """FP64 r = q / sqrt(sum q^2 + eps) / sqrt(dk) (k unscaled) over the 2 hk heads [t, 2 hk dk]; S = |r|."""
+    hk, _, dk, _ = dims
+    x = qkv[:, :2 * hk * dk].astype(np.float64).reshape(len(qkv), 2 * hk, dk)
+    r = x / np.sqrt((x * x).sum(-1, keepdims=True) + L2_EPS)
+    r[:, :hk] /= np.sqrt(dk)
+    return r.reshape(len(qkv), -1), np.abs(r).reshape(len(qkv), -1)
 
 
 class FastKernelTests(unittest.TestCase):
@@ -1665,6 +1712,106 @@ class FastKernelTests(unittest.TestCase):
                     self.assertEqual(got[:3], (0, *RMS_DISPATCHES[mode]))
                     np.testing.assert_array_equal(got[3].view("<u4"), want[mode][3].view("<u4"))
 
+
+    # ---- R1.8 parallel GDN prepare (q38c_gdn_prepare_fast, family fuse) ----
+    def prep_case(self, label, inputs, dims, **view):
+        """Fast and oracle on one case: clean word, (1, 1) against (2, 2) dispatches/barriers, the value copy,
+        log_g and beta bit-identical (same expressions per element), the norms within (a) and (b)."""
+        fast, oracle = (run_prep(mode, inputs, dims, **view) for mode in ("fast", "oracle"))
+        self.assertEqual((fast[:3], oracle[:3]), ((0, 1, 1), (0, 2, 2)), label)
+        keys = 2 * dims[0] * dims[2]
+        for got, want in ((fast[3][:, keys:], oracle[3][:, keys:]), (fast[4], oracle[4]), (fast[5], oracle[5])):
+            np.testing.assert_array_equal(got.view("<u4"), want.view("<u4"), label)
+        ref, magnitude = prep_fp64(inputs[0], dims)
+        stats, oracle_stats = (rms_against_fp64(out[3][:, :keys], ref, magnitude, False) for out in (fast, oracle))
+        stats["vs_oracle"] = against_oracle(fast[3][:, :keys], oracle[3][:, :keys], magnitude)
+        RESULTS.setdefault(label, {}).update(fast=stats, oracle=oracle_stats)
+        CORPUS.setdefault("gdn_prepare_fast", {})[label] = scaled_difference(fast[3][:, :keys], oracle[3][:, :keys],
+                                                                              magnitude).ravel()
+        self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+        self.assertTrue(oracle_stats["finite"] and oracle_stats["condition_a"], (label, oracle_stats))
+        tol = TOLERANCES["kernels"].get("gdn_prepare_fast", {}).get("tol")
+        self.assertIsNotNone(tol, "gdn_prepare_fast: fast kernel without a measured tolerance")
+        self.assertLessEqual(stats["vs_oracle"]["max"], tol, label)
+        return fast
+
+    def test_gdn_prepare_fast_against_oracle_and_fp64(self):
+        """The real GDN dims (hk 16, hv 48, dk = dv 128: 32 q/k heads, 4 threadgroups per token) at 1, 3 and
+        32 tokens, then dims off the 8-head threadgroup and the 32-lane simdgroup: dk 1, 33, 200 (lanes loop),
+        2 hk = 2, 10, 48 heads, hv*dv below and above the 256 threads of a token's group."""
+        rng = np.random.default_rng(3967)
+        for dims, tokens in ((GDN_REAL, (1, 3, 32)), ((1, 3, 33, 5), (1, 3)), ((2, 4, 1, 1), (1, 3)),
+                             ((5, 10, 200, 7), (1, 3)), ((24, 48, 32, 64), (1, 3))):
+            for t in tokens:
+                with self.subTest(dims=dims, t=t):
+                    self.prep_case(f"prep:{dims}t{t}", prep_inputs(rng, t, dims), dims)
+
+    def test_gdn_prepare_fast_rows_bit_independent(self):
+        """Review Focus 4: a token's bits depend neither on the number of tokens nor on its position."""
+        rng = np.random.default_rng(3969)
+        inputs = prep_inputs(rng, 32, GDN_REAL)
+        whole = run_prep("fast", inputs, GDN_REAL)
+        for lo, hi in ((0, 1), (17, 18), (31, 32), (5, 8)):
+            part = run_prep("fast", tuple(a[lo:hi] if a.ndim == 2 else a for a in inputs), GDN_REAL)
+            self.assertEqual(part[:3], (0, 1, 1))
+            for got, want in zip(part[3:], whole[3:]):
+                np.testing.assert_array_equal(got.view("<u4"), want[lo:hi].view("<u4"), (lo, hi))
+
+    def test_gdn_prepare_fast_strided_offset_views_and_inplace(self):
+        """Review Focus 5: row pitches past the width (NaN in the gaps: a read there sets bit 1) and nonzero
+        offsets change no bit and write nothing outside the outputs (the harness checks); in place (the
+        admitted aliases), every element is read and written by one thread, so the bits are unchanged too."""
+        rng = np.random.default_rng(3971)
+        for dims in (GDN_REAL, (5, 10, 200, 7)):
+            inputs = prep_inputs(rng, 3, dims)
+            for mode in ("fast", "oracle"):
+                plain = run_prep(mode, inputs, dims)
+                for gap, offset, inplace in ((5, 3, False), (64, 0, False), (0, 7, False), (0, 0, True), (3, 1, True)):
+                    with self.subTest(dims=dims, mode=mode, gap=gap, offset=offset, inplace=inplace):
+                        got = run_prep(mode, inputs, dims, gap=gap, offset=offset, inplace=inplace)
+                        self.assertEqual(got[:3], plain[:3])
+                        for a, b in zip(got[3:], plain[3:]):
+                            np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
+
+    def test_gdn_prepare_fast_nonfinite_sets_error_word(self):
+        """Review Focus 3 with the check folded in: NaN/Inf in a q, k or value column, alpha, br, A or dt
+        give bit 1 and A > 0 bit 4 as check + q38c_gdn_prepare; a finite overflow of the op (sum of
+        squares, alpha + dt) gives bit 1. With bit 4 preset, a nonfinite input still adds bit 1 (the check
+        always runs), an overflow adds nothing (the op exits early)."""
+        rng = np.random.default_rng(3973)
+        dims = (2, 4, 33, 5)
+        clean = prep_inputs(rng, 3, dims)
+        keys = 2 * dims[0] * dims[2]
+        faults = [(0, (0, 0), np.nan), (0, (1, 33 + 7), np.inf), (0, (2, keys + 19), -np.inf), (1, (0, 3), np.nan),
+                  (2, (2, 0), np.inf), (3, (1,), np.nan), (4, (3,), -np.inf), (3, (2,), 0.5), (0, (1, 40), 3e38),
+                  (1, (2, 1), 3e38)]
+        for part, where, value in faults:
+            inputs = [a.copy() for a in clean]
+            inputs[part][where] = value
+            if part == 1 and value == 3e38:
+                inputs[4][1] = 3e38  # alpha + dt overflows
+            want = 4 if value == 0.5 else 1
+            for initial in (0, 4):
+                expected = want | initial if not np.isfinite(value) or value == 0.5 or not initial else initial
+                with self.subTest(part=part, where=where, value=value, initial=initial):
+                    self.assertEqual([run_prep(m, tuple(inputs), dims, initial=initial)[0] for m in ("fast", "oracle")],
+                                     [expected, expected])
+        with self.subTest(case="clean with bit 4 set"):
+            self.assertEqual([run_prep(m, clean, dims, initial=4)[0] for m in ("fast", "oracle")], [4, 4])
+
+    def test_gdn_prepare_selection(self):
+        """q38c_gpu_encode runs q38c_gdn_prepare_fast (1 dispatch, 1 barrier, the fast bits) unless
+        Q38_REF_KERNELS selects fuse at creation (fuse, 1, all, a list with fuse, a typo: R18)."""
+        inputs = prep_inputs(np.random.default_rng(3977), 3, GDN_REAL)
+        want = {mode: run_prep(mode, inputs, GDN_REAL) for mode in ("fast", "oracle")}
+        for value in (None, "", "0", "linear", "moe,indexed", "fuse", "1", "all", "linear,fuse", "fuze"):
+            mode = "oracle" if value in ("fuse", "1", "all", "linear,fuse", "fuze") else "fast"
+            with self.subTest(value=value):
+                got = run_prep("encode", inputs, GDN_REAL, env={} if value is None else {"Q38_REF_KERNELS": value})
+                self.assertEqual(got[:3], want[mode][:3])
+                self.assertEqual(got[:3], (0, 1, 1) if mode == "fast" else (0, 2, 2))
+                for a, b in zip(got[3:], want[mode][3:]):
+                    np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

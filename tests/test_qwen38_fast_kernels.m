@@ -863,6 +863,89 @@ static int rms_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R1.8 GDN prepare through q38c_gpu_encode (op Q38C_GDN_PREP):
+ *   prep <oracle|fast|encode> t hk hv dk dv gap offset inplace initial
+ * qkv/prepared [t,2hk*dk+hv*dv] and alpha/br/log_g/beta [t,hv]: row pitch
+ * width+gap floats; every view (also A, dt [hv]) starts `offset` floats past
+ * a 16-byte guard, NaN in every input gap. inplace: prepared, log_g, beta over
+ * qkv, alpha, br. stdin: qkv, alpha, br, A, dt packed. stdout: error word,
+ * dispatches, barriers (uint32), then prepared, log_g, beta packed; every
+ * output float outside its view keeps its 0xa5 bytes.
+ *   prepbench <oracle|fast> t hk hv dk dv reps
+ * synthetic inputs (A < 0), 3 warm-ups + 20 measured buffers of reps encodes. */
+static int prep_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"prepbench"), fast=!strcmp(argv[2],"fast");
+    assert(argc==(timing ? 9 : 12) && (fast || !strcmp(argv[2],"oracle") || (!timing && !strcmp(argv[2],"encode"))));
+    size_t t=number(argv[3]), hk=number(argv[4]), hv=number(argv[5]), dk=number(argv[6]), dv=number(argv[7]),
+           reps=timing ? number(argv[8]) : 1, gap=timing ? 0 : number(argv[8]), offset=timing ? 0 : number(argv[9]),
+           inplace=timing ? 0 : number(argv[10]), c=2*hk*dk+hv*dv, total=0;
+    uint32_t initial=timing ? 0 : (uint32_t)number(argv[11]);
+    assert(t && t<=4096 && hk && hv && hv%hk==0 && dk && dv && c<=1u<<20 && gap<=64 && offset<=64 && inplace<=1 &&
+           reps && reps<=1000);
+    size_t width[8]={c,hv,hv,hv,hv,c,hv,hv}, rows[8]={t,t,t,1,1,t,t,t}, words[8], pitch[8];
+    for (size_t b=0;b<5;b++) total+=rows[b]*width[b];
+    float *data=malloc(4*total); assert(data);
+    uint64_t seed=3967;
+    if (timing) for (size_t i=0;i<total;i++) data[i]=(float)(mix(&seed)>>40)*0x1p-23f-1.0f;
+    else assert(fread(data,4,total,stdin)==total && fgetc(stdin)==EOF);
+    for (size_t h=0;timing && h<hv;h++) data[t*(c+2*hv)+h]=-fabsf(data[t*(c+2*hv)+h]); /* A <= 0 */
+    double seconds[23];
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38CGpu *ops=NULL;
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        if (strcmp(argv[2],"encode")) q38c_gpu_set_reference(ops,!fast);
+        id<MTLBuffer> buf[8], word=shared(dev,4); Qwen38GpuF32 v[8]; const float *src=data;
+        for (size_t b=0;b<8;b++) {
+            pitch[b]=width[b]+(b==3 || b==4 ? 0 : gap); words[b]=8+offset+(rows[b]-1)*pitch[b]+width[b];
+            buf[b]=shared(dev,4*words[b]);
+            float *f=buf[b].contents;
+            if (b>=5) memset(f,0xa5,4*words[b]);
+            else for (size_t i=0;i<words[b];i++) f[i]=NAN;
+            for (size_t r=0;b<5 && r<rows[b];r++,src+=width[b]) memcpy(f+4+offset+r*pitch[b],src,4*width[b]);
+            v[b]=(Qwen38GpuF32){{(__bridge void *)buf[b],16+4*offset,4*((rows[b]-1)*pitch[b]+width[b])},2,
+                {rows[b],width[b],1,1},{pitch[b]*4,4,0,0}};
+            if (b==3 || b==4) v[b]=(Qwen38GpuF32){v[b].span,1,{width[b],1,1,1},{4,0,0,0}};
+        }
+        for (size_t b=5;inplace && b<8;b++) { v[b]=v[b-5]; buf[b]=buf[b-5]; }
+        Q38CGpuSpec spec={.gdn={.key_heads=hk,.value_heads=hv,.key_dim=dk,.value_dim=dv,.rms_eps=1e-6f,.l2_eps=1e-6f}};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            ((uint32_t *)word.contents)[0]=initial;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
+            for (size_t rep=0;rep<reps;rep++)
+                assert(q38c_gpu_encode(ops,cmd,Q38C_GDN_PREP,&spec,v,8,NULL)==Q38_OK);
+            [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+            assert(!timing || !((uint32_t *)word.contents)[0]);
+        }
+        for (size_t b=5;!inplace && b<8;b++) for (size_t i=0;i<words[b];i++) { /* no write outside the outputs */
+            size_t k=i-4-offset;
+            assert((i>=4+offset && k/pitch[b]<rows[b] && k%pitch[b]<width[b]) || ((uint32_t *)buf[b].contents)[i]==0xa5a5a5a5u);
+        }
+        if (timing) {
+            Request r={.mode=argv[2],.n=c,.logical=c,.m=t,.reps=reps,.bytes=4*(4*t*hv+2*hv)};
+            char specs[96];
+            snprintf(specs,sizeof specs,"tokens %zu hk %zu hv %zu dk %zu dv %zu",t,hk,hv,dk,dv);
+            report(r,seconds,NULL,specs);
+        } else {
+            uint32_t head[3]={((uint32_t *)word.contents)[0],counter->dispatches,counter->barriers};
+            assert(fwrite(head,4,3,stdout)==3);
+            for (size_t b=5;b<8;b++) for (size_t r=0;r<t;r++)
+                assert(fwrite((float *)buf[b].contents+4+offset+r*pitch[b],4,width[b],stdout)==width[b]);
+        }
+        q38c_gpu_destroy(ops);
+    }
+    free(data);
+    return 0;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -876,6 +959,7 @@ int main(int argc,char **argv) {
         return down_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"route") || !strcmp(argv[1],"rtbench"))) return route_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"rms") || !strcmp(argv[1],"rmsbench"))) return rms_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"prep") || !strcmp(argv[1],"prepbench"))) return prep_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

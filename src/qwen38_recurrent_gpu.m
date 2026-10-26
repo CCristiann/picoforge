@@ -5,9 +5,10 @@
 #include "qwen38_ref.h"
 #include "qwen38_profile.h"   /* only the format sentinels, for the R1.8 sub-group marks */
 #include <stdlib.h>
-/* rms_fast: q38c_rms_fast or NULL (no 32-wide simdgroup / 256 threads: the
- * oracle stays). ref_fuse: RMS and GDN_NORM run check + q38c_rms (R1.6a). */
-struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast; bool ref_fuse; };
+/* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide
+ * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run
+ * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */
+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast; bool ref_fuse; };
 void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }
 void q38c_gpu_destroy(Q38CGpu *g) {
     if (!g) return;
@@ -15,6 +16,7 @@ void q38c_gpu_destroy(Q38CGpu *g) {
     if (g->check) CFRelease(g->check);
     if (g->history) CFRelease(g->history);
     if (g->rms_fast) CFRelease(g->rms_fast);
+    if (g->prep_fast) CFRelease(g->prep_fast);
     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
     free(g);
 }
@@ -39,10 +41,13 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
         else if (i==Q38C_GPU_OPS) g->check=(__bridge_retained void *)p;
         else g->pipeline[i]=(__bridge_retained void *)p;
     }
-    id<MTLFunction> fn=[lib newFunctionWithName:@"q38c_rms_fast"];
-    id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
-    if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
-        g->rms_fast=(__bridge_retained void *)p;
+    NSString *fast[]={@"q38c_rms_fast",@"q38c_gdn_prepare_fast"}; void **slot[]={&g->rms_fast,&g->prep_fast};
+    for (size_t i=0;i<2;++i) {
+        id<MTLFunction> fn=[lib newFunctionWithName:fast[i]];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
+        if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
+            *slot[i]=(__bridge_retained void *)p;
+    }
     g->ref_fuse=q38_ref_kernels("fuse"); /* once per context, never per token */
     *out=g; return q38c_error(e,Q38_OK,NULL);
 }
@@ -215,10 +220,14 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     }
     [enc setBytes:&a length:sizeof(a) atIndex:8];
     [enc setBuffer:error offset:cmd.error_word.offset_bytes atIndex:9];
-    if ((op==Q38C_RMS || op==Q38C_GDN_NORM) && g->rms_fast && !g->ref_fuse) {
-        /* R1.6a: one threadgroup per row, q38c_check folded into the kernel. */
-        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->rms_fast];
-        [enc dispatchThreadgroups:MTLSizeMake(work,1,1) threadsPerThreadgroup:MTLSizeMake(Q38C_RMS_THREADS,1,1)];
+    void *fast=op==Q38C_GDN_PREP ? g->prep_fast : (op==Q38C_RMS || op==Q38C_GDN_NORM) ? g->rms_fast : NULL;
+    if (fast && !g->ref_fuse) {
+        /* R1.6a: one threadgroup per row; R1.8: a [ceil(2hk/8), t] grid, one
+         * simdgroup per q/k head. q38c_check folded into the kernel. */
+        size_t heads=(2*(size_t)a.p[0]+Q38C_RMS_THREADS/32-1)/(Q38C_RMS_THREADS/32);
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)fast];
+        [enc dispatchThreadgroups:op==Q38C_GDN_PREP ? MTLSizeMake(heads,work,1) : MTLSizeMake(work,1,1)
+            threadsPerThreadgroup:MTLSizeMake(Q38C_RMS_THREADS,1,1)];
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         return q38c_error(e,Q38_OK,NULL);
     }

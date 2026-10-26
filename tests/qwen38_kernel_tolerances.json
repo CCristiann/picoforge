@@ -89,6 +89,14 @@
       "samples": 1819312,
       "commit": "9479436",
       "note": "Parallel RMSNorm (R1.6a), RMS and the gated GDN norm, against check + q38c_rms. Here S = |r| (the FP64 output): one scale per row, so (b) is the relative error of that row's scale and every element of a row has nearly the same ratio (p99 close to max). Squares, mean, eps, sqrt, products and the gate are the oracle's expressions; only the order of the sum of squares differs: the oracle adds width squares serially, the fast kernel per thread (stride 256), then simd_sum over 32 lanes, then the 8 simdgroup sums in order. So (b) mostly measures the oracle's serial rounding: at the graph's HC shape [t, 4, 2560] (real per-stream hc_attn_norm gain) the fast kernel is within 2.6e-7 of FP64 and the oracle within 1.2e-6; at the MTP h-norm [t, 1, 10240] 3.3e-7 and 3.2e-6. The max 3.4e-6 (57 u, u = 2^-24) is at mtp_h 32 tokens; 2^-19 = 1.9e-6 is below it, so tol is 2^-18. Width 1 (one square) gives b = 0. Condition (a): gamma(width+16) S + 2 ulp32(r) (+16 gated); worst 10.8% of the bound (width 1), 0.17% at [32, 4, 2560]. Outside the corpus: the error word can differ (bit 1) only when the sum of squares is within about width*2^-24 of FLT_MAX (the two sum orders round differently), and outputs are unspecified whenever the word ends nonzero."
+    },
+    "gdn_prepare_fast": {
+      "tol": 9.5367431640625e-07,
+      "max": 5.697364864399292e-07,
+      "p99": 3.1107450566623845e-07,
+      "samples": 161880,
+      "commit": "measured on the tree of 'Add the parallel GDN prepare kernel' (parent 97123b8), harness report of tests/test_qwen38_fast_kernels.py -k gdn_prepare",
+      "note": "Parallel GDN prepare (R1.8) against check + q38c_gdn_prepare; (b) is measured on the 2 hk L2-normalised q/k heads only, S = |r| (the FP64 output): one scale per head row. The value copy, log_g = A*softplus(alpha+dt) and beta = sigmoid(br) are the oracle's expressions element by element and are asserted bit-identical, not toleranced. In the norms only the order of the dk squares differs: the oracle adds them serially, the fast kernel per lane (stride 32, ascending) then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: at the real dims (hk 16, hv 48, dk 128) the fast kernel is within 2.4e-7 of FP64 and the oracle within 4.9e-7 (32 tokens). The max 5.7e-7 (9.6 u of S, u = 2^-24) is at the real dims, 32 tokens; 2^-21 = 4.8e-7 is below it, so tol is 2^-20. dk 1 (one square) gives b = 0. Condition (a): gamma(dk+16) S + 2 ulp32(r); worst 6.3% of the bound (dk 1), 0.1% at the real dims. Outside the corpus: the error word can differ (5 vs 4) only when A > 0 meets an overflow of the op, and outputs are unspecified whenever the word ends nonzero."
     }
   }
 }
