@@ -16,6 +16,21 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.8 — GDN hotspot
+
+The GDN block was 60% of the token but one profile group, so Task 16-0 split it (profile only):
+gdn.prep 23.2 ms/token (32.9%), proj 6.8, hc_pre 4.2, scan 3.7, out 3.0. QSA and the n-gram
+path got no work (each under 5%). The prepare step L2-normalises the 32 q/k heads of 128
+(q also by 1/sqrt(128)), copies the 6144 values and computes 48 gates (g = A·softplus(α+dt),
+β = sigmoid(b)), and it ran on ONE GPU thread per token. `q38c_gdn_prepare_fast` gives each
+head a simdgroup (lane-strided squares, then simd_sum: the order depends only on dk) and
+strides the copy and gates over 1024 threads, with the input check folded in. Copy and gates
+are bit-identical to the oracle; the norms differ only by summation order (tolerance 2^-20,
+measured max 5.7e-7). Bench at the real dims, t = 1: 666.8 -> 19.4 µs, about 24.0 -> 0.7 ms
+per token by estimate (`bench/qwen38_r1_20261026/gdn-prep`). The scan was not touched.
+Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_front/gdn_prep; no code copied.
+Measured (controller, ladder): pending.
+
 ### R1.7b — GPU argmax
 
 Greedy decode needs one number per token, the id of the largest logit, yet every token copied
