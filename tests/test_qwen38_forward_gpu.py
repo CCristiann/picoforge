@@ -44,6 +44,23 @@ class DeviceGraphTests(unittest.TestCase):
             if saved is None: os.environ.pop('Q38_REF_KERNELS', None)
             else: os.environ['Q38_REF_KERNELS'] = saved
 
+    def test_argmax_matches_cpu_scan(self):
+        """T15c: GPU argmax (default) and the CPU oracle (Q38_REF_KERNELS=argmax) both give the
+        first-maximum id of the logits row, alone (ties, all-equal, NaN/Inf -> bit 1) and in the
+        graph for decode and chunked appends. The native binary asserts; failure is non-zero."""
+        saved = os.environ.get('Q38_REF_KERNELS')
+        os.environ['Q38_G2_ARGMAX_CHECKS'] = '1'
+        try:
+            for mode in ('', 'argmax'):
+                os.environ['Q38_REF_KERNELS'] = mode
+                for chunk in (1, 7):
+                    info, _ = gate.run_native(4, chunk)
+                    self.assertEqual(info['next_pos'], len(gate.TOKENS), f'{mode=} {chunk=}')
+        finally:
+            os.environ.pop('Q38_G2_ARGMAX_CHECKS', None)
+            if saved is None: os.environ.pop('Q38_REF_KERNELS', None)
+            else: os.environ['Q38_REF_KERNELS'] = saved
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--native', type=Path, required=True)

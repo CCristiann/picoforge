@@ -8,6 +8,7 @@
 #include "qwen38_f_internal.h"
 #include "qwen38_b_internal.h"
 #include "qwen38_ngram_internal.h"
+#include "qwen38_ref.h"
 #include <stdlib.h>
 #include <time.h>
 static double clock_s(void) {
@@ -41,6 +42,8 @@ struct Qwen38GpuForward {
     G2Trace *traces; size_t trace_count,trace_offset; Qwen38GpuSpan trace_span;
     Qwen38GpuForwardStats stats;
     bool mtp_enabled,mtp_failed; Qwen38GpuSession *mtp_session;
+    /* T15c: gpu_argmax is read once at creation (`argmax` oracle: logits row + CPU scan). */
+    bool gpu_argmax,want_id; void *argmax; Qwen38GpuF32 argmax_id; float *host_row;
     G2Weight mtp_eh; G2Hc mtp_head;
     Qwen38GpuF32 mtp_egain,mtp_hgain,mtp_en,mtp_hn,mtp_cat,mtp_proj,mtp_r;
     void *mtp_concat,*mtp_sum;
@@ -173,7 +176,7 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     ALLOC(f->r,false,t,h,d); ALLOC(f->normed,false,t,h,d); ALLOC(f->gate,false,t,h,d);
     ALLOC(f->low,false,t,rank); ALLOC(f->act,false,t,rank); ALLOC(f->il,false,t,h);
     ALLOC(f->inject,false,t,h); ALLOC(f->mixed,false,t,d); ALLOC(f->block,false,t,d);
-    ALLOC(f->tokens,false,t); ALLOC(f->logits,false,f->max_logits_rows,f->c.vocab_size);
+    ALLOC(f->tokens,false,t); ALLOC(f->logits,false,f->max_logits_rows,f->c.vocab_size); ALLOC(f->argmax_id,false,1);
     const Qwen38AttentionConfig *a=&f->c.attention;
     ALLOC(f->dw.qg,false,t,a->heads,2,a->head_dim);
     ALLOC(f->dw.k,false,t,a->kv_heads,a->head_dim); ALLOC(f->dw.v,false,t,a->kv_heads,a->head_dim);
@@ -200,6 +203,41 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     ALLOC(f->fw.shared,false,mt,d); ALLOC(f->fw.slogit,false,mt,1); ALLOC(f->fw.ssig,false,mt,1); ALLOC(f->fw.routed,false,mt,d);
     ALLOC(ids,false,p); ALLOC(keep,false,p); f->fw.ids=ids.span; f->fw.identity=keep.span;
     return Q38_OK;
+}
+/* T15c: greedy id on the GPU, one threadgroup over the logits row. The idea, not the
+ * code: ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_argmax. Ties go to the FIRST
+ * index; any non-finite logit sets error bit 1. */
+static void *argmax_pipeline(void *device,void *library) {
+    id<MTLFunction> fn=[(__bridge id<MTLLibrary>)library newFunctionWithName:@"q38g_argmax"];
+    id<MTLComputePipelineState> p=fn ? [(__bridge id<MTLDevice>)device newComputePipelineStateWithFunction:fn error:NULL] : nil;
+    return p && p.maxTotalThreadsPerThreadgroup>=1024 ? (__bridge_retained void *)p : NULL;
+}
+static void argmax_encode(void *pipeline,Qwen38GpuCommand cmd,Qwen38GpuSpan x,Qwen38GpuSpan out,uint32_t n) {
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)pipeline];
+    Qwen38GpuSpan s[3]={x,out,cmd.error_word};
+    [enc setBuffer:(__bridge id<MTLBuffer>)s[0].buffer offset:s[0].offset_bytes atIndex:0];
+    [enc setBuffer:(__bridge id<MTLBuffer>)s[1].buffer offset:s[1].offset_bytes atIndex:1];
+    [enc setBytes:&n length:sizeof n atIndex:2];
+    [enc setBuffer:(__bridge id<MTLBuffer>)s[2].buffer offset:s[2].offset_bytes atIndex:3];
+    [enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1024,1,1)];
+}
+/* Test seam: the kernel alone on one row, outside any graph or session. */
+Qwen38Status q38g_argmax_probe(void *device,void *library,const float *row,uint32_t n,int32_t *winner,
+                               uint32_t *error_bits,Qwen38Error *e) {
+    @autoreleasepool {
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;
+    void *pipeline=argmax_pipeline(device,library); if (!pipeline) return fail(e,Q38_GPU_ERROR,"argmax pipeline");
+    id<MTLBuffer> x=[dev newBufferWithBytes:row length:MAX((size_t)n*4,4) options:MTLResourceStorageModeShared];
+    id<MTLBuffer> out=[dev newBufferWithLength:4 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> err=[dev newBufferWithLength:8 options:MTLResourceStorageModeShared]; memset(err.contents,0,8);
+    id<MTLCommandBuffer> cb=[[dev newCommandQueue] commandBuffer]; id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder];
+    Qwen38GpuCommand cmd={.device=device,.compute_encoder=(__bridge void *)enc,.error_word={(__bridge void *)err,0,8}};
+    argmax_encode(pipeline,cmd,(Qwen38GpuSpan){(__bridge void *)x,0,(size_t)n*4},(Qwen38GpuSpan){(__bridge void *)out,0,4},n);
+    [enc endEncoding]; [cb commit]; [cb waitUntilCompleted]; CFRelease(pipeline);
+    if (cb.error) return fail(e,Q38_GPU_ERROR,"argmax probe");
+    *winner=*(int32_t *)out.contents; *error_bits=*(uint32_t *)err.contents; return fail(e,Q38_OK,NULL);
+    }
 }
 /* R1.7b: weights stay resident on the session's queue. UNSUPPORTED (old OS, `claim`
  * oracle) is not an error: the engine runs the same without it. */
@@ -229,6 +267,8 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
     id<MTLFunction> fn=[(__bridge id<MTLLibrary>)library newFunctionWithName:@"q38g_copy"];
     id<MTLComputePipelineState> p=fn ? [(__bridge id<MTLDevice>)f->device newComputePipelineStateWithFunction:fn error:NULL] : nil;
     if (!p) return fail(e,Q38_GPU_ERROR,"graph copy pipeline"); f->copy=(__bridge_retained void *)p;
+    f->gpu_argmax=!q38_ref_kernels("argmax"); f->argmax=argmax_pipeline(f->device,library);
+    if (!f->argmax) return fail(e,Q38_GPU_ERROR,"graph argmax pipeline");
     TRY(bind_weight(f,QWEN38_GLOBAL_LAYER,Q38_TOKEN_EMBD,&f->embed,e));
     TRY(bind_weight(f,QWEN38_GLOBAL_LAYER,Q38_LM_HEAD,&f->head,e));
     if (f->embed.layout.k_logical!=f->c.hidden_size || f->embed.layout.n_out!=f->c.vocab_size ||
@@ -302,6 +342,8 @@ void qwen38_gpu_forward_destroy(Qwen38GpuForward *f) {
     if (f->mtp_sum) CFRelease(f->mtp_sum);
     if (f->library) CFRelease(f->library);
     if (f->copy) CFRelease(f->copy);
+    if (f->argmax) CFRelease(f->argmax);
+    free(f->host_row);
     if (f->buffers) CFRelease(f->buffers);
     if (f->histories) CFRelease(f->histories);
     if (f->device) CFRelease(f->device);
@@ -475,6 +517,9 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
     }
     TRY(hc_read(f,cmd,QWEN38_GLOBAL_LAYER,&f->final,HC_FINAL,t,e)); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));
     if (rows) TRY(linear(f,cmd,QWEN38_GLOBAL_LAYER,"lm_head",f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e));
+    if (rows && f->want_id) {   /* the concurrent encoder orders only explicit barriers */
+        barrier(*cmd); argmax_encode(f->argmax,*cmd,f->logits.span,f->argmax_id.span,f->c.vocab_size);
+    }
     return Q38_OK;
 }
 static Qwen38Status jobs(Qwen38GpuForward *f,bool commit,Qwen38Status rc,Qwen38Error *e) {
@@ -519,8 +564,9 @@ static Qwen38Status claim(Qwen38GpuForward *f,Qwen38GpuSession *session,const Qw
     if (pin) qwen38_gpu_session_pins_seal(session);
     return Q38_OK;
 }
-Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t count,uint32_t layers,
-    Qwen38F32Mut logits,Qwen38GraphTrace trace,void *user,Qwen38Error *e) {
+/* want!=NULL: GPU argmax of the last row's logits, only the id is read back (logits ignored). */
+static Qwen38Status forward(Qwen38GpuForward *f,const int32_t *tokens,size_t count,uint32_t layers,
+    Qwen38F32Mut logits,int32_t *want,Qwen38GraphTrace trace,void *user,Qwen38Error *e) {
     if (!f || (count && !tokens)) return fail(e,Q38_INVALID_ARGUMENT,"append arguments");
     Qwen38StateInfo before=qwen38_gpu_forward_info(f);
     if (before.busy) return fail(e,Q38_BUSY,"graph busy");
@@ -528,12 +574,15 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     if (layers>f->c.trunk_blocks) return fail(e,Q38_RANGE,"trunk depth");
     if (layers<f->c.trunk_blocks && before.next_pos) return fail(e,Q38_BAD_STATE,"prefix requires fresh graph");
     if (count>f->max_tokens || count>f->capacity-before.next_pos) return fail(e,Q38_CAPACITY,"append capacity");
+    if (want) { logits=(Qwen38F32Mut){.rank=2,.dim={1,f->c.vocab_size}}; if (!count) return fail(e,Q38_INVALID_ARGUMENT,"argmax needs a token"); }
+    else {
     TRY(q38c_view(q38c_ro(logits),e));
     if (logits.rank!=2 || logits.dim[0]>count || logits.dim[0]>f->max_logits_rows || logits.dim[1]!=f->c.vocab_size ||
         logits.stride_bytes[0]!=(size_t)f->c.vocab_size*4) return fail(e,Q38_SHAPE,"dense bounded logits required");
+    }
     for (size_t i=0;i<count;i++) if (tokens[i]<0 || (uint32_t)tokens[i]>=f->c.vocab_size) return fail(e,Q38_RANGE,"token outside vocabulary");
     if (!count) return fail(e,Q38_OK,NULL);
-    size_t output_bytes=q38c_span(q38c_ro(logits));
+    size_t output_bytes=want ? 0 : q38c_span(q38c_ro(logits));
     if (output_bytes) {
         for (id<MTLBuffer> b in (__bridge NSArray *)f->buffers)
             if (q38c_overlap(logits.data,output_bytes,b.contents,b.length)) return fail(e,Q38_INVALID_ARGUMENT,"logits alias graph storage");
@@ -553,7 +602,7 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
         if (!trace_buffer) return fail(e,Q38_OOM,"trace buffer");
         f->trace_span=(Qwen38GpuSpan){(__bridge void *)trace_buffer,0,bytes};
     }
-    f->trace_count=0; f->trace_offset=0; f->busy=true;
+    f->trace_count=0; f->trace_offset=0; f->busy=true; f->want_id=want!=NULL;
     f->stats=(Qwen38GpuForwardStats){0}; double prepare_start=clock_s();
     Qwen38Status rc=prepare(f,tokens,count,layers,before.next_pos,e);
     double encode_start=clock_s(); f->stats.prepare_s=encode_start-prepare_start;
@@ -563,7 +612,7 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     if (!rc) { f->prof_ticket=f->prof ? &ticket : NULL; f->prof_failed=false; }
     if (!rc) rc=run(f,&cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
     if (!rc && f->prof_failed) rc=fail(e,Q38_GPU_ERROR,"profile encoder split");
-    f->prof_ticket=NULL;
+    f->prof_ticket=NULL; f->want_id=false;
     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }
     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
     if (submitted) rc=qwen38_gpu_session_finish(f->session,&ticket,e);
@@ -575,7 +624,8 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     if (rc || layers<f->c.trunk_blocks) f->valid=false;
     else { f->last_start=f->next_pos; f->last_count=count; f->next_pos+=count; }
     if (!rc) {
-        if (logits.dim[0]) memcpy(logits.data,contents(f->logits),logits.dim[0]*f->c.vocab_size*4);
+        if (want) *want=*(int32_t *)contents(f->argmax_id);
+        else if (logits.dim[0]) memcpy(logits.data,contents(f->logits),logits.dim[0]*f->c.vocab_size*4);
         if (trace) for (size_t j=0;j<f->trace_count;j++) {
             G2Trace *r=&f->traces[j]; Qwen38F32 v={.data=contents(r->view),.capacity_bytes=r->view.span.bytes,.rank=r->view.rank};
             memcpy(v.dim,r->view.dim,sizeof v.dim); memcpy(v.stride_bytes,r->view.stride_bytes,sizeof v.stride_bytes);
@@ -584,6 +634,26 @@ Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t
     }
     f->trace_span=(Qwen38GpuSpan){0}; f->busy=false;
     return rc ? rc : fail(e,Q38_OK,NULL);
+}
+Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *f,const int32_t *tokens,size_t count,uint32_t layers,
+    Qwen38F32Mut logits,Qwen38GraphTrace trace,void *user,Qwen38Error *e) {
+    return forward(f,tokens,count,layers,logits,NULL,trace,user,e);
+}
+Qwen38Status qwen38_gpu_forward_argmax(Qwen38GpuForward *f,const int32_t *tokens,size_t count,uint32_t layers,
+    int32_t *id,Qwen38Error *e) {
+    if (!f || !id || !tokens || !count) return fail(e,Q38_INVALID_ARGUMENT,"argmax arguments");
+    if (f->gpu_argmax) return forward(f,tokens,count,layers,(Qwen38F32Mut){0},id,NULL,NULL,e);
+    /* `argmax` oracle: today's path, the last row read back and scanned on the CPU. */
+    uint32_t n=f->c.vocab_size;
+    if (!f->host_row && !(f->host_row=malloc((size_t)n*4))) return fail(e,Q38_OOM,"argmax row");
+    Qwen38F32Mut y={.data=f->host_row,.capacity_bytes=(size_t)n*4,.rank=2,.dim={1,n},.stride_bytes={(size_t)n*4,4}};
+    TRY(forward(f,tokens,count,layers,y,NULL,NULL,NULL,e));
+    int32_t best=0;
+    for (uint32_t j=0;j<n;j++) {
+        if (!isfinite(f->host_row[j])) return fail(e,Q38_GPU_ERROR,"nonfinite logit");
+        if (f->host_row[j]>f->host_row[best]) best=(int32_t)j;
+    }
+    *id=best; return fail(e,Q38_OK,NULL);
 }
 Qwen38Status qwen38_gpu_forward_reset(Qwen38GpuForward *f,Qwen38Error *e) {
     if (!f) return fail(e,Q38_INVALID_ARGUMENT,"null graph");

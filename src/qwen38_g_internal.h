@@ -21,4 +21,7 @@ Qwen38Status q38g_forward_set_profile(Qwen38GpuForward *,Q38Profile *,Qwen38Erro
  * encoders, without a profile or outside an ordinary trunk append (MTP). */
 void q38g_profile_mark(Qwen38GpuForward *,Qwen38GpuCommand *,uint32_t layer,const char *op,
     uint32_t gguf_type,uint64_t weight_bytes);
+/* T15c: the argmax kernel alone on one host row (n >= 1). */
+Qwen38Status q38g_argmax_probe(void *device,void *library,const float *row,uint32_t n,int32_t *id,
+    uint32_t *error_bits,Qwen38Error *);
 #endif

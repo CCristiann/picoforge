@@ -22,6 +22,11 @@ Qwen38Status qwen38_gpu_forward_create(const Gguf *,const Qwen38Config *,const Q
  * GPU commands poison all state; reset zeros histories and advances epoch. */
 Qwen38Status qwen38_gpu_forward(Qwen38GpuForward *,const int32_t *,size_t count,uint32_t layers,
     Qwen38F32Mut logits,Qwen38GraphTrace,void *,Qwen38Error *);
+/* Same append, but only the greedy id of the LAST token's logits comes back: the argmax
+ * runs on the GPU (ties -> first index, non-finite -> Q38_GPU_ERROR). Q38_REF_KERNELS
+ * naming `argmax` reads the row back and scans it on the CPU instead. */
+Qwen38Status qwen38_gpu_forward_argmax(Qwen38GpuForward *,const int32_t *,size_t count,uint32_t layers,
+    int32_t *id,Qwen38Error *);
 Qwen38StateInfo qwen38_gpu_forward_info(const Qwen38GpuForward *);
 Qwen38Status qwen38_gpu_forward_reset(Qwen38GpuForward *,Qwen38Error *);
 void qwen38_gpu_forward_destroy(Qwen38GpuForward *);
