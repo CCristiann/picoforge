@@ -76,6 +76,10 @@ def summarize(paths, runs):
               'effective_gbps': nbytes / (total_us * 1e3), 'bandwidth_floor_us_per_token': nbytes / (CEILING_GBPS * 1e3),
               'dispatches_per_token': dispatches, 'barriers_per_token': per_token('barriers'),
               'dispatch_floor_us_per_token': dispatches * FLOOR_US}
+    gdn = [r for r in rows if r['op'].startswith('gdn.')]   # R1.8: the gdn group is split in sub-groups
+    if gdn:
+        totals.update(gdn_us_per_token=sum(r['us_per_token'] for r in gdn), gdn_share=sum(r['share'] for r in gdn),
+                      gdn_weight_bytes_per_token=sum(r['weight_bytes_per_token'] for r in gdn))
     if runs:
         done = [json.loads(line) for line in Path(runs).read_text().splitlines() if line.strip()]
         done = [d for d in done if d.get('event') == 'done' and not d.get('warmup')]
@@ -97,6 +101,9 @@ def markdown(rows, totals, paths):
              f"floor at {CEILING_GBPS:.0f} GB/s: {t['bandwidth_floor_us_per_token']:.1f} µs",
              f"- Dispatches: {t['dispatches_per_token']:.0f} (floor x {FLOOR_US} µs = {t['dispatch_floor_us_per_token']:.1f} µs); "
              f"barriers: {t['barriers_per_token']:.0f}"]
+    if 'gdn_us_per_token' in t:
+        lines.append(f"- gdn rollup (sum of gdn.*): {t['gdn_us_per_token']:.1f} µs, {100 * t['gdn_share']:.1f}%, "
+                     f"{t['gdn_weight_bytes_per_token'] / 1e6:.2f} MB")
     if 'groups_over_normal_gpu' in t:
         lines.append(f"- Normal-mode decode gpu_s: {t['normal_decode_gpu_us_per_token']:.1f} µs; "
                      f"sum of groups / normal: {t['groups_over_normal_gpu']:.4f}")

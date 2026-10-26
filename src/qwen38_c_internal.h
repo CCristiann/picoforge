@@ -248,6 +248,11 @@ void q38c_gpu_set_reference(Q38CGpu *, bool fuse);
 typedef struct {
     Qwen38GpuF32 residual, history, state;
     Qwen38GpuF32 trace[Q38CT_COUNT], constant[Q38CW_COUNT];
+    /* R1.8 profile only (NULL otherwise: no extra dispatch, barrier or split):
+     * called before each dispatch group of the block with the command it must
+     * continue on (the hook may replace cmd->compute_encoder). */
+    void (*mark)(void *ctx, Qwen38GpuCommand *cmd, const char *op, uint32_t type, uint64_t bytes);
+    void *mark_ctx;
 } Q38CGpuWork;
 Qwen38Status q38c_block_encode(Q38CGpu *, Q38PackedGpu *, Qwen38GpuCommand,
     const Q38CLayer *, const GpuWeightStore *, const GgufBinding *const[Q38CW_COUNT],

@@ -3,6 +3,7 @@
 #include "qwen38_c_internal.h"
 #include "qwen38_b_internal.h"
 #include "qwen38_ref.h"
+#include "qwen38_profile.h"   /* only the format sentinels, for the R1.8 sub-group marks */
 #include <stdlib.h>
 /* rms_fast: q38c_rms_fast or NULL (no 32-wide simdgroup / 256 threads: the
  * oracle stays). ref_fuse: RMS and GDN_NORM run check + q38c_rms (R1.6a). */
@@ -290,14 +291,21 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
 #define K(name) w->constant[Q38CW_##name]
 #define OP(op,...) do { Qwen38GpuF32 views[]={__VA_ARGS__}; \
     Q38C_TRY(q38c_gpu_encode(g,cmd,Q38C_##op,&spec,views,sizeof(views)/sizeof(*views),e)); } while (0)
+    /* Profile groups (hook set only in profile mode); bytes: the linears' whole matrices. */
+#define BYTES(slot) bindings[Q38CW_##slot]->tensor.bytes
+#define TYPE(slot) bindings[Q38CW_##slot]->tensor.type
+#define MARK(op,type,bytes) do { if (w->mark) { w->mark(w->mark_ctx,&cmd,op,type,bytes); \
+    enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; } } while (0)
 #define LINEAR(slot,input,output) do { Q38C_TRY(q38_packed_encode(b,&cmd,store,bindings[Q38CW_##slot], \
     &l->weight[Q38CW_##slot].layout,0,V(input),V(output),e)); \
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
+    MARK("gdn.hc_pre",Q38_PROFILE_MIXED,BYTES(HD)+BYTES(HU)+BYTES(HI));
     OP(RMS,w->residual,K(HN),group_view(V(N),h,width));
     LINEAR(HD,N,LOW); OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
     OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
     LINEAR(HI,N,IL); OP(HC_INJECT,V(IL),V(INJECT));
     { /* R1.4: the four projections of MIX in one multi call, one barrier */
+        MARK("gdn.proj",Q38_PROFILE_MIXED,BYTES(QKV)+BYTES(Z)+BYTES(AP)+BYTES(BP));
         const Q38CWeight slot[]={Q38CW_QKV,Q38CW_Z,Q38CW_AP,Q38CW_BP};
         const GgufBinding *mb[4]; Q38PackedLayout ml[4];
         const Qwen38GpuF32 out[]={V(QKV),V(Z),V(ALPHA),V(BR)};
@@ -305,12 +313,22 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
         Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,4,V(MIX),out,e));
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
+    MARK("gdn.conv",Q38_PROFILE_NONE,0);
     OP(CONV,V(QKV),K(CONV),V(CONV),w->history);
+    MARK("gdn.prep",Q38_PROFILE_NONE,0);
     OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));
+    MARK("gdn.scan",Q38_PROFILE_NONE,0);
     OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));
+    MARK("gdn.norm",Q38_PROFILE_NONE,0);
     OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));
-    LINEAR(OUT,NORM,OUT); OP(HC_ADD,w->residual,V(OUT),V(INJECT));
+    MARK("gdn.out",TYPE(OUT),BYTES(OUT));
+    LINEAR(OUT,NORM,OUT);
+    MARK("gdn.add",Q38_PROFILE_NONE,0);
+    OP(HC_ADD,w->residual,V(OUT),V(INJECT));
 #undef LINEAR
+#undef MARK
+#undef TYPE
+#undef BYTES
 #undef OP
 #undef V
 #undef K

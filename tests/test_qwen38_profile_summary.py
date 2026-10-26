@@ -78,5 +78,21 @@ class SummaryTests(unittest.TestCase):
             self.assertAlmostEqual(totals['normal_decode_gpu_us_per_token'], 100.0)  # warm-up line ignored
             self.assertAlmostEqual(totals['groups_over_normal_gpu'], 1.02)
 
+    def test_gdn_subgroups_roll_up(self):
+        rows = [('global', 'embed', 'NONE', 0, 30.0), ('0', 'gdn.proj', 'MIXED', 300, 30.0),
+                ('0', 'gdn.scan', 'NONE', 0, 20.0), ('0', 'gdn.out', 'Q8_0', 100, 10.0), ('global', 'lm_head', 'Q8_0', 500, 8.0)]
+        text = HEADER + ''.join(f'decode,3,{layer},{op},{fmt},{nbytes},1,1,{us},0.1\n' for layer, op, fmt, nbytes, us in rows)
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory)/'g.csv').write_text(text)
+            done = subprocess.run([sys.executable, '-I', str(TOOL), str(Path(directory)/'g.csv'), '--out', str(Path(directory)/'o')],
+                                  capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            totals = json.loads((Path(directory)/'o'/'totals.json').read_text())
+            self.assertAlmostEqual(totals['us_per_token'], 98.0)          # sub-groups sum to the whole
+            self.assertAlmostEqual(totals['gdn_us_per_token'], 60.0)
+            self.assertAlmostEqual(totals['gdn_share'], 60.0/98.0)
+            self.assertAlmostEqual(totals['gdn_weight_bytes_per_token'], 400)
+            self.assertIn('gdn rollup', (Path(directory)/'o'/'summary.md').read_text())
+
 if __name__ == '__main__':
     unittest.main()

@@ -44,12 +44,18 @@ class ProfileTests(unittest.TestCase):
             for layer in [*map(str, range(layers)), 'global']:
                 self.assertTrue(any(r['layer'] == layer for r in rows), layer)
             ops = {r['op'] for r in rows}
-            for op in ('embed', 'gdn', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.hc_read',
+            self.assertNotIn('gdn', ops)   # R1.8: the group is split into gdn.* sub-groups
+            for op in ('embed', 'gdn.hc_pre', 'gdn.proj', 'gdn.conv', 'gdn.prep', 'gdn.scan', 'gdn.norm', 'gdn.out',
+                       'gdn.add', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.hc_read',
                        'moe', 'hc_add', 'final.up', 'lm_head'):
                 self.assertIn(op, ops)
             for r in rows:
                 self.assertGreater(float(r['gpu_us']), 0, r)
-                if r['op'] in ('gdn', 'moe', 'ple', 'qsa.core'):
+                if r['op'] in ('gdn.hc_pre', 'gdn.proj'):   # R1.8: linears carry their weight bytes
+                    self.assertEqual((r['format'], int(r['weight_bytes']) > 0), ('MIXED', True), r)
+                if r['op'] in ('gdn.conv', 'gdn.prep', 'gdn.scan', 'gdn.norm', 'gdn.add'):
+                    self.assertEqual((r['format'], r['weight_bytes']), ('NONE', '0'), r)
+                if r['op'] in ('moe', 'ple', 'qsa.core'):
                     self.assertEqual(r['format'], 'MIXED')
                     # R0.3: composites count the weights they read; qsa.core reads only caches.
                     self.assertEqual(int(r['weight_bytes']) == 0, r['op'] == 'qsa.core', r)
@@ -77,7 +83,8 @@ class ProfileTests(unittest.TestCase):
             # A 3-token prefill chunk reads more MoE experts than one decode token, the same GDN weights.
             def bytes_of(phase, token, op):
                 return [int(r['weight_bytes']) for r in rows if (r['phase'], r['token'], r['op']) == (phase, token, op)]
-            self.assertEqual(bytes_of('prefill', '0', 'gdn'), bytes_of('decode', '5', 'gdn'))
+            for op in ('gdn.hc_pre', 'gdn.proj', 'gdn.out'):
+                self.assertEqual(bytes_of('prefill', '0', op), bytes_of('decode', '5', op))
             for big, small in zip(bytes_of('prefill', '0', 'moe'), bytes_of('decode', '5', 'moe'), strict=True):
                 self.assertGreater(big, small)
 
