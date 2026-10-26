@@ -57,7 +57,12 @@ fc80bd6 (MIT) `kernel_qwen4_router_topk`, nothing copied. Protocol bench on AC
 
 t = 1, 48 layers: 58.9 → 1.15 ms per token (estimate); faster at 32/128 too: no threshold.
 
-Measured (controller, ladder): pending.
+Measured (controller, full closure for Tasks 13+13b at 0f04548, AC): ladder
+9.371 tok/s (p10 9.247, p90 9.470, n 20; Task 9 3.956, x2.37; 0.28x DwarfStar
+R0). 8-token profile: GPU 105.7 ms/token (Task 12 160.6, -34%); the MoE group
+70.7 → 12.9 ms (94.6 GB/s); dispatches 2578 → 2482. `make test-qwen38`, G3 and
+`Q38_REF_KERNELS=1` bit-identical all pass (`bench/qwen38_r1_20261026/ladder-t13`,
+`profile-t13`).
 
 ### R1.5c — Fused down + reduce
 
@@ -81,7 +86,7 @@ restores the sequence. Bench `bench/qwen38_r1_20261021/moe-down/`
 | Q2_K 640/768→2560 | 75.3 / 81.7 | 282.9 / 311.3 | 2205 / 2471 | 8877 / 9995 |
 | MXFP4 (layer 48) | 94.4 / 101.4 | 354.5 / 383.3 | 2786 / 3027 | 11120 / 12124 |
 
-Measured (controller, ladder): pending.
+Measured together with R1.5d (one checkpoint closure): see R1.5d.
 
 ### R1.5b — Fused gate+up+SwiGLU
 

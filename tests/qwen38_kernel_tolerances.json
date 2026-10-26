@@ -79,7 +79,7 @@
       "max": 2.303485580920677e-07,
       "p99": 9.01935074734253e-08,
       "samples": 11060,
-      "commit": "9d9a0da",
+      "commit": "9d9a0da kernel, measured with the harness of its child bd6759f (Test the fused down + reduce against the unfused sequence)",
       "note": "Fused routed down + weighted reduce (R1.5c), y and routed against the oracle sequence (indexed oracle down, q38f_reduce). Both are bit-identical to the unfused fast sequence (test_fused_down_bit_identical_to_sequence), so (b) measures the indexed fast down dots' order against the oracle's serial one, carried through the slot sum. S = sum_s |w_s| S_s (+ |sigmoid shared| for y). Max 2.3e-7 (3.9 u of S) at IQ2_XXS N33 K600/768 T3x2 (routed), over the real Q2_K/MXFP4 down rows and the synthetic shapes. Condition (a): gamma(2K+8+2k+2) S + 2 ulp32(r) + 2 sum_s |w_s| ulp32(d_s); worst 0.74% of the bound."
     },
     "rms_fast": {
