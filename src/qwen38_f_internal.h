@@ -40,6 +40,11 @@ typedef struct {
     Qwen38GpuF32 sgate, sup, sact, shared;        /* [T,Is] x3, [T,H] */
     Qwen38GpuF32 slogit, ssig, routed;            /* [T,1], [T,1], [T,H] */
     Qwen38GpuSpan ids, identity;                  /* uint32 [P] each */
+    /* R1.9a profile only (NULL otherwise: no extra dispatch, barrier or split):
+     * called before each sub-group with the command it must continue on (the
+     * hook may replace cmd->compute_encoder). */
+    void (*mark)(void *ctx, Qwen38GpuCommand *cmd, const char *op, uint32_t type, uint64_t bytes);
+    void *mark_ctx;
 } Q38FRoutedWork;
 typedef struct Q38FRouted Q38FRouted;
 /* R1.5d parallel router (q38_moe_route_fast): one threadgroup of this many

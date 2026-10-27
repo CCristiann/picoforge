@@ -45,9 +45,10 @@ class ProfileTests(unittest.TestCase):
                 self.assertTrue(any(r['layer'] == layer for r in rows), layer)
             ops = {r['op'] for r in rows}
             self.assertNotIn('gdn', ops)   # R1.8: the group is split into gdn.* sub-groups
+            self.assertNotIn('moe', ops)   # R1.9a: likewise moe.*
             for op in ('embed', 'gdn.hc_pre', 'gdn.proj', 'gdn.conv', 'gdn.prep', 'gdn.scan', 'gdn.norm', 'gdn.out',
                        'gdn.add', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.hc_read',
-                       'moe', 'hc_add', 'final.up', 'lm_head'):
+                       'moe.shared_in', 'moe.route', 'moe.gate_up', 'moe.shared', 'moe.down', 'hc_add', 'final.up', 'lm_head'):
                 self.assertIn(op, ops)
             for r in rows:
                 self.assertGreater(float(r['gpu_us']), 0, r)
@@ -55,7 +56,9 @@ class ProfileTests(unittest.TestCase):
                     self.assertEqual((r['format'], int(r['weight_bytes']) > 0), ('MIXED', True), r)
                 if r['op'] in ('gdn.conv', 'gdn.prep', 'gdn.scan', 'gdn.norm', 'gdn.add'):
                     self.assertEqual((r['format'], r['weight_bytes']), ('NONE', '0'), r)
-                if r['op'] in ('moe', 'ple', 'qsa.core'):
+                if r['op'] == 'moe.route':
+                    self.assertEqual((r['format'], r['weight_bytes']), ('NONE', '0'), r)
+                if r['op'] in ('moe.shared_in', 'moe.gate_up', 'moe.shared', 'moe.down', 'ple', 'qsa.core'):
                     self.assertEqual(r['format'], 'MIXED')
                     # R0.3: composites count the weights they read; qsa.core reads only caches.
                     self.assertEqual(int(r['weight_bytes']) == 0, r['op'] == 'qsa.core', r)
@@ -85,8 +88,11 @@ class ProfileTests(unittest.TestCase):
                 return [int(r['weight_bytes']) for r in rows if (r['phase'], r['token'], r['op']) == (phase, token, op)]
             for op in ('gdn.hc_pre', 'gdn.proj', 'gdn.out'):
                 self.assertEqual(bytes_of('prefill', '0', op), bytes_of('decode', '5', op))
-            for big, small in zip(bytes_of('prefill', '0', 'moe'), bytes_of('decode', '5', 'moe'), strict=True):
-                self.assertGreater(big, small)
+            for op in ('moe.shared_in', 'moe.shared'):   # R1.9a: dense weights once per microbatch
+                self.assertEqual(bytes_of('prefill', '0', op), bytes_of('decode', '5', op))
+            for op in ('moe.gate_up', 'moe.down'):       # experts scale with the tokens
+                for big, small in zip(bytes_of('prefill', '0', op), bytes_of('decode', '5', op), strict=True):
+                    self.assertGreater(big, small)
 
     def test_concurrent_encoder_drops_only_barriers(self):
         """R1.6b: same dispatches and logits as the serial barrier oracle, fewer barriers."""

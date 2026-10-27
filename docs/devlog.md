@@ -16,6 +16,16 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.9a — MoE profile split
+
+After the GDN fix the MoE block is the largest single profile group, but `moe` is one row: it
+mixes the router/shared products, top-k routing, the gate+up experts, the shared expert and the
+down+reduce. Like R1.8, Task 18-0 splits it in `moe.shared_in` (multi call), `moe.route`,
+`moe.gate_up`, `moe.shared` (silu/mul/shared down/sigmoid) and `moe.down` (fused down+reduce or
+its fallback), each with its weight bytes so the summary prints GB/s, plus a `moe rollup` line.
+Profile mode only (a hook in `Q38FRoutedWork`): normal mode adds no dispatch, barrier or split.
+Measured (controller): pending.
+
 ### R1.8 — GDN hotspot
 
 The GDN block was 60% of the token but one profile group, so Task 16-0 split it (profile only):

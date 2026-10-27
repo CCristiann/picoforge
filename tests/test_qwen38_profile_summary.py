@@ -94,5 +94,22 @@ class SummaryTests(unittest.TestCase):
             self.assertAlmostEqual(totals['gdn_weight_bytes_per_token'], 400)
             self.assertIn('gdn rollup', (Path(directory)/'o'/'summary.md').read_text())
 
+    def test_moe_subgroups_roll_up(self):
+        rows = [('global', 'embed', 'NONE', 0, 30.0), ('0', 'moe.shared_in', 'MIXED', 300, 10.0),
+                ('0', 'moe.route', 'NONE', 0, 5.0), ('0', 'moe.gate_up', 'MIXED', 200, 20.0),
+                ('0', 'moe.shared', 'MIXED', 50, 3.0), ('0', 'moe.down', 'MIXED', 100, 12.0), ('global', 'lm_head', 'Q8_0', 500, 8.0)]
+        text = HEADER + ''.join(f'decode,3,{layer},{op},{fmt},{nbytes},1,1,{us},0.1\n' for layer, op, fmt, nbytes, us in rows)
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory)/'g.csv').write_text(text)
+            done = subprocess.run([sys.executable, '-I', str(TOOL), str(Path(directory)/'g.csv'), '--out', str(Path(directory)/'o')],
+                                  capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            totals = json.loads((Path(directory)/'o'/'totals.json').read_text())
+            self.assertAlmostEqual(totals['us_per_token'], 88.0)          # sub-groups sum to the whole
+            self.assertAlmostEqual(totals['moe_us_per_token'], 50.0)
+            self.assertAlmostEqual(totals['moe_share'], 50.0/88.0)
+            self.assertAlmostEqual(totals['moe_weight_bytes_per_token'], 650)
+            self.assertIn('moe rollup', (Path(directory)/'o'/'summary.md').read_text())
+
 if __name__ == '__main__':
     unittest.main()

@@ -80,6 +80,10 @@ def summarize(paths, runs):
     if gdn:
         totals.update(gdn_us_per_token=sum(r['us_per_token'] for r in gdn), gdn_share=sum(r['share'] for r in gdn),
                       gdn_weight_bytes_per_token=sum(r['weight_bytes_per_token'] for r in gdn))
+    moe = [r for r in rows if r['op'].startswith('moe.')]   # R1.9a: the moe group is split in sub-groups
+    if moe:
+        totals.update(moe_us_per_token=sum(r['us_per_token'] for r in moe), moe_share=sum(r['share'] for r in moe),
+                      moe_weight_bytes_per_token=sum(r['weight_bytes_per_token'] for r in moe))
     if runs:
         done = [json.loads(line) for line in Path(runs).read_text().splitlines() if line.strip()]
         done = [d for d in done if d.get('event') == 'done' and not d.get('warmup')]
@@ -104,6 +108,9 @@ def markdown(rows, totals, paths):
     if 'gdn_us_per_token' in t:
         lines.append(f"- gdn rollup (sum of gdn.*): {t['gdn_us_per_token']:.1f} µs, {100 * t['gdn_share']:.1f}%, "
                      f"{t['gdn_weight_bytes_per_token'] / 1e6:.2f} MB")
+    if 'moe_us_per_token' in t:
+        lines.append(f"- moe rollup (sum of moe.*): {t['moe_us_per_token']:.1f} µs, {100 * t['moe_share']:.1f}%, "
+                     f"{t['moe_weight_bytes_per_token'] / 1e6:.2f} MB")
     if 'groups_over_normal_gpu' in t:
         lines.append(f"- Normal-mode decode gpu_s: {t['normal_decode_gpu_us_per_token']:.1f} µs; "
                      f"sum of groups / normal: {t['groups_over_normal_gpu']:.4f}")

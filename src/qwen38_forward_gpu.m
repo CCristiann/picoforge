@@ -468,16 +468,22 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t i,siz
     emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
     emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t)); MARK(i,"hc_add",Q38_PROFILE_NONE,0); return hc_add(f,*cmd,t,e);
 }
+typedef struct { Qwen38GpuForward *f; uint32_t layer; } MoeMark;
+static void moe_mark(void *ctx,Qwen38GpuCommand *cmd,const char *op,uint32_t type,uint64_t bytes) {
+    MoeMark *m=ctx; q38g_profile_mark(m->f,cmd,m->layer,op,type,bytes);
+}
 static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size_t t,Qwen38Error *e) {
     G2Layer *l=&f->layer[i];
     Qwen38MoeConfig mc=f->c.moe;
     if (i>=f->c.trunk_blocks) mc.down_physical=mc.intermediate;
+    MoeMark mark={f,i};
     for (size_t start=0;start<t;start+=32) {
         size_t n=MIN(t-start,32),p=n*f->c.moe.top_k; Q38FRoutedWork w=f->fw;
 #define W(x,rows) w.x=time_view(w.x,rows)
         W(logits,n); W(probs,n); W(weights,n); W(gate,p); W(up,p); W(act,p); W(down,p);
         W(sgate,n); W(sup,n); W(sact,n); W(shared,n); W(slogit,n); W(ssig,n); W(routed,n);
 #undef W
+        if (f->prof_ticket) { w.mark=moe_mark; w.mark_ctx=&mark; }   /* R1.9a: sub-groups, profile only */
         TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&mc,f->store,l->fb,l->fl,
             slice(f->mixed,start,n),slice(f->block,start,n),&w,e));
         if (!cmd.concurrent) barrier(cmd);   /* R1.6b: routed_encode already ends with one */
@@ -485,17 +491,12 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
     return Q38_OK;
 }
 /* R0.3 weight bytes of the composite groups: the tensors their kernels read in
- * this append. gdn is split in sub-groups inside q38c_block_encode (R1.8); ple: key/value plus the staged F32 n-gram rows; moe: router and
- * shared weights once per 32-token microbatch plus top_k experts of gate/up/
- * down per token, exact for decode and an upper bound for t>1 (tokens may
- * share experts). qsa.core reads KV/index caches, no weights: it stays 0. */
+ * this append. gdn is split in sub-groups inside q38c_block_encode (R1.8); ple: key/value plus the staged F32 n-gram rows; moe is split in sub-groups
+ * inside q38f_routed_encode (R1.9a): router and shared weights once per
+ * 32-token microbatch plus top_k experts of gate/up/down per token, exact for
+ * decode and an upper bound for t>1 (tokens may share experts). qsa.core reads KV/index caches, no weights: it stays 0. */
 static uint64_t ple_bytes(const G2Layer *l,size_t t) {
     return l->eb[0]->tensor.bytes+l->eb[1]->tensor.bytes+t*l->ew.rows.stride_bytes[0];
-}
-static uint64_t moe_bytes(const G2Layer *l,size_t t,uint64_t k) {
-    uint64_t s=0;
-    for (size_t j=0;j<8;j++) s+=j>=1 && j<=3 ? t*k*l->fl[j].expert_bytes : (t+31)/32*l->fb[j]->tensor.bytes;
-    return s;
 }
 /* Profile groups: embed reads t rows, linears their whole matrix once. */
 static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint32_t layers,size_t rows,uint32_t pos,Qwen38Error *e) {
@@ -511,7 +512,7 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
         emit(f,*cmd,i,Q38G_ATTN_RESIDUAL,time_view(f->r,t));
         TRY(hc_read(f,cmd,i,&l->ffn,HC_FFN,t,e));
         emit(f,*cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
-        MARK(i,"moe",Q38_PROFILE_MIXED,moe_bytes(l,t,f->c.moe.top_k)); TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
+        TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
         MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
     }
     TRY(hc_read(f,cmd,QWEN38_GLOBAL_LAYER,&f->final,HC_FINAL,t,e)); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));

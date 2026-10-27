@@ -4,6 +4,7 @@
 #include "qwen38_c_internal.h"
 #include "qwen38_b_internal.h"
 #include "qwen38_ref.h"
+#include "qwen38_profile.h"   /* only the format sentinels, for the R1.9a sub-group marks */
 #include <stdlib.h>
 enum { GX,GD,GG,GU,GA,GS,GSL,GSA,GR2P,GP2R,GWEIGHT,GROUTED,GBUFFERS };
 struct Q38FMoeGpu {
@@ -278,7 +279,12 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
 #define ACT(kind,in,out) do { Q38CGpuSpec spec={.activation=kind}; Qwen38GpuF32 v[]={in,out}; \
     Q38C_TRY(q38c_gpu_encode(ops,cmd,Q38C_ACT,&spec,v,2,err)); } while (0)
+    /* Profile sub-groups (hook set only in profile mode); bytes: what the group's kernels read for these t tokens. */
+#define MARK(op,type,bytes) do { if (w->mark) { w->mark(w->mark_ctx,&cmd,op,type,bytes); \
+    enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; } } while (0)
+#define WB(slot) wb[slot]->tensor.bytes
 #define MUL(a,u,n) do { at(enc,(a).span,0); at(enc,(u).span,1); at(enc,cmd.error_word,2); run(enc,r->product,n); } while (0)
+    MARK("moe.shared_in",Q38_PROFILE_MIXED,WB(0)+WB(4)+WB(5)+WB(7));
     { /* R1.4: router, shared gate/up and shared logit all read x: one multi call, one barrier */
         const size_t slot[]={0,4,5,7};
         const GgufBinding *mb[4]; Q38PackedLayout ml[4];
@@ -288,6 +294,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
     struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
+    MARK("moe.route",Q38_PROFILE_NONE,0);
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
     [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5);
     if (q38f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
@@ -301,11 +308,13 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
      * selected: under `indexed` B answers UNSUPPORTED, since the fused act
      * would not match the oracle indexed sequence; so does a format without a
      * row dot. Then the unfused sequence. */
+    MARK("moe.gate_up",Q38_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
     Qwen38Status fused=r->ref_moe ? Q38_UNSUPPORTED :
         q38_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->ids,k,x,w->act,err);
     if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     else if (fused!=Q38_UNSUPPORTED) return fused;
     else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
+    MARK("moe.shared",Q38_PROFILE_MIXED,WB(6));
     ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
     LIN(6,w->sact,w->shared);
     ACT(Q38_SIGMOID,w->slogit,w->ssig);
@@ -316,6 +325,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
      * rule as gate+up: fused only when neither `moe` nor `indexed` is
      * selected (B answers UNSUPPORTED under `indexed` or for a format without
      * a row dot), else IDX down then q38f_reduce, as before R1.5c. */
+    MARK("moe.down",Q38_PROFILE_MIXED,p*wl[3].expert_bytes);
     const Q38DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed};
     fused=r->ref_moe ? Q38_UNSUPPORTED : q38_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],w->ids,w->act,&dv,y,err);
     if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -332,5 +342,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
 #undef IDX
 #undef ACT
 #undef MUL
+#undef WB
+#undef MARK
     return q38c_error(err,Q38_OK,NULL);
 }
