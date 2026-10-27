@@ -291,10 +291,18 @@ def thermal():
     return json.loads(done.stdout)['thermal_state'] if done and done.returncode == 0 else None
 
 
-def provenance(revision):
+def check_bin(bin_dir):
+    """--picoforge-bin DIR (a saved older build) must hold the binary and its metallib."""
+    missing = [n for n in ('picoforge', 'picoforge.metallib') if not (bin_dir/n).is_file()]
+    if missing:
+        raise ValueError(f'--picoforge-bin {bin_dir}: missing {", ".join(missing)}')
+
+
+def provenance(revision, bin_dir=None):
     def git(*a):
         return subprocess.check_output(['git', *a], cwd=ROOT, text=True)
-    binaries = {'picoforge': ENGINE, 'picoforge.metallib': ROOT/'picoforge.metallib',
+    binaries = {'picoforge': bin_dir/'picoforge' if bin_dir else ENGINE,
+                'picoforge.metallib': (bin_dir or ROOT)/'picoforge.metallib',
                 'ds4-bench': DWARFSTAR/'ds4-bench', 'ds4': DWARFSTAR/'ds4', 'tool': Path(__file__)}
     return dict(revision=git('rev-parse', 'HEAD').strip(), diff=git('diff', '--', 'src', 'tools', 'tests'),
                 dwarfstar_revision=pinned(revision), checkpoint=str(CHECKPOINT.relative_to(ROOT)),
@@ -302,13 +310,15 @@ def provenance(revision):
                 sha256={name: sha(path) for name, path in binaries.items()})
 
 
-def command(engine, f, text, d):
+def command(engine, f, text, d, bin_dir=None):
     """One teacher-forced sample. Never --logits: picoforge writes its rows inside decode_s."""
     n = str(len(f['prompt_ids']))
     if engine == 'picoforge':
-        return [str(ENGINE), '--qwen38', str(CHECKPOINT), '--tokens', ','.join(map(str, f['prompt_ids'] + f['forced_ids'])),
+        return [str(bin_dir/'picoforge' if bin_dir else ENGINE), '--qwen38', str(CHECKPOINT), '--tokens',
+                ','.join(map(str, f['prompt_ids'] + f['forced_ids'])),
                 '--teacher-forced', str(FORCED), '--context', str(CONTEXT), '--chunk', str(CHUNK),
-                '--runs-jsonl', str(d/'runs.jsonl'), '--token-ids', str(d/'ids.json')], ROOT
+                '--runs-jsonl', str(d/'runs.jsonl'), '--token-ids', str(d/'ids.json'),
+                *(['--metallib', str(bin_dir/'picoforge.metallib')] if bin_dir else [])], ROOT
     return [str(DWARFSTAR/'ds4-bench'), '-m', str(CHECKPOINT), '--prefill-chunk', str(CHUNK), '--prompt-file', str(text),
             '--ctx-start', n, '--ctx-max', n, '--ctx-alloc', str(CONTEXT), '--gen-tokens', str(FORCED),
             '--teacher-forced-decode', '--csv', str(d/'bench.csv')], DWARFSTAR
@@ -342,9 +352,11 @@ def stop_note(directory):
     return f', {reason}' if reason else ''
 
 
-def run(suite_dir, out, name, counts, block, timeout, launch=None, awake=awake):
+def run(suite_dir, out, name, counts, block, timeout, launch=None, awake=awake, bin_dir=None):
     """Alternate engine blocks on one frontier: one observed process per sample."""
     plan, launch = schedule(counts, block), launch or Launcher()
+    if bin_dir:
+        check_bin(bin_dir)
     suite = json.loads((suite_dir/'suite.json').read_text())
     f = suite['frontiers'][name]
     text = suite_dir/f['text_file']
@@ -354,14 +366,16 @@ def run(suite_dir, out, name, counts, block, timeout, launch=None, awake=awake):
     out.mkdir(parents=True, exist_ok=False)
     manifest = dict(complete=False, frontier=name, engines=[e for e in ENGINES if any(counts[e])], counts=counts,
                     block=block, plan=plan, protocol=PROTOCOL,
-                    suite_sha256=sha(suite_dir/'suite.json'), guard=GUARD, **provenance(bounded()[1]),
+                    suite_sha256=sha(suite_dir/'suite.json'), guard=GUARD, **provenance(bounded()[1], **({'bin_dir': bin_dir} if bin_dir else {})),
                     before=dict(conditions(), thermal_state=thermal()))
+    if bin_dir:  # relative: no absolute personal paths in committed evidence
+        manifest['picoforge_bin'] = str(bin_dir.relative_to(ROOT))
     dump(out/'manifest.json', manifest)
     samples = []
     for engine, flags in plan:
         for warmup in flags:
             d = out/(f'{len(samples):03d}-{engine}' + ('-warmup' if warmup else ''))
-            cmd, cwd = command(engine, f, text, d)
+            cmd, cwd = command(engine, f, text, d, bin_dir)
             code = launch(d, cwd, cmd, timeout)
             if code:
                 raise RuntimeError(f'{d.name} failed (code {code}{stop_note(d)}); raw evidence retained')
@@ -438,6 +452,8 @@ def main():
     r.add_argument('--picoforge-measure', type=int)
     r.add_argument('--engines', choices=('both', 'picoforge'), default='both',
                    help='picoforge: no DwarfStar samples (the R1 ladder keeps the R0 DwarfStar baseline)')
+    r.add_argument('--picoforge-bin', type=Path, metavar='DIR',
+                   help='saved older build holding picoforge + picoforge.metallib (default: this tree)')
     r.add_argument('--timeout', type=float, default=RUN_TIMEOUT, help='seconds per process')
     sub.add_parser('summarize', help='recompute the summary of a run').add_argument('output', type=Path)
     s = sub.add_parser('ssd-check', help='one ds4 --ssd-streaming attempt')
@@ -455,6 +471,8 @@ def main():
                   'dwarfstar': (a.warmup, a.measure) if a.engines == 'both' else (0, 0)}
         try:
             schedule(counts, a.block)
+            if a.picoforge_bin:
+                check_bin(a.picoforge_bin.resolve())
         except ValueError as e:
             p.error(str(e))
     if 'PICOFORGE_GPU_LOCK_FD' not in os.environ:
@@ -463,7 +481,8 @@ def main():
     if a.action == 'prepare':
         prepare(out, Engines(out), CORPUS, frozen_case())
     elif a.action == 'run':
-        run(a.suite.resolve(), out, a.frontier, counts, a.block, a.timeout)
+        run(a.suite.resolve(), out, a.frontier, counts, a.block, a.timeout,
+            bin_dir=a.picoforge_bin and a.picoforge_bin.resolve())
     else:
         ssd_check(out, a.timeout)
 

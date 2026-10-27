@@ -402,6 +402,42 @@ class CompareTests(unittest.TestCase):
             qc.run(d/'suite', d/'both', 'short', {'picoforge': (0, 1), 'dwarfstar': (0, 1)}, 1, 10, bench_launch([]), AWAKE)
             self.assertEqual(json.loads((d/'both/manifest.json').read_text())['engines'], ['picoforge', 'dwarfstar'])
 
+    def test_picoforge_bin_override(self):
+        f = dict(prompt_ids=[1], forced_ids=[2])
+        default, _ = qc.command('picoforge', f, None, Path('x'))
+        self.assertEqual(default[0], str(qc.ENGINE))
+        self.assertNotIn('--metallib', default)
+        with tempfile.TemporaryDirectory(dir=qc.ROOT) as directory:
+            old = Path(directory)
+            with self.assertRaisesRegex(ValueError, 'picoforge, picoforge.metallib'):
+                qc.check_bin(old)
+            (old/'picoforge').write_bytes(b'bin')
+            with self.assertRaisesRegex(ValueError, 'missing picoforge.metallib'):
+                qc.check_bin(old)
+            (old/'picoforge.metallib').write_bytes(b'lib')
+            cmd, _ = qc.command('picoforge', f, None, Path('x'), old)
+            self.assertEqual(cmd[0], str(old/'picoforge'))
+            self.assertEqual(cmd[-2:], ['--metallib', str(old/'picoforge.metallib')])
+            self.assertEqual(cmd[1:-2], default[1:])  # nothing else changes
+            ds4, _ = qc.command('dwarfstar', dict(f, prompt_ids=[1]), Path('t'), Path('x'), old)
+            self.assertNotIn('--metallib', ds4)
+            with patch.object(qc, 'pinned', lambda r: 'pinned'), \
+                    patch.object(qc, 'sha', lambda p: str(p)), patch.object(qc.subprocess, 'check_output', lambda *a, **k: ''):
+                shas = qc.provenance('r', old)['sha256']
+            self.assertEqual((shas['picoforge'], shas['picoforge.metallib']), (str(old/'picoforge'), str(old/'picoforge.metallib')))
+            d = Path(directory)/'w'
+            d.mkdir()
+            corpus = d/'corpus.txt'
+            corpus.write_text(''.join(f'riga {i:05d} del romanzo\n' for i in range(4000)))
+            qc.prepare(d/'suite', Fake(), corpus, CASE)
+            calls = []
+            with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r, bin_dir=None: {}), \
+                    patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
+                qc.run(d/'suite', d/'out', 'short', {'picoforge': (0, 1), 'dwarfstar': (0, 0)}, 1, 10, bench_launch(calls), AWAKE, old)
+            manifest = json.loads((d/'out/manifest.json').read_text())
+            self.assertEqual(manifest['picoforge_bin'], str(old.relative_to(qc.ROOT)))
+            self.assertEqual(calls[0][1][0], str(old/'picoforge'))
+
 
 if __name__ == '__main__':
     unittest.main()
