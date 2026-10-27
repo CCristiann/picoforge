@@ -29,7 +29,9 @@ are bit-identical to the oracle; the norms differ only by summation order (toler
 measured max 5.7e-7). Bench at the real dims, t = 1: 666.8 -> 19.4 µs, about 24.0 -> 0.7 ms
 per token by estimate (`bench/qwen38_r1_20261026/gdn-prep`). The scan was not touched.
 Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_front/gdn_prep; no code copied.
-Measured (controller, ladder): pending.
+Measured (controller, quick closure t16, 8-token profile, AC): GPU 46.9 ms/token (Task 15
+69.2, -32%; normal-mode 50.2 ms); gdn 42.2 → 18.8 ms, gdn.prep 23.2 → 0.33 ms; G3 scaled 5.4e-7;
+`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261026/profile-t16`).
 
 ### R1.7b — GPU argmax
 

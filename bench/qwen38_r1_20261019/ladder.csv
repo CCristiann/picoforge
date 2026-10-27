@@ -8,3 +8,4 @@ R1.5 fused down+reduce + parallel router top-k (Tasks 13-13b),0f04548,2026-10-26
 R1.6a parallel RMSNorm (Task 14b),89d8f05,2026-10-26,short,picoforge,,,,,,75.62,80.73,2307,2270,,bench/qwen38_r1_20261026/profile-t14b (quick closure R24)
 R1.6b concurrent encoder (Task 14a),0ee8c6e,2026-10-26,short,picoforge,,,,,,68.85,88.67,2307,1788,,bench/qwen38_r1_20261026/profile-t14a (quick closure R24)
 R1.7 session weight claims + GPU argmax (Task 15),b279c00,2026-10-26,short,picoforge,,,,,,69.19,88.23,2308,1789,,bench/qwen38_r1_20261026/profile-t15 (quick closure R24; residency set skipped by its memory gate; argmax not exercised by the teacher-forced profile)
+R1.8 parallel GDN prepare (Task 16),61d57d4,2026-10-26,short,picoforge,,,,,,46.85,130.29,2272,1789,,bench/qwen38_r1_20261026/profile-t16 (quick closure R24)
