@@ -29,8 +29,9 @@ static inline float q38_fp16(device const uchar *p) { return q38_fp16_bits(uint(
  * lane l takes chunks l, l+32, ..., sums each chunk in column order and its
  * chunks in chunk order, and simd_sum joins the 32 lanes. That order is a
  * function of K and the format only, never of the rows, slots or expert of
- * the dispatch. The indexed matvecs call it today; the fused MoE kernels of
- * Tasks 12-13 call the same function, so their outputs stay bit-identical. */
+ * the dispatch. The indexed matvecs and the fused gate+up call it; the fused
+ * down+reduce runs q38_quant_chunk in the same order (R1.9b), so their
+ * outputs stay bit-identical. */
 static inline uint q38_le32(device const uchar *p) {
     return uint(p[0]) | (uint(p[1]) << 8) | (uint(p[2]) << 16) | (uint(p[3]) << 24);
 }
@@ -127,25 +128,28 @@ struct Q38Mxfp4 {
         }
     }
 };
-/* Dot of one packed row with x[0..k): columns past k are read neither from
- * the weights' sum nor from x (a partial last chunk sums only its first
- * columns). Every lane returns the same total. */
+/* Column-ordered sum of chunk c of one packed row with x[0..k): columns
+ * past k are read neither from the weights' sum nor from x (a partial last
+ * chunk sums only its first columns). */
+template <typename F>
+static inline float q38_quant_chunk(device const uchar *row, device const float *x, uint k, uint c) {
+    const uint cols = metal::min(F::CHUNK, k - c * F::CHUNK);
+    float w[F::CHUNK];
+    F::decode(row, c, w);
+    device const float *xb = x + c * F::CHUNK;
+    float s = 0.0f;
+    if (cols == F::CHUNK)
+        for (uint i = 0; i < F::CHUNK; i++) s += w[i] * xb[i];
+    else
+        for (uint i = 0; i < cols; i++) s += w[i] * xb[i];
+    return s;
+}
+/* Dot of one packed row with x[0..k). Every lane returns the same total. */
 template <typename F>
 static inline float q38_quant_row(device const uchar *row, device const float *x, uint k, uint lane) {
     float acc = 0.0f;
     const uint chunks = (k + F::CHUNK - 1) / F::CHUNK;
-    for (uint c = lane; c < chunks; c += 32) {
-        const uint cols = metal::min(F::CHUNK, k - c * F::CHUNK);
-        float w[F::CHUNK];
-        F::decode(row, c, w);
-        device const float *xb = x + c * F::CHUNK;
-        float s = 0.0f;
-        if (cols == F::CHUNK)
-            for (uint i = 0; i < F::CHUNK; i++) s += w[i] * xb[i];
-        else
-            for (uint i = 0; i < cols; i++) s += w[i] * xb[i];
-        acc += s;
-    }
+    for (uint c = lane; c < chunks; c += 32) acc += q38_quant_chunk<F>(row, x, k, c);
     return metal::simd_sum(acc);
 }
 /* Two rows of one format against the same x (an expert's gate and up rows,
