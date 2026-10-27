@@ -115,6 +115,12 @@ def bench_launch(calls):
 
 
 class CompareTests(unittest.TestCase):
+    def setUp(self):  # hermetic: an exported Q38_ALLOW_BATTERY must not leak into the guard tests
+        patcher = patch.dict(qc.os.environ)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        qc.os.environ.pop('Q38_ALLOW_BATTERY', None)
+
     def test_schedule_alternates_blocks(self):
         plan = qc.schedule({'picoforge': (1, 3), 'dwarfstar': (1, 3)}, 2)
         self.assertEqual(plan, [('picoforge', [True, False]), ('dwarfstar', [True, False]),
