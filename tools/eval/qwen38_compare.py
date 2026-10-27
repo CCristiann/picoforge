@@ -186,12 +186,24 @@ def awake():
     return dict(graphics=graphics(state), lid_open=lid_open(clamshell),
                 clamshell_causes_sleep=not clamshell_awake(clamshell),
                 lid_ok=lid_open(clamshell) or clamshell_awake(clamshell), ac_power="'AC Power'" in batt,
-                systemstate=state.strip().split('\n')[0].strip())
+                systemstate=state.strip().split('\n')[0].strip(), **({'allow_battery': True} if allow_battery() else {}))
+
+
+def allow_battery():
+    """True iff the user explicitly allowed battery runs with Q38_ALLOW_BATTERY=1 (ruling R38)."""
+    return os.environ.get('Q38_ALLOW_BATTERY') == '1'
 
 
 def require_awake(state):
-    """Refuse to start anything unless `awake()` says fully awake, lid ok, on AC (rulings R13, R20)."""
-    failed = [name for name in ('graphics', 'lid_ok', 'ac_power') if not state[name]]
+    """Refuse to start anything unless `awake()` says fully awake, lid ok, on AC (rulings R13, R20).
+
+    Q38_ALLOW_BATTERY=1 drops only the AC check (ruling R38); it is warned about and recorded as
+    `allow_battery` in the awake state. Graphics and the lid stay mandatory.
+    """
+    override = allow_battery()
+    if override:
+        print('warning: Q38_ALLOW_BATTERY=1, running on battery (ruling R38)', file=sys.stderr)
+    failed = [name for name in ('graphics', 'lid_ok', 'ac_power') if not state[name] and not (override and name == 'ac_power')]
     if failed:
         raise RuntimeError(f"{', '.join(failed)} is false: the Mac must be fully awake (Graphics), lid open, or "
                            f"closed with an external display that keeps the Mac awake, on AC "

@@ -1,4 +1,5 @@
 """R0.4 paired picoforge/DwarfStar harness: pure logic with fake tokenizers (no GPU, no lock)."""
+import io
 import json
 from pathlib import Path
 import re
@@ -275,6 +276,26 @@ class CompareTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(RuntimeError, 'lid_ok.*external display'):
                         qc.require_awake(state)
+
+    def test_battery_override_drops_only_the_ac_check(self):
+        battery = dict(AWAKE(), ac_power=False)
+        with patch.dict(qc.os.environ, {}, clear=False):
+            qc.os.environ.pop('Q38_ALLOW_BATTERY', None)
+            with self.assertRaisesRegex(RuntimeError, 'ac_power is false'):
+                qc.require_awake(battery)
+        for value in ('0', 'true', ''):
+            with patch.dict(qc.os.environ, {'Q38_ALLOW_BATTERY': value}), self.assertRaises(RuntimeError):
+                qc.require_awake(battery)
+        with patch.dict(qc.os.environ, {'Q38_ALLOW_BATTERY': '1'}), patch.object(qc.sys, 'stderr', io.StringIO()) as err:
+            qc.require_awake(battery)
+            self.assertIn('Q38_ALLOW_BATTERY=1, running on battery (ruling R38)', err.getvalue())
+            with self.assertRaisesRegex(RuntimeError, 'graphics is false'):
+                qc.require_awake(dict(battery, graphics=False))
+            with patch.object(qc.subprocess, 'run', lambda c, **k: subprocess.CompletedProcess(c, 0, stdout='')):
+                self.assertTrue(qc.awake()['allow_battery'])
+        with patch.dict(qc.os.environ, {'Q38_ALLOW_BATTERY': '0'}), \
+                patch.object(qc.subprocess, 'run', lambda c, **k: subprocess.CompletedProcess(c, 0, stdout='')):
+            self.assertNotIn('allow_battery', qc.awake())
 
     def test_launcher_refuses_without_full_wake(self):
         with tempfile.TemporaryDirectory() as directory:
