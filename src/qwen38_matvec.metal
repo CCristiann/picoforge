@@ -106,20 +106,18 @@ static inline uint dense_split(uint k) {
 }
 
 /* One chunk of up to DENSE_C weights as FP32, each bit-identical to the
- * oracle's packed_value(): F32 is its bits; F16 is q38_fp16_bits for a whole
- * chunk and q38_fp16 (the GPU's half -> float, R1.9c) for a tail chunk or an
- * unaligned row: the same bits for every finite pattern (subnormals included,
- * which Metal arithmetic would flush; test_*_decode_matches_oracle). A whole chunk of a 16-byte
+ * oracle's packed_value(): F32 is its bits; F16 goes through the GPU's
+ * half -> float (R1.9c; whole chunks too since R2.3, which made the HC up
+ * matvec 43 -> 27 us): the same bits for every finite pattern (subnormals
+ * included, which Metal arithmetic would flush; test_f16_decode_matches_oracle). A whole chunk of a 16-byte
  * aligned row is one 16- or 32-byte load; a tail chunk or an unaligned row is
  * read byte by byte. The values, so the products, are the same either way. */
 template <uint TYPE>
 static inline void dense_chunk(device const uchar *q, bool whole, thread float *w, uint cols) {
     if (TYPE == 1 && whole) {
         const uint4 v = *(device const uint4 *)q;
-        for (uint i = 0; i < 4; i++) {
-            w[2 * i] = q38_fp16_bits(v[i] & 0xffffu);
-            w[2 * i + 1] = q38_fp16_bits(v[i] >> 16);
-        }
+        const half4 a = as_type<half4>(v.xy), b = as_type<half4>(v.zw);
+        for (uint i = 0; i < 4; i++) { w[i] = float(a[i]); w[4 + i] = float(b[i]); }
     } else if (TYPE == 1) {
         for (uint i = 0; i < cols; i++) w[i] = q38_fp16(q + 2 * i);
     } else if (whole) {
@@ -145,6 +143,11 @@ static inline void dense_matvec(device const uchar *weights, device const float 
         device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile,
         uint lane, uint sg, uint sgs, threadgroup float *part) {
     const uint E = TYPE == 1 ? 2 : 4, S = dense_split(p.k_logical); /* E: bytes per element */
+    /* R2.3: with one simdgroup per row (S = 1, K < 2560: HC up, K 320) the single
+     * kernels pack sgs rows per threadgroup (row group*sgs + sg): with the
+     * hardware fp16 decode, 32-thread threadgroups gave 32.4 us, 8 rows 27.1 us
+     * (HC up, 20 encodes). A row's arithmetic is unchanged. */
+    if (S == 1 && sgs > 1) { n = n * sgs + sg; sg = 0; sgs = 1; }
     const ulong m0 = ulong(tile) * DENSE_T;
     if (n >= o.n_out || m0 >= p.rows) return; /* uniform over the threadgroup, as every return below */
     const uint mt = uint(min(ulong(DENSE_T), p.rows - m0));

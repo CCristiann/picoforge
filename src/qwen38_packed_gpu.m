@@ -19,6 +19,8 @@ struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f3
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
  * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
 enum { Q38_Q8_T = 4, Q38_DENSE_T = 4, Q38_DENSE_S = 8, Q38_SIMD = 32 };
+/* R2.3: F16/F32 rows per threadgroup when one simdgroup owns a row (dense_split 1). */
+enum { Q38_DENSE_ROWS = 8 };
 /* Indexed matvecs: IDX_SG in the kernel, simdgroups (one output each) per threadgroup. */
 enum { Q38_IDX_SG = 4 };
 /* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
@@ -248,8 +250,9 @@ static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *com
     bind(encoder,&a,x,y,command);
     [encoder setBytes:&args length:sizeof args atIndex:4];
     if (fast) {
-        size_t simdgroups=layout->gguf_type==8 ? 1 : dense_split(layout->k_logical);
-        MTLSize groups=MTLSizeMake(layout->n_out,(x.dim[0]+tile-1)/tile,1);
+        size_t simdgroups=layout->gguf_type==8 ? 1 : dense_split(layout->k_logical), rows=1;
+        if (layout->gguf_type!=8 && simdgroups==1) simdgroups=rows=Q38_DENSE_ROWS; /* R2.3: rows per threadgroup */
+        MTLSize groups=MTLSizeMake((layout->n_out+rows-1)/rows,(x.dim[0]+tile-1)/tile,1);
         [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*simdgroups,1,1)];
     } else {
         NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);

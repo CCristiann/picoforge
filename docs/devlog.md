@@ -8,6 +8,20 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.3 — F16 matvecs: hardware half -> float on every chunk
+
+The hyper-connection (HC) matvecs are F16: "down" 10240 -> 320 and "up"
+320 -> 10240, 6.5 MB each, at 96 sites per token (GDN, attention and FFN
+blocks). R1.9c had moved the block scales to the GPU's half -> float
+conversion (one instruction, the same bits for every finite pattern) but the
+F16 matvec still rebuilt every whole-chunk weight bit by bit (branches +
+clz). Now whole chunks convert in hardware too; nonfinite weights still set
+error bit 1 (`test_f16_decode_matches_oracle` checks all 65536 patterns).
+With one simdgroup per row (K < 2560) the kernel also packs 8 rows per
+threadgroup. Same bits per row. Isolated (20 encodes): up 41.9 -> 27.1 us
+(157 -> 243 GB/s), down 28.7 -> 22.1 us. Profile short (`profile-short-f16`):
+GPU groups 45.2 -> 43.6 ms/token, gdn.hc_pre 4.07 -> 3.35 ms.
+
 ### R2.2 — exact fast index scores and block selection
 
 Two more qsa.core stages were latency bound: one thread per block ran its
