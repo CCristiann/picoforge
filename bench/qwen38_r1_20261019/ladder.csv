@@ -11,3 +11,5 @@ R1.7 session weight claims + GPU argmax (Task 15),b279c00,2026-10-26,short,picof
 R1.8 parallel GDN prepare (Task 16),61d57d4,2026-10-26,short,picoforge,,,,,,46.85,130.29,2272,1789,,bench/qwen38_r1_20261026/profile-t16 (quick closure R24)
 R1 checkpoint T17 paired vs DwarfStar 33.130 (battery R38),e01998c,2026-10-27,short,picoforge,3,20,20.129,20.078,20.181,46.35,131.71,2272,1789,0.6086,bench/qwen38_r1_20261027/paired-short-t17 + profile-t17 (full closure; DwarfStar same session 33.130 → 0.6076x)
 R1.9 MoE fp16 scale decode + gate/up tail pooling (Task 18),f7bbeed,2026-10-28,short,picoforge,,,,,,44.99,135.68,2272,1789,,bench/qwen38_r1_20261028/profile-t18 (quick closure R24; battery R38; moe split profile-t18-0 in bench/qwen38_r1_20261027)
+R1 close paired vs DwarfStar 33.230 (AC; R43),56760ab,2026-10-28,short,picoforge,3,20,20.716,20.692,20.741,44.99,135.68,2272,1789,0.6263,bench/qwen38_r1_20261028/paired-short-t17 + profile-t18 (DwarfStar same session 33.230 -> 0.6234x)
+R1 close paired 8K vs DwarfStar 31.475 (AC; R43),56760ab,2026-10-28,8k,picoforge,1,5,11.715,11.133,11.745,,,,,,bench/qwen38_r1_20261028/paired-8k-t17 (DwarfStar 3+20 same session -> 0.3722x)

@@ -61,6 +61,7 @@ independent FP32 reference ([G2 spec](docs/specs/qwen38/G2.md)).
 | Speculative decoding, Qwen3-30B-A3B + 0.6B draft | 1.41× (k=2) / 1.43× (adaptive) decode; outputs identical to greedy | [protocol](docs/BENCHMARKS.md), [CSV](bench/spec_qwen3_30b_20261011_pilot.csv) |
 | Expert-cost-aware drafting (`auto-experts`) | 1.009× decode vs `auto`, below the adoption threshold | [writeup](docs/phase4-expert-experiment.md) |
 | Expert reuse across 8 tokens (30B) | 29.8 distinct experts/layer vs 51.6 uniform | [CSV](bench/routing_overlap_qwen3_30b_20261011.csv) |
+| Qwen3.8 Q2 decode on GPU (R1) | 20.7 tok/s short (0.62× DwarfStar), 11.7 tok/s at 8K (0.37×); 19.5× over R0 | [R1 close](bench/qwen38_r1_20261028/README.md), [ladder](bench/qwen38_r1_20261019/ladder.csv) |
 | Qwen3.8 native FP32 decode | ~1.07 tok/s ordinary; MTP 1.19–1.57× on two short pilots | [MTP results](bench/qwen38_mtp_20261013/README.md) |
 
 These are small pilots, not general claims. Raw CSVs, logs, hashes and the

@@ -1,0 +1,56 @@
+{
+  "complete": true,
+  "max_wired_bytes": 17179869184,
+  "elapsed_s": 1.027172292000614,
+  "samples": [
+    {
+      "pid": 72635,
+      "monotonic_s": 40769.830764,
+      "resident_bytes": 1835008,
+      "phys_footprint_bytes": 1343824,
+      "lifetime_peak_phys_footprint_bytes": 1376592,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 197626,
+      "system_compressor_pages": 172163
+    },
+    {
+      "pid": 72636,
+      "monotonic_s": 40770.343011,
+      "resident_bytes": 1835008,
+      "phys_footprint_bytes": 1343824,
+      "lifetime_peak_phys_footprint_bytes": 1376592,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 197626,
+      "system_compressor_pages": 172163
+    },
+    {
+      "pid": 72637,
+      "monotonic_s": 40770.85534,
+      "resident_bytes": 1818624,
+      "phys_footprint_bytes": 1327440,
+      "lifetime_peak_phys_footprint_bytes": 1360208,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 0,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 0,
+      "system_swapouts_pages": 0,
+      "page_bytes": 16384,
+      "system_wired_pages": 196823,
+      "system_compressor_pages": 172163
+    }
+  ],
+  "cache_state": "Not purged or controlled"
+}
