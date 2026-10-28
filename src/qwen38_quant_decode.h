@@ -38,7 +38,7 @@ static inline float q38_fp16(device const uchar *p) {
  * lane l takes chunks l, l+32, ..., sums each chunk in column order and its
  * chunks in chunk order, and simd_sum joins the 32 lanes. That order is a
  * function of K and the format only, never of the rows, slots or expert of
- * the dispatch. The indexed matvecs and the fused down+reduce call it; the
+ * the dispatch. Q2_K's chunk does not form the weights (factored, R1.9c below). The indexed matvecs and the fused down+reduce call it; the
  * fused gate+up runs q38_quant_chunk in the same order (R1.9b), so their
  * outputs stay bit-identical. */
 static inline uint q38_le32(device const uchar *p) {
@@ -152,6 +152,29 @@ static inline float q38_quant_chunk(device const uchar *row, device const float 
     else
         for (uint i = 0; i < cols; i++) s += w[i] * xb[i];
     return s;
+}
+/* R1.9c factored block dot (ruling R40): the routed kernels are bound by the
+ * per-value dequant arithmetic, not by memory. A Q2_K chunk's weights are
+ * w_i = dl q_i - ml, so sum w_i x_i = dl sum(q_i x_i) - ml sum(x_i): the scale
+ * and the min are applied once per 16 columns instead of per value. The two
+ * sums run serially in column order over the same columns < k, so the order
+ * still depends only on K and the format; the bits differ from the oracle's
+ * (its tolerance is measured, not assumed: tests/qwen38_kernel_tolerances.json).
+ * One-hot x gives fl(fl(dl q) - ml), the oracle's decoded weight. */
+template <>
+inline float q38_quant_chunk<Q38Q2K>(device const uchar *row, device const float *x, uint k, uint c) {
+    const uint cols = metal::min(16u, k - c * 16);
+    device const uchar *b = row + ulong(c / 16) * 84;
+    const uint j = c % 16, scale = b[j], shift = 2 * ((j % 8) / 2);
+    const float dl = q38_fp16(b + 80) * float(scale & 15u), ml = q38_fp16(b + 82) * float(scale >> 4);
+    device const uchar *q = b + 16 + (j / 8) * 32 + (j % 2) * 16;
+    device const float *xb = x + c * 16;
+    float qx = 0.0f, sx = 0.0f;
+    if (cols == 16)
+        for (uint i = 0; i < 16; i++) { qx += float((q[i] >> shift) & 3u) * xb[i]; sx += xb[i]; }
+    else
+        for (uint i = 0; i < cols; i++) { qx += float((q[i] >> shift) & 3u) * xb[i]; sx += xb[i]; }
+    return dl * qx - ml * sx;
 }
 /* Dot of one packed row with x[0..k). Every lane returns the same total. */
 template <typename F>

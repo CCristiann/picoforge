@@ -45,10 +45,10 @@
     "q2_k": {
       "tol": 4.76837158203125e-07,
       "max": 3.573851486180951e-07,
-      "p99": 1.0083521720921607e-07,
+      "p99": 1.0131608611860026e-07,
       "samples": 334889,
-      "commit": "968e169",
-      "note": "Indexed expert matvec (R1.5a). Every weight decodes to the oracle's exact FP32 value (test_q2_k_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 16-column scale group, then a lane's groups, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real down slices (640 of 768) the fast kernel is within 1.5e-8 of FP64 and the oracle within 1.2e-7. The max 3.6e-7 (6.0 u of S) is at N512 K640/768; 2^-22 = 2.4e-7 is below it."
+      "commit": "5fbbdc7 + the R1.9c factored Q2_K chunk (measured on its working tree, harness with test_q2_k_factored_chunk)",
+      "note": "Indexed expert matvec (R1.5a), factored chunk since R1.9c: per 16-column scale group dl*sum(q*x) - ml*sum(x), both sums serial in column order, then a lane's groups, then simd_sum over 32 lanes (test_q2_k_factored_chunk checks the chunk bit for bit against an FP32 emulation). The weights are no longer formed (one-hot x still gives the oracle's fl(fl(dl q) - ml): test_q2_k_decode_matches_oracle), so the rounding differs from a reorder and the subtraction can cancel: condition (a) is re-derived as |y-r| <= gamma(m+19) F with F = sum over groups (|dl| sum|q x| + |ml| sum|x|) >= S and m = ceil(groups/32)+5; it implies B's bound only for F/S <= (2K+8)/(m+19) (49 at K 640), which the real rows exceed on impulse x (F/S up to 106), so (a) is measured as B's bound itself: worst 0.23% of it (N32768 K256). On the real down slices the fast kernel stays within 1.4e-7 of the oracle. The max 3.6e-7 (6.0 u of S) is unchanged, at N512 K640/768 (the oracle's own serial rounding dominates); 2^-22 = 2.4e-7 is below it."
     },
     "q4_k": {
       "tol": 4.76837158203125e-07,
@@ -69,10 +69,10 @@
     "moe_gate_up": {
       "tol": 4.76837158203125e-07,
       "max": 3.5294206928898585e-07,
-      "p99": 1.0288685287638119e-07,
+      "p99": 1.0271445614502352e-07,
       "samples": 43112,
       "commit": "0b6ef53",
-      "note": "Fused gate+up+SwiGLU (R1.5b), act = silu(g)*u, against the oracle sequence (indexed oracle gate and up, q38c_activate SILU, q38f_product). The fused act is bit-identical to the unfused fast sequence (test_fused_gate_up_bit_identical_to_sequence), so (b) measures the indexed fast dots' order against the oracle's serial one, carried through silu and the product. S = |silu'(g)| S_g |u| + |silu(g)| S_u (first-order effect of the two dot errors). On the real IQ2_XXS/Q4_K gate/up rows and the synthetic shapes the max 3.5e-7 (5.9 u of S) is at MXFP4 N160 K2560; 2^-22 = 2.4e-7 is below it. Condition (a) adds 8 ulp32(r) (exp, division, product) and the GPU's flush below 2^-126 (exp(g) for g below about -87, then the product)."
+      "note": "Fused gate+up+SwiGLU (R1.5b), act = silu(g)*u, against the oracle sequence (indexed oracle gate and up, q38c_activate SILU, q38f_product). The fused act is bit-identical to the unfused fast sequence (test_fused_gate_up_bit_identical_to_sequence), so (b) measures the indexed fast dots' order against the oracle's serial one, carried through silu and the product. S = |silu'(g)| S_g |u| + |silu(g)| S_u (first-order effect of the two dot errors). On the real IQ2_XXS/Q4_K gate/up rows and the synthetic shapes the max 3.5e-7 (5.9 u of S) is at MXFP4 N160 K2560; 2^-22 = 2.4e-7 is below it. Condition (a) adds 8 ulp32(r) (exp, division, product) and the GPU's flush below 2^-126 (exp(g) for g below about -87, then the product). R1.9c: the Q2_K gate/up dots are factored (see q2_k); remeasured on the R1.9c tree: max unchanged, p99 1.03e-7."
     },
     "moe_down_reduce": {
       "tol": 2.384185791015625e-07,
@@ -80,7 +80,7 @@
       "p99": 9.01935074734253e-08,
       "samples": 11060,
       "commit": "9d9a0da kernel, measured with the harness of its child bd6759f (Test the fused down + reduce against the unfused sequence)",
-      "note": "Fused routed down + weighted reduce (R1.5c), y and routed against the oracle sequence (indexed oracle down, q38f_reduce). Both are bit-identical to the unfused fast sequence (test_fused_down_bit_identical_to_sequence), so (b) measures the indexed fast down dots' order against the oracle's serial one, carried through the slot sum. S = sum_s |w_s| S_s (+ |sigmoid shared| for y). Max 2.3e-7 (3.9 u of S) at IQ2_XXS N33 K600/768 T3x2 (routed), over the real Q2_K/MXFP4 down rows and the synthetic shapes. Condition (a): gamma(2K+8+2k+2) S + 2 ulp32(r) + 2 sum_s |w_s| ulp32(d_s); worst 0.74% of the bound."
+      "note": "Fused routed down + weighted reduce (R1.5c), y and routed against the oracle sequence (indexed oracle down, q38f_reduce). Both are bit-identical to the unfused fast sequence (test_fused_down_bit_identical_to_sequence), so (b) measures the indexed fast down dots' order against the oracle's serial one, carried through the slot sum. S = sum_s |w_s| S_s (+ |sigmoid shared| for y). Max 2.3e-7 (3.9 u of S) at IQ2_XXS N33 K600/768 T3x2 (routed), over the real Q2_K/MXFP4 down rows and the synthetic shapes. Condition (a): gamma(2K+8+2k+2) S + 2 ulp32(r) + 2 sum_s |w_s| ulp32(d_s); worst 0.74% of the bound. R1.9c: the Q2_K down dots are factored (see q2_k); remeasured on the R1.9c tree: max and p99 unchanged (the max is an IQ2_XXS case), every Q2_K case within 2.7e-8."
     },
     "rms_fast": {
       "tol": 3.814697265625e-06,
