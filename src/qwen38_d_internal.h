@@ -54,7 +54,8 @@ typedef uint32_t Q38DUint;
 typedef uint Q38DUint;
 #endif
 enum { Q38D_ROPE, Q38D_POOL, Q38D_SCORES, Q38D_ATTEND, Q38D_GPU_OPS };
-enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT, Q38D_MERGE, Q38D_ALL_OPS };
+enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT, Q38D_MERGE,
+       Q38D_SCORES_FAST, Q38D_RANK_FAST, Q38D_COMPACT_FAST, Q38D_ALL_OPS };
 typedef struct { Q38DUint h,j,d,n,m,r,pos; float theta; } Q38DGpuArgs;
 #ifndef __METAL_VERSION__
 _Static_assert(sizeof(Q38DGpuArgs)==32, "D Metal wire ABI");

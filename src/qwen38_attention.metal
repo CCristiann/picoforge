@@ -269,6 +269,68 @@ kernel void q38d_compact_gpu(device const uint *keep [[buffer(0)]], device uint 
     if (slot>=a.m) { fail(error,2); return; }
     for (uint r=0;r<a.r;++r) ids[slot*a.r+r]=b*a.r+r;
 }
+/* R2.2 exact fast variants of scores, rank and compact: same results, bit for bit
+ * (scores keep every dot's increasing-d order and the head order of the sum; rank and
+ * slot are integer counts). The oracles are latency bound at 8K: one thread per block
+ * runs a 512-step dependent chain (scores) or a 2048-step loop over device memory (rank),
+ * 0.8 ms per layer for 2048 blocks. Scores: the query is staged once per threadgroup and
+ * the <= 8 head dots run as independent chains (Q38D_SCORE_HEADS, h*d <= 1024, d % 16 = 0)
+ * over 16 keys loaded as 4 vectors. Rank and
+ * compact: one simdgroup per block, lanes count strided candidates, simd_sum adds them. */
+#define Q38D_SCORE_HEADS 8
+kernel void q38d_scores_fast_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
+    device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
+    device atomic_uint *error [[buffer(7)]], uint b [[thread_position_in_grid]],
+    uint t [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]]) {
+    threadgroup float qs[1024];
+    for (uint i=t;i<a.h*a.d;i+=tn) qs[i]=q[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (b>=a.n) return;
+    float dot[Q38D_SCORE_HEADS]; bool bad=false;
+    for (uint h=0;h<Q38D_SCORE_HEADS;h++) dot[h]=0;
+    device const packed_float4 *row=(device const packed_float4 *)(k+b*a.d);
+    for (uint d=0;d<a.d;d+=16) {               /* 16 keys in flight, then the same serial order */
+        float y[16];
+        for (uint i=0;i<4;i++) { float4 v=row[d/4+i]; y[4*i]=v.x; y[4*i+1]=v.y; y[4*i+2]=v.z; y[4*i+3]=v.w; }
+        for (uint i=0;i<16;i++) {
+            bad|=!isfinite(y[i]);
+            for (uint h=0;h<Q38D_SCORE_HEADS;h++) if (h<a.h) {
+                float x=qs[h*a.d+d+i]; bad|=!isfinite(x); dot[h]+=x*y[i];
+            }
+        }
+    }
+    float score=0;
+    for (uint h=0;h<Q38D_SCORE_HEADS;h++) if (h<a.h) { bad|=!isfinite(dot[h]); score+=max(0.0f,dot[h]); }
+    if (bad || !isfinite(score)) { fail(error,1); return; }
+    out[b]=score;
+}
+kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    uint b=g*sn+sg;
+    if (b>=a.n) return;
+    float s=scores[b]; uint rank=0; bool bad=false;
+    for (uint c=lane;c<a.n;c+=32) {
+        float o=scores[c]; bad|=!isfinite(o);
+        rank+=(o>s || (o==s && c<b)) ? 1u : 0u;
+    }
+    rank=simd_sum(rank);
+    if (simd_any(bad)) { if (!lane) { keep[b]=0; fail(error,1); } return; }
+    if (!lane) keep[b]=rank<a.m ? 1u : 0u;
+}
+kernel void q38d_compact_fast_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    uint b=g*sn+sg;
+    if (b>=a.n || !keep[b]) return;
+    uint slot=0;
+    for (uint c=lane;c<b;c+=32) slot+=keep[c];
+    slot=simd_sum(slot);
+    if (slot>=a.m) { if (!lane) fail(error,2); return; }
+    for (uint r=lane;r<a.r;r+=32) ids[slot*a.r+r]=b*a.r+r;
+}
 /* a.m = first tail slot, a.n = first tail token, a.pos = last visible token. */
 kernel void q38d_tail_gpu(device uint *ids [[buffer(0)]], constant Q38DGpuArgs &a [[buffer(6)]],
     uint i [[thread_position_in_grid]]) {

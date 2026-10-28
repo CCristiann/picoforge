@@ -18,6 +18,7 @@ R1.8: q38c_gdn_prepare_fast (L2 norms, value copy, gates, input check folded
 in) against check + q38c_gdn_prepare, tolerance entry gdn_prepare_fast.
 R2.1: split decode attention (q38d_attend_encode, family attention) against the
 q38d_attend_gpu oracle and FP64, tolerance entry attend_fast.
+R2.2: exact index scores, rank and compact: bit-identical to their oracles.
 """
 import argparse
 import json
@@ -554,6 +555,20 @@ def run_attend(mode, q, gate, k, v, ids, env=None):
         raise AssertionError(f"attend {mode}: exit {result.returncode}, {stderr!r}")
     word, dispatches = (int(x) for x in np.frombuffer(result.stdout[:8], "<u4"))
     return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(h, d)
+
+
+def run_index(mode, iq, blocks, visible, ratio, budget):
+    """(error word, scores [n], ids) of q38d SCORES then q38d_select_encode, oracle or exact fast kernels."""
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {key: val for key, val in os.environ.items() if key != "Q38_REF_KERNELS"}
+    result = subprocess.run([str(NATIVE), "index", mode, *map(str, (*iq.shape, visible, ratio, budget))],
+                            input=np.ascontiguousarray(iq, "<f4").tobytes() + np.ascontiguousarray(blocks, "<f4").tobytes(),
+                            capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr:
+        raise AssertionError(f"index {mode}: exit {result.returncode}, {stderr!r}")
+    n = len(blocks)
+    return int(np.frombuffer(result.stdout[:4], "<u4")[0]), result.stdout[4:4 + 4 * n], result.stdout[4 + 4 * n:]
 
 
 def attend_inputs(rng, dims, n, m, sharp=4.0):
@@ -1865,6 +1880,31 @@ class FastKernelTests(unittest.TestCase):
                         inputs = [a.copy() for a in (q, gate, k, v, ids)]
                         poke(inputs)
                         self.assertEqual(run_attend(mode, *inputs)[0], bit)
+
+    def test_index_scores_and_selection_bit_identical(self):
+        """R2.2: the exact fast scores, rank and compact give the oracle's bytes (scores, IDs, error word): real
+        index dims (4 heads x 128) from one block to 32K tokens, ties (equal scores: smaller ID wins), a
+        visible tail, other head counts/dims on and off the fast path (h > 8, d % 16 != 0 fall back), and
+        NaN/Inf in the query or one block key (bit 1)."""
+        rng = np.random.default_rng(4139)
+        cases = [((4, 128), visible, 4, 2048) for visible in (4, 7, 2049, 8192, 8195, 32768)]
+        cases += [((1, 16), 300, 4, 64), ((8, 128), 1000, 4, 256), ((3, 48), 999, 3, 300), ((9, 32), 400, 4, 64),
+                  ((2, 24), 400, 4, 64)]
+        for (h, d), visible, ratio, budget in cases:
+            n = visible // ratio
+            iq, blocks = rng.normal(0, 1, (h, d)).astype(np.float32), rng.normal(0, 1, (n, d)).astype(np.float32)
+            variants = [("plain", iq, blocks)]
+            if n > 4:
+                tied = blocks.copy(); tied[1::3] = tied[0]
+                variants += [("ties", iq, tied), ("nan key", iq, np.where(np.arange(n)[:, None] == n // 2, np.nan, blocks)),
+                             ("inf query", np.where(np.arange(h)[:, None] == h - 1, np.inf, iq), blocks)]
+            for name, q, k in variants:
+                with self.subTest(dims=(h, d), visible=visible, case=name):
+                    fast, oracle = (run_index(mode, q, k, visible, ratio, budget) for mode in ("fast", "oracle"))
+                    self.assertEqual(fast[0], 1 if name in ("nan key", "inf query") else 0)
+                    self.assertEqual(fast[0], oracle[0])
+                    if not fast[0]:
+                        self.assertEqual(fast[1:], oracle[1:])
 
     def test_attend_selector(self):
         """encode follows Q38_REF_KERNELS: unset -> fast (bit-identical to forced fast), attention or 1 -> oracle

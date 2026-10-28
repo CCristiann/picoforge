@@ -8,6 +8,22 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.2 — exact fast index scores and block selection
+
+Two more qsa.core stages were latency bound: one thread per block ran its
+whole dependent chain alone (2048 threads at 8K, too few to hide memory
+latency). Both are rewritten so the results stay the same **bit for bit**:
+scores stage the query once per threadgroup and run the 4 head dots as
+independent chains, each still added in increasing feature order and summed
+over heads in the same order; rank and compact give each block one
+simdgroup whose lanes count strided candidates and `simd_sum` the counts
+(integers, so any order is exact). Warm isolated times at 8K (scratch bench,
+after a GPU clock warm-up: the first cold numbers were inflated): scores
+81 -> 64 us, select 364 -> 23 us per layer. Profile at 8K
+(`profile-8k-index`): qsa.core 8.1 -> 4.1 ms, GPU groups 51.1 -> 47.1
+ms/token. The test `test_index_scores_and_selection_bit_identical` compares
+scores, IDs and error word byte for byte with the oracles.
+
 ### R2.1 — split-K decode attention ("flash decoding")
 
 The first 8K profile (`bench/qwen38_r2_20261028/profile-8k-r1`) put 39.6 of

@@ -27,7 +27,8 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
     g->device=(__bridge_retained void *)dev;
     NSString *names[]={@"q38d_rope_gpu",@"q38d_pool_gpu",@"q38d_scores_gpu",@"q38d_attend_gpu",
         @"q38d_rank_gpu",@"q38d_compact_gpu",@"q38d_tail_gpu",@"q38d_copy_gpu",
-        @"q38d_attend_split_gpu",@"q38d_attend_merge_gpu"};
+        @"q38d_attend_split_gpu",@"q38d_attend_merge_gpu",
+        @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu"};
     g->scalar_attention=getenv("Q38_QSA_SCALAR")!=NULL;
     g->reference=q38_ref_kernels("attention");
     if (g->scalar_attention) names[Q38D_ATTEND]=@"q38d_attend_scalar_gpu";
@@ -39,7 +40,7 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
             (p.maxTotalThreadsPerThreadgroup<256 || p.staticThreadgroupMemoryLength>dev.maxThreadgroupMemoryLength)) {
             q38d_gpu_destroy(g); return result(e,Q38_UNSUPPORTED);
         }
-        if ((i==Q38D_SPLIT && p.maxTotalThreadsPerThreadgroup<128) || (i==Q38D_MERGE && p.maxTotalThreadsPerThreadgroup<256))
+        if ((i==Q38D_SPLIT && p.maxTotalThreadsPerThreadgroup<128) || (i>=Q38D_MERGE && p.maxTotalThreadsPerThreadgroup<256))
             g->reference=true;  /* the fast path needs 4 simdgroups and one thread per feature */
         g->pipeline[i]=(__bridge_retained void *)p;
     }
@@ -116,6 +117,8 @@ Qwen38Status q38d_gpu_encode(Q38DGpu *g,Qwen38GpuCommand cmd,uint32_t op,
     Qwen38Status code=admit(g,cmd,op,a,v,count,&work);
     if (code || !work) return result(e,code);
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    /* R2.2: the exact fast scores (same bits) unless the oracle is selected. */
+    if (op==Q38D_SCORES && !g->reference && a->h<=8 && a->d%16==0 && (size_t)a->h*a->d<=1024) op=Q38D_SCORES_FAST;
     id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)g->pipeline[op];
     bind(g,cmd,op,a,v,count);
     if (op==Q38D_ROPE) {
@@ -203,7 +206,14 @@ Qwen38Status q38d_select_encode(Q38DGpu *g, Qwen38GpuCommand cmd,
     }
     if ([(__bridge id<MTLBuffer>)cmd.error_word.buffer storageMode]!=MTLStorageModeShared)
         return result(e,Q38_CAPACITY);
-    if (n) {
+    if (n && !g->reference) {  /* R2.2: one simdgroup per block, same keep flags and IDs */
+        Q38DGpuArgs a={.n=n,.m=sel,.r=ratio};
+        for (uint32_t op=Q38D_RANK_FAST;op<=Q38D_COMPACT_FAST;op++) {
+            bind(g,cmd,op,&a,op==Q38D_RANK_FAST ? (Qwen38GpuSpan[]){scores,keep} : (Qwen38GpuSpan[]){keep,ids},2);
+            [enc dispatchThreadgroups:MTLSizeMake((n+7)/8,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
+    } else if (n) {
         Q38DGpuArgs a={.n=n,.m=sel,.r=ratio};
         helper(g,cmd,Q38D_RANK,&a,(Qwen38GpuSpan[]){scores,keep},2,n);
         helper(g,cmd,Q38D_COMPACT,&a,(Qwen38GpuSpan[]){keep,ids},2,n);

@@ -1008,6 +1008,46 @@ static int attend_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R2.2 exact index scores + device selection (q38d_gpu_encode SCORES, then q38d_select_encode):
+ *   index <oracle|fast> h d visible ratio budget
+ * stdin: iq [h,d], block keys [visible/ratio,d] FP32. stdout: error word, scores [n], ids
+ * [min(n,budget/ratio)*ratio + visible%ratio] (uint32); n = visible/ratio. */
+static int index_main(int argc,char **argv,const char *library) {
+    assert(argc==8 && (!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle")));
+    uint32_t h=(uint32_t)number(argv[3]),d=(uint32_t)number(argv[4]),visible=(uint32_t)number(argv[5]),
+             ratio=(uint32_t)number(argv[6]),budget=(uint32_t)number(argv[7]),n=visible/ratio,
+             sel=n<budget/ratio ? n : budget/ratio,count=sel*ratio+visible%ratio;
+    assert(h && d && ratio && budget%ratio==0 && n && visible<=32768);
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38DGpu *g=NULL;
+        assert(q38d_gpu_create((__bridge void *)dev,(__bridge void *)lib,&g,NULL)==Q38_OK);
+        q38d_gpu_set_reference(g,!strcmp(argv[2],"oracle"));
+        id<MTLBuffer> q=shared(dev,4*(size_t)h*d), k=shared(dev,4*(size_t)n*d), sc=shared(dev,4*(size_t)n),
+                      keep=shared(dev,4*(size_t)n), ids=shared(dev,4*(size_t)count), word=shared(dev,4);
+        assert(fread(q.contents,4,(size_t)h*d,stdin)==(size_t)h*d && fread(k.contents,4,(size_t)n*d,stdin)==(size_t)n*d);
+        assert(fgetc(stdin)==EOF);
+        memset(sc.contents,0xa5,sc.length); memset(ids.contents,0xa5,ids.length); ((uint32_t *)word.contents)[0]=0;
+        id<MTLCommandBuffer> command=[[dev newCommandQueue] commandBuffer];
+        id<MTLComputeCommandEncoder> enc=[command computeCommandEncoder];
+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)enc,{(__bridge void *)word,0,4},false};
+        Q38DGpuArgs a={.h=h,.d=d,.n=n,.m=sel,.r=ratio};
+        Qwen38GpuSpan v[3]={{(__bridge void *)q,0,q.length},{(__bridge void *)k,0,k.length},{(__bridge void *)sc,0,sc.length}};
+        assert(q38d_gpu_encode(g,cmd,Q38D_SCORES,&a,v,3,NULL)==Q38_OK);
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        assert(q38d_select_encode(g,cmd,visible,ratio,budget,v[2],(Qwen38GpuSpan){(__bridge void *)keep,0,keep.length},
+                                  (Qwen38GpuSpan){(__bridge void *)ids,0,ids.length},NULL)==Q38_OK);
+        [enc endEncoding]; [command commit]; [command waitUntilCompleted];
+        assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+        assert(fwrite(word.contents,4,1,stdout)==1 && fwrite(sc.contents,4,n,stdout)==n &&
+               fwrite(ids.contents,4,count,stdout)==count);
+        q38d_gpu_destroy(g);
+    }
+    return 0;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -1023,6 +1063,7 @@ int main(int argc,char **argv) {
     if (argc>2 && (!strcmp(argv[1],"rms") || !strcmp(argv[1],"rmsbench"))) return rms_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"prep") || !strcmp(argv[1],"prepbench"))) return prep_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"attend") || !strcmp(argv[1],"attbench"))) return attend_main(argc,argv,library);
+    if (argc>2 && !strcmp(argv[1],"index")) return index_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);
