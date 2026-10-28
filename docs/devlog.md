@@ -30,7 +30,9 @@ sums round apart and give up to 3.8e-6, so tolerance (b) cannot hold;
 `test_q2_k_zero_weights_give_zero` keeps that case. IQ2_XXS factored gave no gain.
 Bench (same session, alternated, battery): Q2_K down+reduce at 10 slots
 75.4 → 64.8 µs (pilot, fp16 alone), IQ2_XXS gate+up 65.3 → 61.6, Q4_K 84.2 → 77.1.
-Measured (controller, profile + g3): pending.
+Measured (controller, profile-t18 at f7bbeed, battery R38): GPU groups 44.99 ms/token (was 46.35),
+moe 10.94 ms (down 3.35 ms at 92 GB/s, gate_up 3.28 ms at 124 GB/s); g3 pass (fp32 5.42e-7), ref
+bit-identical, default max abs 5.19e-5, argmax 9/9.
 
 ### R1.9b — routed MoE kernels at bandwidth (target not reached)
 
@@ -47,7 +49,8 @@ suggest why: gate_up IQ2_XXS falls to 36.9 us with the decode replaced by a cons
 down Q2_K to 52 us with the decode arithmetic dropped and 33 us with no weight read. The
 kernels are bound by the exact FP32 per-value decode and the serial adds, not by DRAM;
 reaching bandwidth needs a numerics ruling (factored block dot or FMA, with new tolerances).
-Measured (controller, profile): pending.
+Measured (controller, profile-t18): moe.down 3.83 -> 3.35 ms, moe.gate_up 3.75 -> 3.28 ms
+(mostly the fp16 scale decode of R1.9c, not this step).
 
 ### R1.9a — MoE profile split
 
@@ -57,7 +60,8 @@ down+reduce. Like R1.8, Task 18-0 splits it in `moe.shared_in` (multi call), `mo
 `moe.gate_up`, `moe.shared` (silu/mul/shared down/sigmoid) and `moe.down` (fused down+reduce or
 its fallback), each with its weight bytes so the summary prints GB/s, plus a `moe rollup` line.
 Profile mode only (a hook in `Q38FRoutedWork`): normal mode adds no dispatch, barrier or split.
-Measured (controller): pending.
+Measured (controller, profile-t18-0 at 461d528): moe 11.95 ms/token = down 3.83, gate_up 3.75,
+shared_in 2.01, route 1.28, shared 1.09; the rollup sums back to the old `moe` total.
 
 ### R1.8 — GDN hotspot
 

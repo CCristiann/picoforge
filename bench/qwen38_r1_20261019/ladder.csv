@@ -9,3 +9,5 @@ R1.6a parallel RMSNorm (Task 14b),89d8f05,2026-10-26,short,picoforge,,,,,,75.62,
 R1.6b concurrent encoder (Task 14a),0ee8c6e,2026-10-26,short,picoforge,,,,,,68.85,88.67,2307,1788,,bench/qwen38_r1_20261026/profile-t14a (quick closure R24)
 R1.7 session weight claims + GPU argmax (Task 15),b279c00,2026-10-26,short,picoforge,,,,,,69.19,88.23,2308,1789,,bench/qwen38_r1_20261026/profile-t15 (quick closure R24; residency set skipped by its memory gate; argmax not exercised by the teacher-forced profile)
 R1.8 parallel GDN prepare (Task 16),61d57d4,2026-10-26,short,picoforge,,,,,,46.85,130.29,2272,1789,,bench/qwen38_r1_20261026/profile-t16 (quick closure R24)
+R1 checkpoint T17 paired vs DwarfStar 33.130 (battery R38),e01998c,2026-10-27,short,picoforge,3,20,20.129,20.078,20.181,46.35,131.71,2272,1789,0.6086,bench/qwen38_r1_20261027/paired-short-t17 + profile-t17 (full closure; DwarfStar same session 33.130 → 0.6076x)
+R1.9 MoE fp16 scale decode + gate/up tail pooling (Task 18),f7bbeed,2026-10-28,short,picoforge,,,,,,44.99,135.68,2272,1789,,bench/qwen38_r1_20261028/profile-t18 (quick closure R24; battery R38; moe split profile-t18-0 in bench/qwen38_r1_20261027)
