@@ -60,9 +60,11 @@ static inline void gate_up(device const uchar *gw, device const uchar *uw, devic
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    /* R1.9b: the tail chunks of the gate and up rows
-     * (K 2560: 16 + 16 of 80) share one round of the 32 lanes, and each sum
-     * goes back to the lane that adds it last, as q38_quant_row would. */
+    /* R1.9b: the tail chunks of the gate and up rows (chunks % 32 each; K 2560
+     * with 32-column chunks: 16 + 16 of 80) share one round of the 32 lanes, and
+     * each sum goes back to the lane that adds it last, as q38_quant_row would.
+     * Each x chunk is loaded once per row (twice per lane, unlike the former
+     * q38_quant_row_pair): measured not slower, x re-reads are not the limit. */
     const uint chunks = (p.k_logical + F::CHUNK - 1) / F::CHUNK, head = chunks / 32 * 32, tail = chunks - head;
     float acc[2] = {0.0f, 0.0f}, pooled[2];
     device const uchar *row[2] = {gw + grow, uw + urow};

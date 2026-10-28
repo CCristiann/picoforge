@@ -23,8 +23,10 @@ Bit-identical restructurings measured on the isolated bench (t=1 x 10 slots) did
 them: slots in flight, rows per simdgroup sharing x, simdgroups per threadgroup, wider loads,
 pooling the idle-lane tail chunks of the down dot (75.4 vs 75.8 us, reverted). Only pooling
 the gate+up tail chunks (K 2560 = 80 chunks: 16 + 16 fill one round of 32 lanes, each sum
-shuffled back to its lane, same bits) stays: IQ2_XXS 67.6 -> 65.3 us, Q4_K 87.1 -> 84.2 us.
-Ablations say why: gate_up IQ2_XXS falls to 36.9 us with the decode replaced by a constant,
+shuffled back to its lane, same bits) stays: IQ2_XXS 67.7 -> 65.3 us, Q4_K 87.2 -> 84.2 us
+(before: committed AC bench qwen38_r1_20261021; after: battery, qwen38_r1_20261028; no
+same-session A/B, so within condition noise). Unrecorded scratch ablations (no raw file)
+suggest why: gate_up IQ2_XXS falls to 36.9 us with the decode replaced by a constant,
 down Q2_K to 52 us with the decode arithmetic dropped and 33 us with no weight read. The
 kernels are bound by the exact FP32 per-value decode and the serial adds, not by DRAM;
 reaching bandwidth needs a numerics ruling (factored block dot or FMA, with new tolerances).

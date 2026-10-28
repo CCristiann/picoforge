@@ -28,8 +28,10 @@ type 10 Q2_K, 39 MXFP4, 16 IQ2_XXS, 12 Q4_K; m = rows (tokens x 10).
 | 12 | fused | 1280 | 10445.7 (10444.2/10448.2) | 81.4 |
 | 12 | sequence | 1280 | 11715.4 (11711.0/11717.0) | 72.6 |
 
-Before (bench/qwen38_r1_20261021/moe-gate-up and same-harness runs at 461d528 on AC,
-2026-10-27): IQ2_XXS 1 token 67.6 µs (125 GB/s), Q4_K 87.1 µs (212 GB/s). After: 65.3 µs
-(130 GB/s) and 84.2 µs (219 GB/s): -3.4%, bits unchanged. The 200 GB/s target for IQ2_XXS
-is not reached: with the decode replaced by a constant the kernel takes 36.9 µs, so the
-exact per-value FP32 decode bounds it (see the task 18-1 report).
+Reference (committed, AC power): bench/qwen38_r1_20261021/moe-gate-up, fused at 1 token
+IQ2_XXS 67.7 µs (125 GB/s), Q4_K 87.2 µs. After (this folder, battery): 65.3 µs (130 GB/s)
+and 84.2 µs (219 GB/s), about -3.5%, bits unchanged. Before = AC, after = battery, and no
+same-session A/B was run (ruling R41): the gain is small enough to sit within condition
+noise. The scratch runs at 461d528 (67.6 / 87.1 µs, AC, 2026-10-27) and the ablation
+(36.9 µs with the IQ2_XXS decode replaced by a constant) were NOT recorded: no raw file.
+The 200 GB/s target for IQ2_XXS is not reached.

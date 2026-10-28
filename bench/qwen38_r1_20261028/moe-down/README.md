@@ -1,4 +1,4 @@
-# R1.9b fused down+reduce — protocol bench (2026-10-28)
+# R1.9b fused down+reduce — protocol bench (2026-10-28), NOT the shipped kernel
 
 Command: `make bench-qwen38-matvec BENCH_OUT=bench/qwen38_r1_20261028/moe-down` at 08d8c62
 (manifest.txt), i.e. with the tail-chunk pooling of 382c17e in the down kernel.
@@ -28,7 +28,9 @@ type 10 Q2_K, 39 MXFP4, 16 IQ2_XXS, 12 Q4_K; m = rows (tokens x 10).
 | 39 | fused | 1280 | 11224.8 (11212.4/11242.0) | 36.4 |
 | 39 | sequence | 1280 | 12031.3 (12030.8/12032.6) | 34.0 |
 
-Result: no gain. Fused Q2_K at 1 token 75.8 µs vs 75.3 at a5bf5f2 (2026-10-21, AC) and 75.4
-for the restored original kernel measured right after on the same battery session; MXFP4
-94.8 vs 94.4. The pooling was therefore reverted (the shipped down kernel is 461d528's).
+Result: no gain. Fused Q2_K at 1 token 75.8 µs vs the committed AC reference
+bench/qwen38_r1_20261021/moe-down 75.3 µs; MXFP4 94.8 vs 94.4. Before = AC, after = battery.
+The pooling was therefore reverted in f04e20b (the shipped down kernel is 461d528's). The
+75.4 µs of the restored kernel and the ablations (52.3 µs without the decode arithmetic,
+32.6 µs without weight reads) are scratch runs, NOT recorded: no raw file (ruling R41).
 The two rbench lines (q38f_route alone) are part of the target, unchanged.
