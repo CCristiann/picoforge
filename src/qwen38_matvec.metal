@@ -106,8 +106,10 @@ static inline uint dense_split(uint k) {
 }
 
 /* One chunk of up to DENSE_C weights as FP32, each bit-identical to the
- * oracle's packed_value(): F32 is its bits, F16 is q38_fp16_bits (exact on
- * subnormals, which Metal arithmetic would flush). A whole chunk of a 16-byte
+ * oracle's packed_value(): F32 is its bits; F16 is q38_fp16_bits for a whole
+ * chunk and q38_fp16 (the GPU's half -> float, R1.9c) for a tail chunk or an
+ * unaligned row: the same bits for every finite pattern (subnormals included,
+ * which Metal arithmetic would flush; test_*_decode_matches_oracle). A whole chunk of a 16-byte
  * aligned row is one 16- or 32-byte load; a tail chunk or an unaligned row is
  * read byte by byte. The values, so the products, are the same either way. */
 template <uint TYPE>
