@@ -1122,6 +1122,21 @@ class FastKernelTests(unittest.TestCase):
         self.assert_decode_matches_oracle(10, packed, 256, 16384)
         self.assert_scale_nonfinite(10, packed[0])
 
+    def test_q2_k_zero_weights_give_zero(self):
+        """R1.9c / R42: d = dmin, scale 1, min 3, codes 3 make every weight fl(3d) - 3d = 0, so
+        S = 0 and the oracle gives 0. The fast kernel must too: this is why the factored form
+        dl*sum(q x) - ml*sum(x) was rejected (its two sums round apart: up to 3.8e-6, (b) fails)."""
+        rng = seeded(3841, 10)
+        raw = quant_rows(10, 256, 8, rng).reshape(8, 84)
+        raw[:, :16], raw[:, 16:80] = 0x31, 0xFF
+        raw[:, 82:84] = raw[:, 80:82]
+        x = rng.uniform(-1, 1, (4, 256)).astype(np.float32)
+        for mode in ("oracle", "fast"):
+            with self.subTest(mode=mode):
+                code, y, _, stderr = run_indexed(mode, 10, 256, 256, 8, 1, raw.tobytes(), np.zeros(4), x, 1)
+                self.assertEqual((code, stderr), (0, b""))
+                np.testing.assert_array_equal(y, np.zeros((4, 8), np.float32))
+
     def test_q4_k_decode_matches_oracle(self):
         """Every 6-bit scale/min byte at every one of the 12 positions (so every scale and min of
         the 8 sub-blocks, low and high bits), every code at every column, and every finite fp16
