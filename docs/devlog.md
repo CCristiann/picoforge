@@ -16,21 +16,20 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
-### R1.9c — factored block dot
+### R1.9c — factored block dot (rejected) and the fp16 scale decode (shipped)
 
 R1.9b's ablations showed the routed kernels are bound by the arithmetic that
-dequantizes each weight, not by memory. Two cuts. (1) The fp16 block scales
-were rebuilt bit by bit (branches + clz); the GPU's half->float conversion
-gives the same bits for every finite pattern, so every fast kernel is
-unchanged numerically. (2) A Q2_K group's weights are `w = dl·q − ml`, so
-`Σ w·x = dl·Σ(q·x) − ml·Σx`: scale and min once per 16 columns. This is not a
-reordering: the subtraction can cancel. Its bound is `γ(m+19)·F` with
-`F = Σ(|dl|Σ|q·x| + |ml|Σ|x|) ≥ S`; on real rows with impulse x, F/S reaches
-106, so condition (a) is still checked as B's bound and holds on the whole
-corpus (worst 0.23% of it). Tolerance (b) unchanged (q2_k max 3.6e-7, tol
-2^-21). IQ2_XXS factored gave no gain (61.6 µs both) and was not shipped.
+dequantizes each weight, not by memory. Shipped: the fp16 block scales were
+rebuilt bit by bit (branches + clz); the GPU's half->float conversion gives
+the same bits for every finite pattern (half subnormals are FP32 normals, so
+the FP32 flush never applies), so no fast kernel changes numerically.
+Rejected (ruling R42): the factored Q2_K dot `dl·Σ(q·x) − ml·Σx` instead of
+`Σ(dl·q − ml)·x`. It is not a reordering: with d = dmin, scale 1, min 3 and
+codes 3 every weight is exactly 0 (S = 0, the oracle gives 0), yet the two
+sums round apart and give up to 3.8e-6, so tolerance (b) cannot hold;
+`test_q2_k_zero_weights_give_zero` keeps that case. IQ2_XXS factored gave no gain.
 Bench (same session, alternated, battery): Q2_K down+reduce at 10 slots
-75.4 → 60.1 µs (72.7 → 91.2 GB/s), IQ2_XXS gate+up 65.3 → 61.6, Q4_K 84.2 → 77.1.
+75.4 → 64.8 µs (pilot, fp16 alone), IQ2_XXS gate+up 65.3 → 61.6, Q4_K 84.2 → 77.1.
 Measured (controller, profile + g3): pending.
 
 ### R1.9b — routed MoE kernels at bandwidth (target not reached)
