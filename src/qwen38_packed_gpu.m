@@ -504,7 +504,8 @@ Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *
     }
     /* group[f]: projections of fast format f (0 Q8_0, 1 F16, 2 F32) in call
      * order; the rest (no fast kernel, Q38_REF_KERNELS=linear, no 32-wide
-     * simdgroups) run q38_packed_encode one by one: the oracle, bit for bit. */
+     * simdgroups) run q38_packed_encode one by one: its single fast kernel if
+ * one exists and linear is not ref, else the oracle, bit for bit. */
     size_t group[3][Q38_MULTI_MAX], size[3]={0};
     for (size_t i=0;i<count;i++) {
         uint32_t type=layouts[i].gguf_type;

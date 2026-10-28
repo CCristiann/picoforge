@@ -190,7 +190,7 @@ kernel void q38c_gdn_prepare(Q38C_BUFFERS) {
  * word was set before. Outputs are unspecified when the word ends nonzero
  * (the oracle stops a token at its first fault, this kernel writes the other
  * heads); the word itself can differ only when A > 0 meets an overflow of the
- * op (5 here, 4 for the oracle, which then skips the op).
+ * op (4 or 5 here, scheduling dependent; 4 for the oracle, which then skips the op).
  * Idea (GDN front per head, simdgroup L2 norm): ds4 fc80bd6, MIT,
  * metal/qwen4.metal:kernel_qwen4_gdn_front and kernel_qwen4_gdn_prep. */
 kernel void q38c_gdn_prepare_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],

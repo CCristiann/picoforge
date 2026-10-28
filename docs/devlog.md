@@ -29,7 +29,7 @@ codes 3 every weight is exactly 0 (S = 0, the oracle gives 0), yet the two
 sums round apart and give up to 3.8e-6, so tolerance (b) cannot hold;
 `test_q2_k_zero_weights_give_zero` keeps that case. IQ2_XXS factored gave no gain.
 Bench (same session, alternated, battery): Q2_K down+reduce at 10 slots
-75.4 → 64.8 µs (pilot, fp16 alone), IQ2_XXS gate+up 65.3 → 61.6, Q4_K 84.2 → 77.1.
+75.4 → 64.8 µs (pilot, fp16 alone, not in runs.jsonl), IQ2_XXS gate+up 65.3 → 61.6, Q4_K 84.2 → 77.1.
 Measured (controller, profile-t18 at f7bbeed, battery R38): GPU groups 44.99 ms/token (was 46.35),
 moe 10.94 ms (down 3.35 ms at 92 GB/s, gate_up 3.28 ms at 124 GB/s); g3 pass (fp32 5.42e-7), ref
 bit-identical, default max abs 5.19e-5, argmax 9/9.
@@ -215,16 +215,16 @@ Measured together with R1.5d (one checkpoint closure): see R1.5d.
 ### R1.5b — Fused gate+up+SwiGLU
 
 An expert's MLP starts with h = SiLU(g)·u, where g = gate·x and u = up·x
-(SwiGLU: the gate decides how much of u passes). R1.5a did this in four
-dispatches: an indexed gate, an indexed up, ACT, MUL, each one writing to
+(SwiGLU: the gate decides how much of u passes). R1.5a did this in five
+dispatches: an indexed gate, an indexed up, CHECK, ACT, MUL, each one writing to
 memory and followed by a barrier. Now `q38_moe_gate_up` (in
 `qwen38_moe_fused.metal`) does it in one. For each (slot, row), one simdgroup
 decodes the gate and up chunks, multiplies each x value it loads by both, and
 applies q38c_activate's SILU formula. Each dot keeps `q38_quant_row`'s order,
-so act is bit-identical to the four-dispatch sequence: at kernel level for
+so act is bit-identical to the five-dispatch sequence: at kernel level for
 all four formats, and in the graph, where y is bit-identical too. gate/up are
 no longer written. `Q38_REF_KERNELS=moe` (or `indexed`, whose oracle sequence
-the fused kernel does not match) restores the four dispatches. Protocol bench
+the fused kernel does not match) restores the five dispatches. Protocol bench
 `bench/qwen38_r1_20261021/moe-gate-up/` (512 experts, 10 slots per token):
 
 | µs, fused / 4 dispatches | 1 token | 4 | 32 | 128 |

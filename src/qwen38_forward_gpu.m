@@ -267,8 +267,8 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
     id<MTLFunction> fn=[(__bridge id<MTLLibrary>)library newFunctionWithName:@"q38g_copy"];
     id<MTLComputePipelineState> p=fn ? [(__bridge id<MTLDevice>)f->device newComputePipelineStateWithFunction:fn error:NULL] : nil;
     if (!p) return fail(e,Q38_GPU_ERROR,"graph copy pipeline"); f->copy=(__bridge_retained void *)p;
-    f->gpu_argmax=!q38_ref_kernels("argmax"); f->argmax=argmax_pipeline(f->device,library);
-    if (!f->argmax) return fail(e,Q38_GPU_ERROR,"graph argmax pipeline");
+    f->gpu_argmax=!q38_ref_kernels("argmax");  /* oracle mode builds no argmax pipeline (as 360acf0) */
+    if (f->gpu_argmax && !(f->argmax=argmax_pipeline(f->device,library))) return fail(e,Q38_GPU_ERROR,"graph argmax pipeline");
     TRY(bind_weight(f,QWEN38_GLOBAL_LAYER,Q38_TOKEN_EMBD,&f->embed,e));
     TRY(bind_weight(f,QWEN38_GLOBAL_LAYER,Q38_LM_HEAD,&f->head,e));
     if (f->embed.layout.k_logical!=f->c.hidden_size || f->embed.layout.n_out!=f->c.vocab_size ||

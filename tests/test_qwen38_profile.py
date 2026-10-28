@@ -76,7 +76,7 @@ class ProfileTests(unittest.TestCase):
             for r in rows:
                 self.assertGreater(int(r['dispatches']), 0, r)
                 self.assertGreater(int(r['barriers']), 0, r)
-                if r['op'] == 'qsa.proj':  # R1.4: five projections, one multi call: one dispatch, one barrier
+                if r['op'] == 'qsa.proj' and os.environ.get('Q38_REF_KERNELS', '') in ('', '0'):  # ref mode: no multi; R1.4: five projections, one multi call: one dispatch, one barrier
                     self.assertEqual((r['format'], r['dispatches'], r['barriers']), ('Q8_0', '1', '1'), r)
             def counts(token):
                 return [(r['layer'], r['op'], r['dispatches'], r['barriers'], r['weight_bytes'])

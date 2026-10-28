@@ -1797,7 +1797,7 @@ class FastKernelTests(unittest.TestCase):
         dims = (2, 4, 33, 5)
         clean = prep_inputs(rng, 3, dims)
         keys = 2 * dims[0] * dims[2]
-        faults = [(0, (0, 0), np.nan), (0, (1, 33 + 7), np.inf), (0, (2, keys + 19), -np.inf), (1, (0, 3), np.nan),
+        faults = [(0, (0, 0), np.nan), (0, (1, 2 * 33 + 7), np.inf), (0, (2, keys + 19), -np.inf), (1, (0, 3), np.nan),
                   (2, (2, 0), np.inf), (3, (1,), np.nan), (4, (3,), -np.inf), (3, (2,), 0.5), (0, (1, 40), 3e38),
                   (1, (2, 1), 3e38)]
         for part, where, value in faults:
