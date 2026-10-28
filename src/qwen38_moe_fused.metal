@@ -34,8 +34,8 @@ static float q38_silu(float g) {
  * p / x_divisor: the unfused sequence IDX gate, IDX up, ACT SILU, MUL in one
  * pass. One simdgroup per output (p, n), as many along n per threadgroup as
  * the host dispatches (read from the dispatch, no constant shared with the
- * host). Both dots come from q38_quant_row_pair, whose order is
- * q38_quant_row's (the indexed fast kernels'): act is bit-identical to the
+ * host). Both dots run q38_quant_chunk in q38_quant_row's order (the
+ * indexed fast kernels', tail chunks pooled below): act is bit-identical to the
  * unfused fast sequence and, like it, independent of the number of tokens or
  * slots, the slot and the expert id. Bounds as the indexed kernels: an expert
  * id past the tensor, or a gate/up row, x row or act element outside its
@@ -60,8 +60,24 @@ static inline void gate_up(device const uchar *gw, device const uchar *uw, devic
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    float g, u;
-    q38_quant_row_pair<F>(gw + grow, uw + urow, x + xi, p.k_logical, lane, g, u);
+    /* As the down+reduce (R1.9b): the tail chunks of the gate and up rows
+     * (K 2560: 16 + 16 of 80) share one round of the 32 lanes, and each sum
+     * goes back to the lane that adds it last, as q38_quant_row would. */
+    const uint chunks = (p.k_logical + F::CHUNK - 1) / F::CHUNK, head = chunks / 32 * 32, tail = chunks - head;
+    float acc[2] = {0.0f, 0.0f}, pooled[2];
+    device const uchar *row[2] = {gw + grow, uw + urow};
+    for (uint c = lane; c < head; c += 32)
+        for (uint r = 0; r < 2; r++) acc[r] += q38_quant_chunk<F>(row[r], x + xi, p.k_logical, c);
+    for (uint j = 0; j < 2; j++) {
+        const uint i = 32 * j + lane;
+        pooled[j] = i < 2 * tail ? q38_quant_chunk<F>(i < tail ? row[0] : row[1], x + xi, p.k_logical, head + i % tail) : 0.0f;
+    }
+    for (uint r = 0; r < 2; r++) {
+        const uint i = r * tail + lane;
+        const float v0 = simd_shuffle(pooled[0], ushort(i % 32)), v1 = simd_shuffle(pooled[1], ushort(i % 32));
+        if (lane < tail) acc[r] += i < 32 ? v0 : v1;
+    }
+    const float g = simd_sum(acc[0]), u = simd_sum(acc[1]);
     if (lane) return;
     const float s = q38_silu(g), h = s * u;
     act[yi] = h;
