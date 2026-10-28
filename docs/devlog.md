@@ -21,7 +21,8 @@ gate, argmax and ordered top-5 12/12.
 Target: fused down+reduce and gate+up+SwiGLU (one simdgroup per output row) at >= 200 GB/s.
 Bit-identical restructurings measured on the isolated bench (t=1 x 10 slots) did not move
 them: slots in flight, rows per simdgroup sharing x, simdgroups per threadgroup, wider loads,
-pooling the idle-lane tail chunks of the down dot (75.4 vs 75.8 us, reverted). Only pooling
+pooling the idle-lane tail chunks of the down dot (75.8 us vs 75.4 for the restored kernel,
+a scratch run NOT recorded: no raw file; reverted). Only pooling
 the gate+up tail chunks (K 2560 = 80 chunks: 16 + 16 fill one round of 32 lanes, each sum
 shuffled back to its lane, same bits) stays: IQ2_XXS 67.7 -> 65.3 us, Q4_K 87.2 -> 84.2 us
 (before: committed AC bench qwen38_r1_20261021; after: battery, qwen38_r1_20261028; no
