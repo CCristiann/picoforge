@@ -16,6 +16,19 @@ Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
 `make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
 gate, argmax and ordered top-5 12/12.
 
+### R1.9b — routed MoE kernels at bandwidth
+
+A row dot gives lane l the chunks l, l+32, ... then simd_sum. When the chunk count is not a
+multiple of 32 the last round leaves lanes idle: the down projection (K 640) has 40 Q2_K chunks
+(24 of 32 lanes idle in round 2) or 20 MXFP4 chunks (12 idle), for every one of the 10 slots in
+turn; gate/up (K 2560) have 80 (16 idle in round 3). Task 18-1 pools those tail chunks (4 slots
+for down, gate+up for gate_up) over all 32 lanes and shuffles each sum back to the lane that
+adds it: same operations in the same order, so the bits do not change (no new tolerance).
+Isolated bench, t=1 x 10 slots: down Q2_K 75.6 -> 30.7 us, MXFP4 94.0 -> 19.7 us; gate_up
+IQ2_XXS 67.6 -> 65.3 us, Q4_K 87.1 -> 84.1 us. gate_up stays ALU-bound on the exact IQ2_XXS
+decode (36.9 us with the decode removed): reaching 200 GB/s there needs a numerics ruling.
+Measured (controller, profile): pending.
+
 ### R1.9a — MoE profile split
 
 After the GDN fix the MoE block is the largest single profile group, but `moe` is one row: it
