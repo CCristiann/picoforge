@@ -60,7 +60,7 @@ static inline void gate_up(device const uchar *gw, device const uchar *uw, devic
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    /* As the down+reduce (R1.9b): the tail chunks of the gate and up rows
+    /* R1.9b: the tail chunks of the gate and up rows
      * (K 2560: 16 + 16 of 80) share one round of the 32 lanes, and each sum
      * goes back to the lane that adds it last, as q38_quant_row would. */
     const uint chunks = (p.k_logical + F::CHUNK - 1) / F::CHUNK, head = chunks / 32 * 32, tail = chunks - head;
@@ -103,13 +103,12 @@ GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
  * projection as one indexed call over the tokens x slots pairs (x = act, its
  * y extent and pitch are y's), then the token and slot counts. */
 struct DownReduceArgs { IndexedArgs down; uint tokens, slots; };
-#define DOWN_G 4 /* slots whose tail chunks share the 32 lanes: G * 31 tasks fit G rounds */
 static_assert(sizeof(DownReduceArgs) == 104, "down+reduce wire record size");
 /* y[t, n] = sum_s scores[t, s] (down_e[n] . act[t*k+s]) + sigmoid[t] shared[t, n],
  * e = ids[t*k+s], and routed[t, n] = the sum before the shared term: IDX down
  * (divisor 1) then q38f_reduce with the identity map, without writing the
  * [pairs, n] down scratch. One simdgroup per output (t, n); each down dot is
- * q38_quant_row's operations in its order (tail chunks pooled, see below), accumulated in slot order
+ * q38_quant_row (the indexed fast kernel's order), accumulated in slot order
  * 0..k-1 with q38f_reduce's expressions (contraction off in both files), so
  * y and routed are bit-identical to that sequence and independent of the
  * number of tokens, n's position and the expert ids. scores, shared, sigmoid
@@ -132,48 +131,20 @@ static inline void down_reduce(device const uchar *w, device const float *act, d
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    /* q38_quant_row's order per (slot, n): lane l adds chunks l, l+32, ... and
-     * simd_sum joins the lanes. When the chunk count C is not a multiple of 32
-     * (Q2_K down: 40, MXFP4: 20) the last round leaves lanes T = C % 32 .. 31
-     * idle for every slot; here the tail chunks of DOWN_G slots are pooled over
-     * all 32 lanes (R1.9b) and each tail sum is shuffled back to the lane that
-     * adds it, in the same position: the same operations, the same bits. */
-    const uint chunks = (p.k_logical + F::CHUNK - 1) / F::CHUNK, head = chunks / 32 * 32, tail = chunks - head;
     float sum = 0.0f;
     bool finite = true;
-    for (uint s0 = 0; s0 < a.slots; s0 += DOWN_G) {
-        const uint gs = metal::min(uint(DOWN_G), a.slots - s0);
-        float acc[DOWN_G], pooled[DOWN_G];
-        for (uint g = 0; g < DOWN_G; g++) {
-            acc[g] = 0.0f;
-            if (g >= gs) continue;
-            const uint pair = t * a.slots + s0 + g, expert = ids[pair];
-            const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n * p.row_bytes;
-            const ulong xi = ulong(pair) * (p.x_stride / 4);
-            if (expert >= a.down.experts || row > p.weight_end || p.row_bytes > p.weight_end - row ||
-                xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi) {
-                if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
-                return;
-            }
-            for (uint c = lane; c < head; c += 32) acc[g] += q38_quant_chunk<F>(w + row, act + xi, p.k_logical, c);
+    for (uint s = 0; s < a.slots; s++) {
+        const uint pair = t * a.slots + s, expert = ids[pair];
+        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n * p.row_bytes;
+        const ulong xi = ulong(pair) * (p.x_stride / 4);
+        if (expert >= a.down.experts || row > p.weight_end || p.row_bytes > p.weight_end - row ||
+            xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi) {
+            if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+            return;
         }
-        for (uint j = 0; j < DOWN_G; j++) { /* pooled task i = g * tail + (chunk - head) */
-            const uint i = 32 * j + lane, g = tail ? i / tail : 0, pair = t * a.slots + s0 + g;
-            pooled[j] = 0.0f;
-            if (!tail || g >= gs) continue;
-            const ulong row = p.weight_offset + ulong(ids[pair]) * a.down.expert_bytes + n * p.row_bytes;
-            pooled[j] = q38_quant_chunk<F>(w + row, act + ulong(pair) * (p.x_stride / 4), p.k_logical, head + i % tail);
-        }
-        for (uint g = 0; g < DOWN_G; g++) {
-            if (g >= gs) continue;
-            const uint i = g * tail + lane;
-            float v = 0.0f;
-            for (uint j = 0; j < DOWN_G; j++) { const float h = simd_shuffle(pooled[j], ushort(i % 32)); if (j == i / 32) v = h; }
-            if (lane < tail) acc[g] += v;
-            const float d = simd_sum(acc[g]);
-            finite = finite && isfinite(d);
-            sum += scores[t * a.slots + s0 + g] * d;
-        }
+        const float d = q38_quant_row<F>(w + row, act + xi, p.k_logical, lane);
+        finite = finite && isfinite(d);
+        sum += scores[pair] * d;
     }
     if (lane) return;
     routed[ri] = sum;

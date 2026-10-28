@@ -1,0 +1,16 @@
+{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 65.3, "p10_us": 65.2, "p90_us": 65.9, "gbps": 129.9}
+{"mode": "sequence", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 81.5, "p10_us": 81.5, "p90_us": 81.6, "gbps": 104.1}
+{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 251.2, "p10_us": 251.2, "p90_us": 251.3, "gbps": 131.7}
+{"mode": "sequence", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 294.9, "p10_us": 294.9, "p90_us": 295.0, "gbps": 112.2}
+{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 320, "reps": 1, "bytes": 207278080, "median_us": 2020.0, "p10_us": 2019.5, "p90_us": 2021.4, "gbps": 102.6}
+{"mode": "sequence", "type": 16, "n": 640, "k": 2560, "m": 320, "reps": 1, "bytes": 207278080, "median_us": 2360.3, "p10_us": 2359.7, "p90_us": 2361.5, "gbps": 87.8}
+{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 1280, "reps": 1, "bytes": 399109120, "median_us": 8076.0, "p10_us": 8075.2, "p90_us": 8077.5, "gbps": 49.4}
+{"mode": "sequence", "type": 16, "n": 640, "k": 2560, "m": 1280, "reps": 1, "bytes": 399109120, "median_us": 9417.5, "p10_us": 9414.2, "p90_us": 9420.9, "gbps": 42.4}
+{"mode": "fused", "type": 12, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 18467840, "median_us": 84.2, "p10_us": 84.2, "p90_us": 84.3, "gbps": 219.3}
+{"mode": "sequence", "type": 12, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 18467840, "median_us": 101.5, "p10_us": 101.4, "p90_us": 101.6, "gbps": 182.0}
+{"mode": "fused", "type": 12, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 70184960, "median_us": 330.1, "p10_us": 330.0, "p90_us": 330.3, "gbps": 212.6}
+{"mode": "sequence", "type": 12, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 70184960, "median_us": 373.6, "p10_us": 373.3, "p90_us": 373.8, "gbps": 187.9}
+{"mode": "fused", "type": 12, "n": 640, "k": 2560, "m": 320, "reps": 1, "bytes": 445358080, "median_us": 2641.8, "p10_us": 2638.2, "p90_us": 2647.2, "gbps": 168.6}
+{"mode": "sequence", "type": 12, "n": 640, "k": 2560, "m": 320, "reps": 1, "bytes": 445358080, "median_us": 2966.0, "p10_us": 2965.4, "p90_us": 2967.5, "gbps": 150.2}
+{"mode": "fused", "type": 12, "n": 640, "k": 2560, "m": 1280, "reps": 1, "bytes": 850616320, "median_us": 10445.7, "p10_us": 10444.2, "p90_us": 10448.2, "gbps": 81.4}
+{"mode": "sequence", "type": 12, "n": 640, "k": 2560, "m": 1280, "reps": 1, "bytes": 850616320, "median_us": 11715.4, "p10_us": 11711.0, "p90_us": 11717.0, "gbps": 72.6}

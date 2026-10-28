@@ -29,9 +29,9 @@ static inline float q38_fp16(device const uchar *p) { return q38_fp16_bits(uint(
  * lane l takes chunks l, l+32, ..., sums each chunk in column order and its
  * chunks in chunk order, and simd_sum joins the 32 lanes. That order is a
  * function of K and the format only, never of the rows, slots or expert of
- * the dispatch. The indexed matvecs call it; the fused MoE kernels run
- * q38_quant_chunk in the same order (R1.9b), so their outputs stay
- * bit-identical. */
+ * the dispatch. The indexed matvecs and the fused down+reduce call it; the
+ * fused gate+up runs q38_quant_chunk in the same order (R1.9b), so their
+ * outputs stay bit-identical. */
 static inline uint q38_le32(device const uchar *p) {
     return uint(p[0]) | (uint(p[1]) << 8) | (uint(p[2]) << 16) | (uint(p[3]) << 24);
 }
