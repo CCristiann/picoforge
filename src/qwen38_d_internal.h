@@ -54,7 +54,7 @@ typedef uint32_t Q38DUint;
 typedef uint Q38DUint;
 #endif
 enum { Q38D_ROPE, Q38D_POOL, Q38D_SCORES, Q38D_ATTEND, Q38D_GPU_OPS };
-enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_ALL_OPS };
+enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT, Q38D_MERGE, Q38D_ALL_OPS };
 typedef struct { Q38DUint h,j,d,n,m,r,pos; float theta; } Q38DGpuArgs;
 #ifndef __METAL_VERSION__
 _Static_assert(sizeof(Q38DGpuArgs)==32, "D Metal wire ABI");
@@ -62,6 +62,21 @@ Qwen38Status q38d_gpu_create(void *device, void *library, Q38DGpu **, Qwen38Erro
 void q38d_gpu_destroy(Q38DGpu *);
 Qwen38Status q38d_gpu_encode(Q38DGpu *, Qwen38GpuCommand, uint32_t op,
     const Q38DGpuArgs *, const Qwen38GpuSpan *, size_t count, Qwen38Error *);
+/* R2.1 split attention: at most 64 splits of at least 32 keys, no empty split.
+ * Depends on the key count m only, so the summation order does too. */
+#define Q38D_MAX_SPLITS 64u
+static inline __attribute__((unused)) void q38d_attend_splits(uint32_t m, uint32_t *splits, uint32_t *keys) {
+    uint32_t s=(m+31)/32; s=s<1 ? 1 : (s>Q38D_MAX_SPLITS ? Q38D_MAX_SPLITS : s);
+    *keys=(m+s-1)/s; *splits=(m+*keys-1)/ *keys;
+}
+/* Q38D_ATTEND with the fast split kernel (+ merge when splits > 1) unless the
+ * oracle is selected (Q38_REF_KERNELS family "attention", Q38_QSA_SCALAR or
+ * q38d_gpu_set_reference), the shape is outside it (d % 32, d > 256, more than
+ * 16 query heads per KV head) or `part` is smaller than splits*h*(d+2) floats.
+ * v = q, gate, k, v, ids, out as for q38d_gpu_encode. */
+Qwen38Status q38d_attend_encode(Q38DGpu *, Qwen38GpuCommand, const Q38DGpuArgs *,
+    const Qwen38GpuSpan v[6], Qwen38GpuSpan part, Qwen38Error *);
+void q38d_gpu_set_reference(Q38DGpu *, bool reference);
 /* Select complete blocks and append the causal tail, entirely on device.
  * scores/keep need visible/ratio words; ids needs min(blocks,budget/ratio)*ratio
  * + visible%ratio words. Exact FP32 ties prefer smaller block IDs. All spans
@@ -83,6 +98,7 @@ typedef struct {
     Qwen38GpuF32 key_cache, value_cache, index_cache, block_cache; /* [cap,J,D] x2, [cap,Di], [cap/r,Di] */
     Qwen38GpuF32 qn, qr, gate, kn, iqn, iqr, pooled, pooled_n, scores; /* scratch */
     Qwen38GpuSpan keep, ids;                      /* uint32 [cap/r], [budget+r-1] */
+    Qwen38GpuSpan part;                           /* split partials, Q38D_MAX_SPLITS*H*(D+2) floats */
     Qwen38GpuF32 out;                             /* [T,H,D] gated attention */
 } Q38DGpuLayer;
 typedef struct Q38CGpu Q38CGpu;

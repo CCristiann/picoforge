@@ -2,6 +2,33 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R2 — close the gap to DwarfStar, short prompt and 8K (from 2026-10-28)
+
+Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
+8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
+the end. Notes below are newest first.
+
+### R2.1 — split-K decode attention ("flash decoding")
+
+The first 8K profile (`bench/qwen38_r2_20261028/profile-8k-r1`) put 39.6 of
+82.7 ms/token in `qsa.core`, against 2.2 ms on the short prompt: per layer
+2.44 ms attention over the 2048 selected keys, 0.39 ms index scores, 0.43 ms
+block selection. The oracle attention runs one threadgroup per head (24 on a
+20-core GPU) and walks the keys in tiles of 16 with four barriers each.
+Attention is a softmax-weighted average, and softmax can be computed in
+pieces: each piece keeps its running max `m`, sum `l = Σ exp(s-m)` and
+`acc = Σ exp(s-m)·v`; two pieces merge by rescaling with `exp(m_i - max)`.
+So the new kernel gives each threadgroup one split of <= 32 keys (64 splits
+at most) and one KV head; its 4 simdgroups share the K/V rows and own 3 query
+heads each, a lane owns 8 features, and a small merge kernel combines the
+partials in split order. The split layout depends on the key count only, so
+every token, chunk and MTP row keeps the same order. Isolated at the 8K
+shape: 2415 -> 120 us; profile at 8K: qsa.core 39.6 -> 8.1 ms, GPU groups
+82.7 -> 51.1 ms/token (`profile-8k-attn`). Tolerance `attend_fast` = 2^-12,
+set by an extreme case (logits ~ +-1000); realistic logits stay below 2^-19,
+and the fast kernel is closer to FP64 than the oracle in every case.
+`Q38_REF_KERNELS=attention` (or 1) keeps the oracle.
+
 ## R0/R1 — measure, then make Qwen3.8 Q2 decode fast (from 2026-10-17)
 
 Plan: [R0-R1-plan.md](specs/qwen38/R0-R1-plan.md), spec:

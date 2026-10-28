@@ -5,7 +5,8 @@
  *   unset, "" or "0"  -> fast paths where they exist
  *   "1" or "all"      -> every oracle
  *   "linear,moe", ... -> only the listed families: linear, indexed, moe,
- *                        fuse, barrier, claim, argmax (exact, case-sensitive)
+ *                        fuse, barrier, claim, argmax, attention (exact,
+ *                        case-sensitive)
  * Ruling R18: a token that is not a family (typo, "2", empty) selects EVERY
  * oracle: a mistyped request for the reference must fail toward the reference,
  * never silently run a fast kernel. Read when contexts are created, never per
@@ -23,7 +24,7 @@ static inline bool q38_ref_token(const char *p, size_t n, const char *name) {
 /* Pure parser, separate from getenv so tests can feed any value. */
 static inline bool q38_ref_parse(const char *value, const char *family) {
     static const char *const known[] = {"linear", "indexed", "moe", "fuse",
-                                        "barrier", "claim", "argmax"};
+                                        "barrier", "claim", "argmax", "attention"};
     if (!value || !*value || !strcmp(value, "0")) return false;
     if (!strcmp(value, "1") || !strcmp(value, "all")) return true;
     bool listed = false;

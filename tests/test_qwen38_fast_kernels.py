@@ -16,6 +16,8 @@ R1.6a: q38c_rms_fast (RMS and the gated GDN norm, input check folded in)
 against check + q38c_rms through q38c_gpu_encode, tolerance entry rms_fast.
 R1.8: q38c_gdn_prepare_fast (L2 norms, value copy, gates, input check folded
 in) against check + q38c_gdn_prepare, tolerance entry gdn_prepare_fast.
+R2.1: split decode attention (q38d_attend_encode, family attention) against the
+q38d_attend_gpu oracle and FP64, tolerance entry attend_fast.
 """
 import argparse
 import json
@@ -532,6 +534,70 @@ def run_prep(mode, inputs, dims, gap=0, offset=0, inplace=False, initial=0, env=
     out = np.frombuffer(result.stdout[12:], "<f4")
     return (word, dispatches, barriers, out[:qkv.size].reshape(qkv.shape),
             out[qkv.size:qkv.size + t * hv].reshape(t, hv), out[qkv.size + t * hv:].reshape(t, hv))
+
+
+# ---- R2.1 split decode attention: q38d_attend_encode fast against the q38d_attend_gpu oracle ----
+ATTEND_REAL = (24, 2, 256)  # (heads, kv heads, head dim): qwen4exp.attention.head_count(_kv), key_length
+
+
+def run_attend(mode, q, gate, k, v, ids, env=None):
+    """q, gate [h, d], k, v [n, j, d], ids [m]: (error word, dispatches, out [h, d])."""
+    (h, d), (n, j, _) = q.shape, k.shape
+    environment = {key: val for key, val in os.environ.items() if key != "Q38_REF_KERNELS"} | (env or {})
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "attend", mode, *map(str, (h, j, d, n, len(ids)))],
+                            input=b"".join(np.ascontiguousarray(a, "<f4").tobytes() for a in (q, gate, k, v)) +
+                            np.asarray(ids, "<u4").tobytes(), capture_output=True, timeout=60,
+                            pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr or len(result.stdout) != 8 + 4 * h * d:
+        raise AssertionError(f"attend {mode}: exit {result.returncode}, {stderr!r}")
+    word, dispatches = (int(x) for x in np.frombuffer(result.stdout[:8], "<u4"))
+    return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(h, d)
+
+
+def attend_inputs(rng, dims, n, m, sharp=4.0):
+    """q, k ~ N(0, sharp^2/sqrt(d)) so the scaled logits have std sharp^2/sqrt(d); v ~ N(0, 1) with one x100
+    outlier row; gate = sigmoid outputs in (0, 1) with exact 0 and 1 present; ids a sorted random m-subset."""
+    h, j, d = dims
+    q = rng.normal(0, sharp / np.sqrt(d) ** 0.5, (h, d))
+    k = rng.normal(0, sharp / np.sqrt(d) ** 0.5, (n, j, d))
+    v = rng.normal(0, 1, (n, j, d))
+    v[rng.integers(n)] *= 100
+    gate = rng.uniform(0, 1, (h, d))
+    gate.flat[:2] = (0.0, 1.0)
+    ids = np.sort(rng.choice(n, m, replace=False)).astype(np.uint32)
+    return tuple(a.astype(np.float32) for a in (q, gate, k, v)) + (ids,)
+
+
+def attend_fp64(q, gate, k, v, ids):
+    """FP64 r [h, d], S = gate * sum_i p_i |v_i| and the condition (a) factor F per head: |y - r| <= F S + 2 ulp(r).
+    Logits in any order: |ds_i| <= gamma(d+1) * scale * sum|q k| =: E (one more rounding for the scale); s_i - max
+    adds u|s_i - max|; exp (MSL precise, 4 ulp) adds 4u: every weight is off by a factor within exp(+-e), e =
+    E + u R + 4u, R = max_i |s_i - max|, so the normalized weights are within expm1(2e) relative. The online
+    rescales (one exp and one product per key at most, in either kernel), the m-term sums, the division and the
+    gate add gamma(8m + 16) relative to sum_i p_i |v_i|."""
+    h, d = q.shape
+    group, u = h // k.shape[1], 2.0**-24
+    kk, vv = k[ids].astype(np.float64), v[ids].astype(np.float64)  # [m, j, d]
+    r, magnitude, factor = np.zeros((h, d)), np.zeros((h, d)), np.zeros((h, 1))
+    for head in range(h):
+        qh, kh, vh = q[head].astype(np.float64), kk[:, head // group], vv[:, head // group]
+        s = kh @ qh / np.sqrt(d)
+        p = np.exp(s - s.max()); p /= p.sum()
+        e = (d + 1) * u / (1 - (d + 1) * u) * (np.abs(kh * qh).sum(1) / np.sqrt(d)).max() + u * (s.max() - s.min()) + 4 * u
+        n = 8 * len(ids) + 16
+        factor[head] = np.expm1(2 * e) + n * u / (1 - n * u)
+        r[head], magnitude[head] = gate[head] * (p @ vh), gate[head] * (p @ np.abs(vh))
+    return r, magnitude, factor
+
+
+def attend_against_fp64(y, ref, magnitude, factor):
+    bound = factor * magnitude + 2 * np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64)
+    delta = np.abs(y.astype(np.float64) - ref)
+    return dict(outputs=int(y.size), finite=bool(np.isfinite(y).all()), condition_a=bool((delta <= bound).all()),
+                max_rel=float((delta / np.maximum(magnitude, 2.0**-126)).max()),
+                max_bound_fraction=float((delta / np.maximum(bound, 2.0**-149)).max()))
 
 
 def prep_inputs(rng, t, dims):
@@ -1727,6 +1793,90 @@ class FastKernelTests(unittest.TestCase):
                     self.assertEqual(got[:3], (0, *RMS_DISPATCHES[mode]))
                     np.testing.assert_array_equal(got[3].view("<u4"), want[mode][3].view("<u4"))
 
+
+    # ---- R2.1 split decode attention (q38d_attend_encode, family attention) ----
+    def attend_case(self, label, inputs):
+        """Fast and oracle on one case: clean words, 1 dispatch for the oracle and for one split, 2 with the merge;
+        both within (a); fast within (b) of the oracle."""
+        fast, oracle = (run_attend(mode, *inputs) for mode in ("fast", "oracle"))
+        splits = min(64, max(1, -(-len(inputs[4]) // 32)))
+        self.assertEqual((fast[:2], oracle[:2]), ((0, 1 if splits == 1 else 2), (0, 1)), label)
+        ref, magnitude, factor = attend_fp64(*inputs)
+        stats, oracle_stats = (attend_against_fp64(out[2], ref, magnitude, factor) for out in (fast, oracle))
+        stats["vs_oracle"] = against_oracle(fast[2], oracle[2], magnitude)
+        RESULTS.setdefault(label, {}).update(fast=stats, oracle=oracle_stats)
+        CORPUS.setdefault("attend_fast", {})[label] = scaled_difference(fast[2], oracle[2], magnitude).ravel()
+        self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+        self.assertTrue(oracle_stats["finite"] and oracle_stats["condition_a"], (label, oracle_stats))
+        tol = TOLERANCES["kernels"].get("attend_fast", {}).get("tol")
+        self.assertIsNotNone(tol, "attend_fast: fast kernel without a measured tolerance")
+        self.assertLessEqual(stats["vs_oracle"]["max"], tol, label)
+        return fast
+
+    def test_attend_fast_against_oracle_and_fp64(self):
+        """The real dims (24 heads over 2 KV heads, d 256) from 1 key to the 2048-key budget and past the 64-split
+        cap (keys per split grow), then groups off the 4x4 simdgroup slices (1, 3, 5, 12, 16 heads per KV
+        head), d = 32 (one feature per lane) and 128, and sharp logits (one key dominates)."""
+        rng = np.random.default_rng(4099)
+        for m in (1, 2, 31, 32, 33, 64, 65, 100, 1000, 2047, 2048, 2049, 4100):
+            with self.subTest(m=m):
+                self.attend_case(f"attend:{ATTEND_REAL}m{m}", attend_inputs(rng, ATTEND_REAL, max(m, 4 * m // 3), m))
+        for dims, m in (((4, 4, 32), 70), ((3, 1, 128), 33), ((10, 2, 64), 200), ((12, 1, 256), 129),
+                        ((32, 2, 96), 500), ((16, 16, 256), 1)):
+            with self.subTest(dims=dims, m=m):
+                self.attend_case(f"attend:{dims}m{m}", attend_inputs(rng, dims, m + 7, m))
+        for sharp in (16.0, 64.0):
+            with self.subTest(sharp=sharp):
+                self.attend_case(f"attend:sharp{sharp}", attend_inputs(rng, ATTEND_REAL, 3000, 2048, sharp))
+
+    def test_attend_fast_bits_depend_on_keys_only(self):
+        """Review Focus 4 for attention: the output bits depend on the selected keys only, not on the cache length
+        n or where the keys sit in it (the split layout is a function of m)."""
+        rng = np.random.default_rng(4111)
+        q, gate, k, v, ids = attend_inputs(rng, ATTEND_REAL, 300, 200)
+        base = run_attend("fast", q, gate, k[ids], v[ids], np.arange(200, dtype=np.uint32))
+        for n, offset in ((400, 0), (4000, 1234)):
+            kk, vv = (np.full((n, *k.shape[1:]), np.nan, np.float32) for _ in range(2))
+            spots = np.sort(rng.choice(n - offset, 200, replace=False)).astype(np.uint32) + offset
+            kk[spots], vv[spots] = k[ids], v[ids]
+            got = run_attend("fast", q, gate, kk, vv, spots)
+            self.assertEqual(got[:2], base[:2])
+            np.testing.assert_array_equal(got[2].view("<u4"), base[2].view("<u4"), (n, offset))
+
+    def test_attend_fast_error_word(self):
+        """Review Focus 3: NaN/Inf in q, gate, a selected key or value -> bit 1 (an unselected NaN row is never
+        read: clean); an id past the cache, a repeated or decreasing id, or a gate outside [0, 1] -> bit 2;
+        each with one split and with the merge, as the oracle."""
+        rng = np.random.default_rng(4127)
+        for m in (20, 300):
+            q, gate, k, v, ids = attend_inputs(rng, ATTEND_REAL, m + 50, m)
+            unused = np.setdiff1d(np.arange(m + 50), ids)[0]
+            faults = [("q", lambda a: a[0].__setitem__((3, 7), np.nan), 1),
+                      ("gate", lambda a: a[1].__setitem__((5, 0), np.nan), 1),
+                      ("key", lambda a: a[2].__setitem__((ids[m // 2], 1, 9), np.inf), 1),
+                      ("value", lambda a: a[3].__setitem__((ids[-1], 0, 0), np.nan), 1),
+                      ("unused", lambda a: a[2].__setitem__((unused, 0, 0), np.nan), 0),
+                      ("id range", lambda a: a[4].__setitem__(-1, m + 50), 2),
+                      ("id order", lambda a: a[4].__setitem__(m // 2, a[4][m // 2 - 1]), 2),
+                      ("gate range", lambda a: a[1].__setitem__((0, 1), 1.5), 2)]
+            for name, poke, bit in faults:
+                for mode in ("fast", "oracle"):
+                    with self.subTest(m=m, fault=name, mode=mode):
+                        inputs = [a.copy() for a in (q, gate, k, v, ids)]
+                        poke(inputs)
+                        self.assertEqual(run_attend(mode, *inputs)[0], bit)
+
+    def test_attend_selector(self):
+        """encode follows Q38_REF_KERNELS: unset -> fast (bit-identical to forced fast), attention or 1 -> oracle
+        (bit-identical to forced oracle), another family -> fast."""
+        rng = np.random.default_rng(4133)
+        inputs = attend_inputs(rng, ATTEND_REAL, 500, 300)
+        want = {mode: run_attend(mode, *inputs) for mode in ("fast", "oracle")}
+        for value, mode in ((None, "fast"), ("attention", "oracle"), ("1", "oracle"), ("linear,moe", "fast")):
+            with self.subTest(value=value):
+                got = run_attend("encode", *inputs, env={} if value is None else {"Q38_REF_KERNELS": value})
+                self.assertEqual(got[:2], want[mode][:2])
+                np.testing.assert_array_equal(got[2].view("<u4"), want[mode][2].view("<u4"))
 
     # ---- R1.8 parallel GDN prepare (q38c_gdn_prepare_fast, family fuse) ----
     def prep_case(self, label, inputs, dims, **view):

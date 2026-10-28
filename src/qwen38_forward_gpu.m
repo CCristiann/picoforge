@@ -195,6 +195,7 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     }
     Qwen38GpuF32 ids,keep; ALLOC(ids,false,(size_t)a->token_budget+tail); ALLOC(keep,false,f->capacity);
     f->dw.ids=ids.span; f->dw.keep=keep.span;
+    Qwen38GpuF32 part; ALLOC(part,false,Q38D_MAX_SPLITS,a->heads,a->head_dim+2); f->dw.part=part.span;
     const Qwen38MoeConfig *m=&f->c.moe; size_t mt=MIN(t,32),p=mt*m->top_k;
     ALLOC(f->fw.logits,false,mt,m->experts); ALLOC(f->fw.probs,false,mt,m->experts); ALLOC(f->fw.weights,false,mt,m->top_k);
     ALLOC(f->fw.gate,false,p,m->intermediate); ALLOC(f->fw.up,false,p,m->intermediate); ALLOC(f->fw.act,false,p,m->intermediate);
@@ -459,7 +460,7 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t i,siz
     W(qg); W(k); W(v); W(iq); W(ik); W(qn); W(qr); W(gate); W(kn); W(iqn); W(iqr); W(out);
 #undef W
     w.pooled=f->dw.pooled; w.pooled_n=f->dw.pooled_n;
-    w.scores=time_view(f->dw.scores,f->capacity/l->ac.ratio); w.keep=f->dw.keep; w.ids=f->dw.ids;
+    w.scores=time_view(f->dw.scores,f->capacity/l->ac.ratio); w.keep=f->dw.keep; w.ids=f->dw.ids; w.part=f->dw.part;
     TRY(hc_read(f,cmd,i,&l->attn,HC_ATTN,t,e));
     Qwen38GpuF32 outputs[]={w.qg,w.k,w.v,w.iq,w.ik};
     TRY(linears(f,cmd,i,"qsa.proj",l->qsa,5,time_view(f->mixed,t),outputs,e));

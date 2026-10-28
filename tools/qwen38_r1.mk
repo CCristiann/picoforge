@@ -47,7 +47,7 @@ build/qwen38-r1/moe_fused.air: src/qwen38_moe_fused.metal src/qwen38_quant_decod
 
 # R1.1 fast-kernel harness: sanitized like build/qwen38-b/test_packed_gpu; C's GPU ops
 # (R1.5b) run the unfused gate/up sequence the fused kernel is checked against.
-build/qwen38-r1/test_fast_kernels: tests/test_qwen38_fast_kernels.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m $(Q38_RECURRENT) $(Q38_STORAGE) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+build/qwen38-r1/test_fast_kernels: tests/test_qwen38_fast_kernels.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_attention.c src/qwen38_attention_gpu.m $(Q38_RECURRENT) $(Q38_STORAGE) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
 	@mkdir -p $(@D)
 	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
 

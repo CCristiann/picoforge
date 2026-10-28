@@ -152,6 +152,96 @@ kernel void q38d_attend_gpu(device const float *q [[buffer(0)]], device const fl
         out[h*a.d+d]=y;
     }
 }
+/* R2.1 fast decode attention, split over the selected keys ("flash decoding"; the
+ * layout follows ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_attn_decode and
+ * kernel_qwen4_attn_merge, rewritten for the FP32 cache). The oracle above runs one
+ * threadgroup per head over all m keys in tiles of 16 with four barriers each: 24
+ * threadgroups and a serial chain, 2.4 ms per layer at 8K. Here threadgroup (s, kv)
+ * owns keys [s*w, min(m, s*w+w)) of one KV head (a.r = w keys per split, a.pos =
+ * split count, both functions of m only, so every token, chunk and MTP row adds in
+ * the same order). Its 4 simdgroups share the K/V rows and own disjoint query heads
+ * of the group (<= 4 each); lane l owns features l*P..l*P+P-1, P = d/32 <= 8. Per
+ * key: P products in increasing feature order, simd_sum, the oracle's scale, then
+ * online softmax per key (the oracle rescales per tile of 16: rounding differs, see
+ * attend_fast in tests/qwen38_kernel_tolerances.json). One split writes acc/l*gate
+ * like the oracle; more write (max, sum, acc[d]) partials that the merge combines in
+ * split order. Same error bits as the oracle (1 nonfinite, 2 ids or gate range). */
+#define Q38D_SPLIT_HEADS 4
+kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device float *part [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint group=a.h/a.j, hps=(group+3)/4, g0=sg*hps, P=a.d/32, kv=tg.y;
+    if (g0>=group) return;
+    const uint ng=min(hps,group-g0), k0=tg.x*a.r, k1=min(a.m,k0+a.r);
+    const float scale=1.0f/sqrt(float(a.d));
+    float qv[Q38D_SPLIT_HEADS][8], acc[Q38D_SPLIT_HEADS][8], mx[Q38D_SPLIT_HEADS], l[Q38D_SPLIT_HEADS];
+    bool bad=false, range=false;
+    for (uint g=0;g<Q38D_SPLIT_HEADS;g++) {
+        uint h=kv*group+g0+min(g,ng-1);
+        for (uint i=0;i<8;i++) {
+            float x=i<P ? q[h*a.d+lane*P+i] : 0, gt=i<P ? gate[h*a.d+lane*P+i] : 0;
+            bad|=!isfinite(x) || !isfinite(gt); range|=gt<0 || gt>1;
+            qv[g][i]=x; acc[g][i]=0;
+        }
+        mx[g]=-INFINITY; l[g]=0;
+    }
+    for (uint idx=k0;idx<k1;idx++) {
+        uint id=ids[idx];
+        if (id>=a.n || (idx && id<=ids[idx-1])) { range=true; continue; }
+        uint at=(id*a.j+kv)*a.d+lane*P;
+        float kx[8], vx[8];
+        for (uint i=0;i<8;i++) {
+            kx[i]=i<P ? k[at+i] : 0; vx[i]=i<P ? v[at+i] : 0;
+            bad|=!isfinite(kx[i]) || !isfinite(vx[i]);
+        }
+        for (uint g=0;g<Q38D_SPLIT_HEADS;g++) if (g<ng) {   /* uniform per simdgroup */
+            float dot=0;
+            for (uint i=0;i<8;i++) if (i<P) dot+=qv[g][i]*kx[i];
+            float logit=simd_sum(dot)*scale; bad|=!isfinite(logit);
+            float next=max(mx[g],logit), rescale=l[g]==0 ? 0 : exp(mx[g]-next), weight=exp(logit-next);
+            l[g]=l[g]*rescale+weight;
+            for (uint i=0;i<8;i++) acc[g][i]=acc[g][i]*rescale+weight*vx[i];
+            mx[g]=next;
+        }
+    }
+    for (uint g=0;g<Q38D_SPLIT_HEADS;g++) if (g<ng) {   /* constant bounds keep the arrays in registers */
+        uint h=kv*group+g0+g;
+        if (a.pos==1) {
+            bad|=!isfinite(l[g]) || l[g]<=0;
+            for (uint i=0;i<8;i++) if (i<P) {
+                float y=acc[g][i]/l[g]*gate[h*a.d+lane*P+i]; bad|=!isfinite(y);
+                out[h*a.d+lane*P+i]=y;
+            }
+        } else {
+            device float *p=part+((size_t)tg.x*a.h+h)*(a.d+2);
+            if (!lane) { p[0]=mx[g]; p[1]=l[g]; }
+            for (uint i=0;i<8;i++) if (i<P) p[2+lane*P+i]=acc[g][i];
+        }
+    }
+    if (bad) fail(error,1);
+    if (range) fail(error,2);
+}
+/* Threadgroup h, thread f: combine the a.pos split partials of head h in split order. */
+kernel void q38d_attend_merge_gpu(device const float *gate [[buffer(1)]], device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device const float *part [[buffer(8)]], uint h [[threadgroup_position_in_grid]],
+    uint f [[thread_index_in_threadgroup]]) {
+    if (f>=a.d) return;
+    const size_t stride=(size_t)a.h*(a.d+2);
+    device const float *p=part+(size_t)h*(a.d+2);
+    float mx=-INFINITY, l=0, o=0;
+    for (uint s=0;s<a.pos;s++) mx=max(mx,p[s*stride]);
+    for (uint s=0;s<a.pos;s++) {
+        float c=exp(p[s*stride]-mx);
+        l=l+p[s*stride+1]*c; o=o+p[s*stride+2+f]*c;
+    }
+    if (!isfinite(l) || l<=0) { fail(error,1); return; }
+    float y=o/l*gate[h*a.d+f]; if (!isfinite(y)) fail(error,1);
+    out[h*a.d+f]=y;
+}
 /* Device block selection, equivalent to q38d_select: block b is kept when
  * fewer than a.m blocks beat it (higher score, or equal score and smaller ID).
  * Kept blocks are then expanded in time order, followed by the causal tail. */
