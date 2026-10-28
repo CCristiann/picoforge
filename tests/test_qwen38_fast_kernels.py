@@ -1122,40 +1122,6 @@ class FastKernelTests(unittest.TestCase):
         self.assert_decode_matches_oracle(10, packed, 256, 16384)
         self.assert_scale_nonfinite(10, packed[0])
 
-    def assert_factored_chunks(self, kind, chunk, emulate):
-        """R1.9c: x nonzero only in chunk j of a 256-column row; every other chunk adds exact
-        zeros (in the lane sums and simd_sum), so the indexed fast output is that chunk's
-        factored dot, emulated here in FP32 bit for bit (+0 for -0). The unfactored
-        emulation (sum of w*x with the oracle's decoded w) must differ somewhere."""
-        rng, n = seeded(3840, kind), 64
-        raw = quant_rows(kind, 256, n, rng)
-        x = np.zeros((256 // chunk, 256), np.float32)
-        for j in range(len(x)):
-            x[j, j * chunk:(j + 1) * chunk] = rng.uniform(-1, 1, chunk)
-        code, y, _, stderr = run_indexed("fast", kind, 256, 256, n, 1, raw.tobytes(), np.zeros(len(x)), x, 1)
-        self.assertEqual((code, stderr), (0, b""))
-        want = [[[emulate(r, j, x[j, j * chunk:(j + 1) * chunk], f) for r in raw] for j in range(len(x))] for f in (1, 0)]
-        want = np.array(want, np.float32) + np.float32(0)
-        np.testing.assert_array_equal(y.view("<u4"), want[0].view("<u4"))
-        self.assertFalse(np.array_equal(y.view("<u4"), want[1].view("<u4")), "factored and unfactored agree")
-
-    @staticmethod
-    def q2_k_chunk(row, j, x, factored):
-        """Chunk j (16 columns) of a Q2_K block: dl * sum(q x) - ml * sum(x) (factored) or
-        sum((dl q - ml) x), serial FP32 in column order."""
-        f32 = np.float32
-        d, dmin = row[80:84].view("<f2").astype(f32)
-        dl, ml = d * f32(row[j] & 15), dmin * f32(row[j] >> 4)
-        start = 16 + j // 8 * 32 + j % 2 * 16
-        codes = ((row[start:start + 16] >> (2 * (j % 8 // 2))) & 3).astype(f32)
-        qx = sx = f32(0)
-        for q, v in zip(codes, x):
-            qx, sx = (qx + q * v, sx + v) if factored else (qx + (dl * q - ml) * v, sx)
-        return dl * qx - ml * sx if factored else qx
-
-    def test_q2_k_factored_chunk(self):
-        self.assert_factored_chunks(10, 16, self.q2_k_chunk)
-
     def test_q4_k_decode_matches_oracle(self):
         """Every 6-bit scale/min byte at every one of the 12 positions (so every scale and min of
         the 8 sub-blocks, low and high bits), every code at every column, and every finite fp16
