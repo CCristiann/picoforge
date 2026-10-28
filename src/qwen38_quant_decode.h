@@ -19,7 +19,16 @@ static inline float q38_fp16_bits(uint h) {
     }
     return as_type<float>(sign | ((exponent == 31u ? 255u : exponent + 112u) << 23) | (fraction << 13));
 }
-static inline float q38_fp16(device const uchar *p) { return q38_fp16_bits(uint(p[0]) | (uint(p[1]) << 8)); }
+/* A block scale (Q8_0, IQ2_XXS, Q2_K, Q4_K d and dmin) goes through the GPU's
+ * half -> float conversion instead (R1.9c): one instruction instead of the
+ * bit build, 75.4 -> 64.8 us on the Q2_K down at 10 slots. It cannot meet the
+ * FP32 subnormal flush (every fp16 value, subnormals included, is a normal
+ * FP32), and it gives the same bits for all 63488 finite patterns
+ * (test_*_decode_matches_oracle); a nonfinite scale only has to set bit 1
+ * (assert_scale_nonfinite), its NaN payload is not specified. */
+static inline float q38_fp16(device const uchar *p) {
+    return float(as_type<half>(ushort(uint(p[0]) | (uint(p[1]) << 8))));
+}
 
 /* ---- Block formats of the routed experts (R1.5) ----
  * Each format decodes one CHUNK of consecutive columns of a row into FP32,
