@@ -417,13 +417,16 @@ static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t l
 #define OP(k,op,...) do { MARK(layer,n[k],Q38_PROFILE_NONE,0); Qwen38GpuF32 vv[]={__VA_ARGS__}; \
     TRY(q38c_gpu_encode(f->ops,*cmd,Q38C_##op,&spec,vv,sizeof vv/sizeof *vv,e)); } while(0)
     OP(0,RMS,V(r),hc->gain,V(normed));
-    TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
+    /* R2.5: down and inject read the same normed rows: one multi call (bit-identical
+     * to two single calls), profiled as the down group; the lone inject matvec
+     * (4 rows) ran at ~10 GB/s. */
+    if (hc->inject.binding)
+        TRY(linears(f,cmd,layer,n[1],(G2Weight[]){hc->down,hc->inject},2,V(normed),(Qwen38GpuF32[]){V(low),V(il)},e));
+    else TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
     OP(2,HC_LOW,V(low),V(act));
     TRY(linear(f,cmd,layer,n[3],hc->up,V(act),V(gate),e));
     OP(4,HC_READ,V(normed),V(gate),V(mixed));
-    if (hc->inject.binding) {
-        TRY(linear(f,cmd,layer,n[5],hc->inject,V(normed),V(il),e)); OP(6,HC_INJECT,V(il),V(inject));
-    }
+    if (hc->inject.binding) OP(6,HC_INJECT,V(il),V(inject));
 #undef OP
 #undef V
     return Q38_OK;

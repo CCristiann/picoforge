@@ -8,6 +8,16 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.5 — HC down and inject in one multi-GEMV
+
+Each HC read runs two F16 projections of the same normed rows: down
+(10240 -> 320) and inject (10240 -> 4). The inject alone ran 4 output rows on
+the whole GPU (~10 GB/s, 7.6 us). Both now go through the R1.4 multi-GEMV,
+bit-identical to two single calls: 132 dispatches and barriers fewer per
+token (2272 -> 2140). Measured (`profile-short-hcmulti`, battery):
+hc_ffn.down+inject 2.02 -> 1.77 ms, total GPU groups unchanged within noise
+(median 41.64 -> 41.47 ms). Kept for the dispatch count, not for speed.
+
 ### R2.4 — GDN scan: a simdgroup per four state rows
 
 The gated delta rule keeps, per value head, a 128x128 state S and per token

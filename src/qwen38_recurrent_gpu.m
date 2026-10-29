@@ -321,9 +321,16 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
     MARK("gdn.hc_pre",Q38_PROFILE_MIXED,BYTES(HD)+BYTES(HU)+BYTES(HI));
     OP(RMS,w->residual,K(HN),group_view(V(N),h,width));
-    LINEAR(HD,N,LOW); OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
+    { /* R2.5: HC down and inject read the same N: one multi call, bit-identical to two */
+        const GgufBinding *mb[2]={bindings[Q38CW_HD],bindings[Q38CW_HI]};
+        const Q38PackedLayout ml[2]={l->weight[Q38CW_HD].layout,l->weight[Q38CW_HI].layout};
+        const Qwen38GpuF32 out[2]={V(LOW),V(IL)};
+        Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,2,V(N),out,e));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
     OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
-    LINEAR(HI,N,IL); OP(HC_INJECT,V(IL),V(INJECT));
+    OP(HC_INJECT,V(IL),V(INJECT));
     { /* R1.4: the four projections of MIX in one multi call, one barrier */
         MARK("gdn.proj",Q38_PROFILE_MIXED,BYTES(QKV)+BYTES(Z)+BYTES(AP)+BYTES(BP));
         const Q38CWeight slot[]={Q38CW_QKV,Q38CW_Z,Q38CW_AP,Q38CW_BP};
