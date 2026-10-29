@@ -105,12 +105,15 @@ GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
  * projection as one indexed call over the tokens x slots pairs (x = act, its
  * y extent and pitch are y's), then the token and slot counts. */
 struct DownReduceArgs { IndexedArgs down; uint tokens, slots; };
+/* R2.7: output rows per simdgroup, mirrored by Q38_DOWN_REDUCE_ROWS (qwen38_packed_gpu.m). */
+#define DOWN_ROWS 4
 static_assert(sizeof(DownReduceArgs) == 104, "down+reduce wire record size");
 /* y[t, n] = sum_s scores[t, s] (down_e[n] . act[t*k+s]) + sigmoid[t] shared[t, n],
  * e = ids[t*k+s], and routed[t, n] = the sum before the shared term: IDX down
  * (divisor 1) then q38f_reduce with the identity map, without writing the
- * [pairs, n] down scratch. One simdgroup per output (t, n); each down dot is
- * q38_quant_row (the indexed fast kernel's order), accumulated in slot order
+ * [pairs, n] down scratch. One simdgroup per DOWN_ROWS outputs (t, n..n+3)
+ * since R2.7; each down dot is q38_quant_row's (the indexed fast kernel's
+ * order, through q38_quant_rows), accumulated in slot order
  * 0..k-1 with q38f_reduce's expressions (contraction off in both files), so
  * y and routed are bit-identical to that sequence and independent of the
  * number of tokens, n's position and the expert ids. scores, shared, sigmoid
@@ -125,34 +128,40 @@ static inline void down_reduce(device const uchar *w, device const float *act, d
         device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
         uint lane) {
     constant PackedArgs &p = a.down.base;
-    const ulong n = ulong(group.x) * sgs + sg;
+    const ulong n0 = (ulong(group.x) * sgs + sg) * DOWN_ROWS;
     const uint t = group.y;
-    if (n >= p.n_out || t >= a.tokens) return; /* uniform over the simdgroup, as every return below */
-    const ulong yi = ulong(t) * (p.y_stride / 4) + n, ri = ulong(t) * p.n_out + n;
-    if (yi >= p.y_bytes / 4) {
+    if (n0 >= p.n_out || t >= a.tokens) return; /* uniform over the simdgroup, as every return below */
+    const uint nr = uint(min(ulong(DOWN_ROWS), p.n_out - n0));
+    const ulong yi = ulong(t) * (p.y_stride / 4) + n0, ri = ulong(t) * p.n_out + n0;
+    if (yi + nr > p.y_bytes / 4) {
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    float sum = 0.0f;
+    float sum[DOWN_ROWS], d[DOWN_ROWS];
+    for (uint r = 0; r < DOWN_ROWS; r++) sum[r] = 0.0f;
     bool finite = true;
     for (uint s = 0; s < a.slots; s++) {
         const uint pair = t * a.slots + s, expert = ids[pair];
-        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n * p.row_bytes;
-        const ulong xi = ulong(pair) * (p.x_stride / 4);
-        if (expert >= a.down.experts || row > p.weight_end || p.row_bytes > p.weight_end - row ||
+        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n0 * p.row_bytes;
+        const ulong last = row + (nr - 1) * p.row_bytes, xi = ulong(pair) * (p.x_stride / 4);
+        if (expert >= a.down.experts || last > p.weight_end || p.row_bytes > p.weight_end - last ||
             xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi) {
             if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
             return;
         }
-        const float d = q38_quant_row<F>(w + row, act + xi, p.k_logical, lane);
-        finite = finite && isfinite(d);
-        sum += scores[pair] * d;
+        q38_quant_rows<F, DOWN_ROWS>(w + row, p.row_bytes, nr, act + xi, p.k_logical, lane, d);
+        for (uint r = 0; r < nr; r++) {
+            finite = finite && isfinite(d[r]);
+            sum[r] += scores[pair] * d[r];
+        }
     }
     if (lane) return;
-    routed[ri] = sum;
-    sum += sigmoid[t] * shared[ri];
-    if (!finite || !isfinite(sum)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-    y[yi] = sum;
+    for (uint r = 0; r < nr; r++) {
+        routed[ri + r] = sum[r];
+        const float v = sum[r] + sigmoid[t] * shared[ri + r];
+        if (!finite || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        y[yi + r] = v;
+    }
 }
 #define DOWN_REDUCE_KERNEL(name, F) \
 kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[buffer(1)]], \

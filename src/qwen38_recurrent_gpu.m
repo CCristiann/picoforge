@@ -328,9 +328,16 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
         Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,2,V(N),out,e));
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
-    OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
-    OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
-    OP(HC_INJECT,V(IL),V(INJECT));
+    { /* R2.6: low, up, read and inject in one dispatch, bit-identical; the sequence when unsupported */
+        Qwen38Status status=q38_packed_encode_hc_tail(b,&cmd,store,bindings[Q38CW_HU],&l->weight[Q38CW_HU].layout,h,
+            V(LOW),V(N),V(IL),V(ACT),V(HG),V(MIX),V(INJECT),e);
+        if (status==Q38_UNSUPPORTED) {
+            OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
+            OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
+            OP(HC_INJECT,V(IL),V(INJECT));
+        } else if (status) return status;
+        else [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
     { /* R1.4: the four projections of MIX in one multi call, one barrier */
         MARK("gdn.proj",Q38_PROFILE_MIXED,BYTES(QKV)+BYTES(Z)+BYTES(AP)+BYTES(BP));
         const Q38CWeight slot[]={Q38CW_QKV,Q38CW_Z,Q38CW_AP,Q38CW_BP};

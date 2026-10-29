@@ -120,6 +120,22 @@ _Static_assert(sizeof(Q38DownReduceArgs) == 104, "down+reduce Metal argument lay
 Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *down, const Q38PackedLayout *down_layout,
     Qwen38GpuSpan expert_ids, Qwen38GpuF32 act, const Q38DownReduceViews *, Qwen38GpuF32 y, Qwen38Error *);
+/* R2.6 fused HC read tail (qwen38_matvec.metal): HC_LOW (silu(low/h)), the
+ * F16 up projection, HC_READ and HC_INJECT (2 sigmoid(il/h)) of one HC site in
+ * one dispatch, act, gate, mixed and inject bit-identical to that fast
+ * sequence (q38c_gpu_encode ops and q38_packed_encode_fast). up is admitted as
+ * q38_packed_encode with x = act [t, K] and y = gate [t, h*E]; low [t, K],
+ * normed [t, h*E], mixed [t, E], il and inject [t, h] are rank 2 with unit
+ * column strides; an empty il (no buffer) skips the inject. No output aliases
+ * an operand. Q38_UNSUPPORTED, nothing encoded: not F16, K split over several
+ * simdgroups or above 1024, h above 4, or the linear or fuse oracle selected:
+ * the caller encodes the sequence. No barrier after the dispatch. */
+typedef struct { Q38PackedArgs up; uint32_t streams, width, inject, reserved; uint64_t low, normed, mixed, il, out; } Q38HcTailArgs;
+_Static_assert(sizeof(Q38HcTailArgs) == 136, "HC tail Metal argument layout"); /* HcTailArgs */
+Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *up, const Q38PackedLayout *up_layout, size_t streams,
+    Qwen38GpuF32 low, Qwen38GpuF32 normed, Qwen38GpuF32 il, Qwen38GpuF32 act, Qwen38GpuF32 gate,
+    Qwen38GpuF32 mixed, Qwen38GpuF32 inject, Qwen38Error *);
 /* R1.4 multi-GEMV: count (1..Q38_MULTI_MAX) projections of the same x, each
  * with q38_packed_encode's admission (expert 0). One dispatch per format;
  * every y[i] is bit-identical to q38_packed_encode_fast(bindings[i], x, y[i]).

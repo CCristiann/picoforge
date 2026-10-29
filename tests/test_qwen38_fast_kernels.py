@@ -559,6 +559,20 @@ def run_attend(mode, q, gate, k, v, ids, env=None):
     return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(h, d)
 
 
+def run_hctail(shape, inject=True, poison=False, env=None):
+    """R2.6: the native hctail mode (fused HC tail and the fast sequence on the same seeded inputs):
+    {status, equal, words, dispatches} parsed from its one line."""
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "hctail", *map(str, shape), str(int(inject)), str(int(poison))],
+                            capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
+    fields = result.stdout.decode().split()
+    if result.returncode or len(fields) != 10:
+        raise AssertionError(f"hctail: exit {result.returncode}, {result.stderr!r}")
+    return dict(status=int(fields[1]), equal=int(fields[3]), words=(int(fields[5]), int(fields[6])),
+                dispatches=tuple(map(int, fields[-2:])))
+
+
 def run_scan(mode, qkv, g, beta, state, dims, initial=0):
     """dims = (hk, hv, dk, dv): (error word, dispatches, out [t, hv, dv], state [hv, dv, dk])."""
     hk, hv, dk, dv = dims
@@ -2166,6 +2180,24 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual(got[:3], (0, 1, 1) if mode == "fast" else (0, 2, 2))
                 for a, b in zip(got[3:], want[mode][3:]):
                     np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
+    def test_hc_tail_fused_bit_identical_to_sequence(self):
+        """R2.6: the fused HC tail writes act, gate, mixed and inject byte for byte as the fast sequence
+        (HC_LOW, F16 up, HC_READ, HC_INJECT) in one dispatch instead of 7 (5 without inject): the real
+        site (K 320, h 4, E 2560) at 1 and 3 tokens, and shapes with no chunk tail (K 256), no head
+        (K 8), a partial last chunk (K 100, 300), h 1..4 and K 1024. A NaN in low sets bit 1 in both.
+        Under Q38_REF_KERNELS=linear or fuse it answers UNSUPPORTED (8): the caller runs the sequence."""
+        shapes = [(1, 320, 4, 2560), (3, 320, 4, 2560), (2, 100, 3, 37), (1, 1024, 4, 64), (1, 256, 4, 50),
+                  (2, 8, 1, 9), (1, 300, 2, 33)]
+        for shape in shapes:
+            for inject in (True, False):
+                with self.subTest(shape=shape, inject=inject):
+                    got = run_hctail(shape, inject)
+                    self.assertEqual(got, dict(status=0, equal=1, words=(0, 0), dispatches=(1, 7 if inject else 5)))
+        got = run_hctail((1, 320, 4, 2560), poison=True)
+        self.assertEqual((got["status"], got["words"][0] & 1, got["words"][1] & 1), (0, 1, 1))
+        for family in ("linear", "fuse", "1"):
+            with self.subTest(reference=family):
+                self.assertEqual(run_hctail((1, 320, 4, 2560), env={"Q38_REF_KERNELS": family})["status"], 8)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -1115,6 +1115,101 @@ static int index_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R2.6 fused HC read tail against the fast sequence (HC_LOW, F16 up, HC_READ, HC_INJECT):
+ *   hctail t K h E inject poison: seeded F16 up [h*E, K], low [t,K], normed [t,h*E], il [t,h];
+ *     poison 1 puts a NaN in low[t-1, K-1]. Runs both on the same inputs, prints one line:
+ *     "status S equal B words W1 W2 dispatches D1 D2" (B: act, gate, mixed, inject byte-equal).
+ *   hcbench <fused|sequence> t K h E reps: 3 + 20 command buffers, reps encodes each. */
+static int hctail_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"hcbench");
+    assert(argc==8);
+    size_t at=2+timing, t=number(argv[at]), k=number(argv[at+1]), h=number(argv[at+2]), width=number(argv[at+3]),
+           flag=number(argv[at+4]), reps=timing ? flag : 1;
+    bool inj=timing || flag, poison=!timing && number(argv[7]);
+    assert(t && t<=64 && k && k<=4096 && h && h<=8 && width && width<=8192 && reps && reps<=1000);
+    Request r={.mode="fast",.type=1,.physical=k,.logical=k,.n=h*width,.m=t,.bytes=2*k*h*width};
+    unsigned char *raw=malloc(r.bytes); assert(raw);
+    uint64_t seed=5101;
+    synthesize(raw,r.bytes,&seed,1);
+    /* 0 low, 1 normed, 2 il; 3 act, 4 gate, 5 mixed, 6 inject (x2: fused, sequence) */
+    const size_t cols[7]={k,h*width,h,k,h*width,width,h};
+    Qwen38Status status=Q38_OK;
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38PackedGpu *ctx=NULL; Q38CGpu *ops=NULL;
+        assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        Gguf g={0}; GgufTensor tensor;
+        GpuWeightStore *store=make_store(dev,1,&r,raw,&g,&tensor);
+        const GgufBinding *binding=&gpu_weights_plan(store)->weights[0];
+        Q38PackedLayout layout; assert(q38_packed_layout_init(&binding->tensor,k,&layout,NULL)==Q38_OK);
+        id<MTLBuffer> buf[2][7]; Qwen38GpuF32 v[2][7];
+        for (size_t s=0;s<2;s++) for (size_t b=0;b<7;b++) {
+            buf[s][b]=s && b<3 ? buf[0][b] : shared(dev,4*t*cols[b]);
+            if (b>=3) memset(buf[s][b].contents,0xa5,buf[s][b].length);
+            v[s][b]=(Qwen38GpuF32){{(__bridge void *)buf[s][b],0,4*t*cols[b]},2,{t,cols[b],1,1},{4*cols[b],4,0,0}};
+        }
+        for (size_t b=0;b<3;b++) for (size_t i=0;i<t*cols[b];i++) /* low, il in [-4,4), normed in [-1,1) */
+            ((float *)buf[0][b].contents)[i]=((float)(mix(&seed)>>40)*0x1p-23f-1.0f)*(b==1 ? 1.0f : 4.0f);
+        if (poison) ((float *)buf[0][0].contents)[t*k-1]=NAN;
+        Q38CGpuSpec spec={.hc={.streams=h,.hidden_size=width,.low_rank=k,.rms_eps=1e-6f}};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        id<MTLBuffer> word=shared(dev,8);
+        uint32_t words[2]={0,0}, dispatches[2]={0,0};
+        double seconds[23];
+        for (size_t s=0;s<2;s++) {
+            if (timing && strcmp(argv[2],s ? "sequence" : "fused")) continue;
+            Qwen38GpuF32 *x=v[s], none={0}, il=inj ? x[2] : none, inject=inj ? x[6] : none;
+            for (int run=0;run<(timing ? 23 : 1);run++) {
+                memset(word.contents,0,8);
+                id<MTLCommandBuffer> command=[queue commandBuffer];
+                Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+                counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+                Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
+                for (size_t rep=0;rep<reps;rep++) {
+                    Qwen38Error err;
+                    if (!s) {
+                        status=q38_packed_encode_hc_tail(ctx,&cmd,store,binding,&layout,h,x[0],x[1],il,x[3],x[4],x[5],inject,&err);
+                        if (status) { fprintf(stderr,"hc tail: %d %s\n",status,err.detail); break; }
+                        [counter memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                        continue;
+                    }
+                    Qwen38GpuF32 n3=x[1], g3=x[4];
+                    n3.rank=g3.rank=3; n3.dim[1]=g3.dim[1]=h; n3.dim[2]=g3.dim[2]=width;
+                    n3.stride_bytes[1]=g3.stride_bytes[1]=width*4; n3.stride_bytes[2]=g3.stride_bytes[2]=4;
+                    assert(q38c_gpu_encode(ops,cmd,Q38C_HC_LOW,&spec,(Qwen38GpuF32[]){x[0],x[3]},2,NULL)==Q38_OK);
+                    assert(q38_packed_encode_fast(ctx,&cmd,store,binding,&layout,0,x[3],x[4],NULL)==Q38_OK);
+                    [counter memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                    assert(q38c_gpu_encode(ops,cmd,Q38C_HC_READ,&spec,(Qwen38GpuF32[]){n3,g3,x[5]},3,NULL)==Q38_OK);
+                    if (inj) assert(q38c_gpu_encode(ops,cmd,Q38C_HC_INJECT,&spec,(Qwen38GpuF32[]){x[2],x[6]},2,NULL)==Q38_OK);
+                }
+                [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+                assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+                seconds[run]=command.GPUEndTime-command.GPUStartTime;
+                words[s]=((uint32_t *)word.contents)[0]; dispatches[s]=counter->dispatches;
+            }
+            if (timing) {
+                Request q={.mode=argv[2],.n=h*width,.logical=k,.m=t,.reps=reps,.bytes=r.bytes};
+                char specs[96];
+                snprintf(specs,sizeof specs,"hc tail tokens %zu K %zu h %zu E %zu",t,k,h,width);
+                report(q,seconds,NULL,specs);
+            }
+        }
+        if (!timing) {
+            bool equal=true;
+            for (size_t b=3;b<7;b++) if (inj || b<6) equal=equal && !memcmp(buf[0][b].contents,buf[1][b].contents,buf[0][b].length);
+            printf("status %d equal %d words %u %u dispatches %u %u\n",status,equal,words[0],words[1],dispatches[0],dispatches[1]);
+        }
+        q38c_gpu_destroy(ops);
+        q38_packed_gpu_free(ctx);
+        gpu_weights_close(store); assert(close(g.fd)==0);
+    }
+    free(raw);
+    return 0;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -1132,6 +1227,7 @@ int main(int argc,char **argv) {
     if (argc>2 && (!strcmp(argv[1],"attend") || !strcmp(argv[1],"attbench"))) return attend_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"index")) return index_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"scan") || !strcmp(argv[1],"scanbench"))) return scan_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"hctail") || !strcmp(argv[1],"hcbench"))) return hctail_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

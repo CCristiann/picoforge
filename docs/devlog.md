@@ -8,6 +8,34 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.7 — routed down: four rows per simdgroup
+
+The Q2_K down (K 640 = 40 chunks of 16) gave each output row one
+simdgroup: 32 chunks in the first lane round, 8 in the second, so a
+quarter of the lanes worked half the time. A simdgroup now owns 4 rows
+and their tail chunks share rounds (`q38_quant_rows`, 5 rounds instead of
+8), each lane keeping its partial sums in q38_quant_row's order:
+bit-identical (the fused-down tests unchanged). Isolated, 1 token x 10
+slots: 65.4 -> 60.1 us; 2 rows 61.5, 8 rows 72.3 (fewer simdgroups in
+flight). A threadgroup copy of the IQ2_XXS grid for the gate/up was tried
+and dropped (61.6 -> 63.2 us): the kernels are ALU-bound, ~7 operations
+per weight, not limited by the constant cache.
+
+### R2.6 — HC read tail in one dispatch
+
+After down, every HC site ran HC_LOW, the F16 up (320 -> 10240), HC_READ
+and HC_INJECT: 7 dispatches (each C op is check + op). One kernel now does
+all four (idea: ds4 hc_gate_mix): every threadgroup recomputes
+act = silu(low/4) in threadgroup memory, a simdgroup takes the 4 up rows of
+one d with pooled tail chunks (K 320 = 40 chunks of 8: 5 rounds instead of
+8), then the read; threadgroup 0 writes act and inject. Same operations in
+the same order: act, gate, mixed and inject byte-equal to the fast sequence
+(test_hc_tail_fused_bit_identical_to_sequence, 7 shapes); under
+Q38_REF_KERNELS=linear or fuse the sequence runs. Isolated: 48-65 -> 30-35
+us per site. In the graph with R2.7 (`profile-hctail`, AC): dispatches 2140 -> 1560,
+normal-mode GPU 45.6 -> 44.0 ms/token, real short decode (1+3)
+22.54 -> 22.91 tok/s (`speed-d52cb7c`, `speed-hctail`).
+
 ### R2.5 — HC down and inject in one multi-GEMV
 
 Each HC read runs two F16 projections of the same normed rows: down

@@ -161,4 +161,33 @@ static inline float q38_quant_row(device const uchar *row, device const float *x
     for (uint c = lane; c < chunks; c += 32) acc += q38_quant_chunk<F>(row, x, k, c);
     return metal::simd_sum(acc);
 }
+/* R2.7: q38_quant_row of nr <= R consecutive rows (row0 + r * row_bytes) with
+ * the same x, out[r] bit-identical to q38_quant_row of row r: each lane keeps
+ * its partial sums in the same order (chunks lane, lane+32, ...), but the rows'
+ * tail chunks (chunks % 32 each) share rounds of the 32 lanes and each sum goes
+ * back to the lane that adds it last, as in the fused gate+up. The Q2_K down
+ * (K 640: 40 chunks of 16) takes 5 rounds for 4 rows instead of 8. */
+template <typename F, uint R>
+static inline void q38_quant_rows(device const uchar *row0, ulong row_bytes, uint nr, device const float *x, uint k,
+        uint lane, thread float *out) {
+    const uint chunks = (k + F::CHUNK - 1) / F::CHUNK, head = chunks / 32 * 32, tail = chunks - head;
+    float acc[R], pooled[R];
+    for (uint r = 0; r < R; r++) acc[r] = 0.0f;
+    for (uint c = lane; c < head; c += 32)
+        for (uint r = 0; r < nr; r++) acc[r] += q38_quant_chunk<F>(row0 + r * row_bytes, x, k, c);
+    for (uint j = 0; j < R; j++) {
+        const uint i = 32 * j + lane, r = tail ? i / tail : 0;
+        pooled[j] = i < nr * tail ? q38_quant_chunk<F>(row0 + r * row_bytes, x, k, head + i % tail) : 0.0f;
+    }
+    for (uint r = 0; r < R; r++) {
+        const uint i = r * tail + lane;
+        float v = 0.0f;
+        for (uint j = 0; j < R; j++) { /* every lane shuffles: uniform control */
+            const float s = metal::simd_shuffle(pooled[j], ushort(i % 32));
+            if (i / 32 == j) v = s;
+        }
+        if (lane < tail) acc[r] += v;
+        out[r] = metal::simd_sum(acc[r]);
+    }
+}
 #endif

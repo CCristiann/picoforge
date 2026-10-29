@@ -312,3 +312,110 @@ INDEXED_KERNEL(q38_matvec_indexed_iq2_xxs, Q38Iq2Xxs)
 INDEXED_KERNEL(q38_matvec_indexed_q2_k, Q38Q2K)
 INDEXED_KERNEL(q38_matvec_indexed_q4_k, Q38Q4K)
 INDEXED_KERNEL(q38_matvec_indexed_mxfp4, Q38Mxfp4)
+
+/* R2.6 fused HC read tail: HC_LOW, the F16 up projection, HC_READ and
+ * HC_INJECT of one HC site in one dispatch, bit-identical to that fast
+ * sequence (q38c_activate SILU then SIGMOID x2, the dense_matvec rows above,
+ * q38c_hc_read):
+ *   act[r] = silu(low[r] / h)           (every threadgroup, in threadgroup memory)
+ *   gate[k*E + d] = up row k*E + d . act (the h rows of one d, one simdgroup)
+ *   mixed[d] = sum_k normed[k*E + d] sigmoid(gate[k*E + d]) / h
+ *   inject[j] = 2 sigmoid(il[j] / h)    (threadgroup 0; il absent: no inject)
+ * Each up row keeps dense_matvec's order at S = 1: lane l sums chunks l, l+32,
+ * ... of DENSE_C columns, each in column order, then simd_sum. The h rows'
+ * tail chunks (chunks % 32 each; K 320: 8 of 40) share rounds of the 32 lanes
+ * and each sum goes back to the lane that adds it last, as in the fused
+ * gate+up, so the 4 rows of HC up take 5 rounds instead of 8. act and gate
+ * are written as in the sequence (threadgroup 0 writes act). A nonfinite
+ * low, act, il, inject, gate, normed or sum sets bit 1; outputs are then
+ * unspecified (the sequence's checks stop at the first failing op). Wire
+ * record HcTailArgs mirrors Q38HcTailArgs (qwen38_b_internal.h); row pitches
+ * in floats. (Idea of one up + gate + mix kernel per HC read: ds4 fc80bd6,
+ * MIT, metal/qwen4.metal: kernel_qwen4_hc_gate_mix.) */
+#define HC_TAIL_MAX_K 1024
+#define HC_TAIL_MAX_H 4
+struct HcTailArgs { PackedArgs up; uint streams, width, inject, reserved; ulong low, normed, mixed, il, out; };
+static_assert(sizeof(HcTailArgs) == 136, "HC tail wire record size");
+/* q38c_activate's sigmoid (qwen38_recurrent.metal): the same FP32 operations. */
+static float hc_sigmoid(float x) {
+    if (x >= 0.0f) return 1.0f / (1.0f + exp(-x));
+    float z = exp(x); return z / (1.0f + z);
+}
+static inline float hc_chunk(device const uchar *row, bool aligned, threadgroup const float *xs, uint k, uint c) {
+    const uint cols = min(uint(DENSE_C), k - c * DENSE_C);
+    float w[DENSE_C];
+    dense_chunk<1>(row + ulong(c) * DENSE_C * 2, aligned && cols == DENSE_C, w, cols);
+    threadgroup const float *xb = xs + c * DENSE_C;
+    float s = 0.0f;
+    if (cols == DENSE_C)
+        for (uint i = 0; i < DENSE_C; i++) s += w[i] * xb[i];
+    else
+        for (uint i = 0; i < cols; i++) s += w[i] * xb[i];
+    return s;
+}
+kernel void q38_hc_tail_f16(device const uchar *weights [[buffer(0)]], device const float *low [[buffer(1)]],
+        device const float *normed [[buffer(2)]], device const float *il [[buffer(3)]],
+        device float *act [[buffer(4)]], device float *gate [[buffer(5)]], device float *mixed [[buffer(6)]],
+        device float *inject [[buffer(7)]], device atomic_uint *error [[buffer(8)]],
+        constant HcTailArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]],
+        uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float xs[HC_TAIL_MAX_K];
+    const uint t = group.y, k = a.up.k_logical, h = a.streams, E = a.width, tid = sg * 32 + lane;
+    bool bad = false;
+    for (uint r = tid; r < k; r += sgs * 32) { /* HC_LOW: p1 = h, p2 = 1 */
+        const float v = low[t * a.low + r];
+        float x = v / float(h), y = x * hc_sigmoid(x);
+        y *= float(1u);
+        bad = bad || !isfinite(v) || !isfinite(y);
+        xs[r] = y;
+        if (!group.x) act[t * (a.up.x_stride / 4) + r] = y;
+    }
+    if (!group.x && a.inject && tid < h) { /* HC_INJECT: p1 = h, p2 = 2 */
+        const float v = il[t * a.il + tid];
+        float y = hc_sigmoid(v / float(h));
+        y *= float(2u);
+        bad = bad || !isfinite(v) || !isfinite(y);
+        inject[t * a.out + tid] = y;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint d = group.x * sgs + sg;
+    if (d < E) { /* uniform over the simdgroup */
+        const uint chunks = (k + DENSE_C - 1) / DENSE_C, head = chunks / 32 * 32, tail = chunks - head;
+        device const uchar *row[HC_TAIL_MAX_H];
+        bool aligned[HC_TAIL_MAX_H];
+        float acc[HC_TAIL_MAX_H], pooled[HC_TAIL_MAX_H];
+        for (uint r = 0; r < HC_TAIL_MAX_H; r++) {
+            const ulong at = a.up.weight_offset + ulong(r < h ? r * E + d : d) * a.up.row_bytes;
+            row[r] = weights + at; aligned[r] = (at & 15) == 0; acc[r] = 0.0f;
+        }
+        for (uint c = lane; c < head; c += 32)
+            for (uint r = 0; r < h; r++) acc[r] += hc_chunk(row[r], aligned[r], xs, k, c);
+        for (uint j = 0; j < HC_TAIL_MAX_H; j++) {
+            const uint i = 32 * j + lane, r = tail ? i / tail : 0;
+            pooled[j] = i < h * tail ? hc_chunk(row[r], aligned[r], xs, k, head + i % tail) : 0.0f;
+        }
+        float sum = 0.0f;
+        for (uint r = 0; r < h; r++) {
+            const uint i = r * tail + lane;
+            float v = 0.0f;
+            for (uint j = 0; j < HC_TAIL_MAX_H; j++) { /* every lane shuffles: uniform control */
+                const float s = simd_shuffle(pooled[j], ushort(i % 32));
+                if (i / 32 == j) v = s;
+            }
+            if (lane < tail) acc[r] += v;
+            const float g = simd_sum(acc[r]);
+            if (!lane) { /* HC_READ, k = r in ascending order */
+                const float n = normed[t * a.normed + r * E + d];
+                gate[t * (a.up.y_stride / 4) + r * E + d] = g;
+                sum += n * hc_sigmoid(g);
+                bad = bad || !isfinite(g) || !isfinite(n);
+            }
+        }
+        if (!lane) {
+            bad = bad || !isfinite(sum);
+            mixed[t * a.mixed + d] = sum / float(h);
+        }
+    }
+    if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}

@@ -1,0 +1,89 @@
+{
+  "complete": true,
+  "frontier": "short",
+  "engines": [
+    "picoforge"
+  ],
+  "counts": {
+    "picoforge": [
+      1,
+      3
+    ],
+    "dwarfstar": [
+      0,
+      0
+    ]
+  },
+  "block": 1,
+  "plan": [
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ]
+  ],
+  "protocol": "One process per sample for both engines (ds4-bench measures one frontier per process): prefill to the frontier, then 128 forced one-token appends. tok/s = forced IDs / decode seconds (picoforge decode_s, ds4-bench gen_tps). Warm-ups discarded. OS file cache warm, not purged: no cold-start claim.",
+  "suite_sha256": "d0bcf8bfd4ed69b4a881be724d1bf9022d574437ee1b0eae9137d10e41307379",
+  "guard": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "revision": "d52cb7ccd88228d4e70cf3e16d4af3aaa3ed5933",
+  "diff": "",
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "checkpoint": "models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "checkpoint_sha256_recomputed": false,
+  "sha256": {
+    "picoforge": "9fe49c2fb06ab171acc6d61c4767c587798edde0c9ed35696462bedd7536a1dc",
+    "picoforge.metallib": "e713e7468e821ae01213fb5d437129112ec5f20ac6ccaf2ce95565df9449a785",
+    "ds4-bench": "27e2c3666d82123ca3d3bd93f6fff09545df4de91e606ee52c78445c99a4e5d0",
+    "ds4": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+    "tool": "9c1dac97b43da670f775a6eba11e812584ef4e98eb1082b25109dae1aead0fde"
+  },
+  "before": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t24%; charging; (no estimate) present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 262144,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "thermal_state": "nominal"
+  },
+  "after": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t24%; charging; (no estimate) present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 262144,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "thermal_state": "nominal"
+  }
+}

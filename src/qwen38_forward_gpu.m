@@ -423,6 +423,15 @@ static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t l
     if (hc->inject.binding)
         TRY(linears(f,cmd,layer,n[1],(G2Weight[]){hc->down,hc->inject},2,V(normed),(Qwen38GpuF32[]){V(low),V(il)},e));
     else TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
+    { /* R2.6: low, up, read and inject in one dispatch, bit-identical; the sequence when unsupported */
+        MARK(layer,n[3],hc->up.binding->tensor.type,hc->up.binding->tensor.bytes);
+        bool inj=hc->inject.binding!=NULL; const Qwen38GpuF32 none={0};
+        Qwen38Status status=q38_packed_encode_hc_tail(f->b,cmd,f->store,hc->up.binding,&hc->up.layout,f->c.hc.streams,
+            flat(V(low)),flat(V(normed)),inj ? flat(V(il)) : none,flat(V(act)),flat(V(gate)),flat(V(mixed)),
+            inj ? flat(V(inject)) : none,e);
+        if (!status) { barrier(*cmd); return Q38_OK; }
+        if (status!=Q38_UNSUPPORTED) return status;
+    }
     OP(2,HC_LOW,V(low),V(act));
     TRY(linear(f,cmd,layer,n[3],hc->up,V(act),V(gate),e));
     OP(4,HC_READ,V(normed),V(gate),V(mixed));
