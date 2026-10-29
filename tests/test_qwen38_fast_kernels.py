@@ -19,6 +19,8 @@ in) against check + q38c_gdn_prepare, tolerance entry gdn_prepare_fast.
 R2.1: split decode attention (q38d_attend_encode, family attention) against the
 q38d_attend_gpu oracle and FP64, tolerance entry attend_fast.
 R2.2: exact index scores, rank and compact: bit-identical to their oracles.
+R2.4: q38c_gdn_scan_fast (family fuse) against check + q38c_gdn_scan and FP64,
+tolerance entry gdn_scan_fast.
 """
 import argparse
 import json
@@ -555,6 +557,81 @@ def run_attend(mode, q, gate, k, v, ids, env=None):
         raise AssertionError(f"attend {mode}: exit {result.returncode}, {stderr!r}")
     word, dispatches = (int(x) for x in np.frombuffer(result.stdout[:8], "<u4"))
     return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(h, d)
+
+
+def run_scan(mode, qkv, g, beta, state, dims, initial=0):
+    """dims = (hk, hv, dk, dv): (error word, dispatches, out [t, hv, dv], state [hv, dv, dk])."""
+    hk, hv, dk, dv = dims
+    t = len(qkv)
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {key: val for key, val in os.environ.items() if key != "Q38_REF_KERNELS"}
+    result = subprocess.run([str(NATIVE), "scan", mode, *map(str, (t, *dims, initial))],
+                            input=b"".join(np.ascontiguousarray(a, "<f4").tobytes() for a in (qkv, g, beta, state)),
+                            capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr or len(result.stdout) != 8 + 4 * (t * hv * dv + hv * dv * dk):
+        raise AssertionError(f"scan {mode}: exit {result.returncode}, {stderr!r}")
+    word, dispatches = (int(x) for x in np.frombuffer(result.stdout[:8], "<u4"))
+    out = np.frombuffer(result.stdout[8:], "<f4")
+    return word, dispatches, out[:t * hv * dv].reshape(t, hv, dv), out[t * hv * dv:].reshape(hv, dv, dk)
+
+
+def scan_inputs(rng, t, dims):
+    """As after q38c_gdn_prepare: q, k unit L2 rows (q / sqrt(dk)), v ~ N(0, 1), g = log decay in [-3, 0],
+    beta in (0, 1), state ~ N(0, 0.5) with one x50 row."""
+    hk, hv, dk, dv = dims
+    qk = rng.normal(0, 1, (t, 2 * hk, dk))
+    qk /= np.linalg.norm(qk, axis=-1, keepdims=True)
+    qk[:, :hk] /= np.sqrt(dk)
+    qkv = np.concatenate([qk.reshape(t, -1), rng.normal(0, 1, (t, hv * dv))], 1)
+    state = rng.normal(0, 0.5, (hv, dv, dk))
+    state[rng.integers(hv), rng.integers(dv)] *= 50
+    return tuple(a.astype(np.float32) for a in (qkv, -rng.uniform(0, 3, (t, hv)), rng.uniform(0, 1, (t, hv)), state))
+
+
+def scan_fp64(qkv, g, beta, state, dims):
+    """One token (t = 1) in FP64 from the FP32 inputs: out r [hv, dv], state r_s [hv, dv, dk], magnitudes S
+    (sum_j |s'_j q_j| for out, |s g| + |delta k_j| + |k_j| |beta| P per state element) and condition (a) bounds. Errors in any
+    order: s1 = s*exp(g) within gamma(6) (exp 4 ulp + product); u = sum s1 k within gamma(dk+6) P, P =
+    sum|s g k|; delta = (v - u) beta within E_d = |beta| (gamma(dk+6) P + gamma(2)(|v| + |u|)); s2 = s1 +
+    delta k within e_j = gamma(6)|s g| + |k_j| E_d + gamma(2)(|s g| + |delta k_j|); o = sum s2 q within
+    gamma(dk) sum|s2 q| + sum |q_j| e_j."""
+    hk, hv, dk, dv = dims
+    gam = lambda n: n * 2.0**-24 / (1 - n * 2.0**-24)
+    x = qkv[0].astype(np.float64)
+    q = x[:hk * dk].reshape(hk, dk)[np.arange(hv) % hk][:, None, :]           # [hv, 1, dk]
+    k = x[hk * dk:2 * hk * dk].reshape(hk, dk)[np.arange(hv) % hk][:, None, :]
+    v = x[2 * hk * dk:].reshape(hv, dv)
+    s = state.astype(np.float64) * np.exp(g[0].astype(np.float64))[:, None, None]
+    u = (s * k).sum(-1)
+    P = np.abs(s * k).sum(-1)
+    delta = (v - u) * beta[0].astype(np.float64)[:, None]
+    s2 = s + delta[..., None] * k
+    out = (s2 * q).sum(-1)
+    e_d = np.abs(beta[0].astype(np.float64))[:, None] * (gam(dk + 6) * P + gam(2) * (np.abs(v) + np.abs(u)))
+    e_s = gam(6) * np.abs(s) + np.abs(k) * e_d[..., None] + gam(2) * (np.abs(s) + np.abs(delta[..., None] * k))
+    out_bound = gam(dk) * np.abs(s2 * q).sum(-1) + (np.abs(q) * e_s).sum(-1)
+    # the state's S counts every magnitude its rounding scales with: |s g|, |delta k_j| and, through
+    # delta, the prediction's sum |k_j| |beta| P (as sum|w x| for a matvec)
+    mag_s = np.abs(s) + np.abs(delta[..., None] * k) + np.abs(k) * (np.abs(beta[0].astype(np.float64))[:, None] * P)[..., None]
+    return out, s2, np.abs(s2 * q).sum(-1), mag_s, out_bound, e_s
+
+
+def scan_magnitudes(qkv, g, beta, state, dims):
+    """FP64 replay of t tokens: S of the last output (sum|s' q|) and of the final state, the running sum
+    M <- M exp(g) + |delta k_j| + |k_j| |beta| P (P = sum|s exp(g) k|), M_0 = |state|: the absolute values
+    every rounding of the state scales with, decayed as the state itself."""
+    hk, hv, dk, dv = dims
+    s, m = state.astype(np.float64), np.abs(state.astype(np.float64))
+    for x, gt, bt in zip(qkv.astype(np.float64), g.astype(np.float64), beta.astype(np.float64)):
+        q = x[:hk * dk].reshape(hk, dk)[np.arange(hv) % hk][:, None, :]
+        k = x[hk * dk:2 * hk * dk].reshape(hk, dk)[np.arange(hv) % hk][:, None, :]
+        decay = np.exp(gt)[:, None, None]
+        s, m = s * decay, m * decay
+        delta = (x[2 * hk * dk:].reshape(hv, dv) - (s * k).sum(-1)) * bt[:, None]
+        m = m + np.abs(delta[..., None] * k) + np.abs(k) * (np.abs(bt)[:, None] * np.abs(s * k).sum(-1))[..., None]
+        s = s + delta[..., None] * k
+    return np.abs(s * q).sum(-1), m
 
 
 def run_index(mode, iq, blocks, visible, ratio, budget):
@@ -1905,6 +1982,78 @@ class FastKernelTests(unittest.TestCase):
                     self.assertEqual(fast[0], oracle[0])
                     if not fast[0]:
                         self.assertEqual(fast[1:], oracle[1:])
+
+    # ---- R2.4 fast GDN scan (q38c_gdn_scan_fast, family fuse) ----
+    def test_gdn_scan_fast_against_oracle_and_fp64(self):
+        """Real GDN dims (hk 16, hv 48, dk = dv 128) and smaller ones (dk 32 / 64, hv/hk 1 and 3): one token
+        within (a) for out and state, fast and oracle; 1, 3 and 32 tokens within (b) of the oracle for out
+        (S = sum|s' q| of the FP64 last token) and the final state (S = scan_magnitudes' running sum)."""
+        rng = np.random.default_rng(4157)
+        corpus = CORPUS.setdefault("gdn_scan_fast", {})
+        tol = TOLERANCES["kernels"].get("gdn_scan_fast", {}).get("tol")
+        self.assertIsNotNone(tol, "gdn_scan_fast: fast kernel without a measured tolerance")
+        for dims in (GDN_REAL, (2, 6, 32, 8), (4, 4, 64, 12)):
+            for t in (1, 3, 32):
+                with self.subTest(dims=dims, t=t):
+                    inputs = scan_inputs(rng, t, dims)
+                    fast, oracle = (run_scan(mode, *inputs, dims) for mode in ("fast", "oracle"))
+                    self.assertEqual((fast[:2], oracle[:2]), ((0, 1), (0, 2)))
+                    mag, mag_s = scan_magnitudes(*inputs, dims)
+                    label = f"scan:{dims}t{t}"
+                    d_out = scaled_difference(fast[2][-1], oracle[2][-1], mag).ravel()
+                    d_state = scaled_difference(fast[3], oracle[3], mag_s).ravel()
+                    if t == 1:
+                        ref, ref_s, _, _, bound, bound_s = scan_fp64(*inputs, dims)
+                        for name, got in (("fast", fast), ("oracle", oracle)):
+                            stats = dict(out=float((np.abs(got[2][0] - ref) / bound).max()),
+                                         state=float((np.abs(got[3] - ref_s) / (bound_s + np.spacing(np.abs(ref_s).astype(np.float32)))).max()))
+                            RESULTS.setdefault(label, {})[name] = stats
+                            self.assertTrue(stats["out"] <= 1 and stats["state"] <= 1, (label, name, stats))
+                    corpus[label] = np.concatenate([d_out, d_state])
+                    RESULTS.setdefault(label, {})["vs_oracle"] = dict(out=float(d_out.max()), state=float(d_state.max()))
+                    self.assertLessEqual(max(d_out.max(), d_state.max()), tol, label)
+
+    def test_gdn_scan_fast_chunk_equals_steps(self):
+        """Review Focus 4 for the scan: 7 tokens in one call give the bits of 7 one-token calls chained
+        through the state (chunked prefill vs decode), outputs and final state."""
+        rng = np.random.default_rng(4159)
+        qkv, g, beta, state = scan_inputs(rng, 7, GDN_REAL)
+        whole = run_scan("fast", qkv, g, beta, state, GDN_REAL)
+        s, outs = state, []
+        for i in range(7):
+            word, _, out, s = run_scan("fast", qkv[i:i + 1], g[i:i + 1], beta[i:i + 1], s, GDN_REAL)
+            self.assertEqual(word, 0)
+            outs.append(out)
+        np.testing.assert_array_equal(np.concatenate(outs).view("<u4"), whole[2].view("<u4"))
+        np.testing.assert_array_equal(s.view("<u4"), whole[3].view("<u4"))
+
+    def test_gdn_scan_fast_error_word(self):
+        """Review Focus 3: NaN/Inf in q, k, v, g, beta or the state set bit 1 and g > 0 or beta outside [0, 1]
+        bit 4 (q38c_check's rules; an infinite beta both), the same word as the oracle; with the word preset to
+        4 an input fault still adds its bits; an overflow of the update gives bit 1, nothing when preset (the
+        op is skipped, as the oracle)."""
+        rng = np.random.default_rng(4161)
+        dims = (2, 6, 32, 8)
+        clean = scan_inputs(rng, 2, dims)
+        faults = [(0, (1, 3), np.nan), (0, (0, 2 * 32 + 5), np.inf), (0, (1, 4 * 32 + 9), -np.inf),
+                  (1, (0, 4), np.nan), (2, (1, 0), np.inf), (3, (5, 7, 31), np.nan), (1, (1, 2), 0.5),
+                  (2, (0, 3), 1.5), (2, (1, 5), -0.25)]
+        for which, at, value in faults:
+            for mode in ("fast", "oracle"):
+                with self.subTest(input=which, at=at, mode=mode):
+                    inputs = [a.copy() for a in clean]
+                    inputs[which][at] = value
+                    want = (1 if not np.isfinite(value) else 0) | (4 if which in (1, 2) and (value > 0 if which == 1
+                                                                                            else not 0 <= value <= 1) else 0)
+                    self.assertEqual(run_scan(mode, *inputs, dims)[0], want)
+                    self.assertEqual(run_scan(mode, *inputs, dims, initial=4)[0], want | 4)
+        big = [a.copy() for a in clean]
+        big[3][:] = 3e38
+        big[0][:, 2 * 32:4 * 32] = 1 / np.sqrt(32)  # aligned k: s.k = 3e38 * sqrt(32) overflows
+        for mode in ("fast", "oracle"):
+            with self.subTest(overflow=mode):
+                self.assertEqual(run_scan(mode, *big, dims)[0], 1)
+                self.assertEqual(run_scan(mode, *big, dims, initial=4)[0], 4)
 
     def test_attend_selector(self):
         """encode follows Q38_REF_KERNELS: unset -> fast (bit-identical to forced fast), attention or 1 -> oracle

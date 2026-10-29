@@ -8,7 +8,7 @@
 /* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide
  * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run
  * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */
-struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast; bool ref_fuse; };
+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast; bool ref_fuse; };
 void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }
 void q38c_gpu_destroy(Q38CGpu *g) {
     if (!g) return;
@@ -17,6 +17,7 @@ void q38c_gpu_destroy(Q38CGpu *g) {
     if (g->history) CFRelease(g->history);
     if (g->rms_fast) CFRelease(g->rms_fast);
     if (g->prep_fast) CFRelease(g->prep_fast);
+    if (g->scan_fast) CFRelease(g->scan_fast);
     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
     free(g);
 }
@@ -41,8 +42,9 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
         else if (i==Q38C_GPU_OPS) g->check=(__bridge_retained void *)p;
         else g->pipeline[i]=(__bridge_retained void *)p;
     }
-    NSString *fast[]={@"q38c_rms_fast",@"q38c_gdn_prepare_fast"}; void **slot[]={&g->rms_fast,&g->prep_fast};
-    for (size_t i=0;i<2;++i) {
+    NSString *fast[]={@"q38c_rms_fast",@"q38c_gdn_prepare_fast",@"q38c_gdn_scan_fast"};
+    void **slot[]={&g->rms_fast,&g->prep_fast,&g->scan_fast};
+    for (size_t i=0;i<3;++i) {
         id<MTLFunction> fn=[lib newFunctionWithName:fast[i]];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
         if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
@@ -221,6 +223,15 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     [enc setBytes:&a length:sizeof(a) atIndex:8];
     [enc setBuffer:error offset:cmd.error_word.offset_bytes atIndex:9];
     void *fast=op==Q38C_GDN_PREP ? g->prep_fast : (op==Q38C_RMS || op==Q38C_GDN_NORM) ? g->rms_fast : NULL;
+    /* R2.4: the fast scan needs dk a multiple of 32 (<= 256), dv of 4, and unit last strides
+     * on qkv and the state, which it reads as contiguous lane slices. */
+    if (op==Q38C_GDN_SCAN && g->scan_fast && !g->ref_fuse && a.p[2]%32==0 && a.p[2]<=256 && a.p[3]%4==0 &&
+        a.v[0].stride[1]==1 && a.v[3].stride[2]==1) {
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->scan_fast];
+        [enc dispatchThreadgroups:MTLSizeMake((a.p[1]*a.p[3]+15)/16,1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        return q38c_error(e,Q38_OK,NULL);
+    }
     if (fast && !g->ref_fuse) {
         /* R1.6a: one threadgroup per row; R1.8: a [ceil(2hk/8), t] grid, one
          * simdgroup per q/k head. q38c_check folded into the kernel. */

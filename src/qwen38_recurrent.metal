@@ -229,6 +229,69 @@ kernel void q38c_gdn_prepare_fast(device float *v0 [[buffer(0)]], device float *
     }
     if (bad || fault) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
 }
+/* R2.4 fast GDN scan: one simdgroup per 4 consecutive state rows (h, v..v+3) of
+ * a value head instead of one thread per row (as ds4's _r4: q, k, g, beta loaded
+ * once for 4 rows, 8 reductions in flight; 1 row per simdgroup was slower than the
+ * oracle); lane l keeps S[h,v,l*P..l*P+P-1] (P = dk/32 <= 8)
+ * in registers for the whole token loop, so the 512-byte row is read and written
+ * once per dispatch, not twice per token. Per token, as the oracle: S *= exp(g),
+ * u = S.k, delta = (v - u)*beta, S += delta*k, o = S.q; each dot sums P products
+ * per lane then simd_sum (the oracle: dk serial products), so the tolerance entry
+ * is gdn_scan_fast. The input check is folded in as in q38c_gdn_prepare_fast:
+ * a nonfinite qkv, log-decay, beta or state element read here sets bit 1, and a
+ * log-decay > 0 or beta outside [0, 1] bit 4, as q38c_check, even when
+ * the word is already set; then the op's bits and every write are skipped.
+ * Outputs are unspecified when the word ends nonzero. Rows of state, q, k need a
+ * unit last stride (host). Idea: ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_scan. */
+#define Q38C_SCAN_ROWS 4
+kernel void q38c_gdn_scan_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+    device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],
+    constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+    uint tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3], r0=(tg*sn+sg)*Q38C_SCAN_ROWS, P=dk/32;
+    if (r0>=hv*dv) return;                       /* dv % Q38C_SCAN_ROWS == 0 (host): one head */
+    const bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    const uint h=r0/dv, v0i=r0%dv, width=2*hk*dk+hv*dv;
+    uint row[Q38C_SCAN_ROWS];
+    bool bad=false, fault=false, range=false;
+    float S[Q38C_SCAN_ROWS][8];
+    for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
+        row[j]=at(a.v[3],(r0+j)*dk)+lane*P;
+        for (uint i=0;i<8;i++) { S[j][i]=i<P ? v3[row[j]+i] : 0; bad|=!isfinite(S[j][i]); }
+    }
+    for (uint t=0;t<a.v[0].dim[0];t++) {
+        uint q=at(a.v[0],t*width+(h%hk)*dk)+lane*P, k=at(a.v[0],t*width+hk*dk+(h%hk)*dk)+lane*P;
+        float g=v1[at(a.v[1],t*hv+h)], beta=v2[at(a.v[2],t*hv+h)], qx[8], kx[8];
+        for (uint i=0;i<8;i++) {
+            qx[i]=i<P ? v0[q+i] : 0; kx[i]=i<P ? v0[k+i] : 0;
+            bad|=!isfinite(qx[i]) || !isfinite(kx[i]);
+        }
+        bad|=!isfinite(g) || !isfinite(beta); range|=g>0 || beta<0 || beta>1;
+        float decay=exp(g), prediction[Q38C_SCAN_ROWS], result[Q38C_SCAN_ROWS];
+        for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
+            prediction[j]=0;
+            for (uint i=0;i<8;i++) if (i<P) { S[j][i]*=decay; prediction[j]+=S[j][i]*kx[i]; }
+            prediction[j]=simd_sum(prediction[j]);
+        }
+        for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
+            float value=v0[at(a.v[0],t*width+2*hk*dk+h*dv+v0i+j)];
+            bad|=!isfinite(value);
+            float delta=(value-prediction[j])*beta;
+            result[j]=0;
+            for (uint i=0;i<8;i++) if (i<P) {
+                S[j][i]+=delta*kx[i]; fault|=!isfinite(S[j][i]);
+                result[j]+=S[j][i]*qx[i];
+            }
+            result[j]=simd_sum(result[j]);
+            fault|=!isfinite(prediction[j]) || !isfinite(delta) || !isfinite(result[j]);
+            if (!skip && !lane) v4[at(a.v[4],(t*hv+h)*dv+v0i+j)]=result[j];
+        }
+    }
+    if (!skip) for (uint j=0;j<Q38C_SCAN_ROWS;j++) for (uint i=0;i<8;i++) if (i<P) v3[row[j]+i]=S[j][i];
+    if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
+}
 /* Each lane owns an entire (value-head,value-channel) state row. FP32 and
  * sequential feature/time order deliberately mirror C before optimization. */
 kernel void q38c_gdn_scan(Q38C_BUFFERS) {

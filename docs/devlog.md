@@ -8,6 +8,24 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.4 — GDN scan: a simdgroup per four state rows
+
+The gated delta rule keeps, per value head, a 128x128 state S and per token
+does `S *= exp(g); u = S·k; delta = (v - u)·beta; S += delta·k; o = S·q`.
+The oracle gives each thread one state row: it walks its 512-byte row in
+device memory twice per token, and neighbouring threads touch rows 512 bytes
+apart, so with each layer's 3 MB state cold in the graph the scan ran at
+~58 GB/s. Now a simdgroup owns 4 rows of one head (as ds4's `gdn_scan_r4`):
+each lane keeps 4 consecutive state values per row in registers for the
+whole token loop (one coalesced read and write per dispatch), q and k are
+loaded once for the 4 rows, and the two dots become per-lane sums + simd_sum.
+One row per simdgroup was slower than the oracle; four were needed. The
+input check of `q38c_check` (bits 1 and 4) is folded in. Tolerance
+`gdn_scan_fast` = 2^-21 (max 4.3 u; the state's S is the running sum of the
+magnitudes its roundings scale with). Chunked tokens stay bit-identical to
+one-token steps. Profile short (`bench/qwen38_r2_20261029/profile-short-scan`,
+battery): gdn.scan 3.70 -> 1.83 ms, GPU groups 43.6 -> 41.7 ms/token.
+
 ### R2.3 — F16 matvecs: hardware half -> float on every chunk
 
 The hyper-connection (HC) matvecs are F16: "down" 10240 -> 320 and "up"

@@ -1008,6 +1008,73 @@ static int attend_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R2.4 GDN scan through q38c_gpu_encode (op Q38C_GDN_SCAN):
+ *   scan <oracle|fast> t hk hv dk dv initial
+ * stdin: qkv [t,2hk*dk+hv*dv], log-decay g [t,hv], beta [t,hv], state [hv,dv,dk] FP32.
+ * stdout: error word, dispatches (uint32), out [t,hv,dv], state [hv,dv,dk].
+ *   scanbench <oracle|fast> t hk hv dk dv reps: seeded inputs (g < 0), 3 + 20 buffers. */
+static int scan_main(int argc,char **argv,const char *library) {
+    bool timing=!strcmp(argv[1],"scanbench"), fast=!strcmp(argv[2],"fast");
+    assert(argc==9 && (fast || !strcmp(argv[2],"oracle")));
+    size_t t=number(argv[3]), hk=number(argv[4]), hv=number(argv[5]), dk=number(argv[6]), dv=number(argv[7]),
+           reps=timing ? number(argv[8]) : 1, c=2*hk*dk+hv*dv;
+    uint32_t initial=timing ? 0 : (uint32_t)number(argv[8]);
+    assert(t && t<=1024 && hk && hv && hv%hk==0 && dk && dk<=256 && dv && reps && reps<=1000);
+    size_t width[5]={c,hv,hv,dk,dv}, rows[5]={t,t,t,hv*dv,t*hv}, total=0;
+    for (size_t b=0;b<4;b++) total+=rows[b]*width[b];
+    float *data=malloc(4*total); assert(data);
+    uint64_t seed=4157;
+    if (timing) for (size_t i=0;i<total;i++) data[i]=((float)(mix(&seed)>>40)*0x1p-23f-1.0f)*0.1f;
+    else assert(fread(data,4,total,stdin)==total && fgetc(stdin)==EOF);
+    for (size_t i=0;timing && i<t*hv;i++) data[t*c+i]=-fabsf(data[t*c+i]); /* g <= 0 */
+    double seconds[23];
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38CGpu *ops=NULL;
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        q38c_gpu_set_reference(ops,!fast);
+        id<MTLBuffer> buf[5], word=shared(dev,8); Qwen38GpuF32 v[5]; const float *src=data;
+        for (size_t b=0;b<5;b++) {
+            buf[b]=shared(dev,4*rows[b]*width[b]);
+            if (b<4) { memcpy(buf[b].contents,src,4*rows[b]*width[b]); src+=rows[b]*width[b]; }
+            else memset(buf[b].contents,0xa5,buf[b].length);
+        }
+        Qwen38GpuSpan sp[5]; for (size_t b=0;b<5;b++) sp[b]=(Qwen38GpuSpan){(__bridge void *)buf[b],0,buf[b].length};
+        v[0]=(Qwen38GpuF32){sp[0],2,{t,c,1,1},{c*4,4,0,0}};
+        v[1]=(Qwen38GpuF32){sp[1],2,{t,hv,1,1},{hv*4,4,0,0}}; v[2]=(Qwen38GpuF32){sp[2],2,{t,hv,1,1},{hv*4,4,0,0}};
+        v[3]=(Qwen38GpuF32){sp[3],3,{hv,dv,dk,1},{dv*dk*4,dk*4,4,0}};
+        v[4]=(Qwen38GpuF32){sp[4],3,{t,hv,dv,1},{hv*dv*4,dv*4,4,0}};
+        Q38CGpuSpec spec={.gdn={.key_heads=hk,.value_heads=hv,.key_dim=dk,.value_dim=dv,.rms_eps=1e-6f,.l2_eps=1e-6f}};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+        for (int run=0;run<(timing ? 23 : 1);run++) {
+            ((uint32_t *)word.contents)[0]=initial; ((uint32_t *)word.contents)[1]=0;
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
+            for (size_t rep=0;rep<reps;rep++) assert(q38c_gpu_encode(ops,cmd,Q38C_GDN_SCAN,&spec,v,5,NULL)==Q38_OK);
+            [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            seconds[run]=command.GPUEndTime-command.GPUStartTime;
+        }
+        if (timing) {
+            Request r={.mode=argv[2],.n=hv*dv,.logical=dk,.m=t,.reps=reps,.bytes=8*hv*dv*dk};
+            char specs[96];
+            snprintf(specs,sizeof specs,"tokens %zu hk %zu hv %zu dk %zu dv %zu",t,hk,hv,dk,dv);
+            report(r,seconds,NULL,specs);
+        } else {
+            uint32_t head[2]={((uint32_t *)word.contents)[0],counter->dispatches};
+            assert(fwrite(head,4,2,stdout)==2 && fwrite(buf[4].contents,4,t*hv*dv,stdout)==t*hv*dv &&
+                   fwrite(buf[3].contents,4,hv*dv*dk,stdout)==hv*dv*dk);
+        }
+        q38c_gpu_destroy(ops);
+    }
+    free(data);
+    return 0;
+}
+
 /* R2.2 exact index scores + device selection (q38d_gpu_encode SCORES, then q38d_select_encode):
  *   index <oracle|fast> h d visible ratio budget
  * stdin: iq [h,d], block keys [visible/ratio,d] FP32. stdout: error word, scores [n], ids
@@ -1064,6 +1131,7 @@ int main(int argc,char **argv) {
     if (argc>2 && (!strcmp(argv[1],"prep") || !strcmp(argv[1],"prepbench"))) return prep_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"attend") || !strcmp(argv[1],"attbench"))) return attend_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"index")) return index_main(argc,argv,library);
+    if (argc>2 && (!strcmp(argv[1],"scan") || !strcmp(argv[1],"scanbench"))) return scan_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

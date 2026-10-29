@@ -105,6 +105,14 @@
       "samples": 103552,
       "commit": "c50cf10 + the R2.1 working tree, measured with the harness of 'Add split-K decode attention'",
       "note": "S = gate * sum_i p_i |v_i| (exact softmax weights). The split kernel sums each logit as 8 per-lane products then simd_sum (the oracle: 256 serial products) and rescales per key (the oracle: per tile of 16); the merge rescales once per split. A logit error is relative to |logit|, and exp turns it into a relative weight error, so (b) grows with logit size: up to 1.24e-6 (< 2^-19) for logits of std <= 1 (every real-dims and off-tile case), 2.0e-5 at std 16 and 1.46e-4 at std 256 (attend:sharp64, logits ~ +-1000, ulp 6e-5), which sets tol. On every case the fast kernel is closer to FP64 than the oracle (condition (a) fraction 4.6e-5..4.7e-3 against 2.2e-4..8.8e-3)."
+    },
+    "gdn_scan_fast": {
+      "tol": 4.76837158203125e-07,
+      "max": 2.546494693388438e-07,
+      "p99": 7.166882216569216e-08,
+      "samples": 2391840,
+      "commit": "79dc4d7 + the R2.4 working tree, measured with the harness of 'Add a simdgroup GDN scan'",
+      "note": "Per token the two dots (prediction S.k, output S.q) sum dk/32 products per lane then simd_sum instead of dk serial products; everything else (decay, delta, update) is the same expression per element. Outputs: S = sum|s' q| of the last token. State: S = the running sum M <- M exp(g) + |delta k_j| + |k_j| |beta| sum|s exp(g) k| (scan_magnitudes), the absolute values each state rounding scales with, so the error that delta carries from the prediction is counted. Max 2.5e-7 (4.3 u) on the final state after 3 tokens at the real dims; outputs <= 2.2e-7. Condition (a) for one token holds for fast and oracle at <= 0.33 of the bound."
     }
   }
 }
