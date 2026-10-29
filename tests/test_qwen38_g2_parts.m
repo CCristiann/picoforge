@@ -267,7 +267,7 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
         qn = shared(total*h*d*4), qr = shared(total*h*d*4), gt = shared(total*h*d*4), kn = shared(total*w_kv*4),
         iqn = shared(total*w_iq*4), iqr = shared(total*w_iq*4), pl = shared(di*4), pn = shared(di*4),
         sc = shared(cap/c.ratio*4 + 4), kp = shared(cap/c.ratio*4 + 4), ids = shared((c.token_budget + c.ratio)*4),
-        bo = shared(total*h*d*4);
+        bo = shared(total*h*d*4), pt = shared((size_t)Q38D_MAX_SPLITS*h*(d+2)*4);
     memcpy(gq.contents, gamma[0], d*4); memcpy(gk.contents, gamma[1], d*4);
     memcpy(giq.contents, gamma[2], di*4); memcpy(gik.contents, gamma[3], di*4);
     NSArray *scratch=@[kc,vc,ic,bc,qn,qr,gt,kn,iqn,iqr,pl,pn,sc,kp,ids,bo];
@@ -300,7 +300,8 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
             g3(kc, cap, j, d), g3(vc, cap, j, d), gview(ic, 0, cap, di), gview(bc, 0, cap/c.ratio, di),
             g3(qn, n, h, d), g3(qr, n, h, d), g3(gt, n, h, d), g3(kn, n, j, d), g3(iqn, n, hi, di), g3(iqr, n, hi, di),
             g3(pl, 1, 1, di), g3(pn, 1, 1, di), g1(sc, cap/c.ratio),
-            {(__bridge void *)kp, 0, kp.length}, {(__bridge void *)ids, 0, ids.length}, g3(bo, n, h, d)};
+            {(__bridge void *)kp, 0, kp.length}, {(__bridge void *)ids, 0, ids.length}, g3(bo, n, h, d),
+            {(__bridge void *)pt, 0, pt.length}};  /* R2.1: the graph's split attention */
         __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
         size_t pos0 = start, count = n; Q38DGpuLayer *lp = &l;
         if (!pass && !start) qsa_admission(dg,ops,&c,lp,scratch,inputs);

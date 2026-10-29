@@ -99,8 +99,8 @@ typedef struct {
     Qwen38GpuF32 key_cache, value_cache, index_cache, block_cache; /* [cap,J,D] x2, [cap,Di], [cap/r,Di] */
     Qwen38GpuF32 qn, qr, gate, kn, iqn, iqr, pooled, pooled_n, scores; /* scratch */
     Qwen38GpuSpan keep, ids;                      /* uint32 [cap/r], [budget+r-1] */
-    Qwen38GpuSpan part;                           /* split partials, Q38D_MAX_SPLITS*H*(D+2) floats */
     Qwen38GpuF32 out;                             /* [T,H,D] gated attention */
+    Qwen38GpuSpan part;   /* R2.1 split partials, Q38D_MAX_SPLITS*H*(D+2) floats; empty: oracle attention */
 } Q38DGpuLayer;
 typedef struct Q38CGpu Q38CGpu;
 Qwen38Status q38d_layer_encode(Q38DGpu *, Q38CGpu *, Qwen38GpuCommand,
