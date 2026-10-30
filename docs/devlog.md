@@ -19,9 +19,9 @@ blocks). RoPE now runs one thread per element with the oracle's
 expression (7 us; test_rope_fast_bit_identical_to_oracle), the scores 8
 lanes per block, lane h running head h's dot in increasing d, the first
 lane adding the clamped dots in head order (10-14 us short, 62 -> 15-21 us
-at 8K; the index scores test unchanged). Graph (,
+at 8K; the index scores test unchanged). Graph (`profile-qsa-small`,
 battery): qsa.core 2.33 -> 0.95 ms/token; real short decode 24.04 tok/s
-().
+(`speed-qsa-small`).
 
 ### R2.7 — routed down: four rows per simdgroup
 
