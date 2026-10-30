@@ -1115,6 +1115,84 @@ static int index_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R2.9 activations, q38c_gpu_encode fast (check folded) or oracle (check + op):
+ *   act <oracle|fast> op kind t width streams initial   op 0 ACT (kind 0 sigmoid, 1 silu,
+ *   2 softplus), 1 HC_LOW, 2 HC_INJECT; stdin: x [t,width]; stdout: word, dispatches, y. */
+static int act_main(int argc,char **argv,const char *library) {
+    bool fast=!strcmp(argv[2],"fast");
+    assert(argc==9 && (fast || !strcmp(argv[2],"oracle")));
+    size_t op=number(argv[3]), kind=number(argv[4]), t=number(argv[5]), width=number(argv[6]), h=number(argv[7]);
+    uint32_t initial=(uint32_t)number(argv[8]);
+    assert(op<=2 && kind<=2 && t && t<=64 && width && width<=16384 && h && h<=8);
+    const Q38CGpuOp ops_of[3]={Q38C_ACT,Q38C_HC_LOW,Q38C_HC_INJECT};
+    const Qwen38Activation kinds[3]={Q38_SIGMOID,Q38_SILU,Q38_SOFTPLUS};
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38CGpu *ops=NULL; assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        q38c_gpu_set_reference(ops,!fast);
+        id<MTLBuffer> x=shared(dev,4*t*width), y=shared(dev,4*t*width), word=shared(dev,8);
+        assert(fread(x.contents,4,t*width,stdin)==t*width && fgetc(stdin)==EOF);
+        memset(y.contents,0xa5,y.length); memset(word.contents,0,8); ((uint32_t *)word.contents)[0]=initial;
+        Qwen38GpuF32 v[2]={{{(__bridge void *)x,0,4*t*width},2,{t,width,1,1},{4*width,4,0,0}},
+                           {{(__bridge void *)y,0,4*t*width},2,{t,width,1,1},{4*width,4,0,0}}};
+        Q38CGpuSpec spec={.activation=kinds[kind],.hc={.streams=h,.hidden_size=1,.low_rank=width,.rms_eps=1e-6f}};
+        if (op==2) spec.hc.streams=width, spec.hc.low_rank=1;
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        id<MTLCommandBuffer> command=[queue commandBuffer];
+        Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+        counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
+        assert(q38c_gpu_encode(ops,cmd,ops_of[op],&spec,v,2,NULL)==Q38_OK);
+        [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+        assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+        uint32_t head[2]={((uint32_t *)word.contents)[0],counter->dispatches};
+        assert(fwrite(head,4,2,stdout)==2 && fwrite(y.contents,4,t*width,stdout)==t*width);
+        q38c_gpu_destroy(ops);
+    }
+    return 0;
+}
+
+/* R2.9 HC_ADD, q38c_gpu_encode fast (check folded) or oracle (check + op):
+ *   hcadd <oracle|fast> t h width initial   stdin: residual [t,h,width], block [t,width],
+ *   inject [t,h] FP32; stdout: error word, dispatches, residual after. */
+static int hcadd_main(int argc,char **argv,const char *library) {
+    bool fast=!strcmp(argv[2],"fast");
+    assert(argc==7 && (fast || !strcmp(argv[2],"oracle")));
+    size_t t=number(argv[3]), h=number(argv[4]), width=number(argv[5]);
+    uint32_t initial=(uint32_t)number(argv[6]);
+    assert(t && t<=64 && h && h<=8 && width && width<=8192);
+    size_t n[3]={t*h*width,t*width,t*h};
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38CGpu *ops=NULL; assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        q38c_gpu_set_reference(ops,!fast);
+        id<MTLBuffer> buf[3], word=shared(dev,8);
+        for (size_t b=0;b<3;b++) { buf[b]=shared(dev,4*n[b]); assert(fread(buf[b].contents,4,n[b],stdin)==n[b]); }
+        assert(fgetc(stdin)==EOF);
+        memset(word.contents,0,8); ((uint32_t *)word.contents)[0]=initial;
+        Qwen38GpuF32 v[3]={{{(__bridge void *)buf[0],0,4*n[0]},3,{t,h,width,1},{4*h*width,4*width,4,0}},
+                           {{(__bridge void *)buf[1],0,4*n[1]},2,{t,width,1,1},{4*width,4,0,0}},
+                           {{(__bridge void *)buf[2],0,4*n[2]},2,{t,h,1,1},{4*h,4,0,0}}};
+        Q38CGpuSpec spec={.hc={.streams=h,.hidden_size=width,.low_rank=1,.rms_eps=1e-6f}};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        id<MTLCommandBuffer> command=[queue commandBuffer];
+        Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+        counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
+        assert(q38c_gpu_encode(ops,cmd,Q38C_HC_ADD,&spec,v,3,NULL)==Q38_OK);
+        [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+        assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+        uint32_t head[2]={((uint32_t *)word.contents)[0],counter->dispatches};
+        assert(fwrite(head,4,2,stdout)==2 && fwrite(buf[0].contents,4,n[0],stdout)==n[0]);
+        q38c_gpu_destroy(ops);
+    }
+    return 0;
+}
+
 /* R2.8 RoPE, q38d_gpu_encode ROPE fast (one thread per element) or oracle:
  *   rope <oracle|fast> h d r pos   stdin: x [h,d] FP32; stdout: error word, y [h,d]. */
 static int rope_main(int argc,char **argv,const char *library) {
@@ -1258,6 +1336,8 @@ int main(int argc,char **argv) {
     if (argc>2 && !strcmp(argv[1],"index")) return index_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"scan") || !strcmp(argv[1],"scanbench"))) return scan_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"rope")) return rope_main(argc,argv,library);
+    if (argc>2 && !strcmp(argv[1],"hcadd")) return hcadd_main(argc,argv,library);
+    if (argc>2 && !strcmp(argv[1],"act")) return act_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"hctail") || !strcmp(argv[1],"hcbench"))) return hctail_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");

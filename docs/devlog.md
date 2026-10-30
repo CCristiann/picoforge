@@ -8,6 +8,24 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.9 — check folded into HC_ADD and the activations
+
+HC_ADD (96 per token), ACT (MoE shared SiLU and sigmoid, QSA gate) and
+the unfused HC_LOW/HC_INJECT ran q38c_check, then the op: two dispatches
+and two barriers each. `q38c_hc_add_fast` and `q38c_activate_fast` test
+each thread's own inputs (together every element the check reads) and
+then evaluate the op's expression, so the outputs keep their bits
+(test_hc_add_fast_bit_identical_to_oracle,
+test_activation_fast_bit_identical_to_oracle). The difference is on
+faults only: the sequence stops the whole op, the folded kernel may still
+write other elements (the session discards the command; the C contract
+test now checks "nothing written" with the oracle forced). On a
+concurrent command the fault goes to word 1 and the op continues, as
+R1.6b's overlapped check. Measured (`profile-folded`, battery): GPU
+groups 40.16 -> 38.63 ms/token, dispatches 1560 -> 1356, hc_add+gdn.add
+0.95 -> 0.57 ms; real short decode unchanged within battery noise
+(24.00 tok/s, p10 22.62: `speed-folded`).
+
 ### R2.8 — QSA small stages: RoPE per element, scores per head
 
 At the short prompt qsa.core cost 185 us per layer for a few keys. A

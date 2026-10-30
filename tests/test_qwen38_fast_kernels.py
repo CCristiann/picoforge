@@ -559,6 +559,35 @@ def run_attend(mode, q, gate, k, v, ids, env=None):
     return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(h, d)
 
 
+def run_act(mode, op, kind, x, streams=4, initial=0):
+    """R2.9: ACT (op 0, kind 0/1/2 sigmoid/silu/softplus), HC_LOW (1) or HC_INJECT (2), fast or
+    oracle on x [t, width]: (error word, dispatches, y)."""
+    t, width = x.shape
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"}
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "act", mode, str(op), str(kind), str(t), str(width), str(streams), str(initial)],
+                            input=np.ascontiguousarray(x, "<f4").tobytes(), capture_output=True, timeout=60,
+                            pass_fds=(int(lock),) if lock else (), env=environment)
+    if result.returncode or len(result.stdout) != 8 + 4 * x.size:
+        raise AssertionError(f"act {mode}: exit {result.returncode}, {result.stderr!r}")
+    word, dispatches = (int(v) for v in np.frombuffer(result.stdout[:8], "<u4"))
+    return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(x.shape)
+
+
+def run_hcadd(mode, residual, block, inject, initial=0):
+    """R2.9: HC_ADD fast or oracle: (error word, dispatches, residual after [t, h, width])."""
+    t, h, width = residual.shape
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"}
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "hcadd", mode, str(t), str(h), str(width), str(initial)],
+                            input=b"".join(np.ascontiguousarray(a, "<f4").tobytes() for a in (residual, block, inject)),
+                            capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
+    if result.returncode or len(result.stdout) != 8 + 4 * residual.size:
+        raise AssertionError(f"hcadd {mode}: exit {result.returncode}, {result.stderr!r}")
+    word, dispatches = (int(x) for x in np.frombuffer(result.stdout[:8], "<u4"))
+    return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(residual.shape)
+
+
 def run_rope(mode, x, r, pos):
     """R2.8: q38d ROPE fast or oracle on x [h, d]: (error word, y [h, d])."""
     h, d = x.shape
@@ -2195,7 +2224,8 @@ class FastKernelTests(unittest.TestCase):
                     np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
     def test_hc_tail_fused_bit_identical_to_sequence(self):
         """R2.6: the fused HC tail writes act, gate, mixed and inject byte for byte as the fast sequence
-        (HC_LOW, F16 up, HC_READ, HC_INJECT) in one dispatch instead of 7 (5 without inject): the real
+        (HC_LOW, F16 up, HC_READ, HC_INJECT) in one dispatch instead of 5 (4 without inject; 7 and 5
+        before R2.9 folded the activation checks): the real
         site (K 320, h 4, E 2560) at 1 and 3 tokens, and shapes with no chunk tail (K 256), no head
         (K 8), a partial last chunk (K 100, 300), h 1..4 and K 1024. A NaN in low sets bit 1 in both.
         Under Q38_REF_KERNELS=linear or fuse it answers UNSUPPORTED (8): the caller runs the sequence."""
@@ -2205,7 +2235,7 @@ class FastKernelTests(unittest.TestCase):
             for inject in (True, False):
                 with self.subTest(shape=shape, inject=inject):
                     got = run_hctail(shape, inject)
-                    self.assertEqual(got, dict(status=0, equal=1, words=(0, 0), dispatches=(1, 7 if inject else 5)))
+                    self.assertEqual(got, dict(status=0, equal=1, words=(0, 0), dispatches=(1, 5 if inject else 4)))
         got = run_hctail((1, 320, 4, 2560), poison=True)
         self.assertEqual((got["status"], got["words"][0] & 1, got["words"][1] & 1), (0, 1, 1))
         for family in ("linear", "fuse", "1"):
@@ -2226,6 +2256,45 @@ class FastKernelTests(unittest.TestCase):
         x = rng.standard_normal((24, 256)).astype(np.float32)
         x[5, 17] = np.nan
         self.assertEqual((run_rope("fast", x, 64, 9)[0], run_rope("oracle", x, 64, 9)[0]), (1, 1))
+    def test_hc_add_fast_bit_identical_to_oracle(self):
+        """R2.9: HC_ADD with the check folded in (1 dispatch instead of 2) writes the oracle's
+        residual bits at 1, 3 and 7 tokens of the real [4, 2560] HC shape and odd shapes; a NaN or
+        Inf in any of the three inputs sets bit 1 in both; preset, the word keeps its bits and an
+        input fault still adds bit 1."""
+        rng = np.random.default_rng(4231)
+        for t, h, width in ((1, 4, 2560), (3, 4, 2560), (7, 3, 33), (2, 1, 5)):
+            with self.subTest(t=t, h=h, width=width):
+                inputs = [rng.standard_normal(shape).astype(np.float32) for shape in ((t, h, width), (t, width), (t, h))]
+                fast, oracle = run_hcadd("fast", *inputs), run_hcadd("oracle", *inputs)
+                self.assertEqual((fast[0], fast[1], oracle[0]), (0, 1, 0))
+                self.assertEqual(fast[2].tobytes(), oracle[2].tobytes())
+        clean = [rng.standard_normal(shape).astype(np.float32) for shape in ((2, 4, 64), (2, 64), (2, 4))]
+        for which, at, value in ((0, (1, 2, 3), np.nan), (1, (0, 5), np.inf), (2, (1, 3), -np.inf)):
+            for mode in ("fast", "oracle"):
+                with self.subTest(input=which, mode=mode):
+                    inputs = [a.copy() for a in clean]
+                    inputs[which][at] = value
+                    self.assertEqual(run_hcadd(mode, *inputs)[0], 1)
+                    self.assertEqual(run_hcadd(mode, *inputs, initial=4)[0], 5)
+    def test_activation_fast_bit_identical_to_oracle(self):
+        """R2.9: ACT (sigmoid, silu, softplus), HC_LOW (silu(x/h)) and HC_INJECT (2 sigmoid(x/h)) with
+        the check folded in (1 dispatch instead of 2) give the oracle's bits, large magnitudes included
+        (exp overflow and underflow branches); a NaN or Inf sets bit 1 in both, preset words keep theirs."""
+        rng = np.random.default_rng(4241)
+        x = (rng.standard_normal((3, 640)) * 30).astype(np.float32)
+        x[0, :4] = (0.0, -0.0, 89.0, -104.0)
+        for op, kind, width in ((0, 0, 640), (0, 1, 640), (0, 2, 640), (1, 1, 640), (2, 0, 4)):
+            with self.subTest(op=op, kind=kind):
+                xs = np.ascontiguousarray(x[:, :width])
+                fast, oracle = run_act("fast", op, kind, xs), run_act("oracle", op, kind, xs)
+                self.assertEqual((fast[0], fast[1], oracle[0]), (0, 1, 0))
+                self.assertEqual(fast[2].tobytes(), oracle[2].tobytes())
+        for value in (np.nan, np.inf, -np.inf):
+            for mode in ("fast", "oracle"):
+                with self.subTest(value=value, mode=mode):
+                    xs = x.copy(); xs[2, 7] = value
+                    self.assertEqual(run_act(mode, 0, 1, xs)[0], 1)
+                    self.assertEqual(run_act(mode, 0, 1, xs, initial=4)[0], 5)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "qwen38_c_internal.h"
+#include "qwen38_ref.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -86,8 +87,14 @@ static void activations(void) {
     }
     View x=view(1,(size_t[]){3},0), y=view(1,(size_t[]){3},0); pattern(x,1); x.cpu.data[2]=NAN;
     Q38CGpuSpec s={.activation=Q38_SILU}; Qwen38GpuF32 v[]={x.gpu,y.gpu};
+    /* The oracle (check, then the op) writes nothing; the R2.9 folded fast kernel sets the same
+     * word, its outputs are unspecified once the word is set (the session discards the command). */
+    q38c_gpu_set_reference(gpu,true);
     assert(q38c_gpu_encode(gpu,begin(0),Q38C_ACT,&s,v,2,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
     for (size_t i=0;i<3;++i) assert(y.cpu.data[i]==123456);
+    q38c_gpu_set_reference(gpu,q38_ref_kernels("fuse"));
+    assert(q38c_gpu_encode(gpu,begin(0),Q38C_ACT,&s,v,2,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
+    for (size_t i=0;i<3;++i) y.cpu.data[i]=123456;
     x.cpu.data[2]=1;
     assert(q38c_gpu_encode(gpu,begin(Q38_GPU_STATE),Q38C_ACT,&s,v,2,NULL)==Q38_OK); finish(Q38_GPU_STATE);
     for (size_t i=0;i<3;++i) assert(y.cpu.data[i]==123456);
@@ -111,8 +118,13 @@ static void concurrent_words(void) {
     View r=view(3,(size_t[]){1,1,33},0), m=view(2,(size_t[]){1,33},0), j=view(2,(size_t[]){1,1},0);
     pattern(r,2); pattern(m,2); pattern(j,2); r.cpu.data[0]=NAN; float kept=r.cpu.data[1];
     Qwen38GpuF32 rv[]={r.gpu,m.gpu,j.gpu}; cmd=begin(0); cmd.error_word.bytes=8; cmd.concurrent=true; w[1]=0;
+    q38c_gpu_set_reference(gpu,true);  /* the oracle sequence skips the whole op; R2.9's folded add sets the same words */
     assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_ADD,&hs,rv,3,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
     assert(w[1]==0 && r.cpu.data[1]==kept);                /* in place: word 0, the op skipped */
+    q38c_gpu_set_reference(gpu,q38_ref_kernels("fuse"));
+    cmd=begin(0); cmd.error_word.bytes=8; cmd.concurrent=true; w[1]=0;
+    assert(q38c_gpu_encode(gpu,cmd,Q38C_HC_ADD,&hs,rv,3,NULL)==Q38_OK); finish(Q38_GPU_NONFINITE);
+    assert(w[1]==0);                                       /* in place: word 0 (outputs unspecified) */
     release_view(r); release_view(m); release_view(j);
 }
 static void norms(void) {

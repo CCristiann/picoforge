@@ -46,6 +46,23 @@ kernel void q38c_activate(Q38C_BUFFERS) {
     y*=float(a.p[2]);
     if (valid(y,error)) v1[at(a.v[1],i)]=y;
 }
+/* R2.9: q38c_check + q38c_activate in one dispatch (ACT, HC_LOW, HC_INJECT): the
+ * op's expression per element, so the bits are the same; the check folded in as in
+ * q38c_hc_add_fast (each thread tests its own input: together all of v0). */
+kernel void q38c_activate_fast(Q38C_BUFFERS, device atomic_uint *check [[buffer(10)]],
+        constant uint &split [[buffer(11)]]) {
+    if (i>=a.v[0].count) return;
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    float v=v0[at(a.v[0],i)];
+    if (!isfinite(v)) { atomic_fetch_or_explicit(check,1u,memory_order_relaxed); if (!split) return; }
+    if (skip) return;
+    float x=v/float(a.p[1]), y;
+    if (a.p[0]==0) y=sigmoid(x);
+    else if (a.p[0]==1) y=x*sigmoid(x);
+    else y=softplus(x);
+    y*=float(a.p[2]);
+    if (valid(y,error)) v1[at(a.v[1],i)]=y;
+}
 kernel void q38c_rms(Q38C_BUFFERS) {
     uint width=a.v[0].dim[2], groups=a.v[0].dim[1];
     if (i>=a.v[0].count/width || atomic_load_explicit(error,memory_order_relaxed)) return;
@@ -128,6 +145,29 @@ kernel void q38c_hc_add(Q38C_BUFFERS) {
     uint width=a.v[0].dim[2], h=a.v[0].dim[1], th=i/width;
     float y=v0[at(a.v[0],i)]+v2[at(a.v[2],th)]*v1[at(a.v[1],(th/h)*width+i%width)];
     if (valid(y,error)) v0[at(a.v[0],i)]=y;
+}
+/* R2.9: q38c_check + q38c_hc_add in one dispatch, one thread per element as the
+ * op: y = residual + inject * block with q38c_hc_add's expression, so the bits are
+ * the same. The check is folded in: each thread tests its residual, block and
+ * inject elements (together every element of the three views, as q38c_check), a
+ * nonfinite one sets bit 1 even when the word is already set; y is skipped when
+ * the word was set before (as the op after a failed check). Outputs are
+ * unspecified when the word ends nonzero (other elements may be written); the
+ * session then discards the command. On a concurrent command whose op writes
+ * nothing the check reads (R1.6b), the input fault goes to word 1 (`check`,
+ * split = 1) and the op is not stopped, as the overlapped check + op. 96 calls
+ * per decode token. */
+kernel void q38c_hc_add_fast(Q38C_BUFFERS, device atomic_uint *check [[buffer(10)]],
+        constant uint &split [[buffer(11)]]) {
+    if (i>=a.v[0].count) return;
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    uint width=a.v[0].dim[2], h=a.v[0].dim[1], th=i/width;
+    uint ri=at(a.v[0],i);
+    float r=v0[ri], b=v1[at(a.v[1],(th/h)*width+i%width)], s=v2[at(a.v[2],th)];
+    if (!isfinite(r) || !isfinite(b) || !isfinite(s)) { atomic_fetch_or_explicit(check,1u,memory_order_relaxed); if (!split) return; }
+    if (skip) return;
+    float y=r+s*b;
+    if (valid(y,error)) v0[ri]=y;
 }
 kernel void q38c_conv(Q38C_BUFFERS) {
     if (i>=a.v[0].count || atomic_load_explicit(error,memory_order_relaxed)) return;
