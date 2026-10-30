@@ -1,0 +1,4 @@
+a5bf5f2d0bcb03b2c7d7585183320062fe5ab287
+?? bench/qwen38_r1_20261021/moe-down/
+ec54125cb7f1695551daf0025362a32c4452f3839708bf1a5c73864adb0da6a0  build/qwen38-r1/test_fast_kernels
+842643f6787a82ff84eb10dfbcfddd7f1a07f81273697447e42e2f5cbb2fb0eb  picoforge.metallib

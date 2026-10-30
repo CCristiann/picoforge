@@ -1,0 +1,22 @@
+{
+  "decode_appends": 8,
+  "groups_per_token": 992.0,
+  "us_per_token": 41699.08275,
+  "us_per_token_median": 41468.0665,
+  "us_per_token_p10": 41292.006499999996,
+  "us_per_token_p90": 42337.8219,
+  "weight_bytes_per_token": 6104775680.0,
+  "effective_gbps": 146.40071861053107,
+  "bandwidth_floor_us_per_token": 19885.26280130293,
+  "dispatches_per_token": 2140.0,
+  "barriers_per_token": 1657.0,
+  "dispatch_floor_us_per_token": 2996.0,
+  "gdn_us_per_token": 16081.411499999998,
+  "gdn_share": 0.38565384270952574,
+  "gdn_weight_bytes_per_token": 2716139520.0,
+  "moe_us_per_token": 11020.017,
+  "moe_share": 0.2642748059008564,
+  "moe_weight_bytes_per_token": 1217986560.0,
+  "normal_decode_gpu_us_per_token": 45626.80725,
+  "groups_over_normal_gpu": 0.9139162975292339
+}

@@ -2,6 +2,754 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R2 — close the gap to DwarfStar, short prompt and 8K (from 2026-10-28)
+
+Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
+8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
+the end. Notes below are newest first.
+
+### R2 review — one Important, seven Minor
+
+One opus review of 0da4c82..d745172 (`.superpowers/sdd/R0-R1-plan/r2-final-review.md`):
+no Critical; every "bit-identical" step checked as such. Fixed: I1 (split
+attention set bit 1 on top of bit 2 for an invalid id: it now scans the
+ids first, as the oracle, and sets bit 2 alone; new combined-fault tests),
+M2 (the QSA fast kernels fall back to the oracle without 32-lane
+simdgroups), M7 (this log's split size). Accepted as documented: M1 (the
+fused HC tail reports input faults in word 0 on a concurrent command; the
+session ORs both words, so the status is the same), M3 (the S = 1 packing
+drops a redundant dispatch check). Deferred to the next round: M4
+(tolerance provenance "commit + working tree" for attend_fast and
+gdn_scan_fast: re-measure on a commit), M5 (attend_fast tol set by an
+extreme case; scan (a) single-token), M6 (attention fallback and `part`
+alias tests, strided HC tail views).
+
+### R2 close — 0.75x short, 0.72x at 8K
+
+Paired on AC at `9ae6e02` (`bench/qwen38_r2_20261030`, README): short
+24.15 tok/s vs DwarfStar 32.33 = 0.747x (R1 0.623x), 8K 21.73 vs 30.14 =
+0.721x (R1 0.372x). The 8K target (0.60x) is met; the short one (0.80x) is
+not. All gates green: test-qwen38, MTP, speculative, fast-kernels (80) in
+both modes, G3 scaled 2.1e-7, `Q38_REF_KERNELS=1` logits bit-identical to
+360acf0, default within 4.9e-5 (argmax 9/9). Only two new tolerances in R2
+(attend_fast 2^-12, gdn_scan_fast 2^-21); every other step is
+bit-identical to the path it replaces. What is left on the short prompt is
+mostly the routed MoE (6.5 ms, ALU-bound decode of IQ2_XXS/Q2_K) and the
+HC F16 matvecs; no cheap exact rewrite remains there.
+
+### R2.9 — check folded into HC_ADD and the activations
+
+HC_ADD (96 per token), ACT (MoE shared SiLU and sigmoid, QSA gate) and
+the unfused HC_LOW/HC_INJECT ran q38c_check, then the op: two dispatches
+and two barriers each. `q38c_hc_add_fast` and `q38c_activate_fast` test
+each thread's own inputs (together every element the check reads) and
+then evaluate the op's expression, so the outputs keep their bits
+(test_hc_add_fast_bit_identical_to_oracle,
+test_activation_fast_bit_identical_to_oracle). The difference is on
+faults only: the sequence stops the whole op, the folded kernel may still
+write other elements (the session discards the command; the C contract
+test now checks "nothing written" with the oracle forced). On a
+concurrent command the fault goes to word 1 and the op continues, as
+R1.6b's overlapped check. Measured (`profile-folded`, battery): GPU
+groups 40.16 -> 38.63 ms/token, dispatches 1560 -> 1356, hc_add+gdn.add
+0.95 -> 0.57 ms; real short decode unchanged within battery noise
+(24.00 tok/s, p10 22.62: `speed-folded`).
+
+### R2.8 — QSA small stages: RoPE per element, scores per head
+
+At the short prompt qsa.core cost 185 us per layer for a few keys. A
+20-encode microbench found two latency chains: RoPE ran one thread per
+head (24 threads, each 256 precise cos/sin in series: 33 us per call at
+any context, three calls per token) and the R2.2 fast scores one thread
+per block (4 head dots interleaved over 128 columns: 31 us even at 3
+blocks). RoPE now runs one thread per element with the oracle's
+expression (7 us; test_rope_fast_bit_identical_to_oracle), the scores 8
+lanes per block, lane h running head h's dot in increasing d, the first
+lane adding the clamped dots in head order (10-14 us short, 62 -> 15-21 us
+at 8K; the index scores test unchanged). Graph (`profile-qsa-small`,
+battery): qsa.core 2.33 -> 0.95 ms/token; real short decode 24.04 tok/s
+(`speed-qsa-small`).
+
+### R2.7 — routed down: four rows per simdgroup
+
+The Q2_K down (K 640 = 40 chunks of 16) gave each output row one
+simdgroup: 32 chunks in the first lane round, 8 in the second, so a
+quarter of the lanes worked half the time. A simdgroup now owns 4 rows
+and their tail chunks share rounds (`q38_quant_rows`, 5 rounds instead of
+8), each lane keeping its partial sums in q38_quant_row's order:
+bit-identical (the fused-down tests unchanged). Isolated, 1 token x 10
+slots: 65.4 -> 60.1 us; 2 rows 61.5, 8 rows 72.3 (fewer simdgroups in
+flight). A threadgroup copy of the IQ2_XXS grid for the gate/up was tried
+and dropped (61.6 -> 63.2 us): the kernels are ALU-bound, ~7 operations
+per weight, not limited by the constant cache.
+
+### R2.6 — HC read tail in one dispatch
+
+After down, every HC site ran HC_LOW, the F16 up (320 -> 10240), HC_READ
+and HC_INJECT: 7 dispatches (each C op is check + op). One kernel now does
+all four (idea: ds4 hc_gate_mix): every threadgroup recomputes
+act = silu(low/4) in threadgroup memory, a simdgroup takes the 4 up rows of
+one d with pooled tail chunks (K 320 = 40 chunks of 8: 5 rounds instead of
+8), then the read; threadgroup 0 writes act and inject. Same operations in
+the same order: act, gate, mixed and inject byte-equal to the fast sequence
+(test_hc_tail_fused_bit_identical_to_sequence, 7 shapes); under
+Q38_REF_KERNELS=linear or fuse the sequence runs. Isolated: 48-65 -> 30-35
+us per site. In the graph with R2.7 (`profile-hctail`, AC): dispatches 2140 -> 1560,
+normal-mode GPU 45.6 -> 44.0 ms/token, real short decode (1+3)
+22.54 -> 22.91 tok/s (`speed-d52cb7c`, `speed-hctail`).
+
+### R2.5 — HC down and inject in one multi-GEMV
+
+Each HC read runs two F16 projections of the same normed rows: down
+(10240 -> 320) and inject (10240 -> 4). The inject alone ran 4 output rows on
+the whole GPU (~10 GB/s, 7.6 us). Both now go through the R1.4 multi-GEMV,
+bit-identical to two single calls: 132 dispatches and barriers fewer per
+token (2272 -> 2140). Measured (`profile-short-hcmulti`, battery):
+hc_ffn.down+inject 2.02 -> 1.77 ms, total GPU groups unchanged within noise
+(median 41.64 -> 41.47 ms). Kept for the dispatch count, not for speed.
+
+### R2.4 — GDN scan: a simdgroup per four state rows
+
+The gated delta rule keeps, per value head, a 128x128 state S and per token
+does `S *= exp(g); u = S·k; delta = (v - u)·beta; S += delta·k; o = S·q`.
+The oracle gives each thread one state row: it walks its 512-byte row in
+device memory twice per token, and neighbouring threads touch rows 512 bytes
+apart, so with each layer's 3 MB state cold in the graph the scan ran at
+~58 GB/s. Now a simdgroup owns 4 rows of one head (as ds4's `gdn_scan_r4`):
+each lane keeps 4 consecutive state values per row in registers for the
+whole token loop (one coalesced read and write per dispatch), q and k are
+loaded once for the 4 rows, and the two dots become per-lane sums + simd_sum.
+One row per simdgroup was slower than the oracle; four were needed. The
+input check of `q38c_check` (bits 1 and 4) is folded in. Tolerance
+`gdn_scan_fast` = 2^-21 (max 4.3 u; the state's S is the running sum of the
+magnitudes its roundings scale with). Chunked tokens stay bit-identical to
+one-token steps. Profile short (`bench/qwen38_r2_20261029/profile-short-scan`,
+battery): gdn.scan 3.70 -> 1.83 ms, GPU groups 43.6 -> 41.7 ms/token.
+
+### R2.3 — F16 matvecs: hardware half -> float on every chunk
+
+The hyper-connection (HC) matvecs are F16: "down" 10240 -> 320 and "up"
+320 -> 10240, 6.5 MB each, at 96 sites per token (GDN, attention and FFN
+blocks). R1.9c had moved the block scales to the GPU's half -> float
+conversion (one instruction, the same bits for every finite pattern) but the
+F16 matvec still rebuilt every whole-chunk weight bit by bit (branches +
+clz). Now whole chunks convert in hardware too; nonfinite weights still set
+error bit 1 (`test_f16_decode_matches_oracle` checks all 65536 patterns).
+With one simdgroup per row (K < 2560) the kernel also packs 8 rows per
+threadgroup. Same bits per row. Isolated (20 encodes): up 41.9 -> 27.1 us
+(157 -> 243 GB/s), down 28.7 -> 22.1 us. Profile short (`profile-short-f16`):
+GPU groups 45.2 -> 43.6 ms/token, gdn.hc_pre 4.07 -> 3.35 ms.
+
+### R2.2 — exact fast index scores and block selection
+
+Two more qsa.core stages were latency bound: one thread per block ran its
+whole dependent chain alone (2048 threads at 8K, too few to hide memory
+latency). Both are rewritten so the results stay the same **bit for bit**:
+scores stage the query once per threadgroup and run the 4 head dots as
+independent chains, each still added in increasing feature order and summed
+over heads in the same order; rank and compact give each block one
+simdgroup whose lanes count strided candidates and `simd_sum` the counts
+(integers, so any order is exact). Warm isolated times at 8K (scratch bench,
+after a GPU clock warm-up: the first cold numbers were inflated): scores
+81 -> 64 us, select 364 -> 23 us per layer. Profile at 8K
+(`profile-8k-index`): qsa.core 8.1 -> 4.1 ms, GPU groups 51.1 -> 47.1
+ms/token. The test `test_index_scores_and_selection_bit_identical` compares
+scores, IDs and error word byte for byte with the oracles.
+
+### R2.1 — split-K decode attention ("flash decoding")
+
+The first 8K profile (`bench/qwen38_r2_20261028/profile-8k-r1`) put 39.6 of
+82.7 ms/token in `qsa.core`, against 2.2 ms on the short prompt: per layer
+2.44 ms attention over the 2048 selected keys, 0.39 ms index scores, 0.43 ms
+block selection. The oracle attention runs one threadgroup per head (24 on a
+20-core GPU) and walks the keys in tiles of 16 with four barriers each.
+Attention is a softmax-weighted average, and softmax can be computed in
+pieces: each piece keeps its running max `m`, sum `l = Σ exp(s-m)` and
+`acc = Σ exp(s-m)·v`; two pieces merge by rescaling with `exp(m_i - max)`.
+So the new kernel gives each threadgroup one split of ceil(m/s) keys, s =
+min(64, ceil(m/32)) splits (<= 32 keys up to 2048, more beyond: 65 at m 4100) and one KV head; its 4 simdgroups share the K/V rows and own 3 query
+heads each, a lane owns 8 features, and a small merge kernel combines the
+partials in split order. The split layout depends on the key count only, so
+every token, chunk and MTP row keeps the same order. Isolated at the 8K
+shape: 2415 -> 120 us; profile at 8K: qsa.core 39.6 -> 8.1 ms, GPU groups
+82.7 -> 51.1 ms/token (`profile-8k-attn`). Tolerance `attend_fast` = 2^-12,
+set by an extreme case (logits ~ +-1000); realistic logits stay below 2^-19,
+and the fast kernel is closer to FP64 than the oracle in every case.
+`Q38_REF_KERNELS=attention` (or 1) keeps the oracle.
+
+## R0/R1 — measure, then make Qwen3.8 Q2 decode fast (from 2026-10-17)
+
+Plan: [R0-R1-plan.md](specs/qwen38/R0-R1-plan.md), spec:
+[R0-R1-decode.md](specs/qwen38/R0-R1-decode.md). For this stage the human
+chose to **build first and study afterwards**: agents implement each step
+under the usual gates, and every step leaves a note here (concept, what
+changed, the measured number) to be studied line by line later. Notes below
+are newest first.
+
+Correctness baseline on the unchanged code (`360acf0`): `make test-qwen38`,
+`make test-qwen38-mtp test-qwen38-speculative`, `make test-all` and
+`make qwen38-g3` all pass; G3 scaled logits error 2.24e-6 against the 1e-3
+gate, argmax and ordered top-5 12/12.
+
+### R1.9c — factored block dot (rejected) and the fp16 scale decode (shipped)
+
+R1.9b's ablations showed the routed kernels are bound by the arithmetic that
+dequantizes each weight, not by memory. Shipped: the fp16 block scales were
+rebuilt bit by bit (branches + clz); the GPU's half->float conversion gives
+the same bits for every finite pattern (half subnormals are FP32 normals, so
+the FP32 flush never applies), so no fast kernel changes numerically.
+Rejected (ruling R42): the factored Q2_K dot `dl·Σ(q·x) − ml·Σx` instead of
+`Σ(dl·q − ml)·x`. It is not a reordering: with d = dmin, scale 1, min 3 and
+codes 3 every weight is exactly 0 (S = 0, the oracle gives 0), yet the two
+sums round apart and give up to 3.8e-6, so tolerance (b) cannot hold;
+`test_q2_k_zero_weights_give_zero` keeps that case. IQ2_XXS factored gave no gain.
+Bench (same session, alternated, battery): Q2_K down+reduce at 10 slots
+75.4 → 64.8 µs (pilot, fp16 alone, not in runs.jsonl), IQ2_XXS gate+up 65.3 → 61.6, Q4_K 84.2 → 77.1.
+Measured (controller, profile-t18 at f7bbeed, battery R38): GPU groups 44.99 ms/token (was 46.35),
+moe 10.94 ms (down 3.35 ms at 92 GB/s, gate_up 3.28 ms at 124 GB/s); g3 pass (fp32 5.42e-7), ref
+bit-identical, default max abs 5.19e-5, argmax 9/9.
+
+### R1.9b — routed MoE kernels at bandwidth (target not reached)
+
+Target: fused down+reduce and gate+up+SwiGLU (one simdgroup per output row) at >= 200 GB/s.
+Bit-identical restructurings measured on the isolated bench (t=1 x 10 slots) did not move
+them: slots in flight, rows per simdgroup sharing x, simdgroups per threadgroup, wider loads,
+pooling the idle-lane tail chunks of the down dot (75.8 us vs 75.4 for the restored kernel,
+a scratch run NOT recorded: no raw file; reverted). Only pooling
+the gate+up tail chunks (K 2560 = 80 chunks: 16 + 16 fill one round of 32 lanes, each sum
+shuffled back to its lane, same bits) stays: IQ2_XXS 67.7 -> 65.3 us, Q4_K 87.2 -> 84.2 us
+(before: committed AC bench qwen38_r1_20261021; after: battery, qwen38_r1_20261028; no
+same-session A/B, so within condition noise). Unrecorded scratch ablations (no raw file)
+suggest why: gate_up IQ2_XXS falls to 36.9 us with the decode replaced by a constant,
+down Q2_K to 52 us with the decode arithmetic dropped and 33 us with no weight read. The
+kernels are bound by the exact FP32 per-value decode and the serial adds, not by DRAM;
+reaching bandwidth needs a numerics ruling (factored block dot or FMA, with new tolerances).
+Measured (controller, profile-t18): moe.down 3.83 -> 3.35 ms, moe.gate_up 3.75 -> 3.28 ms
+(mostly the fp16 scale decode of R1.9c, not this step).
+
+### R1.9a — MoE profile split
+
+After the GDN fix the MoE block is the largest single profile group, but `moe` is one row: it
+mixes the router/shared products, top-k routing, the gate+up experts, the shared expert and the
+down+reduce. Like R1.8, Task 18-0 splits it in `moe.shared_in` (multi call), `moe.route`,
+`moe.gate_up`, `moe.shared` (silu/mul/shared down/sigmoid) and `moe.down` (fused down+reduce or
+its fallback), each with its weight bytes so the summary prints GB/s, plus a `moe rollup` line.
+Profile mode only (a hook in `Q38FRoutedWork`): normal mode adds no dispatch, barrier or split.
+Measured (controller, profile-t18-0 at 461d528): moe 11.95 ms/token = down 3.83, gate_up 3.75,
+shared_in 2.01, route 1.28, shared 1.09; the rollup sums back to the old `moe` total.
+
+### R1.8 — GDN hotspot
+
+The GDN block was 60% of the token but one profile group, so Task 16-0 split it (profile only):
+gdn.prep 23.2 ms/token (32.9%), proj 6.8, hc_pre 4.2, scan 3.7, out 3.0. QSA and the n-gram
+path got no work (each under 5%). The prepare step L2-normalises the 32 q/k heads of 128
+(q also by 1/sqrt(128)), copies the 6144 values and computes 48 gates (g = A·softplus(α+dt),
+β = sigmoid(b)), and it ran on ONE GPU thread per token. `q38c_gdn_prepare_fast` gives each
+head a simdgroup (lane-strided squares, then simd_sum: the order depends only on dk) and
+strides the copy and gates over 1024 threads, with the input check folded in. Copy and gates
+are bit-identical to the oracle; the norms differ only by summation order (tolerance 2^-20,
+measured max 5.7e-7). Bench at the real dims, t = 1: 666.8 -> 19.4 µs, about 24.0 -> 0.7 ms
+per token by estimate (`bench/qwen38_r1_20261026/gdn-prep`). The scan was not touched.
+Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_front/gdn_prep; no code copied.
+Measured (controller, quick closure t16, 8-token profile, AC): GPU 46.9 ms/token (Task 15
+69.2, -32%; normal-mode 50.2 ms); gdn 42.2 → 18.8 ms, gdn.prep 23.2 → 0.33 ms; G3 scaled 5.4e-7;
+`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261026/profile-t16`).
+
+### R1.7b — GPU argmax
+
+Greedy decode needs one number per token, the id of the largest logit, yet every token copied
+the whole 248320-float row (~1 MB) to the host and scanned it on the CPU. Now one threadgroup
+of 1024 threads reduces the row on the GPU right after the LM head (after an explicit barrier,
+the encoder is concurrent): each thread keeps the first maximum of its strided slice, then a
+tree keeps the larger value and, on a tie, the smaller index, so the answer is the FIRST
+maximum whatever the split. Non-finite logits never compete and set error bit 1 (the session
+turns it into Q38_GPU_ERROR). The result is an integer, so the test is exact equality with
+the CPU scan: random rows, ties across and inside a thread's slice, all-equal, -0/+0, sizes
+that are not a multiple of 1024, NaN/Inf, and decode/chunked appends in the graph. Only plain
+greedy reads just the id (`qwen38_gpu_forward_argmax`); `--logits`, MTP and the gate paths
+still read logits. `Q38_REF_KERNELS=argmax` (or 1) keeps the logits readback and CPU scan.
+Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_argmax; no code copied.
+Measured (controller): not exercised by the teacher-forced quick-closure profile (no greedy
+step); the greedy gain is measured by the Task 17 ladder.
+
+### R1.7a — Session-wide weight claims
+
+Every command used to declare (claim) every weight tensor, and each claim was checked
+against all earlier ones: O(n^2) work and a buffer retain per tensor, per token, before the
+GPU got anything. The weights are read-only and live as long as the session, so the session
+now registers them once (`qwen38_gpu_session_pin_read`, sorted ranges with a running max of
+the end address, one binary search per later claim). Semantics are unchanged: a WRITE over a
+pinned READ is still refused, READ/READ overlap is allowed, no-copy aliases are still found by
+address. Per token the graph now claims only its ~60 scratch buffers. R1.7a also adds one
+`MTLResidencySet` (macOS 15+, probe `residency_set`) with the weight views, shared by the main
+and MTP queues, intended to keep them resident across command buffers (not measured); it is
+skipped, with a stderr line, unless views + 4 GiB fit 85% of the recommended working set, and
+it logs its allocatedSize; weights only, no numeric effect. `Q38_REF_KERNELS=claim` (or 1) restores per-command claims and no
+residency set. Claim cost per token with 1500 weights + 60 scratch (g0 micro-benchmark,
+`Q38_CLAIM_BENCH=1`, ASan build): 1.57 ms -> 0.009 ms.
+Measured (controller, quick closure t15, 8-token teacher-forced profile, AC): host encode
+5.2 → 4.7 ms/token, wall decode 77.8 → 77.1 ms/token. On the real store the residency set is
+skipped by its gate (42720 MiB + 4096 MiB > 85% of 53084 MiB). `Q38_REF_KERNELS=1` bit-identical;
+G3 scaled 4.2e-7 (`bench/qwen38_r1_20261026/profile-t15`).
+
+### R1.6b — Concurrent encoder
+
+A serial Metal encoder runs dispatch N+1 only after N has finished, even when N+1 does not
+need N's results. A concurrent encoder (`MTLDispatchTypeConcurrent`) lets them overlap and
+orders only at explicit memory barriers, so every write → read (or read → write) pair needs
+a barrier: a missing one is a race. The session now opens concurrent encoders; with
+`Q38_REF_KERNELS=barrier` (or 1) it keeps the serial encoder and today's barriers. An audit of
+every dispatch path showed only two kinds of removable barrier: check → op inside a C op
+(the check now ORs into a second error word that no kernel reads, `finish()` ORs both; kept
+when the op writes what the check reads: HC_ADD, CONV, GDN_SCAN) and the graph's duplicate
+barrier after the MoE block. A failed check then no longer stops its op, so on a failed
+command the error bits may differ from the serial ones (bit 1 still set; the status is the
+contract). Fake graph, one decode token: 211 dispatches either way, barriers 207 → 165.
+Logits and traces bit-identical over 3 runs per mode.
+Measured (controller, quick closure, 8-token profile, AC): GPU 68.8 ms/token (Task 14b
+75.6, -9%; normal-mode decode 62.3 ms); barriers 2270 → 1788, dispatches 2307. Default logits
+bit-identical over 3 runs and to the serial Task 14b run; `Q38_REF_KERNELS=1` bit-identical;
+G3 scaled 4.2e-7 (`bench/qwen38_r1_20261026/profile-t14a`).
+
+### R1.6a — Parallel RMSNorm
+
+RMSNorm: y = x / sqrt(sum(x²)/width + eps) * gain (GDN norm: then * sigmoid(z)).
+`q38c_rms` used ONE thread per row: at one token each HC norm [1, 4, 2560] (per stream)
+was 4 threads, each a serial pass over 2560 floats, 290 µs (61 calls = 17.7 ms in the t12
+profile; 39 more inside the GDN block and PLE). `q38c_rms_fast`: one 256-thread threadgroup
+per row, strided squares, `simd_sum`, the 8 simdgroup sums in order (order depends only on
+the width), the oracle's expressions. At [t, 4, 2560] it is within 2.6e-7 of FP64, the oracle
+1.2e-6; tolerance `rms_fast` 2^-18 (max 3.4e-6, MTP h-norm). The input check is folded in
+(1 dispatch + 1 barrier instead of 2 + 2, same error word). All RMS and GDN norms use it;
+`Q38_REF_KERNELS=fuse` (or 1) keeps check + `q38c_rms`. Idea: ds4 fc80bd6 (MIT)
+`kernel_qwen4_hc_norm`, nothing copied. AC protocol bench
+(`bench/qwen38_r1_20261026/rms`): HC norm at t = 1 286.6 → 25.9 µs (11.1x), t = 32 378.3 →
+12.8 µs; small widths at t = 1 are faster too (GDN gated 61.5 → 4.5 µs). Per token, counting
+100 HC-shaped norms (61 in the profile's rms groups + 36 GDN block + 3 PLE) and the small
+widths: 32.0 → 3.3 ms (estimate from per-dispatch time, not end-to-end).
+Measured (controller, quick closure, 8-token profile, AC): GPU 75.6 ms/token (Task 13b
+105.7, -28%); rms groups 17.9 → 0.63 ms, gdn 56.3 → 44.4 ms (its 36 norms); dispatches 2307.
+G3 scaled 4.2e-7; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261026/profile-t14b`).
+
+### R1.5d — Parallel router top-k
+
+The router turns 512 logits into p = softmax(z) and keeps the 10 largest as the
+token's experts, weights p renormalized to sum 1. `q38f_route` did it in ONE GPU
+thread per token (512 exp, a serial sum, 10 scans): 1227.3 µs per layer, 58.9 ms
+per decoded token over 48 layers (36.7% of the 160.6 ms post-Task-12 token).
+`q38_moe_route_fast` (`qwen38_moe_fused.metal`): one 256-thread threadgroup per
+token. Max, exp, divide and each selection round (arg-max over larger p, then
+smaller id = the oracle's strict `>`; chosen experts masked in threadgroup memory)
+are exact in any order. Float addition is not, so the exp sum (thread 0, e = 0..511)
+and the sum of the 10 weights keep the oracle's order. Ids, weights and probs are
+bit-identical to `q38f_route` (5 kernel tests; graph layers 0–3);
+`Q38_REF_KERNELS=moe` (or 1), E > 1024 or k > E dispatch the oracle. Idea: ds4
+fc80bd6 (MIT) `kernel_qwen4_router_topk`, nothing copied. Protocol bench on AC
+(`bench/qwen38_r1_20261023/moe-route`, ee67690, synthetic logits, µs median):
+
+| tokens | q38f_route (p10/p90) | q38_moe_route_fast (p10/p90) |
+|---|---|---|
+| 1 | 1227.3 (1224.7/1229.6) | 23.9 (23.8/24.7) |
+| 4 | 1230.6 (1228.5/1232.3) | 24.0 (23.9/24.0) |
+| 32 | 1294.8 (1294.0/1295.4) | 24.6 (24.6/25.0) |
+| 128 | 1310.6 (1310.5/1311.1) | 38.7 (38.7/38.7) |
+
+t = 1, 48 layers: 58.9 → 1.15 ms per token (estimate); faster at 32/128 too: no threshold.
+
+Measured (controller, full closure for Tasks 13+13b at 0f04548, AC): ladder
+9.371 tok/s (p10 9.247, p90 9.470, n 20; Task 9 3.956, x2.37; 0.28x DwarfStar
+R0). 8-token profile: GPU 105.7 ms/token (Task 12 160.6, -34%); the MoE group
+70.7 → 12.9 ms (94.6 GB/s); dispatches 2578 → 2482. `make test-qwen38`, G3 and
+`Q38_REF_KERNELS=1` bit-identical all pass (`bench/qwen38_r1_20261026/ladder-t13`,
+`profile-t13`).
+
+### R1.5c — Fused down + reduce
+
+After the gate+up+SwiGLU, each routed expert projects its act row back to the
+hidden size (down, 640 → 2560), and the token's output is
+y = Σ_s w_s·down_s + σ(z)·shared, summed in slot order 0..k−1. Before, this
+took two dispatches: an indexed down writing a [pairs, 2560] scratch (100 KiB
+per token), then `q38f_reduce` reading it back. Now `q38_moe_down_reduce`
+(in `qwen38_moe_fused.metal`) does both in one dispatch, after the shared
+expert. One simdgroup per (token, column) runs the same `q38_quant_row` per
+slot and accumulates with `q38f_reduce`'s expressions (contraction off in
+both files), so y and routed are bit-identical to the unfused sequence
+(kernel level, all four formats; graph, layers 0–3). Per MoE layer call, the
+identity map (`q38f_iota`), the indexed down and `q38f_reduce` (3 dispatches,
+3 barriers) become 1 dispatch and 1 barrier. `Q38_REF_KERNELS=moe` or `indexed`
+restores the sequence. Bench `bench/qwen38_r1_20261021/moe-down/`
+(512 experts, 10 slots):
+
+| µs, fused / sequence | 1 token | 4 | 32 | 128 |
+|---|---|---|---|---|
+| Q2_K 640/768→2560 | 75.3 / 81.7 | 282.9 / 311.3 | 2205 / 2471 | 8877 / 9995 |
+| MXFP4 (layer 48) | 94.4 / 101.4 | 354.5 / 383.3 | 2786 / 3027 | 11120 / 12124 |
+
+Measured together with R1.5d (one checkpoint closure): see R1.5d.
+
+### R1.5b — Fused gate+up+SwiGLU
+
+An expert's MLP starts with h = SiLU(g)·u, where g = gate·x and u = up·x
+(SwiGLU: the gate decides how much of u passes). R1.5a did this in five
+dispatches: an indexed gate, an indexed up, CHECK, ACT, MUL, each one writing to
+memory and followed by a barrier. Now `q38_moe_gate_up` (in
+`qwen38_moe_fused.metal`) does it in one. For each (slot, row), one simdgroup
+decodes the gate and up chunks, multiplies each x value it loads by both, and
+applies q38c_activate's SILU formula. Each dot keeps `q38_quant_row`'s order,
+so act is bit-identical to the five-dispatch sequence: at kernel level for
+all four formats, and in the graph, where y is bit-identical too. gate/up are
+no longer written. `Q38_REF_KERNELS=moe` (or `indexed`, whose oracle sequence
+the fused kernel does not match) restores the five dispatches. Protocol bench
+`bench/qwen38_r1_20261021/moe-gate-up/` (512 experts, 10 slots per token):
+
+| µs, fused / 4 dispatches | 1 token | 4 | 32 | 128 |
+|---|---|---|---|---|
+| IQ2_XXS 2560→640 (gate+up) | 67.7 / 81.7 | 261.1 / 294.1 | 2088 / 2361 | 8279 / 9463 |
+| Q4_K (layer 48) | 87.2 / 101.5 | 340.8 / 372.0 | 2704 / 2981 | 10656 / 11713 |
+
+Measured (controller, quick closure for Tasks 11+12, 8-token profile, AC): GPU
+160.6 ms/token (Task 10 248.6, -35%); the MoE group 159.4 → 70.7 ms (17.2 GB/s,
+now 44% of the token); dispatches 2770 → 2578. G3 scaled 9.1e-7;
+`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261021/profile-t12`).
+
+### R1.5a — Indexed experts
+
+After R1.3 the routed experts were 64% of the decode token: 10 experts per
+token, each a gate, up and down matvec through `q38_packed_linear_indexed`,
+one thread per output row walking K serially (7.6 GB/s). Now each output gets
+one 32-lane simdgroup: lane l decodes chunks l, l+32, ... of the row (an
+IQ2_XXS group or Q4_K sub-block of 32 columns, a Q2_K scale group of 16, an
+MXFP4 block of 32), sums each chunk in column order, then its chunks, then
+`simd_sum`. The order depends on K and the format only. The row dot
+(`q38_quant_row`, in `qwen38_quant_decode.h`) is shared with the fused MoE
+kernels. Weights decode to the oracle's FP32 values, so only the order differs:
+`tol = 2^-21` for all four formats (the GPU flushes the 16 subnormal MXFP4
+weights, oracle and fast alike). `Q38_REF_KERNELS=indexed` restores the oracle.
+Fast is faster at every row count, so there is no threshold. Protocol bench
+`bench/qwen38_r1_20261021/matvec-indexed/` (512 experts, 10 slots per token):
+
+| µs, fast / oracle | 1 token | 4 | 32 | 128 |
+|---|---|---|---|---|
+| gate IQ2_XXS 2560→640 | 37.2 / 704.9 | 141.4 / 1799.3 | 1162 / 13055 | 4643 / 51443 |
+| down Q2_K 640/768→2560 | 78.1 / 543.6 | 307.3 / 1916.5 | 2465 / 14619 | 9885 / 58415 |
+| gate Q4_K (layer 48) | 46.9 / 1069.6 | | 1463 / 17799 | |
+| down MXFP4 (layer 48) | 95.4 / 372.5 | | 3008 / 10545 | |
+
+Measured (controller): with Task 12, in one quick closure — see R1.5b
+(`bench/qwen38_r1_20261021/profile-t12`).
+
+### R1.4 — Multi-GEMV
+
+Several projections often read the same x: QSA's five (qg, k, v, iq, ik), GDN's
+QKV, Z, alpha, beta, and the router, shared gate/up and shared logit of the
+MoE. Each was its own dispatch plus a barrier, a few µs of launch per call.
+`q38_packed_encode_multi` encodes up to 8 of them as one dispatch per format:
+the grid holds the sum of their n_out, a threadgroup finds its projection
+from prefix offsets and runs the single kernel's row function, so every
+output is bit-identical to the single call (order still K and format only).
+x-side fields come from `p[0]`, only the tensor side from `p[j]`: indexing
+every field dynamically made each short threadgroup ~5% slower. Graph: one
+call and one barrier per site; profile group `qsa.proj` replaces the five
+`qsa.*` projection groups. Synthetic, 20 per buffer, K 2560
+([bench/qwen38_r1_20261020/matvec-multi](../bench/qwen38_r1_20261020/matvec-multi/README.md)):
+
+| group, rows 1 / 4 (µs) | multi | single calls |
+|---|---|---|
+| QSA, 5 × Q8_0 | 139.1 / 220.2 | 147.7 / 231.9 |
+| GDN, 2 Q8_0 + 2 F32 | 182.1 / 266.7 | 180.4 / 271.2 |
+| shared expert, 2 F32 + 2 Q8_0 | 26.1 / 42.1 | 31.5 / 51.6 |
+
+Measured (controller, quick closure, 8-token profile, AC): GPU 248.6 ms/token
+(Task 9 248.4: no measurable gain), dispatches 2986 → 2770, barriers 3033 →
+2733; the MoE (64%) hides it. G3 scaled 8.0e-7; `Q38_REF_KERNELS=1`
+bit-identical; default logits equal to Task 9's (`bench/qwen38_r1_20261020`).
+
+### R1.3 — F16 and F32 matvecs
+
+The HC tensors are F16 (down 10240→320, inject 10240→4, up 320→10240, 49
+layers each) and the router and ssm_alpha/beta are F32; the oracle gave
+inject 4 threads for 10240 columns each, 0.04 GB/s. `q38_matvec_f16` and
+`q38_matvec_f32` repeat the Q8_0 scheme with an 8-column chunk in place of a
+block (one 16- or 32-byte load per lane), and add one thing: S simdgroups
+share an output row, S = `dense_split(K)` = 1 below K 2560, 2, 4, then 8 from
+K 10240. S depends on K alone, so the order of the sum (chunk, lane's chunks,
+`simd_sum`, the S partials in order) still never depends on the rows or the
+tiling. Every weight decodes exactly (F16 by hand, like the oracle; the
+65,536 patterns are tested), so the products equal the oracle's.
+`tol["f16"] = 2^-21` (max 4.2e-7, p99 1.7e-7, 255,206 outputs),
+`tol["f32"] = 2^-20` (max 4.9e-7, p99 1.8e-7, 255,182). Evidence:
+[bench/qwen38_r1_20261020/matvec-f16-f32](../bench/qwen38_r1_20261020/matvec-f16-f32/README.md).
+
+| shape, 1 row (µs) | fast | oracle | speedup |
+|---|---|---|---|
+| F16 500 MiB, 20 per buffer | 1830, **287 GB/s (93%)** | 5903, 89 GB/s | 3.2x |
+| F32 500 MiB, 20 per buffer | 1823, **288 GB/s (94%)** | 2649, 198 GB/s | 1.5x |
+| HC down 320×10240, 200 per buffer | 24.5 | 2154.5 | 88x |
+| HC inject 4×10240 | 5.2 | 2002.3 | 385x |
+| HC up 10240×320 | 42.1 | 72.9 | 1.7x |
+| router 512×2560 | 12.6 | 439.6 | 35x |
+
+Fast is faster at every row count 1–1024 on HC down, router, up and inject
+(narrowest: HC down at 1024 rows, 43.0 vs 58.2 ms). Alternatives tried
+(exploration runs, not committed): S fixed at 1 / 2 / 4 / 8 on inject 20.6 /
+11.5 / 6.3 / 4.2 µs, on HC down 27.8 / 22.4 / 21.5 / 22.3, on HC up 41.2 /
+59.8 / 91.4 / 152 (so S grows with K only); F16 by hardware `float(half)`
+(also exact on all patterns) 285 vs 290 GB/s and slower on the small shapes;
+chunks of 4 or 16 columns with byte loads 184–200 GB/s on F16 (F32 stays at
+~294 either way); rows of x per threadgroup T = 1/2/4/8 on HC down at 1/4/32
+rows 19.0/67.0/514, 22.0/46.2/382, **24.5/36.6/349**, 30.0/46.8/333 µs.
+
+In the graph: `q38_packed_encode` now runs the F16 and F32 kernels by default,
+at any row count, like Q8_0 (one predicate: a format with a fast pipeline and
+`linear` not selected). `Q38_REF_KERNELS=linear` restores the oracle bit for
+bit. Tests: `test_default_selects_fast_f16`/`_f32`, and
+`test_reference_env_selects_oracle` over the three formats. No Make target
+compares `q38_packed_encode` with the CPU bit for bit (B-GPU's exact checks are
+a zero row and a single impulse). One GPU-vs-GPU check compared formats: the
+MoE padding test ran the Q2_K down tensor against the same values as F32 with
+1e30 padding, equal only while both used the oracle's order; it now compares
+two F32 runs (original vs poisoned padding), same intent.
+Measured (controller, ladder, short, 3+20, AC): 3.956 tok/s (p10 3.952, p90
+3.962; Task 8 1.377, x2.87), GPU 248 ms/token (Task 8 722); HC F16 now ~2.4%,
+MoE 64%, GDN 22%. G3 scaled 8.0e-7; `Q38_REF_KERNELS=1` bit-identical
+(`bench/qwen38_r1_20261020`).
+
+### R1.2b — Q8_0 matvec by default in the graph
+
+`q38_packed_encode` now runs `q38_matvec_q8_0` for every Q8_0 tensor, at any
+row count (R1.2a measured it faster than the oracle from 1 to 1024 rows).
+Both entry points share one helper, so validation is identical. Other formats,
+the indexed path and the lookup keep the oracle. The oracle stays reachable:
+`Q38_REF_KERNELS=linear` (or `1`, or a typo, ruling R18) restores it bit for
+bit. So the default path is no longer bit-identical to `360acf0`. The gate is
+G3, plus `Q38_REF_KERNELS=1` bit-identical to the oracle logits. Tests:
+`test_default_selects_fast_q8_0`, `test_reference_env_selects_oracle`. No
+Make target needed the reference: none compares `q38_packed_encode` with the
+CPU bit for bit. B, F, G2 and compositions use the γ bound or a tolerance. The
+exact checks are GPU against GPU (chunk, replay, MTP) or exact IDs, and they
+pass on the fast path.
+Measured (controller, ladder, short, 3+20, AC): 1.377 tok/s (p10 1.376, p90
+1.377; R0 1.064, +29%), GPU 722 ms/token (R0 936); LM head 2.44 ms at 277 GB/s.
+G3 scaled 1.7e-6; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261019`).
+
+### R1.2a — Cooperative Q8_0 matvec kernel
+
+Decode reads every weight once per token, so a matvec should stream bytes at
+the 307 GB/s ceiling. The oracle gives one thread per output row and walks
+K serially, decoding one element at a time. `q38_matvec_q8_0`
+(`src/qwen38_matvec.metal`, reached only through `q38_packed_encode_fast`
+until Task 8) gives one 32-lane simdgroup per output row. Lane l takes whole
+34-byte blocks l, l+32, …, so the simdgroup reads 1088 contiguous bytes. It
+sums each block in column order, then its blocks, then `simd_sum`. That order
+depends only on K, never on rows or tiling. Each decoded block serves 4 rows
+of x. w = d·code is exact in FP32, so every product equals the oracle's; only
+the order of the sum differs. Against FP64 the fast kernel is about 10x closer
+than the oracle (real tensors: 1.6e-8 vs 1.5e-7 of S = Σ|w·x|).
+`tol["q8_0"] = 2^-21`: corpus max 4.6e-7, p99 2.6e-8, 257,323 outputs. The
+fp16 scale decodes exactly on the 63,488 finite patterns; the 2,048 non-finite
+ones set bit 1. Measured on synthetic data, median of 20 after 3 warm-ups, AC
+power, thermal state nominal before and after. Raw evidence and conditions are
+in [bench/qwen38_r1_20261019/matvec-q8_0](../bench/qwen38_r1_20261019/matvec-q8_0/README.md):
+
+| tensor (K 2560) | fast, 1 encode per command buffer | fast, 20 per buffer | oracle |
+|---|---|---|---|
+| LM head 248320 rows, 644 MiB | 2518 µs, 269 GB/s | **2414 µs, 280 GB/s (91%)** | 12933 µs, 52 GB/s |
+| attn_qkv 10240 rows, 26.6 MiB | 320 µs, 87 GB/s | 80.2 µs, 348 GB/s¹ | 625 µs, 45 GB/s |
+
+¹ above the ceiling: back to back, part of the 26.6 MiB stays in the system
+cache. The LM head, 24 times larger, is the honest number. A lone short
+command buffer runs at an idle GPU clock, so it is slow and noisy; the decode
+graph encodes about 3000 dispatches per buffer.
+
+| attn_qkv, rows of x | 1 | 2 | 4 | 8 | 32 | 128 | 1024 |
+|---|---|---|---|---|---|---|---|
+| fast µs | 80.2 | 107.1 | 151.4 | 298.7 | 2128 | 10011 | 87942 |
+| oracle µs | 633.5 | 1273 | 2311 | 4462 | 17019 | 66885 | 538161 |
+| speedup | 7.9x | 11.9x | 15.3x | 14.9x | 8.0x | 6.7x | 6.1x |
+
+Rows ≤ 32 are timed 20 per buffer, 128 and 1024 one per buffer. Fast is
+faster at every row count, also on the other real shapes (2560×640,
+2560×6144, 640×2560: 5.8x to 45x, in the same folder). Beyond 8 rows it is
+compute-bound: whole-block lanes read x at a 128-byte stride.
+
+Alternatives tried (exploration runs of 2026-10-18, not committed as evidence),
+rows = 1, GB/s on 159 MiB / attn_qkv / ssm_out (K 6144):
+- Simdgroups × output rows per simdgroup: **1×1: 287/339/405**; 2×1 280/317/388;
+  4×1 253/305/360; 8×1 243/293/390; 1×2 277/314/349; 4×2 255/257/350;
+  1×4 238/258/343; 8×4 222/266/337.
+- Loads, 4×2 tile: bytes 272/315/351; packed_char4 + packed_float4
+  272/297/338; ushort 264/314/350.
+- Quarter block per lane, the layout of ds4 fc80bd6 (MIT,
+  metal/dense.metal:kernel_mul_mv_q8_0_f32_impl): 280/270/290. At 128 rows
+  25% faster, at 4–8 rows slower.
+- Rows of x per threadgroup, µs at 1/4/8/128 rows: T=1 102/221/488/11817;
+  T=2 115/175/361/10698; **T=4 105/180/305/9984**; T=8 104/219/312/10217;
+  T=16 125/329/502/9906.
+- x staged in threadgroup memory (33-float pitch): 167 µs vs 85 at one row,
+  24 ms vs 10 at 128. Occupancy loss, rejected.
+- Explicit `fma`: no gain (bound by x loads), so `fp contract(off)` stays.
+
+### R1.1 — Reference-kernel selector and fast-kernel harness
+
+Every R1 fast kernel is judged against the slow oracle it replaces (one thread
+per output row, serial K loop), so the oracle stays selectable for good:
+`Q38_REF_KERNELS=1` (or `all`, or a family list such as `linear,moe`) is read
+once when a context is created; an unknown token selects every oracle, so a
+typo can never silently run a fast kernel. `q38_packed_encode_fast` exists with
+the same admission as `q38_packed_encode` and answers UNSUPPORTED for now; the
+default path is untouched. `make test-qwen38-fast-kernels` runs oracle, fast
+path and an FP64 product (from `q38_packed_decode_row`) on the real row slices
+plus seeded shapes, with S = Σ|w·x| per output. A fast kernel must meet
+(a) |y−r| ≤ γ(2K+8)·S + 2·ulp32(r), valid for any summation order, and
+(b) |y_fast−y_oracle| / max(S, 2^-126) ≤ tol, tol the power of two above the
+measured corpus maximum (`tests/qwen38_kernel_tolerances.json`, empty today).
+Measured: 45 cases, 19,944 outputs, oracle against itself 0 bits apart, (a) at
+most 1.1% of the bound, ~15 s per run; every fast case is "unsupported".
+
+### R1.0 — Fenced G3 launches and picoforge-only runs
+
+G3 (`tools/qwen38_g3.py`) maps the 46 GiB checkpoint four times back to back:
+`forward_real`, the stock-Metal oracle, `ds4 --cpu`, the picoforge chat. A
+Metal process's wired pages stay wired for ~1.5 s after it exits, and mapping
+the checkpoint again inside that window froze the Mac twice (ruling R9); in
+the R0 baseline G3 the stock-Metal process started under a second after
+`forward_real` exited. Those four steps now start through the paired
+harness's `Launcher` (release wait before and after, strict memory guard with
+the R0.5a sleep gap, full-wake precheck), each in its own `launch-<name>`
+directory with a 900 s timeout; clang and the synthetic-graph replay map
+nothing and stay plain. The gate itself is untouched. The second change is
+`qwen38_compare.py run --engines picoforge`: DwarfStar gets no samples
+(`(0, 0)` in the schedule, `null` in the summary, `engines` in the manifest).
+Every R1 task measures picoforge alone, 3 warm-ups + 20 measured on the short
+frontier; DwarfStar's baseline stays the R0 one.
+
+### R0.5 — Recorded decode baseline
+
+Before any R1 kernel changes, decode is measured where it stands and against
+DwarfStar on the same Mac and file, so the profile, not taste, orders R1 and
+every step has a baseline. Decode reads each weight once per token: ceiling =
+bytes ÷ 307 GB/s. Short frontier, paired, teacher-forced (9 + 128 IDs, one
+process per sample, alternated, 3 warm-ups + 20 measured): picoforge 1.064
+tok/s (p10 1.062, p90 1.066), DwarfStar `fc80bd6` 33.075 (p10 23.62: three
+consecutive slow samples and one at 27.6, thermal nominal, kept), ratio 0.0322.
+Profile, 935.5 ms/token: `gdn` 34.6%, `moe` 28.1%, HC F16 26.5% (`inject`,
+n_out = 4, 0.04 GB/s), so the spec order R1.2 → R1.3 → R1.5 stands. 6104.78 MB
+per token (ceiling ~50 tok/s), 6.5 GB/s = 2.1% of 307; DwarfStar ≈ 202 GB/s
+(65.8%, estimated with picoforge's bytes); 2986 dispatches, floor 4.2 ms. At
+8K only a profile (974.0 ms/token, prefill 1406 s, `qsa.core` 3.1 → 40.5 ms):
+the paired 8K run is deferred (ruling R22) after three invalid attempts, all
+kept. `oracle/oracle-logits.f32` is the reference for `Q38_REF_KERNELS=1`.
+Evidence and limits: `bench/qwen38_r0_20261017/README.md`.
+
+### R0.5a — Sleep-gap abort and full-wake precheck
+
+The first 8K paired baseline ran while the Mac was in a DarkWake (lid closed):
+it wakes for ~20 s maintenance slices every ~15 min with no Graphics, so
+picoforge advanced only during those slices and the sample ran into the 3600 s
+timeout without anything noticing. The observer's clock is CLOCK_MONOTONIC,
+which on macOS keeps counting through sleep, so a sleep appears as one very
+long gap between two memory-sample attempts. A sample spanning a sleep is not
+a measurement. `run_observed.py` takes an optional guard key `gap_s` (absent
+from the default guard, so other callers are unchanged): a larger gap SIGTERMs
+then SIGKILLs the child with `stop_reason: "sleep gap"`, and `process.json`
+always records `max_sample_gap_s`. The paired harness sets `gap_s=5`, and its
+Launcher refuses any checkpoint launch unless Graphics is in `pmset -g
+systemstate`, the lid is open (`ioreg` AppleClamshellState) and the Mac is on
+AC; `run` checks the same before it creates its output directory, and every
+conditions.json records the wake state. The number: the failed attempt's
+sampling gaps reached 899.05 s; the longest gap in the 46 valid short-run
+samples is 0.35 s, so 5 s separates the two by a wide margin.
+
+Ruling R20 (user decision 2026-10-18): clamshell mode counts as awake. With the
+lid closed, two external displays and AC, `ioreg` prints `AppleClamshellCausesSleep`
+= No and `AppleClamshellState` = Yes, and the Mac does not sleep. The precheck
+now reads `lid_ok` = lid open or `AppleClamshellCausesSleep` = No; the sleep-gap abort is unchanged.
+
+### R0.4b — Paired picoforge/DwarfStar decode harness
+
+Paired: both engines decode the same IDs on the same Mac and file, so the
+ratio isolates the engine. Teacher-forced: after prefill to a frontier, 128
+fixed IDs are appended one by one, so tok/s (forced IDs / decode seconds)
+counts equal work. Alternated: engine blocks interleave, so heat or background
+drift falls on both. `tools/eval/qwen38_compare.py`: `prepare` fixes the IDs of
+the short frontier (frozen 9-ID coding prompt + 128 IDs of picoforge's greedy
+continuation, refused if a stop ID appears) and of the 8K one (first 8063 + 128
+IDs of `promessi_sposi.txt`), and requires picoforge and `ds4 --dump-tokens`
+to tokenize them identically; `run` gives one observed process per sample for
+both engines (ds4-bench measures one frontier per process); `summarize` gives
+the median, nearest-sample p10/p90 and the ratio; `ssd-check` makes one try.
+Lesson: mapping the checkpoint while the last Metal process's ~46 GiB were
+still wired froze the Mac twice. Every launch now waits for release before
+and after and runs under a strict memory guard. Smoke (short frontier, AC,
+1 warm-up + 2 measured per engine, not the baseline): picoforge 1.064 tok/s,
+DwarfStar 33.07 tok/s, ratio 0.032; pressure normal, swap 0. `ds4
+--ssd-streaming` refuses Qwen3.8 (exit 1: SSD streaming not supported).
+
+### R0.4a — Teacher-forced decode in the CLI
+
+Teacher forcing means the next input token comes from a fixed list, not from
+the model's own choice. Given the same IDs, picoforge and DwarfStar
+(`ds4-bench --teacher-forced-decode`) do exactly the same work, so tok/s
+compares equal work even where the two would sample differently. Each forced
+ID is its own one-token append (one logits row, one argmax), as in
+`ds4_session_eval`: a batched append would be prefill, not decode. New
+`--teacher-forced N` (with `--tokens`; excludes `--mtp`, `--session`,
+`--stop-after`, `--max-new`): the first count−N IDs are prefilled in chunks,
+the last N appended one by one, no stop on EOS; `decode_s` spans the N
+appends and argmaxes, `decode_tokens = N`, JSONL adds `mode`/`forced_tokens`.
+Test: forcing an ordinary greedy run's own tokens reproduces its logits bit
+for bit. Smoke, real checkpoint, slow baseline, on battery, one run: 4 forced
+tokens after a 9-token prompt, 3.763 s → 1.06 tok/s (941 ms/token).
+
+### R0.3 — Bytes, dispatches and barriers per profiled op
+
+Decode reads each weight it uses once per token, so time ≥ bytes ÷ 307 GB/s;
+launches set a second floor, time ≥ dispatches × 1.4 µs (Step 4.1). The
+profile now fills both per group: `weight_bytes` from the real bindings, also
+for composites (`gdn` its linears, `moe` router + shared + top_k experts of
+gate/up/down, `ple` key/value + staged n-gram rows; `qsa.core` reads caches,
+not weights: 0), and dispatches/barriers counted by an `NSProxy` around the
+encoder, in profile mode only. `tools/eval/qwen38_profile_summary.py` makes
+the per-op table and per-token totals. Also: a stale reused timestamp now
+fails, warm-up repetitions write no rows, resolve left `wait_s`. Real
+checkpoint, one decode token (mean of 2, on battery): 6.10 GB of weights →
+floor 19.9 ms, measured 935.6 ms (6.5 GB/s, 2.1% of peak); 2977 dispatches →
+floor 4.2 ms; 3024 barriers; sum of groups / normal `gpu_s` 1.0015. Logits
+bitwise identical with and without `--profile`.
+
+### R0.2 — Opt-in per-op GPU profile
+
+The GPU stamps time only at encoder boundaries, so `--profile FILE.csv` gives
+each group (embed, every `linear()`, each HC C op, `gdn`, `qsa.core`, `moe`,
+`hc_add`, `final.*`, `lm_head`) its own compute encoder in the same command
+buffer, with start/end timestamps in a counter sample buffer; GPU ticks are
+calibrated with `sampleTimestamps:gpuTimestamp:` (1 ns per tick here). Metal
+keeps encoder order and hazard tracking, so results are unchanged; but each
+boundary costs a little and the gaps between encoders belong to no group, so
+the sum of `gpu_us` is not `gpu_s`. New: `src/qwen38_profile.{h,m}`,
+`q38g_session_split`, graph marks (no-op, no extra encoder, without a profile;
+MTP appends are not profiled), `make test-qwen38-profile`. Real checkpoint,
+coding prompt, one decode token per mode (n=1): logits bitwise identical;
+`gpu_s` 931.7 ms normal, 934.2 ms profiled (+0.27%); sum of the 656 groups
+932.1 ms (+0.04%). Tiny CLI graph, median of 20: +1.8% and +1.0%.
+
+### R0.1 — Metal capability probe
+
+We ask the live device what it supports instead of trusting headers: Metal 4
+and residency sets are young, so each is called only after
+`respondsToSelector:`/`@available`. What matters for R0.2 is the counter
+sampling point: *stage* sampling reads the GPU clock at the start/end of a
+whole encoder pass, *dispatch* sampling around every dispatch inside one
+encoder (what per-op timing in a fused graph would need). New:
+`tools/probe/qwen38_capabilities.m` and `make test-qwen38-r0-tools` (one lock
+in the recipe, none in the test). Measured on this M5 Pro (macOS 27.0.1, AC,
+thermal `nominal`; `bench/qwen38_r0_20261017/capabilities.json`): the only
+counter set is `timestamp`, sampling works at the **stage** boundary only
+(dispatch, draw, blit, tile false), so per-op times need separate encoders or
+command buffers. `GPUStartTime/EndTime` are valid; Metal 4 family,
+`MTL4CommandQueue` and residency sets are available; working set 55.66 GB,
+max buffer 41.75 GB, unified memory.
+
 ## 2026-10-11 — accepted-route cost predictor, opt-in experiment
 
 `auto-experts` forecasts verify cost from the last 32 accepted input routes,

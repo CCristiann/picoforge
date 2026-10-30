@@ -34,7 +34,7 @@ build/kernels.air: src/kernels.metal
 	# -std=metal4.0: TensorOps and the tensor types live in Metal 4.
 	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/kernels.air
 
-$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air build/qwen38-e/ple.air build/qwen38-g2/forward.air
+$(METALLIB): build/kernels.air build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air build/qwen38-e/ple.air build/qwen38-g2/forward.air build/qwen38-r1/matvec.air build/qwen38-r1/moe_fused.air
 	xcrun -sdk macosx metallib $^ -o $@
 
 build/qwen38-e/ple.air: src/qwen38_ple.metal
@@ -209,7 +209,10 @@ clean:
         test-quant-formats test-quant-kernels test-forward-quant quant-models
 
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
-Q38_HEADERS := $(wildcard src/qwen38*.h)
+# Metal-only headers (ruling R3: decode helpers of the fast kernels) are not C
+# contracts; their .air rules list them as prerequisites instead.
+Q38_METAL_HEADERS := src/qwen38_quant_decode.h
+Q38_HEADERS := $(filter-out $(Q38_METAL_HEADERS),$(wildcard src/qwen38*.h))
 Q38_PUBLIC_HEADERS := $(filter-out %_internal.h,$(Q38_HEADERS))
 src/gpu_weights.m.o build/test_gpu_weights: $(Q38_HEADERS)
 test-qwen38-contracts:

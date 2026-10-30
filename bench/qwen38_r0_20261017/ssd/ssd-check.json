@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/path/to/ds4-qwen38-baseline/ds4",
+    "-m",
+    "/path/to/picoforge-perf-decode/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "--ssd-streaming",
+    "-c",
+    "8192",
+    "-n",
+    "8",
+    "--temp",
+    "0",
+    "-p",
+    "def add(a, b):\n    return"
+  ],
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "ds4_sha256": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+  "returncode": 1,
+  "stop_reason": null,
+  "accepted": false
+}

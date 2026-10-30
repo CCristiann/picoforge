@@ -1,13 +1,25 @@
 /* Private per-stage harness glue. No submission, waits or numerical CPU path. */
 #import <Metal/Metal.h>
 #include "qwen38_c_internal.h"
+#include "qwen38_b_internal.h"
+#include "qwen38_ref.h"
+#include "qwen38_profile.h"   /* only the format sentinels, for the R1.8 sub-group marks */
 #include <stdlib.h>
-struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS]; };
+/* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide
+ * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run
+ * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */
+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast; bool ref_fuse; };
+void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }
 void q38c_gpu_destroy(Q38CGpu *g) {
     if (!g) return;
     if (g->device) CFRelease(g->device);
     if (g->check) CFRelease(g->check);
     if (g->history) CFRelease(g->history);
+    if (g->rms_fast) CFRelease(g->rms_fast);
+    if (g->prep_fast) CFRelease(g->prep_fast);
+    if (g->scan_fast) CFRelease(g->scan_fast);
+    if (g->add_fast) CFRelease(g->add_fast);
+    if (g->act_fast) CFRelease(g->act_fast);
     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
     free(g);
 }
@@ -32,6 +44,16 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
         else if (i==Q38C_GPU_OPS) g->check=(__bridge_retained void *)p;
         else g->pipeline[i]=(__bridge_retained void *)p;
     }
+    NSString *fast[]={@"q38c_rms_fast",@"q38c_gdn_prepare_fast",@"q38c_gdn_scan_fast",@"q38c_hc_add_fast",
+        @"q38c_activate_fast"};
+    void **slot[]={&g->rms_fast,&g->prep_fast,&g->scan_fast,&g->add_fast,&g->act_fast};
+    for (size_t i=0;i<5;++i) {
+        id<MTLFunction> fn=[lib newFunctionWithName:fast[i]];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
+        if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
+            *slot[i]=(__bridge_retained void *)p;
+    }
+    g->ref_fuse=q38_ref_kernels("fuse"); /* once per context, never per token */
     *out=g; return q38c_error(e,Q38_OK,NULL);
 }
 static Qwen38Status gpu_span(Qwen38GpuSpan s, id<MTLDevice> dev, Qwen38Error *e) {
@@ -178,9 +200,10 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     if (op==Q38C_GDN_SCAN) expected_count=5;
     if (count!=expected_count) return q38c_error(e,Q38_SHAPE,"wrong GPU view count");
     Q38CGpuArgs a={0}; size_t span[8]={0};
+    bool two_words=cmd.concurrent && cmd.error_word.bytes>=8;   /* R1.6b: see Qwen38GpuCommand */
     for (size_t j=0;j<count;++j) {
         Q38C_TRY(gpu_view(v[j],dev,&a.v[j],&span[j],e));
-        if (gpu_overlap(v[j].span,span[j],cmd.error_word,4))
+        if (gpu_overlap(v[j].span,span[j],cmd.error_word,two_words ? 8 : 4))
             return q38c_error(e,Q38_INVALID_ARGUMENT,"view aliases GPU error word");
     }
     size_t work, check_count=0; uint32_t writes; uint64_t inplace;
@@ -202,8 +225,47 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     }
     [enc setBytes:&a length:sizeof(a) atIndex:8];
     [enc setBuffer:error offset:cmd.error_word.offset_bytes atIndex:9];
+    void *fast=op==Q38C_GDN_PREP ? g->prep_fast : (op==Q38C_RMS || op==Q38C_GDN_NORM) ? g->rms_fast : NULL;
+    /* R2.4: the fast scan needs dk a multiple of 32 (<= 256), dv of 4, and unit last strides
+     * on qkv and the state, which it reads as contiguous lane slices. */
+    if (op==Q38C_GDN_SCAN && g->scan_fast && !g->ref_fuse && a.p[2]%32==0 && a.p[2]<=256 && a.p[3]%4==0 &&
+        a.v[0].stride[1]==1 && a.v[3].stride[2]==1) {
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->scan_fast];
+        [enc dispatchThreadgroups:MTLSizeMake((a.p[1]*a.p[3]+15)/16,1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        return q38c_error(e,Q38_OK,NULL);
+    }
+    if (fast && !g->ref_fuse) {
+        /* R1.6a: one threadgroup per row; R1.8: a [ceil(2hk/8), t] grid, one
+         * simdgroup per q/k head. q38c_check folded into the kernel. */
+        size_t heads=(2*(size_t)a.p[0]+Q38C_RMS_THREADS/32-1)/(Q38C_RMS_THREADS/32);
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)fast];
+        [enc dispatchThreadgroups:op==Q38C_GDN_PREP ? MTLSizeMake(heads,work,1) : MTLSizeMake(work,1,1)
+            threadsPerThreadgroup:MTLSizeMake(Q38C_RMS_THREADS,1,1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        return q38c_error(e,Q38_OK,NULL);
+    }
+    /* R1.6b: on a concurrent command the check ORs into the second word, which
+     * the op never reads, so the two may overlap unless the op writes memory
+     * the check reads (in-place HC_ADD, CONV history, GDN state, aliases).
+     * A failed check then no longer stops the op: failure bits are diagnostic. */
+    bool overlap=two_words;
+    for (size_t i=0;i<count;++i) for (size_t j=0;j<count && overlap;++j)
+        if ((writes&(1u<<i)) && (a.read_mask&(1u<<j)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j]))
+            overlap=false;
+    void *folded=op==Q38C_HC_ADD ? g->add_fast : (op==Q38C_ACT || op==Q38C_HC_LOW || op==Q38C_HC_INJECT) ? g->act_fast : NULL;
+    if (folded && !g->ref_fuse) { /* R2.9: HC_ADD and the activations with the check folded, one dispatch */
+        uint32_t split=overlap;   /* the check's word as above: word 1 when it may overlap the op */
+        [enc setBuffer:error offset:cmd.error_word.offset_bytes+(overlap ? 4 : 0) atIndex:10];
+        [enc setBytes:&split length:sizeof split atIndex:11];
+        dispatch(enc,folded,work);
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        return q38c_error(e,Q38_OK,NULL);
+    }
+    if (overlap) [enc setBuffer:error offset:cmd.error_word.offset_bytes+4 atIndex:9];
     dispatch(enc,g->check,check_count);
-    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    if (overlap) [enc setBuffer:error offset:cmd.error_word.offset_bytes atIndex:9];
+    else [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     dispatch(enc,g->pipeline[op],work);
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     if (op==Q38C_CONV && a.v[3].count) {
@@ -261,20 +323,58 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
 #define K(name) w->constant[Q38CW_##name]
 #define OP(op,...) do { Qwen38GpuF32 views[]={__VA_ARGS__}; \
     Q38C_TRY(q38c_gpu_encode(g,cmd,Q38C_##op,&spec,views,sizeof(views)/sizeof(*views),e)); } while (0)
+    /* Profile groups (hook set only in profile mode); bytes: the linears' whole matrices. */
+#define BYTES(slot) bindings[Q38CW_##slot]->tensor.bytes
+#define TYPE(slot) bindings[Q38CW_##slot]->tensor.type
+#define MARK(op,type,bytes) do { if (w->mark) { w->mark(w->mark_ctx,&cmd,op,type,bytes); \
+    enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; } } while (0)
 #define LINEAR(slot,input,output) do { Q38C_TRY(q38_packed_encode(b,&cmd,store,bindings[Q38CW_##slot], \
     &l->weight[Q38CW_##slot].layout,0,V(input),V(output),e)); \
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
+    MARK("gdn.hc_pre",Q38_PROFILE_MIXED,BYTES(HD)+BYTES(HU)+BYTES(HI));
     OP(RMS,w->residual,K(HN),group_view(V(N),h,width));
-    LINEAR(HD,N,LOW); OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
-    OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
-    LINEAR(HI,N,IL); OP(HC_INJECT,V(IL),V(INJECT));
-    LINEAR(QKV,MIX,QKV); LINEAR(Z,MIX,Z); LINEAR(AP,MIX,ALPHA); LINEAR(BP,MIX,BR);
+    { /* R2.5: HC down and inject read the same N: one multi call, bit-identical to two */
+        const GgufBinding *mb[2]={bindings[Q38CW_HD],bindings[Q38CW_HI]};
+        const Q38PackedLayout ml[2]={l->weight[Q38CW_HD].layout,l->weight[Q38CW_HI].layout};
+        const Qwen38GpuF32 out[2]={V(LOW),V(IL)};
+        Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,2,V(N),out,e));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    { /* R2.6: low, up, read and inject in one dispatch, bit-identical; the sequence when unsupported */
+        Qwen38Status status=q38_packed_encode_hc_tail(b,&cmd,store,bindings[Q38CW_HU],&l->weight[Q38CW_HU].layout,h,
+            V(LOW),V(N),V(IL),V(ACT),V(HG),V(MIX),V(INJECT),e);
+        if (status==Q38_UNSUPPORTED) {
+            OP(HC_LOW,V(LOW),V(ACT)); LINEAR(HU,ACT,HG);
+            OP(HC_READ,group_view(V(N),h,width),group_view(V(HG),h,width),V(MIX));
+            OP(HC_INJECT,V(IL),V(INJECT));
+        } else if (status) return status;
+        else [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    { /* R1.4: the four projections of MIX in one multi call, one barrier */
+        MARK("gdn.proj",Q38_PROFILE_MIXED,BYTES(QKV)+BYTES(Z)+BYTES(AP)+BYTES(BP));
+        const Q38CWeight slot[]={Q38CW_QKV,Q38CW_Z,Q38CW_AP,Q38CW_BP};
+        const GgufBinding *mb[4]; Q38PackedLayout ml[4];
+        const Qwen38GpuF32 out[]={V(QKV),V(Z),V(ALPHA),V(BR)};
+        for (size_t i=0;i<4;++i) { mb[i]=bindings[slot[i]]; ml[i]=l->weight[slot[i]].layout; }
+        Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,4,V(MIX),out,e));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    MARK("gdn.conv",Q38_PROFILE_NONE,0);
     OP(CONV,V(QKV),K(CONV),V(CONV),w->history);
+    MARK("gdn.prep",Q38_PROFILE_NONE,0);
     OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));
+    MARK("gdn.scan",Q38_PROFILE_NONE,0);
     OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));
+    MARK("gdn.norm",Q38_PROFILE_NONE,0);
     OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));
-    LINEAR(OUT,NORM,OUT); OP(HC_ADD,w->residual,V(OUT),V(INJECT));
+    MARK("gdn.out",TYPE(OUT),BYTES(OUT));
+    LINEAR(OUT,NORM,OUT);
+    MARK("gdn.add",Q38_PROFILE_NONE,0);
+    OP(HC_ADD,w->residual,V(OUT),V(INJECT));
 #undef LINEAR
+#undef MARK
+#undef TYPE
+#undef BYTES
 #undef OP
 #undef V
 #undef K

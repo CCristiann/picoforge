@@ -1,0 +1,82 @@
+{
+  "command": [
+    "/path/to/picoforge-perf-decode/picoforge",
+    "--qwen38",
+    "/path/to/picoforge-perf-decode/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "--tokens",
+    "727,884,2784,11,292,1590,198,262,460,264,478,292,271,727,31192,2784,11",
+    "--teacher-forced",
+    "8",
+    "--context",
+    "8192",
+    "--chunk",
+    "1024",
+    "--runs-jsonl",
+    "/path/to/picoforge-perf-decode/bench/qwen38_r0_20261017/profile-short/runs.jsonl",
+    "--token-ids",
+    "/path/to/picoforge-perf-decode/bench/qwen38_r0_20261017/profile-short/ids.json",
+    "--profile",
+    "/path/to/picoforge-perf-decode/bench/qwen38_r0_20261017/profile-short/profile.csv"
+  ],
+  "cwd": "/path/to/picoforge-perf-decode",
+  "pilot": true,
+  "complete": true,
+  "recorded_utc": "2026-10-17T20:26:32.203251+00:00",
+  "executable_sha256": "d10ae768973431a19a150da1ff335757993eaa2997682dde50c18c209591877e",
+  "environment": {
+    "DS4_METAL_MEMORY_REPORT": "1"
+  },
+  "removed_environment_names": [],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "sample_interval_s": 0.25,
+  "system_before": {
+    "pid": 8185,
+    "monotonic_s": 9993.715766,
+    "resident_bytes": 1835008,
+    "phys_footprint_bytes": 1360232,
+    "lifetime_peak_phys_footprint_bytes": 1393000,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 0,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 0,
+    "system_swapouts_pages": 0,
+    "page_bytes": 16384,
+    "system_wired_pages": 282227,
+    "system_compressor_pages": 199852
+  },
+  "guard": "stop after 2 samples: pressure level >= 2 or swap growth > 256 MiB",
+  "guard_limits": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2
+  },
+  "pid": 8187,
+  "start_monotonic_s": 9993.723477,
+  "process_s": 10.023153000000093,
+  "returncode": 0,
+  "stop_reason": null,
+  "first_stream_bytes_s": {
+    "stderr": 0.21037799999976414,
+    "stdout": 10.013961000000563
+  },
+  "system_after": {
+    "pid": 8249,
+    "monotonic_s": 10003.749135,
+    "resident_bytes": 1835008,
+    "phys_footprint_bytes": 1360232,
+    "lifetime_peak_phys_footprint_bytes": 1393000,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 0,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 0,
+    "system_swapouts_pages": 0,
+    "page_bytes": 16384,
+    "system_wired_pages": 2818314,
+    "system_compressor_pages": 199851
+  },
+  "samples": 33,
+  "sampled_peak_footprint_bytes": 1637158824,
+  "lifetime_peak_footprint_bytes": 1637158824
+}

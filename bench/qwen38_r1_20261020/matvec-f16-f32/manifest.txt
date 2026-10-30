@@ -1,0 +1,10 @@
+8449a403f96d7681b41a04df75cdcd199078b51e
+ M src/qwen38_matvec.metal
+ M src/qwen38_packed_gpu.m
+ M tests/qwen38_kernel_tolerances.json
+ M tests/test_qwen38_fast_kernels.m
+ M tests/test_qwen38_fast_kernels.py
+ M tools/qwen38_r1.mk
+?? bench/qwen38_r1_20261020/
+2aedcae438d1a0869ad556720c3751da5fa4bdf936518c66f54aec87c2a51dce  build/qwen38-r1/test_fast_kernels
+c136ae9c0d4cd5ceb5216e1cf43e56a2572e993ce64d2da1db818bdb9634d6b8  picoforge.metallib

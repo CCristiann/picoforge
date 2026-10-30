@@ -126,23 +126,71 @@ static void check_moe(uint32_t layer, size_t t) {
     Q38FRoutedWork rwk = {gview(bl,0,t,c->experts), gview(bp,0,t,c->experts), gview(bw,0,t,k),
         gview(bg,0,p,i), gview(bu,0,p,i), gview(ba,0,p,i), gview(bd,0,p,h), gview(sg,0,t,s), gview(su,0,t,s),
         gview(sa,0,t,s), gview(sh,0,t,h), gview(sl,0,t,1), gview(ss,0,t,1), gview(br,0,t,h),
-        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}};
-    Q38FRouted *routed; Q38PackedGpu *b; Q38CGpu *ops;
-    ok(q38f_routed_create((__bridge void *)device, (__bridge void *)library, &routed, &e), &e, "routed");
-    ok(q38_packed_gpu_create((__bridge void *)device, (__bridge void *)library, &b, &e), &e, "B gpu");
-    ok(q38c_gpu_create((__bridge void *)device, (__bridge void *)library, &ops, &e), &e, "C gpu");
-    __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
-    const GgufBinding *const *gbp = gb; const Q38PackedLayout *glp = gl;
-    ok(command(t, @[by, bl, bp, bw, bg, bu, ba, bd, sg, su, sa, sh, sl, ss, br, bi, bm], @[bx], ^(Qwen38GpuCommand cmd) {
-        rc = q38f_routed_encode(routed, b, ops, cmd, c, store, gbp, glp, gview(bx,0,t,h), gview(by,0,t,h), &rwk, &inner);
-        return rc;
-    }, &e), &e, "moe command");
-    ok(rc, &inner, "moe encode");
-    bool same_ids = !memcmp(bi.contents, ids, p*4);
-    report("moe_route_ids", layer, same_ids ? 0 : 1, 0, same_ids);
-    compare("moe_route_weights",layer,bw.contents,rw,p,2e-6);
-    compare("moe_y",layer,by.contents,y,x_n,5e-4);
-    q38f_routed_destroy(routed); q38_packed_gpu_free(b); q38c_gpu_destroy(ops);
+        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL};
+    /* R1.5b/c selection (Q38_REF_KERNELS read at creation, unset for the default
+     * whatever the caller's environment): by default gate+up+SwiGLU and
+     * down+reduce are fused (the gate/up and down scratch are never written)
+     * and y and routed have the bits of the unfused fast sequence (`moe`);
+     * `indexed` runs the unfused indexed oracle. */
+    static const char *const envs[] = {NULL, "moe", "indexed"};
+    float *fused = malloc(x_n * 4), *fused_routed = malloc(x_n * 4);
+    /* R1.5d router: the parallel kernel is the default and `moe` selects q38f_route; ids, weights
+     * and probs have the same bits either way. */
+    float *route_probs = malloc(t*c->experts*4), *route_weights = malloc(p*4);
+    uint32_t *route_ids = malloc(p*4);
+    for (size_t r = 0; r < 3; ++r) {
+        assert(envs[r] ? setenv("Q38_REF_KERNELS", envs[r], 1) == 0 : unsetenv("Q38_REF_KERNELS") == 0);
+        Q38FRouted *routed; Q38PackedGpu *b; Q38CGpu *ops;
+        ok(q38f_routed_create((__bridge void *)device, (__bridge void *)library, &routed, &e), &e, "routed");
+        ok(q38_packed_gpu_create((__bridge void *)device, (__bridge void *)library, &b, &e), &e, "B gpu");
+        ok(q38c_gpu_create((__bridge void *)device, (__bridge void *)library, &ops, &e), &e, "C gpu");
+        assert(unsetenv("Q38_REF_KERNELS") == 0);
+        memset(bg.contents, 0xa5, p*i*4); memset(bu.contents, 0xa5, p*i*4); memset(bd.contents, 0xa5, p*h*4);
+        memset(bp.contents, 0xa5, t*c->experts*4); memset(bw.contents, 0xa5, p*4); memset(bi.contents, 0xa5, p*4);
+        __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
+        const GgufBinding *const *gbp = gb; const Q38PackedLayout *glp = gl;
+        ok(command(t, @[by, bl, bp, bw, bg, bu, ba, bd, sg, su, sa, sh, sl, ss, br, bi, bm], @[bx], ^(Qwen38GpuCommand cmd) {
+            rc = q38f_routed_encode(routed, b, ops, cmd, c, store, gbp, glp, gview(bx,0,t,h), gview(by,0,t,h), &rwk, &inner);
+            return rc;
+        }, &e), &e, "moe command");
+        ok(rc, &inner, "moe encode");
+        bool untouched = true;
+        for (size_t j = 0; j < p*i; ++j)
+            untouched = untouched && ((uint32_t *)bg.contents)[j] == 0xa5a5a5a5u && ((uint32_t *)bu.contents)[j] == 0xa5a5a5a5u;
+        static const char *const names[] = {"moe_fused_selected", "moe_ref_moe_unfused", "moe_ref_indexed_unfused"};
+        report(names[r], layer, untouched == !r ? 0 : 1, 0, untouched);
+        bool down_untouched = true;
+        for (size_t j = 0; j < p*h; ++j) down_untouched = down_untouched && ((uint32_t *)bd.contents)[j] == 0xa5a5a5a5u;
+        static const char *const down_names[] = {"moe_down_fused_selected", "moe_ref_moe_down_unfused",
+                                                  "moe_ref_indexed_down_unfused"};
+        report(down_names[r], layer, down_untouched == !r ? 0 : 1, 0, down_untouched);
+        compare("moe_y",layer,by.contents,y,x_n,5e-4);
+        bool fast_route = q38f_routed_fast_route(routed, c->experts, k);
+        static const char *const route_names[] = {"moe_route_fast_selected", "moe_ref_moe_route_oracle", "moe_ref_indexed_route_fast"};
+        report(route_names[r], layer, fast_route == (r != 1) ? 0 : 1, 0, fast_route);
+        if (!r) { /* shapes the parallel kernel does not take keep q38f_route */
+            bool shapes = q38f_routed_fast_route(routed, 1024, 10) && !q38f_routed_fast_route(routed, 1025, 10) &&
+                !q38f_routed_fast_route(routed, 4, 5) && q38f_routed_fast_route(routed, 1, 1) && !q38f_routed_fast_route(routed, 0, 0);
+            report("moe_route_fast_shapes", layer, shapes ? 0 : 1, 0, shapes);
+            memcpy(route_probs, bp.contents, t*c->experts*4); memcpy(route_weights, bw.contents, p*4); memcpy(route_ids, bi.contents, p*4);
+        } else if (r == 1) {
+            bool same = !memcmp(route_probs, bp.contents, t*c->experts*4) && !memcmp(route_weights, bw.contents, p*4) &&
+                !memcmp(route_ids, bi.contents, p*4);
+            report("moe_route_fast_bits_match_oracle", layer, same ? 0 : 1, 0, same);
+        }
+        if (!r) {
+            bool same_ids = !memcmp(bi.contents, ids, p*4);
+            report("moe_route_ids", layer, same_ids ? 0 : 1, 0, same_ids);
+            compare("moe_route_weights",layer,bw.contents,rw,p,2e-6);
+            memcpy(fused, by.contents, x_n*4); memcpy(fused_routed, br.contents, x_n*4);
+        } else if (r == 1) {
+            bool same = !memcmp(fused, by.contents, x_n*4), same_routed = !memcmp(fused_routed, br.contents, x_n*4);
+            report("moe_fused_bits_match_unfused", layer, same ? 0 : 1, 0, same);
+            report("moe_fused_routed_bits_match_unfused", layer, same_routed ? 0 : 1, 0, same_routed);
+        }
+        q38f_routed_destroy(routed); q38_packed_gpu_free(b); q38c_gpu_destroy(ops);
+    }
+    free(fused); free(fused_routed); free(route_probs); free(route_weights); free(route_ids);
     qwen38_moe_work_destroy(work); qwen38_moe_destroy(moe); free(x); free(y); free(rw); free(ids);
 }
 
@@ -219,7 +267,7 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
         qn = shared(total*h*d*4), qr = shared(total*h*d*4), gt = shared(total*h*d*4), kn = shared(total*w_kv*4),
         iqn = shared(total*w_iq*4), iqr = shared(total*w_iq*4), pl = shared(di*4), pn = shared(di*4),
         sc = shared(cap/c.ratio*4 + 4), kp = shared(cap/c.ratio*4 + 4), ids = shared((c.token_budget + c.ratio)*4),
-        bo = shared(total*h*d*4);
+        bo = shared(total*h*d*4), pt = shared((size_t)Q38D_MAX_SPLITS*h*(d+2)*4);
     memcpy(gq.contents, gamma[0], d*4); memcpy(gk.contents, gamma[1], d*4);
     memcpy(giq.contents, gamma[2], di*4); memcpy(gik.contents, gamma[3], di*4);
     NSArray *scratch=@[kc,vc,ic,bc,qn,qr,gt,kn,iqn,iqr,pl,pn,sc,kp,ids,bo];
@@ -252,7 +300,8 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
             g3(kc, cap, j, d), g3(vc, cap, j, d), gview(ic, 0, cap, di), gview(bc, 0, cap/c.ratio, di),
             g3(qn, n, h, d), g3(qr, n, h, d), g3(gt, n, h, d), g3(kn, n, j, d), g3(iqn, n, hi, di), g3(iqr, n, hi, di),
             g3(pl, 1, 1, di), g3(pn, 1, 1, di), g1(sc, cap/c.ratio),
-            {(__bridge void *)kp, 0, kp.length}, {(__bridge void *)ids, 0, ids.length}, g3(bo, n, h, d)};
+            {(__bridge void *)kp, 0, kp.length}, {(__bridge void *)ids, 0, ids.length}, g3(bo, n, h, d),
+            {(__bridge void *)pt, 0, pt.length}};  /* R2.1: the graph's split attention */
         __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
         size_t pos0 = start, count = n; Q38DGpuLayer *lp = &l;
         if (!pass && !start) qsa_admission(dg,ops,&c,lp,scratch,inputs);

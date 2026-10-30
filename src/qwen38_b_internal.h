@@ -79,5 +79,73 @@ Q38_B_INLINE Qwen38Status q38_b_matrix(size_t rank, const size_t dim[4],
     }
     return *extent > capacity ? Q38_CAPACITY : Q38_OK;
 }
+/* R1 kernel choice (qwen38_ref.h): override the flags read at creation. */
+void q38_packed_gpu_set_reference(Q38PackedGpu *, bool linear, bool indexed);
+/* Same contract and admission as q38_packed_encode, always the fast kernel:
+ * Q38_UNSUPPORTED if the format has no fast kernel yet. */
+Qwen38Status q38_packed_encode_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
+    size_t expert, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
+/* Same contract and admission as q38_packed_encode_indexed, always the
+ * indexed fast kernel (R1.5): Q38_UNSUPPORTED if the format has none. */
+Qwen38Status q38_packed_encode_indexed_fast(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
+    Qwen38GpuSpan expert_ids, size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *);
+/* R1.5b fused gate+up+SwiGLU of the routed experts (qwen38_moe_fused.metal):
+ * act[p, n] = silu(gate_e[n] . x) * (up_e[n] . x), e = ids[p], x row
+ * p / x_divisor, bit-identical to the unfused fast sequence (indexed fast gate
+ * and up, q38c_activate SILU, q38f_product). gate and up are each admitted as
+ * q38_packed_encode_indexed with act as their output. Q38_UNSUPPORTED, nothing
+ * encoded: gate and up formats differ, the format has no fused kernel, or the
+ * indexed oracle is selected (its sequence is not the fused kernel's): the
+ * caller encodes the unfused sequence. No barrier after the dispatch. */
+Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *gate, const Q38PackedLayout *gate_layout,
+    const GgufBinding *up, const Q38PackedLayout *up_layout, Qwen38GpuSpan expert_ids,
+    size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 act, Qwen38Error *);
+/* R1.5c fused routed down + weighted reduce (qwen38_moe_fused.metal), the
+ * graph's IDX down (divisor 1) then q38f_reduce (identity map) in one pass:
+ * routed[t, n] = sum over s = 0..k-1 of scores[t, s] (down_e[n] . act[t*k+s]),
+ * e = ids[t*k+s], and y[t, n] = routed[t, n] + sigmoid[t] shared[t, n], both
+ * bit-identical to that fast sequence; the [pairs, n] down scratch is never
+ * written. act [t*k, k_logical] and y [t, n_out] are admitted as
+ * q38_packed_encode's x and y (pitches allowed); scores [t, k], shared and
+ * routed [t, n_out] and sigmoid [t, 1] must be dense; routed and y alias no
+ * other operand. Q38_UNSUPPORTED, nothing encoded: the format has no fused
+ * kernel or the indexed oracle is selected: the caller encodes the unfused
+ * sequence. No barrier after the dispatch. */
+typedef struct { Qwen38GpuF32 scores, shared, sigmoid, routed; } Q38DownReduceViews;
+typedef struct { Q38PackedIndexedArgs down; uint32_t tokens, slots; } Q38DownReduceArgs;
+_Static_assert(sizeof(Q38DownReduceArgs) == 104, "down+reduce Metal argument layout"); /* DownReduceArgs */
+Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *down, const Q38PackedLayout *down_layout,
+    Qwen38GpuSpan expert_ids, Qwen38GpuF32 act, const Q38DownReduceViews *, Qwen38GpuF32 y, Qwen38Error *);
+/* R2.6 fused HC read tail (qwen38_matvec.metal): HC_LOW (silu(low/h)), the
+ * F16 up projection, HC_READ and HC_INJECT (2 sigmoid(il/h)) of one HC site in
+ * one dispatch, act, gate, mixed and inject bit-identical to that fast
+ * sequence (q38c_gpu_encode ops and q38_packed_encode_fast). up is admitted as
+ * q38_packed_encode with x = act [t, K] and y = gate [t, h*E]; low [t, K],
+ * normed [t, h*E], mixed [t, E], il and inject [t, h] are rank 2 with unit
+ * column strides; an empty il (no buffer) skips the inject. No output aliases
+ * an operand. Q38_UNSUPPORTED, nothing encoded: not F16, K split over several
+ * simdgroups or above 1024, h above 4, or the linear or fuse oracle selected:
+ * the caller encodes the sequence. No barrier after the dispatch. */
+typedef struct { Q38PackedArgs up; uint32_t streams, width, inject, reserved; uint64_t low, normed, mixed, il, out; } Q38HcTailArgs;
+_Static_assert(sizeof(Q38HcTailArgs) == 136, "HC tail Metal argument layout"); /* HcTailArgs */
+Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *up, const Q38PackedLayout *up_layout, size_t streams,
+    Qwen38GpuF32 low, Qwen38GpuF32 normed, Qwen38GpuF32 il, Qwen38GpuF32 act, Qwen38GpuF32 gate,
+    Qwen38GpuF32 mixed, Qwen38GpuF32 inject, Qwen38Error *);
+/* R1.4 multi-GEMV: count (1..Q38_MULTI_MAX) projections of the same x, each
+ * with q38_packed_encode's admission (expert 0). One dispatch per format;
+ * every y[i] is bit-identical to q38_packed_encode_fast(bindings[i], x, y[i]).
+ * Under Q38_REF_KERNELS=linear, and for a format with no fast kernel, it
+ * encodes q38_packed_encode per projection. No barrier between or after the
+ * dispatches: the caller adds one after the call. */
+enum { Q38_MULTI_MAX = 8 };
+Qwen38Status q38_packed_encode_multi(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *const *bindings,
+    const Q38PackedLayout *layouts, size_t count, Qwen38GpuF32 x,
+    const Qwen38GpuF32 *y, Qwen38Error *);
 #undef Q38_B_INLINE
 #endif

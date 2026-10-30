@@ -1,0 +1,7 @@
+before 1f995d6, after d62f163
+?? bench/qwen38_r1_20261027/
+?? bench/qwen38_r1_20261028/moe-factored-dot/
+6ca21c39767675a724dbb520968f88b0a95e1fe19ef855766daddbcb010d91e4  before/picoforge.metallib
+1a6f742d30f8ea28495d411ae33200bc391c6ec522e005815328f3406b06b556  before/test_fast_kernels
+46a9428aa03bee6dcc0fc0a072a2a2305d9b739d45ae5804012d5632d6a635ed  after/picoforge.metallib
+1a6f742d30f8ea28495d411ae33200bc391c6ec522e005815328f3406b06b556  after/test_fast_kernels

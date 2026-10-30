@@ -1,0 +1,4 @@
+d3af03b01a6956374db43ca8f0c15d7f7a165f06
+?? bench/qwen38_r1_20261021/moe-gate-up/
+04448ffa5200341bdd86f09343df0d4273e42eb3acff904c957b3b89d535be01  build/qwen38-r1/test_fast_kernels
+fd5cc4f508b0b909010bff2651d737b1f6ad0f9bbc32ac5a6ae12e3b47c2da73  picoforge.metallib

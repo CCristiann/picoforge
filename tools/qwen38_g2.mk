@@ -1,6 +1,6 @@
 # G2, ordinary graph on the GPU over the G0 session. Coordinator-owned.
 Q38_G2_GPU := src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m \
- src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/gpu_weights.m
+ src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/qwen38_profile.m src/gpu_weights.m
 
 build/qwen38-g2/test_parts: tests/test_qwen38_g2_parts.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
 	@mkdir -p $(@D)

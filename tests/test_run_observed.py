@@ -1,10 +1,11 @@
-"""Exercise capture, nonzero exit, timeout and memory-guard termination."""
+"""Exercise capture, nonzero exit, timeout, memory-guard and sleep-gap termination."""
 import importlib.util
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -15,15 +16,23 @@ spec.loader.exec_module(observed)
 
 
 class ObservedTests(unittest.TestCase):
-    def execute(self, code, timeout=5, *, critical=False):
+    def execute(self, code, timeout=5, *, critical=False, sleep_s=0, guard=None):
+        """`sleep_s`: the clock jumps forward that much once, right after the first child sample."""
+        clock = dict(offset=0)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "run"
             def sample(_probe, pid=None):
-                return dict(monotonic_s=observed.now(), system_pressure_level=4 if pid and critical else 1,
-                            system_swap_used_bytes=0, phys_footprint_bytes=1024,
-                            lifetime_peak_phys_footprint_bytes=2048)
-            with patch.object(observed, "sample", sample):
-                rc = observed.run(output, ROOT, [sys.executable, "-I", "-c", code], timeout, .05)
+                row = dict(monotonic_s=observed.now(), system_pressure_level=4 if pid and critical else 1,
+                           system_swap_used_bytes=0, phys_footprint_bytes=1024,
+                           lifetime_peak_phys_footprint_bytes=2048)
+                if pid and sleep_s and not clock["offset"]:
+                    clock["offset"] = sleep_s  # the Mac sleeps right after this sample
+                return row
+            # Like the real clock, the fake one keeps counting through the "sleep".
+            def now():
+                return time.clock_gettime(time.CLOCK_MONOTONIC) + clock["offset"]
+            with patch.object(observed, "sample", sample), patch.object(observed, "now", now):
+                rc = observed.run(output, ROOT, [sys.executable, "-I", "-c", code], timeout, .05, guard=guard)
             metadata = json.loads((output / "process.json").read_text())
             return rc, metadata, (output / "stdout.log").read_bytes(), (output / "stderr.log").read_bytes()
 
@@ -35,6 +44,7 @@ class ObservedTests(unittest.TestCase):
         self.assertGreaterEqual(meta["process_s"], .2)
         self.assertLess(meta["first_stream_bytes_s"]["stdout"], meta["process_s"])
         self.assertGreater(meta["samples"], 1)
+        self.assertLess(meta["max_sample_gap_s"], 2)  # always recorded; healthy runs sample every ~interval
 
     def test_failed_child_is_not_complete(self):
         rc, meta, _, _ = self.execute("raise SystemExit(7)")
@@ -60,6 +70,18 @@ class ObservedTests(unittest.TestCase):
         self.assertNotEqual(rc, 0)
         self.assertEqual(meta["stop_reason"], "memory guard")
         self.assertGreaterEqual(meta["samples"], 3)
+
+    def test_sleep_gap_stops_child(self):
+        rc, meta, _, _ = self.execute("import time;time.sleep(30)", 20, sleep_s=6, guard={"gap_s": 5})
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(meta["stop_reason"], "sleep gap")
+        self.assertFalse(meta["complete"])
+        self.assertGreater(meta["max_sample_gap_s"], 5)
+        self.assertLess(meta["process_s"], 10)  # the 6 s jump plus a prompt SIGTERM, not the 30 s sleep
+        # Without gap_s the same jump is only recorded: callers keep today's behaviour.
+        rc, meta, _, _ = self.execute("import time;time.sleep(.5)", 20, sleep_s=6)
+        self.assertEqual((rc, meta["stop_reason"], meta["complete"]), (0, None, True))
+        self.assertGreater(meta["max_sample_gap_s"], 5)
 
     def test_refuses_existing_directory(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,0 +1,24 @@
+{
+  "before": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t25%; charging; (no estimate) present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 262144,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network"
+  },
+  "after": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t24%; charging; 18:05 remaining present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 262144,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network"
+  }
+}

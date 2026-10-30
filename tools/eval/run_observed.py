@@ -27,7 +27,15 @@ def sample(probe, pid=None):
     return json.loads(result.stdout) if result.returncode == 0 else None
 
 
-def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
+# Kill the child after `samples` consecutive samples at pressure level >= `pressure`
+# or swap growth > `swap_bytes`. Callers may pass a stricter guard; this is the default.
+# Optional `gap_s` (not in the default): also kill the child when two consecutive sample
+# attempts are more than that many seconds apart on our clock (see the loop below).
+DEFAULT_GUARD = dict(pressure=4, swap_bytes=2 * 2**30, samples=3)
+
+
+def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None, guard=None):
+    limits = dict(DEFAULT_GUARD, **(guard or {}))
     probe = ROOT / "build/process_memory"
     before = sample(probe)
     if before is None:
@@ -46,7 +54,10 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
                     environment={"DS4_METAL_MEMORY_REPORT": "1", **(env_overrides or {})},
                     removed_environment_names=sorted(k for k in os.environ if k.startswith("DS4_")),
                     thermal_before=thermal, sample_interval_s=interval, system_before=before,
-                    guard="stop after 3 samples: critical pressure or swap growth > 2 GiB")
+                    guard=("stop after 3 samples: critical pressure or swap growth > 2 GiB" if guard is None else
+                           f"stop after {limits['samples']} samples: pressure level >= {limits['pressure']} "
+                           f"or swap growth > {limits['swap_bytes'] / 2**20:g} MiB"),
+                    guard_limits=limits)
     meta_path = output / "process.json"
     meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
     start = now()
@@ -63,12 +74,21 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
     for name in logs:
         selector.register(getattr(process, name), selectors.EVENT_READ, name)
     first, samples, reason, bad, next_sample = {}, [], None, 0, start
+    last_attempt, max_gap = None, None
     terminated = None
     try:
         with (output / "events.jsonl").open("w") as events, (output / "memory.jsonl").open("w") as memory:
             while selector.get_map() or process.poll() is None:
                 current = now()
                 if current >= next_sample and process.poll() is None:
+                    # now() is CLOCK_MONOTONIC, which on macOS keeps counting while the Mac sleeps,
+                    # so a sleep shows up as one long gap between attempts (a failed probe counts
+                    # too). A sample that spanned a sleep is not a measurement: stop the child.
+                    if last_attempt is not None:
+                        max_gap = max(current - last_attempt, max_gap or 0)
+                        if limits.get("gap_s") and current - last_attempt > limits["gap_s"]:
+                            reason = reason or "sleep gap"
+                    last_attempt = current
                     row = sample(probe, process.pid)
                     next_sample = current + interval
                     if row is not None:
@@ -76,10 +96,10 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
                         samples.append(row)
                         memory.write(json.dumps(row) + "\n")
                         memory.flush()
-                        unsafe = (row["system_pressure_level"] == 4 or
-                                  row["system_swap_used_bytes"] - before["system_swap_used_bytes"] > 2 * 2**30)
+                        unsafe = (row["system_pressure_level"] >= limits["pressure"] or
+                                  row["system_swap_used_bytes"] - before["system_swap_used_bytes"] > limits["swap_bytes"])
                         bad = bad + 1 if unsafe else 0
-                        if bad >= 3:
+                        if bad >= limits["samples"]:
                             reason = "memory guard"
                 if current - start > timeout:
                     reason = reason or "timeout"
@@ -117,7 +137,7 @@ def run(output, cwd, command, timeout=1200, interval=1.0, env_overrides=None):
                         returncode=process.returncode, stop_reason=reason,
                         complete=process.returncode == 0 and reason is None,
                         first_stream_bytes_s=first, system_after=sample(probe),
-                        samples=len(samples),
+                        samples=len(samples), max_sample_gap_s=max_gap,
                         sampled_peak_footprint_bytes=max((s["phys_footprint_bytes"] for s in samples), default=None),
                         lifetime_peak_footprint_bytes=max((s["lifetime_peak_phys_footprint_bytes"] for s in samples), default=None))
         meta_path.write_text(json.dumps(metadata, indent=2) + "\n")

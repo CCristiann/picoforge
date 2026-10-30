@@ -2,6 +2,9 @@
 #import <Metal/Metal.h>
 #include "qwen38_f_internal.h"
 #include "qwen38_c_internal.h"
+#include "qwen38_b_internal.h"
+#include "qwen38_ref.h"
+#include "qwen38_profile.h"   /* only the format sentinels, for the R1.9a sub-group marks */
 #include <stdlib.h>
 enum { GX,GD,GG,GU,GA,GS,GSL,GSA,GR2P,GP2R,GWEIGHT,GROUTED,GBUFFERS };
 struct Q38FMoeGpu {
@@ -206,11 +209,13 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
 
 /* ---- Device-routed MoE (G2). Same stage order as moe_batch, without grouping:
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
-struct Q38FRouted { void *device, *route, *iota, *product, *reduce; };
+/* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up
+ * or down+reduce. */
+struct Q38FRouted { void *device, *route, *iota, *product, *reduce, *route_fast; bool ref_moe; };
 void q38f_routed_destroy(Q38FRouted *r) {
     if (!r) return;
-    void *all[]={r->route,r->iota,r->product,r->reduce,r->device};
-    for (size_t i=0;i<5;i++) if (all[i]) CFRelease(all[i]);
+    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->device};
+    for (size_t i=0;i<6;i++) if (all[i]) CFRelease(all[i]);
     free(r);
 }
 Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen38Error *err) {
@@ -219,6 +224,7 @@ Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen
     id<MTLDevice> dev=(__bridge id<MTLDevice>)device; id<MTLLibrary> lib=(__bridge id<MTLLibrary>)library;
     Q38FRouted *r=calloc(1,sizeof *r); if (!r) return q38c_error(err,Q38_OOM,"routed MoE context");
     r->device=(__bridge_retained void *)dev;
+    r->ref_moe=q38_ref_kernels("moe");
     NSArray *names=@[@"q38f_route",@"q38f_iota",@"q38f_product",@"q38f_reduce"];
     void **slots[]={&r->route,&r->iota,&r->product,&r->reduce};
     for (size_t j=0;j<4;j++) {
@@ -227,7 +233,16 @@ Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen
         if (!p) { q38f_routed_destroy(r); return q38c_error(err,Q38_GPU_ERROR,"routed MoE pipeline"); }
         *slots[j]=(__bridge_retained void *)p;
     }
+    { /* R1.5d: optional; without a 32-wide simdgroup or 256 threads q38f_route stays */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_route_fast"];
+        id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
+        if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38F_ROUTE_THREADS)
+            r->route_fast=(__bridge_retained void *)p;
+    }
     *out=r; return q38c_error(err,Q38_OK,NULL);
+}
+bool q38f_routed_fast_route(const Q38FRouted *r,size_t experts,size_t slots) {
+    return r && r->route_fast && !r->ref_moe && experts && experts<=Q38F_ROUTE_MAX_EXPERTS && slots && slots<=experts;
 }
 static void run(id<MTLComputeCommandEncoder> enc,void *pipeline,size_t count) {
     id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)pipeline;
@@ -264,26 +279,70 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
 #define ACT(kind,in,out) do { Q38CGpuSpec spec={.activation=kind}; Qwen38GpuF32 v[]={in,out}; \
     Q38C_TRY(q38c_gpu_encode(ops,cmd,Q38C_ACT,&spec,v,2,err)); } while (0)
+    /* Profile sub-groups (hook set only in profile mode); bytes: what the group's kernels read for these t tokens. */
+#define MARK(op,type,bytes) do { if (w->mark) { w->mark(w->mark_ctx,&cmd,op,type,bytes); \
+    enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; } } while (0)
+#define WB(slot) wb[slot]->tensor.bytes
 #define MUL(a,u,n) do { at(enc,(a).span,0); at(enc,(u).span,1); at(enc,cmd.error_word,2); run(enc,r->product,n); } while (0)
-    LIN(0,x,w->logits);
+    MARK("moe.shared_in",Q38_PROFILE_MIXED,WB(0)+WB(4)+WB(5)+WB(7));
+    { /* R1.4: router, shared gate/up and shared logit all read x: one multi call, one barrier */
+        const size_t slot[]={0,4,5,7};
+        const GgufBinding *mb[4]; Q38PackedLayout ml[4];
+        const Qwen38GpuF32 out[]={w->logits,w->sgate,w->sup,w->slogit};
+        for (size_t j=0;j<4;j++) { mb[j]=wb[slot[j]]; ml[j]=wl[slot[j]]; }
+        Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,4,x,out,err));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
     struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
+    MARK("moe.route",Q38_PROFILE_NONE,0);
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
-    [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5); run(enc,r->route,t);
-    at(enc,w->identity,0); run(enc,r->iota,p);
-    IDX(1,x,w->gate,k); IDX(2,x,w->up,k);
-    ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i);
-    IDX(3,w->act,w->down,1);
-    LIN(4,x,w->sgate); LIN(5,x,w->sup);
+    [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5);
+    if (q38f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)r->route_fast];
+        [enc dispatchThreadgroups:MTLSizeMake(t,1,1) threadsPerThreadgroup:MTLSizeMake(Q38F_ROUTE_THREADS,1,1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    } else run(enc,r->route,t);
+    /* R1.5b: gate+up+SwiGLU in one fused dispatch, act bit-identical to the
+     * unfused fast sequence below; gate/up are then not written (nothing reads
+     * them but ACT and MUL). Fused only when neither `moe` nor `indexed` is
+     * selected: under `indexed` B answers UNSUPPORTED, since the fused act
+     * would not match the oracle indexed sequence; so does a format without a
+     * row dot. Then the unfused sequence. */
+    MARK("moe.gate_up",Q38_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
+    Qwen38Status fused=r->ref_moe ? Q38_UNSUPPORTED :
+        q38_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->ids,k,x,w->act,err);
+    if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    else if (fused!=Q38_UNSUPPORTED) return fused;
+    else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
+    MARK("moe.shared",Q38_PROFILE_MIXED,WB(6));
     ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
-    LIN(6,w->sact,w->shared); LIN(7,x,w->slogit);
+    LIN(6,w->sact,w->shared);
     ACT(Q38_SIGMOID,w->slogit,w->ssig);
-    FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
-    at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
-    at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
-    at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
+    /* R1.5c: the routed down projection and q38f_reduce in one fused dispatch
+     * after the shared expert (it reads shared and ssig as q38f_reduce does);
+     * y and routed are bit-identical to the unfused fast sequence below and
+     * the down scratch is not written (only that sequence reads it). Same
+     * rule as gate+up: fused only when neither `moe` nor `indexed` is
+     * selected (B answers UNSUPPORTED under `indexed` or for a format without
+     * a row dot), else IDX down then q38f_reduce, as before R1.5c. */
+    MARK("moe.down",Q38_PROFILE_MIXED,p*wl[3].expert_bytes);
+    const Q38DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed};
+    fused=r->ref_moe ? Q38_UNSUPPORTED : q38_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],w->ids,w->act,&dv,y,err);
+    if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    else if (fused!=Q38_UNSUPPORTED) return fused;
+    else { /* the identity map is read only by q38f_reduce */
+        at(enc,w->identity,0); run(enc,r->iota,p);
+        IDX(3,w->act,w->down,1);
+        FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
+        at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
+        at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
+        at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
+    }
 #undef LIN
 #undef IDX
 #undef ACT
 #undef MUL
+#undef WB
+#undef MARK
     return q38c_error(err,Q38_OK,NULL);
 }

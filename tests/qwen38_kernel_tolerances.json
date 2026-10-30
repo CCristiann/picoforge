@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "rule": "Condition (b) of a fast kernel: |y_fast - y_oracle| / max(sum|w*x|, 2^-126) <= tol. tol is the power of two just above the maximum measured over the whole corpus of tests/test_qwen38_fast_kernels.py. Condition (a), the FP64 bound gamma(2K+8)*sum|w*x| + 2*ulp32(r), applies to every kernel regardless.",
+  "fields": {
+    "tol": "power of two used by condition (b)",
+    "max": "largest measured (b) ratio over the corpus",
+    "p99": "99th percentile of the (b) ratio",
+    "samples": "number of output elements measured",
+    "commit": "commit whose harness run measured max and p99",
+    "note": "why this kernel's error has this size"
+  },
+  "kernels": {
+    "q8_0": {
+      "tol": 4.76837158203125e-07,
+      "max": 4.582050681871297e-07,
+      "p99": 2.604570892930817e-08,
+      "samples": 257323,
+      "commit": "ab4b0a8 kernel, measured with the harness of its child 'Fix the Q8_0 matvec review findings' (M rotated over K)",
+      "note": "Products w*x are bit-identical to the oracle's (w = d*code is exact in FP32); only the summation order differs. The oracle adds K products serially; the fast kernel sums each 32-column block, then a lane's blocks, then simd_sum over 32 lanes. So (b) mostly measures the oracle's own serial rounding: on the real tensors the fast kernel is within 1.6e-8 of FP64 and the oracle within 1.5e-7. K = 32 (one block, same serial order) gives b = 0. The max 4.6e-7 (7.7 u of S, u = 2^-24) is at N512 K640; 2^-22 = 2.4e-7 is below it."
+    },
+    "f16": {
+      "tol": 4.76837158203125e-07,
+      "max": 4.1928169028653147e-07,
+      "p99": 1.662059720363309e-07,
+      "samples": 255206,
+      "commit": "a3a7592",
+      "note": "Products w*x are bit-identical to the oracle's (every F16 weight decodes exactly to FP32); only the summation order differs. The oracle adds K products serially; the fast kernel sums each 8-column chunk, then a lane's chunks, then simd_sum over 32 lanes, then the dense_split(K) simdgroup partials in order (1 below K 2560, 8 from K 10240). So (b) mostly measures the oracle's serial rounding: on the real HC tensors the fast kernel is within 4.5e-9 (K 10240) and 1.4e-8 (K 320) of FP64, the oracle within 6.8e-8 and 1.1e-7. The max 4.2e-7 (7.0 u of S, u = 2^-24) is at N248320 K32; 2^-22 = 2.4e-7 is below it. The weights span 2^-16..2^0 (F16 subnormals included), so p99 is higher than Q8_0's."
+    },
+    "f32": {
+      "tol": 9.5367431640625e-07,
+      "max": 4.932613399099605e-07,
+      "p99": 1.7735740180754662e-07,
+      "samples": 255182,
+      "commit": "a3a7592",
+      "note": "Products w*x are bit-identical to the oracle's (every F32 weight decodes exactly to FP32); only the summation order differs. The oracle adds K products serially; the fast kernel sums each 8-column chunk, then a lane's chunks, then simd_sum over 32 lanes, then the dense_split(K) simdgroup partials in order (1 below K 2560, 8 from K 10240). So (b) mostly measures the oracle's serial rounding: on the real router/ssm_alpha (K 2560) and K 10240 rows the fast kernel is within 1.6e-8 and 1.6e-9 of FP64, the oracle within 8.9e-8 and 3.5e-8. The max 4.9e-7 (8.3 u of S) is at N248320 K32, above 2^-21 = 4.8e-7, so tol is 2^-20. The weights span 2^-16..2^0, so p99 is higher than Q8_0's."
+    },
+    "iq2_xxs": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.653738572568702e-07,
+      "p99": 1.0336309066738883e-07,
+      "samples": 341531,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5a). Every weight decodes to the oracle's exact FP32 value (test_iq2_xxs_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 32-column group, then a lane's groups, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real gate/up slices (K 2560) the fast kernel is within 1.3e-8 of FP64 and the oracle within 2.3e-7. The max 3.7e-7 (6.1 u of S, u = 2^-24) is at N32768 K256; 2^-22 = 2.4e-7 is below it."
+    },
+    "q2_k": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.573851486180951e-07,
+      "p99": 1.0083521720921607e-07,
+      "samples": 334889,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5a). Every weight decodes to the oracle's exact FP32 value (test_q2_k_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 16-column scale group, then a lane's groups, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real down slices (640 of 768) the fast kernel is within 1.5e-8 of FP64 and the oracle within 1.2e-7. The max 3.6e-7 (6.0 u of S) is at N512 K640/768; 2^-22 = 2.4e-7 is below it."
+    },
+    "q4_k": {
+      "tol": 4.76837158203125e-07,
+      "max": 2.807887259048226e-07,
+      "p99": 9.0236440732542e-08,
+      "samples": 333647,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5b, layer 48 / MTP gate and up). Every weight decodes to the oracle's exact FP32 value (test_q4_k_decode_matches_oracle), so the products w*x are the oracle's; only the summation order differs. The oracle adds K products serially; the fast kernel sums each 32-column sub-block, then a lane's sub-blocks, then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: on the real gate/up slices (K 2560) the fast kernel is within 8.2e-9 of FP64 and the oracle within 8.8e-8. The max 2.8e-7 (4.7 u of S, u = 2^-24) is at N32768 K256; 2^-22 = 2.4e-7 is below it."
+    },
+    "mxfp4": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.748504299613388e-07,
+      "p99": 0.0,
+      "samples": 2488411,
+      "commit": "968e169",
+      "note": "Indexed expert matvec (R1.5b, layer 48 / MTP down). Every weight is built as the oracle's exact FP32 bits (test_mxfp4_decode_matches_oracle, all 256 exponents x 16 codes); the 16 subnormal weights are flushed by the GPU multiply in both kernels, so the products w*x are the oracle's and only the summation order differs: each 32-column block, then a lane's blocks, then simd_sum over 32 lanes. On the real down slices (K 640) the fast kernel is within 1.4e-8 of FP64 and the oracle within 5.1e-8. The max 3.7e-7 (6.3 u of S) is at N33 K640/768 (views); 2^-22 = 2.4e-7 is below it. p99 is 0 because the N248320 K32 case (2.48M of the samples) is one block: the same serial order as the oracle, b = 0."
+    },
+    "moe_gate_up": {
+      "tol": 4.76837158203125e-07,
+      "max": 3.5294206928898585e-07,
+      "p99": 1.0288685287638119e-07,
+      "samples": 43112,
+      "commit": "0b6ef53",
+      "note": "Fused gate+up+SwiGLU (R1.5b), act = silu(g)*u, against the oracle sequence (indexed oracle gate and up, q38c_activate SILU, q38f_product). The fused act is bit-identical to the unfused fast sequence (test_fused_gate_up_bit_identical_to_sequence), so (b) measures the indexed fast dots' order against the oracle's serial one, carried through silu and the product. S = |silu'(g)| S_g |u| + |silu(g)| S_u (first-order effect of the two dot errors). On the real IQ2_XXS/Q4_K gate/up rows and the synthetic shapes the max 3.5e-7 (5.9 u of S) is at MXFP4 N160 K2560; 2^-22 = 2.4e-7 is below it. Condition (a) adds 8 ulp32(r) (exp, division, product) and the GPU's flush below 2^-126 (exp(g) for g below about -87, then the product)."
+    },
+    "moe_down_reduce": {
+      "tol": 2.384185791015625e-07,
+      "max": 2.303485580920677e-07,
+      "p99": 9.01935074734253e-08,
+      "samples": 11060,
+      "commit": "9d9a0da kernel, measured with the harness of its child bd6759f (Test the fused down + reduce against the unfused sequence)",
+      "note": "Fused routed down + weighted reduce (R1.5c), y and routed against the oracle sequence (indexed oracle down, q38f_reduce). Both are bit-identical to the unfused fast sequence (test_fused_down_bit_identical_to_sequence), so (b) measures the indexed fast down dots' order against the oracle's serial one, carried through the slot sum. S = sum_s |w_s| S_s (+ |sigmoid shared| for y). Max 2.3e-7 (3.9 u of S) at IQ2_XXS N33 K600/768 T3x2 (routed), over the real Q2_K/MXFP4 down rows and the synthetic shapes. Condition (a): gamma(2K+8+2k+2) S + 2 ulp32(r) + 2 sum_s |w_s| ulp32(d_s); worst 0.74% of the bound."
+    },
+    "rms_fast": {
+      "tol": 3.814697265625e-06,
+      "max": 3.382118721079508e-06,
+      "p99": 2.3297019402357083e-06,
+      "samples": 1819312,
+      "commit": "9479436",
+      "note": "Parallel RMSNorm (R1.6a), RMS and the gated GDN norm, against check + q38c_rms. Here S = |r| (the FP64 output): one scale per row, so (b) is the relative error of that row's scale and every element of a row has nearly the same ratio (p99 close to max). Squares, mean, eps, sqrt, products and the gate are the oracle's expressions; only the order of the sum of squares differs: the oracle adds width squares serially, the fast kernel per thread (stride 256), then simd_sum over 32 lanes, then the 8 simdgroup sums in order. So (b) mostly measures the oracle's serial rounding: at the graph's HC shape [t, 4, 2560] (real per-stream hc_attn_norm gain) the fast kernel is within 2.6e-7 of FP64 and the oracle within 1.2e-6; at the MTP h-norm [t, 1, 10240] 3.3e-7 and 3.2e-6. The max 3.4e-6 (57 u, u = 2^-24) is at mtp_h 32 tokens; 2^-19 = 1.9e-6 is below it, so tol is 2^-18. Width 1 (one square) gives b = 0. Condition (a): gamma(width+16) S + 2 ulp32(r) (+16 gated); worst 10.8% of the bound (width 1), 0.17% at [32, 4, 2560]. Outside the corpus: the error word can differ (bit 1) only when the sum of squares is within about width*2^-24 of FLT_MAX (the two sum orders round differently), and outputs are unspecified whenever the word ends nonzero."
+    },
+    "gdn_prepare_fast": {
+      "tol": 9.5367431640625e-07,
+      "max": 5.697364864399292e-07,
+      "p99": 3.1107450566623845e-07,
+      "samples": 161880,
+      "commit": "0c03365",
+      "note": "Parallel GDN prepare (R1.8) against check + q38c_gdn_prepare; (b) is measured on the 2 hk L2-normalised q/k heads only, S = |r| (the FP64 output): one scale per head row. The value copy, log_g = A*softplus(alpha+dt) and beta = sigmoid(br) are the oracle's expressions element by element and are asserted bit-identical, not toleranced. In the norms only the order of the dk squares differs: the oracle adds them serially, the fast kernel per lane (stride 32, ascending) then simd_sum over 32 lanes. So (b) mostly measures the oracle's serial rounding: at the real dims (hk 16, hv 48, dk 128) the fast kernel is within 2.4e-7 of FP64 and the oracle within 4.9e-7 (32 tokens). The max 5.7e-7 (9.6 u of S, u = 2^-24) is at the real dims, 32 tokens; 2^-21 = 4.8e-7 is below it, so tol is 2^-20. dk 1 (one square) gives b = 0. Condition (a): gamma(dk+16) S + 2 ulp32(r); worst 6.3% of the bound (dk 1), 0.1% at the real dims. Outside the corpus: the error word can differ (4 or 5 vs 4) only when A > 0 meets an overflow of the op, and outputs are unspecified whenever the word ends nonzero."
+    },
+    "attend_fast": {
+      "tol": 0.000244140625,
+      "max": 0.00014589086709707223,
+      "p99": 7.3051355012039915e-06,
+      "samples": 103552,
+      "commit": "c50cf10 + the R2.1 working tree, measured with the harness of 'Add split-K decode attention'",
+      "note": "S = gate * sum_i p_i |v_i| (exact softmax weights). The split kernel sums each logit as 8 per-lane products then simd_sum (the oracle: 256 serial products) and rescales per key (the oracle: per tile of 16); the merge rescales once per split. A logit error is relative to |logit|, and exp turns it into a relative weight error, so (b) grows with logit size: up to 1.24e-6 (< 2^-19) for logits of std <= 1 (every real-dims and off-tile case), 2.0e-5 at std 16 and 1.46e-4 at std 256 (attend:sharp64, logits ~ +-1000, ulp 6e-5), which sets tol. On every case the fast kernel is closer to FP64 than the oracle (condition (a) fraction 4.6e-5..4.7e-3 against 2.2e-4..8.8e-3)."
+    },
+    "gdn_scan_fast": {
+      "tol": 4.76837158203125e-07,
+      "max": 2.546494693388438e-07,
+      "p99": 7.166882216569216e-08,
+      "samples": 2391840,
+      "commit": "79dc4d7 + the R2.4 working tree, measured with the harness of 'Add a simdgroup GDN scan'",
+      "note": "Per token the two dots (prediction S.k, output S.q) sum dk/32 products per lane then simd_sum instead of dk serial products; everything else (decay, delta, update) is the same expression per element. Outputs: S = sum|s' q| of the last token. State: S = the running sum M <- M exp(g) + |delta k_j| + |k_j| |beta| sum|s exp(g) k| (scan_magnitudes), the absolute values each state rounding scales with, so the error that delta carries from the prediction is counted. Max 2.5e-7 (4.3 u) on the final state after 3 tokens at the real dims; outputs <= 2.2e-7. Condition (a) for one token holds for fast and oracle at <= 0.33 of the bound."
+    }
+  }
+}

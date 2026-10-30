@@ -13,6 +13,16 @@ typedef struct {
 typedef struct {
     void *device, *compute_encoder; /* borrowed, same device as every resource */
     Qwen38GpuSpan error_word;       /* aligned uint32, zero before command */
+    /* R1.6b, set only by the session: the encoder is concurrent (only explicit
+     * barriers order dispatches) and error_word spans 8 bytes: word 0, read by
+     * the kernels' early exits, then a second zeroed word that finish() ORs in.
+     * Input checks may write word 1 instead: no kernel reads it, so a check
+     * needs no barrier before an op that does not write what the check reads.
+     * Then a failed check stops neither its op nor the later kernels: the
+     * failure bits differ from the serial check+oracle pattern (deterministic,
+     * bit 1 still set for non-finite inputs, but not a superset). The contract
+     * is the status: Q38_GPU_ERROR and an INVALID session. */
+    bool concurrent;
 } Qwen38GpuCommand;
 enum {
     Q38_GPU_NONFINITE = 1u,
@@ -84,6 +94,28 @@ Qwen38Status qwen38_gpu_session_begin(Qwen38GpuSession *, const void *model,
 typedef enum { Q38_GPU_USE_READ, Q38_GPU_USE_WRITE } Qwen38GpuUse;
 Qwen38Status qwen38_gpu_session_claim(Qwen38GpuSession *, const Qwen38GpuTicket *,
     Qwen38GpuSpan, Qwen38GpuUse, Qwen38Error *);
+/* R1.7a: a READ span registered once for the session's life (retained until
+ * destroy, kept across commands and reset). Later WRITE claims overlapping it are
+ * refused as before; the per-command cost is a binary search, not a scan. Like claim,
+ * only while ENCODING. Q38_UNSUPPORTED when Q38_REF_KERNELS selects `claim`
+ * (today's per-command claims). */
+Qwen38Status qwen38_gpu_session_pin_read(Qwen38GpuSession *, const Qwen38GpuTicket *,
+    Qwen38GpuSpan, Qwen38Error *);
+/* R1.7b: attach a residency set of these MTLBuffers to the session's queue (not while
+ * busy, once). Skipped with Q38_UNSUPPORTED (and a stderr line) unless buffers plus
+ * headroom_bytes <= 85% of the recommended working set; also UNSUPPORTED on an old OS or
+ * with the `claim` oracle. Callers ignore UNSUPPORTED: the session works without it.
+ * share_residency puts an existing set (residency() of another session) on this queue. */
+Qwen38Status qwen38_gpu_session_use_residency(Qwen38GpuSession *, void *const *buffers,
+    size_t count, uint64_t headroom_bytes, Qwen38Error *);
+void *qwen38_gpu_session_residency(const Qwen38GpuSession *);   /* borrowed, or NULL */
+Qwen38Status qwen38_gpu_session_share_residency(Qwen38GpuSession *, void *set, Qwen38Error *);
+/* Pins are all-or-nothing: seal a complete set; clear (and unseal) after a failed pass. */
+void qwen38_gpu_session_pins_seal(Qwen38GpuSession *);
+bool qwen38_gpu_session_pins_sealed(const Qwen38GpuSession *);
+void qwen38_gpu_session_pins_clear(Qwen38GpuSession *);
+bool qwen38_gpu_session_pins_enabled(const Qwen38GpuSession *);
+size_t qwen38_gpu_session_pin_count(const Qwen38GpuSession *);
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *, const Qwen38GpuTicket *,
     Qwen38Error *);
 Qwen38Status qwen38_gpu_session_abort(Qwen38GpuSession *, const Qwen38GpuTicket *,

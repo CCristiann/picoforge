@@ -46,6 +46,23 @@ kernel void q38c_activate(Q38C_BUFFERS) {
     y*=float(a.p[2]);
     if (valid(y,error)) v1[at(a.v[1],i)]=y;
 }
+/* R2.9: q38c_check + q38c_activate in one dispatch (ACT, HC_LOW, HC_INJECT): the
+ * op's expression per element, so the bits are the same; the check folded in as in
+ * q38c_hc_add_fast (each thread tests its own input: together all of v0). */
+kernel void q38c_activate_fast(Q38C_BUFFERS, device atomic_uint *check [[buffer(10)]],
+        constant uint &split [[buffer(11)]]) {
+    if (i>=a.v[0].count) return;
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    float v=v0[at(a.v[0],i)];
+    if (!isfinite(v)) { atomic_fetch_or_explicit(check,1u,memory_order_relaxed); if (!split) return; }
+    if (skip) return;
+    float x=v/float(a.p[1]), y;
+    if (a.p[0]==0) y=sigmoid(x);
+    else if (a.p[0]==1) y=x*sigmoid(x);
+    else y=softplus(x);
+    y*=float(a.p[2]);
+    if (valid(y,error)) v1[at(a.v[1],i)]=y;
+}
 kernel void q38c_rms(Q38C_BUFFERS) {
     uint width=a.v[0].dim[2], groups=a.v[0].dim[1];
     if (i>=a.v[0].count/width || atomic_load_explicit(error,memory_order_relaxed)) return;
@@ -63,6 +80,58 @@ kernel void q38c_rms(Q38C_BUFFERS) {
         v2[yi+j]=y;
     }
 }
+/* R1.6a: q38c_rms with one Q38C_RMS_THREADS threadgroup per row instead of
+ * one thread (at one token the HC norm [1,4,2560] was 4 threads, each a
+ * serial pass over 2560 floats).
+ * The sum order depends only on width, never on rows or position: thread tid
+ * adds x[j]^2 for j = tid, tid+256, ... in ascending j, simd_sum joins its 32
+ * lanes, thread 0 adds the 8 simdgroup sums in ascending order. Variance,
+ * scale, y and the GDN gate are q38c_rms's expressions. The input check is
+ * folded in: each row reads all its x (and z) and a whole gain row, the rows
+ * together every element, so a nonfinite input sets bit 1 as q38c_check does,
+ * even when the word is already set; the op's own bits (sum, variance, y)
+ * and the writes are skipped when the word was set before, as in q38c_rms.
+ * Outputs are unspecified when the word ends nonzero (a nonfinite input: the
+ * oracle writes nothing, this kernel may write other rows and elements); the
+ * session then discards the command. The sum order differs from q38c_rms, so
+ * the two can disagree on overflow (bit 1) only when the sum of squares is
+ * within about width*2^-24 (relative) of FLT_MAX; y has a 1-ulp-of-scale band.
+ * Idea (threadgroup per row, strided squares, simd_sum, ordered simdgroup
+ * combine): ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_hc_norm. */
+kernel void q38c_rms_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+        device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]],
+        constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+        uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float partial[Q38C_RMS_THREADS/32+1]; /* simdgroup sums, then the row's sum */
+    uint width=a.v[0].dim[2], groups=a.v[0].dim[1];
+    if (row>=a.v[0].count/width) return; /* whole threadgroups only: no barrier is skipped by part of one */
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0, bad=false;
+    uint xi=at(a.v[0],row*width), yi=at(a.v[2],row*width), zi=a.p[0] ? at(a.v[3],row*width) : 0;
+    uint wi=a.v[1].rank==1 ? 0 : (row%groups)*a.v[1].stride[0];
+    float sum=0;
+    for (uint j=tid;j<width;j+=Q38C_RMS_THREADS) { float x=v0[xi+j]; bad|=!isfinite(x); sum+=x*x; }
+    sum=simd_sum(sum);
+    if (!lane) partial[sg]=sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup); /* also: every x of the row is read before any y */
+    if (!tid) { float s=0; for (uint k=0;k<Q38C_RMS_THREADS/32;++k) s+=partial[k]; partial[Q38C_RMS_THREADS/32]=s; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float total=partial[Q38C_RMS_THREADS/32];
+    float variance=total/float(width)+a.eps;
+    bool ok=!skip && isfinite(total) && isfinite(variance);
+    if (!skip && !tid && !ok) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    float scale=1.0f/sqrt(variance);
+    for (uint j=tid;j<width;j+=Q38C_RMS_THREADS) {
+        float g=v1[wi+j], z=a.p[0] ? v3[zi+j] : 0.0f;
+        bad|=!isfinite(g) || !isfinite(z);
+        float y=(v0[xi+j]*scale)*g;
+        if (!ok) continue;
+        if (!valid(y,error)) continue;
+        if (a.p[0]) y*=sigmoid(z);
+        v2[yi+j]=y;
+    }
+    if (bad) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+}
 kernel void q38c_hc_read(Q38C_BUFFERS) {
     if (i>=a.v[2].count || atomic_load_explicit(error,memory_order_relaxed)) return;
     uint width=a.v[0].dim[2], h=a.v[0].dim[1], t=i/width, j=i%width; float sum=0;
@@ -76,6 +145,29 @@ kernel void q38c_hc_add(Q38C_BUFFERS) {
     uint width=a.v[0].dim[2], h=a.v[0].dim[1], th=i/width;
     float y=v0[at(a.v[0],i)]+v2[at(a.v[2],th)]*v1[at(a.v[1],(th/h)*width+i%width)];
     if (valid(y,error)) v0[at(a.v[0],i)]=y;
+}
+/* R2.9: q38c_check + q38c_hc_add in one dispatch, one thread per element as the
+ * op: y = residual + inject * block with q38c_hc_add's expression, so the bits are
+ * the same. The check is folded in: each thread tests its residual, block and
+ * inject elements (together every element of the three views, as q38c_check), a
+ * nonfinite one sets bit 1 even when the word is already set; y is skipped when
+ * the word was set before (as the op after a failed check). Outputs are
+ * unspecified when the word ends nonzero (other elements may be written); the
+ * session then discards the command. On a concurrent command whose op writes
+ * nothing the check reads (R1.6b), the input fault goes to word 1 (`check`,
+ * split = 1) and the op is not stopped, as the overlapped check + op. 96 calls
+ * per decode token. */
+kernel void q38c_hc_add_fast(Q38C_BUFFERS, device atomic_uint *check [[buffer(10)]],
+        constant uint &split [[buffer(11)]]) {
+    if (i>=a.v[0].count) return;
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    uint width=a.v[0].dim[2], h=a.v[0].dim[1], th=i/width;
+    uint ri=at(a.v[0],i);
+    float r=v0[ri], b=v1[at(a.v[1],(th/h)*width+i%width)], s=v2[at(a.v[2],th)];
+    if (!isfinite(r) || !isfinite(b) || !isfinite(s)) { atomic_fetch_or_explicit(check,1u,memory_order_relaxed); if (!split) return; }
+    if (skip) return;
+    float y=r+s*b;
+    if (valid(y,error)) v0[ri]=y;
 }
 kernel void q38c_conv(Q38C_BUFFERS) {
     if (i>=a.v[0].count || atomic_load_explicit(error,memory_order_relaxed)) return;
@@ -122,6 +214,123 @@ kernel void q38c_gdn_prepare(Q38C_BUFFERS) {
         v6[at(a.v[6],i*hv+h)]=g;
         v7[at(a.v[7],i*hv+h)]=sigmoid(v2[at(a.v[2],i*hv+h)]);
     }
+}
+/* R1.8: q38c_gdn_prepare on a [ceil(2hk/8), t] grid of Q38C_RMS_THREADS
+ * threadgroups instead of one thread per token (at one token a single thread
+ * did 32 L2 norms of 128 floats, a 6144-float copy and 48 gates, serially).
+ * Simdgroup s of a token's groups owns q/k head s: lane l adds x[j]^2 for
+ * j = l, l+32, ... in ascending j and simd_sum joins the 32 lanes, so the
+ * order depends only on dk, never on t or position. The value copy and the
+ * gates are strided over the token's threads. Expressions (sum+eps, 1/sqrt,
+ * (x*inv)*scale, softplus, sigmoid) are q38c_gdn_prepare's. Every element is
+ * read and written by one thread, so the admitted in-place aliases need no
+ * barrier. The input check is folded in as in q38c_rms_fast: a nonfinite
+ * qkv, alpha, br, A or dt element sets bit 1 and A > 0 bit 4 even when the
+ * word is already set; the op's own bits and the writes are skipped when the
+ * word was set before. Outputs are unspecified when the word ends nonzero
+ * (the oracle stops a token at its first fault, this kernel writes the other
+ * heads); the word itself can differ only when A > 0 meets an overflow of the
+ * op (4 or 5 here, scheduling dependent; 4 for the oracle, which then skips the op).
+ * Idea (GDN front per head, simdgroup L2 norm): ds4 fc80bd6, MIT,
+ * metal/qwen4.metal:kernel_qwen4_gdn_front and kernel_qwen4_gdn_prep. */
+kernel void q38c_gdn_prepare_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+        device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],
+        device float *v5 [[buffer(5)]], device float *v6 [[buffer(6)]], device float *v7 [[buffer(7)]],
+        constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+        uint2 group [[threadgroup_position_in_grid]], uint2 groups [[threadgroups_per_grid]],
+        uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {
+    uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3], t=group.y, keys=2*hk*dk;
+    uint src=t*a.v[0].stride[0], dst=t*a.v[5].stride[0];
+    uint first=group.x*Q38C_RMS_THREADS+tid, threads=groups.x*Q38C_RMS_THREADS;
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0, bad=false, fault=false;
+    float qscale=1.0f/sqrt(float(dk));
+    for (uint h=first/32;h<2*hk;h+=threads/32) { /* uniform per simdgroup: simd_sum is safe */
+        float sum=0;
+        for (uint j=lane;j<dk;j+=32) { float x=v0[src+h*dk+j]; bad|=!isfinite(x); sum+=x*x; }
+        float squared=simd_sum(sum)+a.eps;
+        bool ok=!skip && isfinite(squared);
+        fault|=!skip && !ok;
+        float inv=1.0f/sqrt(squared), scale=h<hk ? qscale : 1.0f;
+        for (uint j=lane;ok && j<dk;j+=32) v5[dst+h*dk+j]=(v0[src+h*dk+j]*inv)*scale;
+    }
+    for (uint j=first;j<hv*dv;j+=threads) {
+        float x=v0[src+keys+j]; bad|=!isfinite(x);
+        if (!skip) v5[dst+keys+j]=x;
+    }
+    for (uint h=first;h<hv;h+=threads) {
+        uint n=t*hv+h; float A=v3[h], dt=v4[h], alpha=v1[at(a.v[1],n)], br=v2[at(a.v[2],n)];
+        bad|=!isfinite(A) || !isfinite(dt) || !isfinite(alpha) || !isfinite(br);
+        if (A>0) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
+        float value=alpha+dt, g=A*softplus(value);
+        if (skip) continue;
+        if (!isfinite(value) || !isfinite(g)) { fault=true; continue; }
+        v6[at(a.v[6],n)]=g;
+        v7[at(a.v[7],n)]=sigmoid(br);
+    }
+    if (bad || fault) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+}
+/* R2.4 fast GDN scan: one simdgroup per 4 consecutive state rows (h, v..v+3) of
+ * a value head instead of one thread per row (as ds4's _r4: q, k, g, beta loaded
+ * once for 4 rows, 8 reductions in flight; 1 row per simdgroup was slower than the
+ * oracle); lane l keeps S[h,v,l*P..l*P+P-1] (P = dk/32 <= 8)
+ * in registers for the whole token loop, so the 512-byte row is read and written
+ * once per dispatch, not twice per token. Per token, as the oracle: S *= exp(g),
+ * u = S.k, delta = (v - u)*beta, S += delta*k, o = S.q; each dot sums P products
+ * per lane then simd_sum (the oracle: dk serial products), so the tolerance entry
+ * is gdn_scan_fast. The input check is folded in as in q38c_gdn_prepare_fast:
+ * a nonfinite qkv, log-decay, beta or state element read here sets bit 1, and a
+ * log-decay > 0 or beta outside [0, 1] bit 4, as q38c_check, even when
+ * the word is already set; then the op's bits and every write are skipped.
+ * Outputs are unspecified when the word ends nonzero. Rows of state, q, k need a
+ * unit last stride (host). Idea: ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_scan. */
+#define Q38C_SCAN_ROWS 4
+kernel void q38c_gdn_scan_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+    device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],
+    constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+    uint tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3], r0=(tg*sn+sg)*Q38C_SCAN_ROWS, P=dk/32;
+    if (r0>=hv*dv) return;                       /* dv % Q38C_SCAN_ROWS == 0 (host): one head */
+    const bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    const uint h=r0/dv, v0i=r0%dv, width=2*hk*dk+hv*dv;
+    uint row[Q38C_SCAN_ROWS];
+    bool bad=false, fault=false, range=false;
+    float S[Q38C_SCAN_ROWS][8];
+    for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
+        row[j]=at(a.v[3],(r0+j)*dk)+lane*P;
+        for (uint i=0;i<8;i++) { S[j][i]=i<P ? v3[row[j]+i] : 0; bad|=!isfinite(S[j][i]); }
+    }
+    for (uint t=0;t<a.v[0].dim[0];t++) {
+        uint q=at(a.v[0],t*width+(h%hk)*dk)+lane*P, k=at(a.v[0],t*width+hk*dk+(h%hk)*dk)+lane*P;
+        float g=v1[at(a.v[1],t*hv+h)], beta=v2[at(a.v[2],t*hv+h)], qx[8], kx[8];
+        for (uint i=0;i<8;i++) {
+            qx[i]=i<P ? v0[q+i] : 0; kx[i]=i<P ? v0[k+i] : 0;
+            bad|=!isfinite(qx[i]) || !isfinite(kx[i]);
+        }
+        bad|=!isfinite(g) || !isfinite(beta); range|=g>0 || beta<0 || beta>1;
+        float decay=exp(g), prediction[Q38C_SCAN_ROWS], result[Q38C_SCAN_ROWS];
+        for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
+            prediction[j]=0;
+            for (uint i=0;i<8;i++) if (i<P) { S[j][i]*=decay; prediction[j]+=S[j][i]*kx[i]; }
+            prediction[j]=simd_sum(prediction[j]);
+        }
+        for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
+            float value=v0[at(a.v[0],t*width+2*hk*dk+h*dv+v0i+j)];
+            bad|=!isfinite(value);
+            float delta=(value-prediction[j])*beta;
+            result[j]=0;
+            for (uint i=0;i<8;i++) if (i<P) {
+                S[j][i]+=delta*kx[i]; fault|=!isfinite(S[j][i]);
+                result[j]+=S[j][i]*qx[i];
+            }
+            result[j]=simd_sum(result[j]);
+            fault|=!isfinite(prediction[j]) || !isfinite(delta) || !isfinite(result[j]);
+            if (!skip && !lane) v4[at(a.v[4],(t*hv+h)*dv+v0i+j)]=result[j];
+        }
+    }
+    if (!skip) for (uint j=0;j<Q38C_SCAN_ROWS;j++) for (uint i=0;i<8;i++) if (i<P) v3[row[j]+i]=S[j][i];
+    if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
 }
 /* Each lane owns an entire (value-head,value-channel) state row. FP32 and
  * sequential feature/time order deliberately mirror C before optimization. */

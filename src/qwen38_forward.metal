@@ -20,3 +20,24 @@ kernel void q38g_mtp_sum(device const float *proj [[buffer(0)]],device float *r 
     if (!isfinite(value)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
     r[i]=value;
 }
+/* One threadgroup over one logits row (T15c). Each thread keeps the first maximum of its
+ * strided slice; the tree keeps the larger value, and on a tie the smaller index, so the
+ * result is the FIRST maximum whatever the slice split. Non-finite logits never compete
+ * and set error bit 1. Idea: ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_argmax. */
+kernel void q38g_argmax(device const float *x [[buffer(0)]],device int *out [[buffer(1)]],
+    constant uint &n [[buffer(2)]],device atomic_uint *error [[buffer(3)]],uint t [[thread_index_in_threadgroup]]) {
+    threadgroup float bv[1024]; threadgroup uint bi[1024];
+    float v=-INFINITY; uint idx=0xffffffffu; bool bad=false;
+    for (uint i=t;i<n;i+=1024) {
+        float c=x[i];
+        if (!isfinite(c)) { bad=true; continue; }
+        if (idx==0xffffffffu || c>v) { v=c; idx=i; }
+    }
+    bv[t]=v; bi[t]=idx;
+    for (uint s=512;s>0;s>>=1) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (t<s && (bv[t+s]>bv[t] || (bv[t+s]==bv[t] && bi[t+s]<bi[t]))) { bv[t]=bv[t+s]; bi[t]=bi[t+s]; }
+    }
+    if (bad) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    if (t==0) out[0]=bi[0]==0xffffffffu ? 0 : (int)bi[0];
+}

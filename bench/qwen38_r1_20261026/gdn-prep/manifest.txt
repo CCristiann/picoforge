@@ -1,0 +1,5 @@
+570ecdd4ec6a1f1b8209eda28b1d670fcd4c8c6b
+?? bench/qwen38_r1_20261026/gdn-prep/
+?? bench/qwen38_r1_20261026/profile-t16-0/
+da931b07232d08f333d825b4e0dc3b8c5c0fbb8882d9183ee71a0ae8cee27a8e  build/qwen38-r1/test_fast_kernels
+dbc63102c7ca3a31d3742af86833ff480fff55d0a71757376f2f348b43e83d92  picoforge.metallib

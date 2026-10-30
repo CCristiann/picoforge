@@ -188,7 +188,7 @@ int main(int argc,char **argv) {
         id<MTLCommandBuffer> command=[queue commandBuffer];
         assert(command.retainedReferences);
         id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,4,4}};
+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,4,4},false};
         if (r.decode) decode_rows(dev,lib,encoder,store,binding,r,output,word);
         else linear_rows(ctx,cmd,store,binding,r,input,output);
         [encoder endEncoding]; [command commit]; [command waitUntilCompleted];

@@ -1,0 +1,7 @@
+2026-10-28T12:28:06Z
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+Now drawing from 'Battery Power'
+ -InternalBattery-0 (id=7864419)	51%; discharging; 2:42 remaining present: true
+vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)

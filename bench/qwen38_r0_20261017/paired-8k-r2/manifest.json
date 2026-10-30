@@ -1,0 +1,198 @@
+{
+  "complete": false,
+  "frontier": "8k",
+  "counts": {
+    "picoforge": [
+      0,
+      2
+    ],
+    "dwarfstar": [
+      3,
+      20
+    ]
+  },
+  "block": 1,
+  "plan": [
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ]
+  ],
+  "protocol": "One process per sample for both engines (ds4-bench measures one frontier per process): prefill to the frontier, then 128 forced one-token appends. tok/s = forced IDs / decode seconds (picoforge decode_s, ds4-bench gen_tps). Warm-ups discarded. OS file cache warm, not purged: no cold-start claim.",
+  "suite_sha256": "d0bcf8bfd4ed69b4a881be724d1bf9022d574437ee1b0eae9137d10e41307379",
+  "guard": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "revision": "789ce5aa1c09389f31e9dda5ecef858abea87a4f",
+  "diff": "",
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "checkpoint": "models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "checkpoint_sha256_recomputed": false,
+  "sha256": {
+    "picoforge": "d10ae768973431a19a150da1ff335757993eaa2997682dde50c18c209591877e",
+    "picoforge.metallib": "dcbb957bf5a0bf88cffa74767afa216d60ecc3a0fb8ed39f12581811b24bdfd2",
+    "ds4-bench": "27e2c3666d82123ca3d3bd93f6fff09545df4de91e606ee52c78445c99a4e5d0",
+    "ds4": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+    "tool": "55bcf179b3f5c7a14239b961e8ad98984ff561402fab96592a4612d48cf8c7bc"
+  },
+  "before": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t90%; AC attached; not charging present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 0,
+    "graphics": true,
+    "lid_open": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "thermal_state": "nominal"
+  }
+}

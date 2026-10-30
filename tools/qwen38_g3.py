@@ -1,7 +1,10 @@
 """Bounded full-checkpoint G3 gate against pinned DwarfStar FP32 reference.
 
 Run under qwen38_gpu_lock.py from the picoforge worktree. The inherited lock
-FD is preserved even when the oracle child changes to the DwarfStar cwd.
+FD is preserved even when the oracle child changes to the DwarfStar cwd. Every
+step that maps the checkpoint starts through the paired harness's Launcher
+(release wait, strict memory guard: ruling R9); clang and the synthetic-graph
+replay map nothing and stay plain subprocesses.
 No downloads, checkpoint conversion, or full checkpoint hash. Stock Metal
 parity is recorded separately because its QSA K/V cache uses FP16.
 """
@@ -16,11 +19,12 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'tools/eval'))
-from run_observed import run as observe
 from inspect_qwen38_gguf import inspect
+import qwen38_compare
 REVISION = 'fc80bd695da76ee14bcb86820bf900a5cdfda806'
 GATE = 1e-3
 TOKENS = [248045, 846, 198, 7734, 12654, 220, 18, 1970, 25471, 10562, 56761, 2515]
+FENCED_TIMEOUT = 900  # seconds per fenced step; the whole R0 gate took about a minute
 
 
 def scaled(actual, reference):
@@ -41,6 +45,18 @@ def logits_report(actual, reference):
                 per_token_scaled=(error/np.maximum(1, np.abs(reference).max(1))).tolist(),
                 per_token_margin=margin.tolist(), native_top5=actual_top5.tolist(), reference_top5=reference_top5.tolist(),
                 top5_order_matches=int(np.all(actual_top5==reference_top5, axis=1).sum()))
+
+
+def fenced(launch, out, name, command, cwd, env=None):
+    """Run a checkpoint-mapping step through `launch` in out/launch-NAME; returns its report entry.
+
+    forward_real owns out/native, so launch directories get their own prefix.
+    """
+    command = list(map(str, command))
+    code = launch(out/f'launch-{name}', cwd, command, FENCED_TIMEOUT, env=env)
+    if code:
+        raise RuntimeError(f'{name} failed (code {code}); evidence retained in {out}/launch-{name}')
+    return dict(name=name, argv=command, cwd=str(cwd), env=env or {}, launcher='qwen38_compare.Launcher')
 
 
 def near_tie(checkpoint, native, out):
@@ -93,7 +109,7 @@ def main():
     native = out/'native'; native.mkdir()
     checkpoint = args.checkpoint.resolve()
     (out/'tokens.json').write_text(json.dumps(TOKENS)+'\n')
-    commands = []
+    commands, launch = [], qwen38_compare.Launcher()
 
     def run(name, command, cwd=ROOT, extra_env=None):
         commands.append(dict(name=name, argv=list(map(str, command)), cwd=str(cwd), env=extra_env or {}))
@@ -103,19 +119,19 @@ def main():
             subprocess.run(list(map(str, command)), cwd=cwd, env=child_env,
                            pass_fds=(fd,), stdout=log, stderr=log, check=True)
 
-    run('native', [ROOT/'build/qwen38-g2/forward_real', checkpoint, native, 48, 4, *TOKENS])
+    commands.append(fenced(launch, out, 'native', [ROOT/'build/qwen38-g2/forward_real', checkpoint, native, 48, 4, *TOKENS], ROOT))
     objects = ['ds4.o', 'ds4_image.o', 'ds4_distributed.o', 'ds4_tp.o', 'ds4_ssd.o', 'ds4_metal.o', 'ds4_layer_pack.o', 'ds4_engram.o']
     oracle = out/'dwarfstar_logits'
     run('oracle-build', ['clang', '-O2', '-std=c11', '-I'+str(ds), ROOT/'tools/oracle/qwen38_dwarfstar_logits.c',
                         *[ds/p for p in objects], '-framework', 'Metal', '-framework', 'Foundation', '-lm', '-pthread', '-o', oracle])
-    run('stock-metal', [oracle, checkpoint, out/'stock-metal.f32', *TOKENS], cwd=ds,
-        extra_env={'DS4_METAL_GRAPH_DUMP_PREFIX': str(out/'stock-trace')})
+    commands.append(fenced(launch, out, 'stock-metal', [oracle, checkpoint, out/'stock-metal.f32', *TOKENS], ds,
+                           {'DS4_METAL_GRAPH_DUMP_PREFIX': str(out/'stock-trace')}))
     tie = near_tie(checkpoint, native, out)
     run('near-tie-replay', [ROOT/'build/qwen38-g2/test_parts', ROOT/'build/qwen38-g1/graph.gguf',
                           ROOT/'picoforge.metallib', out/'near-tie-scores.f32'], extra_env={'MTL_DEBUG_LAYER': '1'})
-    run('fp32-reference', [ds/'ds4', '--cpu', '--first-token-test', '-m', checkpoint, '-p', 'x'], cwd=ds,
-        extra_env={'DS4_QWEN4_FT_TOKENS': ','.join(map(str, TOKENS)),
-                   'DS4_QWEN4_FT_OUT': str(out/'fp32-logits.f32'), 'DS4_QWEN4_FT_HIDDEN': str(out/'fp32-hidden.f32')})
+    commands.append(fenced(launch, out, 'fp32-reference', [ds/'ds4', '--cpu', '--first-token-test', '-m', checkpoint, '-p', 'x'], ds,
+                           {'DS4_QWEN4_FT_TOKENS': ','.join(map(str, TOKENS)),
+                            'DS4_QWEN4_FT_OUT': str(out/'fp32-logits.f32'), 'DS4_QWEN4_FT_HIDDEN': str(out/'fp32-hidden.f32')}))
     logits = np.fromfile(native/'logits.f32', '<f4').reshape(len(TOKENS), -1)
     fp32 = np.fromfile(out/'fp32-logits.f32', '<f4').reshape(logits.shape)
     stock = np.fromfile(out/'stock-metal.f32', '<f4').reshape(logits.shape)
@@ -123,13 +139,10 @@ def main():
     errors = [scaled(np.fromfile(native/f'layer{i}.output.f32', '<f4').reshape(len(TOKENS), -1), hidden[:, i]) for i in range(48)]
     ref = logits_report(logits, fp32); metal = logits_report(logits, stock)
     passed = max(errors)<=GATE and ref['scaled']<=GATE and ref['argmax_matches']==len(TOKENS) and ref['margin_decided']==len(TOKENS)
-    chat_command = list(map(str, [ROOT/'picoforge', '--qwen38', checkpoint, '--chat', 'Rispondi in italiano: quanto fa 2 + 2?',
-                                 '--max-new', 16, '--token-ids', out/'chat-ids.json', '--logits', out/'chat-logits.f32']))
-    commands.append(dict(name='chat', argv=chat_command, cwd=str(ROOT), observer='tools/eval/run_observed.py'))
-    if observe(out/'chat', ROOT, chat_command, timeout=1200, interval=.25):
-        raise RuntimeError('chat or memory observation failed; evidence retained')
-    memory = json.loads((out/'chat/process.json').read_text())
-    metal_memory = [json.loads(line.split(': ', 1)[1]) for line in (out/'chat/stderr.log').read_text().splitlines()
+    commands.append(fenced(launch, out, 'chat', [ROOT/'picoforge', '--qwen38', checkpoint, '--chat', 'Rispondi in italiano: quanto fa 2 + 2?',
+                                                 '--max-new', 16, '--token-ids', out/'chat-ids.json', '--logits', out/'chat-logits.f32'], ROOT))
+    memory = json.loads((out/'launch-chat/process/process.json').read_text())
+    metal_memory = [json.loads(line.split(': ', 1)[1]) for line in (out/'launch-chat/process/stderr.log').read_text().splitlines()
                     if line.startswith('Qwen3.8 memory: ')][-1]
     report = dict(gate=GATE, tokens=TOKENS, layers=48, checkpoint=str(checkpoint), checkpoint_bytes=checkpoint.stat().st_size,
                   dwarfstar_revision=revision, fp32_reference=ref, hidden_by_layer=errors, hidden_max=max(errors),

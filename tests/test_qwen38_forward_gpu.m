@@ -96,6 +96,56 @@ static void graph_state_checks(Qwen38GpuForward *graph,const int32_t *tokens,siz
     fprintf(stderr,"G2 histories: chunk/reset/replay bit-exact; late GPU fault withheld logits/hash/position\n");
 }
 
+/* T15c: the GPU argmax equals the CPU scan (first maximum, non-finite -> bit 1), alone on
+ * rows and inside the graph, for the selector's mode (default or Q38_REF_KERNELS=argmax). */
+static int32_t scan(const float *x,uint32_t n) { uint32_t b=0; for (uint32_t j=1;j<n;j++) if (x[j]>x[b]) b=j; return (int32_t)b; }
+static void argmax_checks(void *device,void *library,Qwen38GpuForward *graph,const int32_t *tokens,size_t count,
+                          uint32_t chunk,uint32_t layers,uint32_t vocab) {
+    Qwen38Error e; uint64_t seed=0x9e3779b97f4a7c15ull; int32_t id; uint32_t bits;
+    const uint32_t sizes[]={1,2,3,1023,1024,1025,2047,2048,2049,5000,vocab,248320};
+    for (size_t k=0;k<sizeof sizes/sizeof *sizes;k++) {
+        uint32_t n=sizes[k]; float *row=malloc((size_t)n*4); assert(row);
+        for (int variant=0;variant<8;variant++) {
+            for (uint32_t j=0;j<n;j++) { seed^=seed<<13; seed^=seed>>7; seed^=seed<<17; row[j]=(float)(int32_t)(seed>>40)/65536.0f-64.0f; }
+            if (variant==1) for (uint32_t j=0;j<n;j++) row[j]=3.5f;                    /* all equal -> 0 */
+            if (variant==2 && n>1) { row[n-1]=1e9f; row[n/2]=1e9f; }                  /* tie, first index wins */
+            if (variant==3 && n>1025) { row[1]=2e9f; row[1025]=2e9f; row[1024]=2e9f; } /* ties inside one thread's slice */
+            if (variant==4) for (uint32_t j=0;j<n;j++) row[j]=-1e30f-(float)(j%7);    /* all negative */
+            if (variant==5 && n>1) { row[0]=-0.0f; row[1]=0.0f; for (uint32_t j=2;j<n;j++) row[j]=-1.0f; } /* -0 == +0 */
+            if (variant==6) row[n-1]=1e10f;                                           /* maximum in the tail */
+            check(q38g_argmax_probe(device,library,row,n,&id,&bits,&e),&e);
+            assert(bits==0 && id==scan(row,n));
+        }
+        const float bad[]={NAN,INFINITY,-INFINITY};
+        for (int b=0;b<3;b++) for (uint32_t at=0;at<3;at++) {
+            uint32_t pos=at==0 ? 0 : at==1 ? n/2 : n-1; float keep=row[pos]; row[pos]=bad[b];
+            check(q38g_argmax_probe(device,library,row,n,&id,&bits,&e),&e);
+            assert(bits&Q38_GPU_NONFINITE); row[pos]=keep;
+        }
+        free(row);
+    }
+    /* In the graph: id of the last row of every append (decode and chunked) equals the CPU scan of the
+     * logits the ordinary path reads back, and the graph keeps advancing exactly as before. */
+    int32_t *want=malloc(count*sizeof *want),*got=malloc(count*sizeof *got); float *row=malloc((size_t)vocab*4);
+    assert(want && got && row);
+    Qwen38F32Mut y={.data=row,.capacity_bytes=(size_t)vocab*4,.rank=2,.dim={1,vocab},.stride_bytes={(size_t)vocab*4,4}};
+    size_t appends=0;
+    check(qwen38_gpu_forward_reset(graph,&e),&e);
+    for (size_t start=0;start<count;start+=chunk,appends++) {
+        check(qwen38_gpu_forward(graph,tokens+start,MIN(count-start,(size_t)chunk),layers,y,NULL,NULL,&e),&e);
+        want[appends]=scan(row,vocab);
+    }
+    check(qwen38_gpu_forward_reset(graph,&e),&e); appends=0;
+    for (size_t start=0;start<count;start+=chunk,appends++) {
+        check(qwen38_gpu_forward_argmax(graph,tokens+start,MIN(count-start,(size_t)chunk),layers,&got[appends],&e),&e);
+        assert(got[appends]==want[appends]);
+    }
+    assert(qwen38_gpu_forward_info(graph).next_pos==count);
+    assert(qwen38_gpu_forward_argmax(graph,tokens,0,layers,&id,&e)==Q38_INVALID_ARGUMENT);
+    free(want); free(got); free(row);
+    fprintf(stderr,"G2 argmax: kernel rows, ties, non-finite and %zu graph appends equal the CPU scan\n",appends);
+}
+
 int main(int argc, char **argv) {
     if (argc < 6) { fprintf(stderr, "usage: %s GGUF OUTDIR LAYERS CHUNK TOKEN...\n", argv[0]); return 2; }
     outdir = argv[2];
@@ -149,6 +199,7 @@ int main(int argc, char **argv) {
            count, layers, chunk, (unsigned long long)info.next_pos, info.valid ? "true" : "false",
            replay);
     if (full && count>1 && getenv("Q38_G2_STATE_CHECKS")) graph_state_checks(graph,tokens,count,chunk,layers,vocab);
+    if (full && getenv("Q38_G2_ARGMAX_CHECKS")) argmax_checks((__bridge void *)device,(__bridge void *)library,graph,tokens,count,chunk,layers,vocab);
     qwen38_gpu_forward_destroy(graph); qwen38_weights_free(weights);
     gpu_weights_close(store); qwen38_config_free(config); gguf_close(&g);
     free(logits); free(again); free(tokens);
