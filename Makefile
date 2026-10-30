@@ -87,6 +87,7 @@ test-qwen38-tools: build/process_memory build/memory_budget
 
 src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.m.o src/main.o: src/gguf.h
 src/main.o: src/qwen38_cli.h
+src/qwen38_cli.m.o: src/qwen38_run.h
 
 build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/util.c src/gguf.h src/picoforge.h
 	@mkdir -p build

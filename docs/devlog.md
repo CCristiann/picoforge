@@ -2,6 +2,22 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Roadmap stage R2 "Terminal" — `./picoforge` like `./ds4` (from 2026-10-30)
+
+Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
+interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
+The decode path is not touched: only host orchestration. Newest first.
+
+### T-R2.1 — one request is now `q38_turn()`
+
+The prefill + greedy/MTP decode loop moved out of `qwen38_cli()` into
+`q38_turn()` (`src/qwen38_run.h`), so the REPL can drive the same code. Every
+trunk append goes through one `append()` helper (profile row, stats, and the
+length of the last append, which the REPL needs to catch the MTP predictor
+up between turns). Same graph calls in the same order: generated IDs on the
+synthetic model identical before/after (plain and `--mtp`), test-qwen38-cli
+7/7, session tests green, a real `--chat` run on Flash-Next Q2 answers.
+
 ## R2 — close the gap to DwarfStar, short prompt and 8K (from 2026-10-28)
 
 Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
