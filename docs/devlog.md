@@ -8,6 +8,22 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2 review — one Important, seven Minor
+
+One opus review of 0da4c82..d745172 (`.superpowers/sdd/R0-R1-plan/r2-final-review.md`):
+no Critical; every "bit-identical" step checked as such. Fixed: I1 (split
+attention set bit 1 on top of bit 2 for an invalid id: it now scans the
+ids first, as the oracle, and sets bit 2 alone; new combined-fault tests),
+M2 (the QSA fast kernels fall back to the oracle without 32-lane
+simdgroups), M7 (this log's split size). Accepted as documented: M1 (the
+fused HC tail reports input faults in word 0 on a concurrent command; the
+session ORs both words, so the status is the same), M3 (the S = 1 packing
+drops a redundant dispatch check). Deferred to the next round: M4
+(tolerance provenance "commit + working tree" for attend_fast and
+gdn_scan_fast: re-measure on a commit), M5 (attend_fast tol set by an
+extreme case; scan (a) single-token), M6 (attention fallback and `part`
+alias tests, strided HC tail views).
+
 ### R2 close — 0.75x short, 0.72x at 8K
 
 Paired on AC at `9ae6e02` (`bench/qwen38_r2_20261030`, README): short
@@ -150,8 +166,8 @@ block selection. The oracle attention runs one threadgroup per head (24 on a
 Attention is a softmax-weighted average, and softmax can be computed in
 pieces: each piece keeps its running max `m`, sum `l = Σ exp(s-m)` and
 `acc = Σ exp(s-m)·v`; two pieces merge by rescaling with `exp(m_i - max)`.
-So the new kernel gives each threadgroup one split of <= 32 keys (64 splits
-at most) and one KV head; its 4 simdgroups share the K/V rows and own 3 query
+So the new kernel gives each threadgroup one split of ceil(m/s) keys, s =
+min(64, ceil(m/32)) splits (<= 32 keys up to 2048, more beyond: 65 at m 4100) and one KV head; its 4 simdgroups share the K/V rows and own 3 query
 heads each, a lane owns 8 features, and a small merge kernel combines the
 partials in split order. The split layout depends on the key count only, so
 every token, chunk and MTP row keeps the same order. Isolated at the 8K

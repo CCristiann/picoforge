@@ -2006,7 +2006,11 @@ class FastKernelTests(unittest.TestCase):
                       ("unused", lambda a: a[2].__setitem__((unused, 0, 0), np.nan), 0),
                       ("id range", lambda a: a[4].__setitem__(-1, m + 50), 2),
                       ("id order", lambda a: a[4].__setitem__(m // 2, a[4][m // 2 - 1]), 2),
-                      ("gate range", lambda a: a[1].__setitem__((0, 1), 1.5), 2)]
+                      ("gate range", lambda a: a[1].__setitem__((0, 1), 1.5), 2),
+                      # R2 review I1: with an invalid id the oracle sets bit 2 alone, whatever else is wrong
+                      ("id order + NaN q", lambda a: (a[4].__setitem__(m // 2, a[4][m // 2 - 1]),
+                                                      a[0].__setitem__((3, 7), np.nan)), 2),
+                      ("every id past the cache", lambda a: a[4].__setitem__(slice(None), m + 50 + np.arange(m)), 2)]
             for name, poke, bit in faults:
                 for mode in ("fast", "oracle"):
                     with self.subTest(m=m, fault=name, mode=mode):
@@ -2017,7 +2021,7 @@ class FastKernelTests(unittest.TestCase):
     def test_index_scores_and_selection_bit_identical(self):
         """R2.2: the exact fast scores, rank and compact give the oracle's bytes (scores, IDs, error word): real
         index dims (4 heads x 128) from one block to 32K tokens, ties (equal scores: smaller ID wins), a
-        visible tail, other head counts/dims on and off the fast path (h > 8, d % 16 != 0 fall back), and
+        visible tail, other head counts/dims on and off the fast path (only h > 8 falls back since R2.8), and
         NaN/Inf in the query or one block key (bit 1)."""
         rng = np.random.default_rng(4139)
         cases = [((4, 128), visible, 4, 2048) for visible in (4, 7, 2049, 8192, 8195, 32768)]
@@ -2295,6 +2299,13 @@ class FastKernelTests(unittest.TestCase):
                     xs = x.copy(); xs[2, 7] = value
                     self.assertEqual(run_act(mode, 0, 1, xs)[0], 1)
                     self.assertEqual(run_act(mode, 0, 1, xs, initial=4)[0], 5)
+    def test_attend_fast_single_invalid_key(self):
+        """R2 review I1: one selected key past the cache (m = 1) sets bit 2 alone, fast and oracle."""
+        rng = np.random.default_rng(4129)
+        q, gate, k, v, ids = attend_inputs(rng, ATTEND_REAL, 8, 1)
+        for mode in ("fast", "oracle"):
+            with self.subTest(mode=mode):
+                self.assertEqual(run_attend(mode, q, gate, k, v, np.array([8], np.uint32))[0], 2)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

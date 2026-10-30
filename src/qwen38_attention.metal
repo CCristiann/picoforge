@@ -174,6 +174,10 @@ kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device co
     device float *part [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]],
     ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     const uint group=a.h/a.j, hps=(group+3)/4, g0=sg*hps, P=a.d/32, kv=tg.y;
+    /* An invalid id anywhere: the oracle sets bit 2 alone and writes nothing (R2 review I1). */
+    bool invalid=false;
+    for (uint i=lane;i<a.m;i+=32) invalid|=ids[i]>=a.n || (i && ids[i]<=ids[i-1]);
+    if (simd_any(invalid)) { if (!tg.x && !tg.y && !sg && !lane) fail(error,2); return; }
     if (g0>=group) return;
     const uint ng=min(hps,group-g0), k0=tg.x*a.r, k1=min(a.m,k0+a.r);
     const float scale=1.0f/sqrt(float(a.d));
@@ -190,7 +194,7 @@ kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device co
     }
     for (uint idx=k0;idx<k1;idx++) {
         uint id=ids[idx];
-        if (id>=a.n || (idx && id<=ids[idx-1])) { range=true; continue; }
+        if (id>=a.n || (idx && id<=ids[idx-1])) continue; /* excluded above */
         uint at=(id*a.j+kv)*a.d+lane*P;
         float kx[8], vx[8];
         for (uint i=0;i<8;i++) {
@@ -225,11 +229,18 @@ kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device co
     if (range) fail(error,2);
 }
 /* Threadgroup h, thread f: combine the a.pos split partials of head h in split order. */
-kernel void q38d_attend_merge_gpu(device const float *gate [[buffer(1)]], device float *out [[buffer(5)]],
+kernel void q38d_attend_merge_gpu(device const float *gate [[buffer(1)]], device const uint *ids [[buffer(4)]],
+    device float *out [[buffer(5)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
     device const float *part [[buffer(8)]], uint h [[threadgroup_position_in_grid]],
-    uint f [[thread_index_in_threadgroup]]) {
-    if (f>=a.d) return;
+    uint f [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]]) {
+    threadgroup atomic_uint invalid;   /* the split kernel set bit 2 alone and wrote no partials */
+    if (!f) atomic_store_explicit(&invalid,0,memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i=f;i<a.m;i+=tn)
+        if (ids[i]>=a.n || (i && ids[i]<=ids[i-1])) atomic_store_explicit(&invalid,1,memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (atomic_load_explicit(&invalid,memory_order_relaxed) || f>=a.d) return;
     const size_t stride=(size_t)a.h*(a.d+2);
     device const float *p=part+(size_t)h*(a.d+2);
     float mx=-INFINITY, l=0, o=0;

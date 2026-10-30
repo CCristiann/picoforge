@@ -42,6 +42,8 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
         }
         if ((i==Q38D_SPLIT && p.maxTotalThreadsPerThreadgroup<128) || (i>=Q38D_MERGE && p.maxTotalThreadsPerThreadgroup<256))
             g->reference=true;  /* the fast path needs 4 simdgroups and one thread per feature */
+        if (i>=Q38D_SPLIT && p.threadExecutionWidth!=32)
+            g->reference=true;  /* the fast kernels' simd_sum, simd_any and 8-lane groups assume 32 lanes */
         g->pipeline[i]=(__bridge_retained void *)p;
     }
     *out=g; return result(e,Q38_OK);
