@@ -273,36 +273,51 @@ kernel void q38d_compact_gpu(device const uint *keep [[buffer(0)]], device uint 
  * (scores keep every dot's increasing-d order and the head order of the sum; rank and
  * slot are integer counts). The oracles are latency bound at 8K: one thread per block
  * runs a 512-step dependent chain (scores) or a 2048-step loop over device memory (rank),
- * 0.8 ms per layer for 2048 blocks. Scores: the query is staged once per threadgroup and
- * the <= 8 head dots run as independent chains (Q38D_SCORE_HEADS, h*d <= 1024, d % 16 = 0)
- * over 16 keys loaded as 4 vectors. Rank and
- * compact: one simdgroup per block, lanes count strided candidates, simd_sum adds them. */
-#define Q38D_SCORE_HEADS 8
+ * 0.8 ms per layer for 2048 blocks. Scores (R2.8): Q38D_SCORE_LANES threads per block,
+ * lane h runs head h's dot (a 128-step chain instead of the R2.2 kernel's 4 interleaved
+ * ones in one thread: 31 us even at 3 blocks), then the block's first lane adds the
+ * clamped dots in head order. Rank and compact: one simdgroup per block, lanes count
+ * strided candidates, simd_sum adds them. */
 kernel void q38d_scores_fast_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
     device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
-    device atomic_uint *error [[buffer(7)]], uint b [[thread_position_in_grid]],
-    uint t [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]]) {
-    threadgroup float qs[1024];
-    for (uint i=t;i<a.h*a.d;i+=tn) qs[i]=q[i];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (b>=a.n) return;
-    float dot[Q38D_SCORE_HEADS]; bool bad=false;
-    for (uint h=0;h<Q38D_SCORE_HEADS;h++) dot[h]=0;
-    device const packed_float4 *row=(device const packed_float4 *)(k+b*a.d);
-    for (uint d=0;d<a.d;d+=16) {               /* 16 keys in flight, then the same serial order */
-        float y[16];
-        for (uint i=0;i<4;i++) { float4 v=row[d/4+i]; y[4*i]=v.x; y[4*i+1]=v.y; y[4*i+2]=v.z; y[4*i+3]=v.w; }
-        for (uint i=0;i<16;i++) {
-            bad|=!isfinite(y[i]);
-            for (uint h=0;h<Q38D_SCORE_HEADS;h++) if (h<a.h) {
-                float x=qs[h*a.d+d+i]; bad|=!isfinite(x); dot[h]+=x*y[i];
-            }
+    device atomic_uint *error [[buffer(7)]], uint i [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    const uint b=i/Q38D_SCORE_LANES, h=i%Q38D_SCORE_LANES, first=lane-h;
+    float dot=0; bool bad=false;
+    if (b<a.n && h<a.h)
+        for (uint d=0;d<a.d;++d) {
+            float x=q[h*a.d+d],y=k[b*a.d+d];
+            bad|=!isfinite(x)||!isfinite(y); dot+=x*y;
         }
-    }
+    bad|=!isfinite(dot);
     float score=0;
-    for (uint h=0;h<Q38D_SCORE_HEADS;h++) if (h<a.h) { bad|=!isfinite(dot[h]); score+=max(0.0f,dot[h]); }
+    for (uint g=0;g<Q38D_SCORE_LANES;++g) { /* every lane shuffles: uniform control */
+        float v=simd_shuffle(dot,ushort(first+g)); uint w=simd_shuffle(uint(bad),ushort(first+g));
+        if (g<a.h) { score+=max(0.0f,v); bad|=w!=0; }
+    }
+    if (h || b>=a.n) return;
     if (bad || !isfinite(score)) { fail(error,1); return; }
     out[b]=score;
+}
+/* R2.8: q38d_rope_gpu with one thread per element instead of one per head (24 threads
+ * each running 256 precise cos/sin in series: 33 us per call at any context). Each
+ * element's arithmetic is the oracle's, so y is bit-identical; on a nonfinite value the
+ * other elements are still written (outputs are unspecified once the word is set). */
+kernel void q38d_rope_fast_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    constant float *frequencies [[buffer(8)]], uint e [[thread_position_in_grid]]) {
+    if (e>=a.h*a.d) return;
+    uint h=e/a.d, d=e%a.d;
+    float value=x[h*a.d+d];
+    if (!isfinite(value)) { fail(error,1); return; }
+    if (d<a.r) {
+        uint i=d%(a.r/2); float frequency=frequencies[i];
+        float angle=float(a.pos)*frequency;
+        float other=x[h*a.d+(d<a.r/2 ? d+a.r/2 : d-a.r/2)];
+        value=value*cos(angle)+(d<a.r/2 ? -other : other)*sin(angle);
+    }
+    if (!isfinite(value)) { fail(error,1); return; }
+    y[h*a.d+d]=value;
 }
 kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],

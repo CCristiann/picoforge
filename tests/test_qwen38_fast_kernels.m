@@ -1115,6 +1115,36 @@ static int index_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* R2.8 RoPE, q38d_gpu_encode ROPE fast (one thread per element) or oracle:
+ *   rope <oracle|fast> h d r pos   stdin: x [h,d] FP32; stdout: error word, y [h,d]. */
+static int rope_main(int argc,char **argv,const char *library) {
+    bool fast=!strcmp(argv[2],"fast");
+    assert(argc==7 && (fast || !strcmp(argv[2],"oracle")));
+    uint32_t h=(uint32_t)number(argv[3]), d=(uint32_t)number(argv[4]), r=(uint32_t)number(argv[5]), pos=(uint32_t)number(argv[6]);
+    assert(h && h<=128 && d && d<=256 && r && r<=d && r%2==0);
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38DGpu *g=NULL; assert(q38d_gpu_create((__bridge void *)dev,(__bridge void *)lib,&g,NULL)==Q38_OK);
+        q38d_gpu_set_reference(g,!fast);
+        id<MTLBuffer> x=shared(dev,4*h*d), y=shared(dev,4*h*d), word=shared(dev,4);
+        assert(fread(x.contents,4,h*d,stdin)==h*d && fgetc(stdin)==EOF);
+        memset(y.contents,0xa5,y.length); memset(word.contents,0,4);
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        id<MTLCommandBuffer> command=[queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc=[command computeCommandEncoder];
+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)enc,{(__bridge void *)word,0,4},false};
+        Q38DGpuArgs a={.h=h,.d=d,.r=r,.pos=pos,.theta=1e7f};
+        assert(q38d_gpu_encode(g,cmd,Q38D_ROPE,&a,(Qwen38GpuSpan[]){{(__bridge void *)x,0,4*h*d},{(__bridge void *)y,0,4*h*d}},2,NULL)==Q38_OK);
+        [enc endEncoding]; [command commit]; [command waitUntilCompleted];
+        assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+        assert(fwrite(word.contents,4,1,stdout)==1 && fwrite(y.contents,4,h*d,stdout)==h*d);
+        q38d_gpu_destroy(g);
+    }
+    return 0;
+}
+
 /* R2.6 fused HC read tail against the fast sequence (HC_LOW, F16 up, HC_READ, HC_INJECT):
  *   hctail t K h E inject poison: seeded F16 up [h*E, K], low [t,K], normed [t,h*E], il [t,h];
  *     poison 1 puts a NaN in low[t-1, K-1]. Runs both on the same inputs, prints one line:
@@ -1227,6 +1257,7 @@ int main(int argc,char **argv) {
     if (argc>2 && (!strcmp(argv[1],"attend") || !strcmp(argv[1],"attbench"))) return attend_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"index")) return index_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"scan") || !strcmp(argv[1],"scanbench"))) return scan_main(argc,argv,library);
+    if (argc>2 && !strcmp(argv[1],"rope")) return rope_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"hctail") || !strcmp(argv[1],"hcbench"))) return hctail_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");

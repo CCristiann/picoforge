@@ -1,0 +1,91 @@
+{
+  "complete": true,
+  "frontier": "short",
+  "engines": [
+    "picoforge"
+  ],
+  "counts": {
+    "picoforge": [
+      1,
+      3
+    ],
+    "dwarfstar": [
+      0,
+      0
+    ]
+  },
+  "block": 1,
+  "plan": [
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ]
+  ],
+  "protocol": "One process per sample for both engines (ds4-bench measures one frontier per process): prefill to the frontier, then 128 forced one-token appends. tok/s = forced IDs / decode seconds (picoforge decode_s, ds4-bench gen_tps). Warm-ups discarded. OS file cache warm, not purged: no cold-start claim.",
+  "suite_sha256": "d0bcf8bfd4ed69b4a881be724d1bf9022d574437ee1b0eae9137d10e41307379",
+  "guard": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "revision": "dffa899343f2505ecf2c63dc363dcbb2bfed9e61",
+  "diff": "diff --git a/src/qwen38_attention.metal b/src/qwen38_attention.metal\nindex 48d6486..a395469 100644\n--- a/src/qwen38_attention.metal\n+++ b/src/qwen38_attention.metal\n@@ -273,37 +273,52 @@ kernel void q38d_compact_gpu(device const uint *keep [[buffer(0)]], device uint\n  * (scores keep every dot's increasing-d order and the head order of the sum; rank and\n  * slot are integer counts). The oracles are latency bound at 8K: one thread per block\n  * runs a 512-step dependent chain (scores) or a 2048-step loop over device memory (rank),\n- * 0.8 ms per layer for 2048 blocks. Scores: the query is staged once per threadgroup and\n- * the <= 8 head dots run as independent chains (Q38D_SCORE_HEADS, h*d <= 1024, d % 16 = 0)\n- * over 16 keys loaded as 4 vectors. Rank and\n- * compact: one simdgroup per block, lanes count strided candidates, simd_sum adds them. */\n-#define Q38D_SCORE_HEADS 8\n+ * 0.8 ms per layer for 2048 blocks. Scores (R2.8): Q38D_SCORE_LANES threads per block,\n+ * lane h runs head h's dot (a 128-step chain instead of the R2.2 kernel's 4 interleaved\n+ * ones in one thread: 31 us even at 3 blocks), then the block's first lane adds the\n+ * clamped dots in head order. Rank and compact: one simdgroup per block, lanes count\n+ * strided candidates, simd_sum adds them. */\n kernel void q38d_scores_fast_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],\n     device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],\n-    device atomic_uint *error [[buffer(7)]], uint b [[thread_position_in_grid]],\n-    uint t [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]]) {\n-    threadgroup float qs[1024];\n-    for (uint i=t;i<a.h*a.d;i+=tn) qs[i]=q[i];\n-    threadgroup_barrier(mem_flags::mem_threadgroup);\n-    if (b>=a.n) return;\n-    float dot[Q38D_SCORE_HEADS]; bool bad=false;\n-    for (uint h=0;h<Q38D_SCORE_HEADS;h++) dot[h]=0;\n-    device const packed_float4 *row=(device const packed_float4 *)(k+b*a.d);\n-    for (uint d=0;d<a.d;d+=16) {               /* 16 keys in flight, then the same serial order */\n-        float y[16];\n-        for (uint i=0;i<4;i++) { float4 v=row[d/4+i]; y[4*i]=v.x; y[4*i+1]=v.y; y[4*i+2]=v.z; y[4*i+3]=v.w; }\n-        for (uint i=0;i<16;i++) {\n-            bad|=!isfinite(y[i]);\n-            for (uint h=0;h<Q38D_SCORE_HEADS;h++) if (h<a.h) {\n-                float x=qs[h*a.d+d+i]; bad|=!isfinite(x); dot[h]+=x*y[i];\n-            }\n+    device atomic_uint *error [[buffer(7)]], uint i [[thread_position_in_grid]],\n+    uint lane [[thread_index_in_simdgroup]]) {\n+    const uint b=i/Q38D_SCORE_LANES, h=i%Q38D_SCORE_LANES, first=lane-h;\n+    float dot=0; bool bad=false;\n+    if (b<a.n && h<a.h)\n+        for (uint d=0;d<a.d;++d) {\n+            float x=q[h*a.d+d],y=k[b*a.d+d];\n+            bad|=!isfinite(x)||!isfinite(y); dot+=x*y;\n         }\n-    }\n+    bad|=!isfinite(dot);\n     float score=0;\n-    for (uint h=0;h<Q38D_SCORE_HEADS;h++) if (h<a.h) { bad|=!isfinite(dot[h]); score+=max(0.0f,dot[h]); }\n+    for (uint g=0;g<Q38D_SCORE_LANES;++g) { /* every lane shuffles: uniform control */\n+        float v=simd_shuffle(dot,ushort(first+g)); uint w=simd_shuffle(uint(bad),ushort(first+g));\n+        if (g<a.h) { score+=max(0.0f,v); bad|=w!=0; }\n+    }\n+    if (h || b>=a.n) return;\n     if (bad || !isfinite(score)) { fail(error,1); return; }\n     out[b]=score;\n }\n+/* R2.8: q38d_rope_gpu with one thread per element instead of one per head (24 threads\n+ * each running 256 precise cos/sin in series: 33 us per call at any context). Each\n+ * element's arithmetic is the oracle's, so y is bit-identical; on a nonfinite value the\n+ * other elements are still written (outputs are unspecified once the word is set). */\n+kernel void q38d_rope_fast_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],\n+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],\n+    constant float *frequencies [[buffer(8)]], uint e [[thread_position_in_grid]]) {\n+    if (e>=a.h*a.d) return;\n+    uint h=e/a.d, d=e%a.d;\n+    float value=x[h*a.d+d];\n+    if (!isfinite(value)) { fail(error,1); return; }\n+    if (d<a.r) {\n+        uint i=d%(a.r/2); float frequency=frequencies[i];\n+        float angle=float(a.pos)*frequency;\n+        float other=x[h*a.d+(d<a.r/2 ? d+a.r/2 : d-a.r/2)];\n+        value=value*cos(angle)+(d<a.r/2 ? -other : other)*sin(angle);\n+    }\n+    if (!isfinite(value)) { fail(error,1); return; }\n+    y[h*a.d+d]=value;\n+}\n kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],\n     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],\n     uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],\ndiff --git a/src/qwen38_attention_gpu.m b/src/qwen38_attention_gpu.m\nindex 7af801e..b50b241 100644\n--- a/src/qwen38_attention_gpu.m\n+++ b/src/qwen38_attention_gpu.m\n@@ -28,7 +28,7 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro\n     NSString *names[]={@\"q38d_rope_gpu\",@\"q38d_pool_gpu\",@\"q38d_scores_gpu\",@\"q38d_attend_gpu\",\n         @\"q38d_rank_gpu\",@\"q38d_compact_gpu\",@\"q38d_tail_gpu\",@\"q38d_copy_gpu\",\n         @\"q38d_attend_split_gpu\",@\"q38d_attend_merge_gpu\",\n-        @\"q38d_scores_fast_gpu\",@\"q38d_rank_fast_gpu\",@\"q38d_compact_fast_gpu\"};\n+        @\"q38d_scores_fast_gpu\",@\"q38d_rank_fast_gpu\",@\"q38d_compact_fast_gpu\",@\"q38d_rope_fast_gpu\"};\n     g->scalar_attention=getenv(\"Q38_QSA_SCALAR\")!=NULL;\n     g->reference=q38_ref_kernels(\"attention\");\n     if (g->scalar_attention) names[Q38D_ATTEND]=@\"q38d_attend_scalar_gpu\";\n@@ -117,17 +117,21 @@ Qwen38Status q38d_gpu_encode(Q38DGpu *g,Qwen38GpuCommand cmd,uint32_t op,\n     Qwen38Status code=admit(g,cmd,op,a,v,count,&work);\n     if (code || !work) return result(e,code);\n     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;\n-    /* R2.2: the exact fast scores (same bits) unless the oracle is selected. */\n-    if (op==Q38D_SCORES && !g->reference && a->h<=8 && a->d%16==0 && (size_t)a->h*a->d<=1024) op=Q38D_SCORES_FAST;\n+    /* R2.2/R2.8: the exact fast scores and RoPE (same bits) unless the oracle is selected:\n+     * scores Q38D_SCORE_LANES threads per block (one per head), RoPE one per element. */\n+    if (op==Q38D_SCORES && !g->reference && a->h<=Q38D_SCORE_LANES) { op=Q38D_SCORES_FAST; work=(size_t)a->n*Q38D_SCORE_LANES; }\n+    if (op==Q38D_ROPE && !g->reference) { op=Q38D_ROPE_FAST; work=(size_t)a->h*a->d; }\n     id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)g->pipeline[op];\n     bind(g,cmd,op,a,v,count);\n-    if (op==Q38D_ROPE) {\n+    if (op==Q38D_ROPE || op==Q38D_ROPE_FAST) {\n         float frequencies[128];\n         for (uint32_t i=0;i<a->r/2;++i) frequencies[i]=q38d_rope_frequency(a->theta,i,a->r);\n         [enc setBytes:frequencies length:a->r/2*sizeof(float) atIndex:8];\n     }\n     if (op==Q38D_ATTEND && !g->scalar_attention)\n         [enc dispatchThreadgroups:MTLSizeMake(a->h,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];\n+    else if (op==Q38D_SCORES_FAST || op==Q38D_ROPE_FAST) /* whole 8-lane groups per threadgroup */\n+        [enc dispatchThreads:MTLSizeMake(work,1,1) threadsPerThreadgroup:MTLSizeMake(MIN(work,(size_t)256),1,1)];\n     else [enc dispatchThreads:MTLSizeMake(work,1,1)\n         threadsPerThreadgroup:MTLSizeMake(MIN(work,p.maxTotalThreadsPerThreadgroup),1,1)];\n     return result(e,Q38_OK);\ndiff --git a/src/qwen38_d_internal.h b/src/qwen38_d_internal.h\nindex b556f7b..696c2f5 100644\n--- a/src/qwen38_d_internal.h\n+++ b/src/qwen38_d_internal.h\n@@ -1,6 +1,8 @@\n /* Private D test/core boundary. Not a second public attention ABI. */\n #ifndef PICOFORGE_QWEN38_D_INTERNAL_H\n #define PICOFORGE_QWEN38_D_INTERNAL_H\n+/* R2.8: threads per block of the fast index scores (one per head, h <= 8). */\n+#define Q38D_SCORE_LANES 8u\n #ifndef __METAL_VERSION__\n #include \"qwen38_attention.h\"\n #include \"qwen38_gpu.h\"\n@@ -55,7 +57,7 @@ typedef uint Q38DUint;\n #endif\n enum { Q38D_ROPE, Q38D_POOL, Q38D_SCORES, Q38D_ATTEND, Q38D_GPU_OPS };\n enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT, Q38D_MERGE,\n-       Q38D_SCORES_FAST, Q38D_RANK_FAST, Q38D_COMPACT_FAST, Q38D_ALL_OPS };\n+       Q38D_SCORES_FAST, Q38D_RANK_FAST, Q38D_COMPACT_FAST, Q38D_ROPE_FAST, Q38D_ALL_OPS };\n typedef struct { Q38DUint h,j,d,n,m,r,pos; float theta; } Q38DGpuArgs;\n #ifndef __METAL_VERSION__\n _Static_assert(sizeof(Q38DGpuArgs)==32, \"D Metal wire ABI\");\ndiff --git a/tests/test_qwen38_fast_kernels.m b/tests/test_qwen38_fast_kernels.m\nindex ee8be10..0475c83 100644\n--- a/tests/test_qwen38_fast_kernels.m\n+++ b/tests/test_qwen38_fast_kernels.m\n@@ -1115,6 +1115,36 @@ static int index_main(int argc,char **argv,const char *library) {\n     return 0;\n }\n \n+/* R2.8 RoPE, q38d_gpu_encode ROPE fast (one thread per element) or oracle:\n+ *   rope <oracle|fast> h d r pos   stdin: x [h,d] FP32; stdout: error word, y [h,d]. */\n+static int rope_main(int argc,char **argv,const char *library) {\n+    bool fast=!strcmp(argv[2],\"fast\");\n+    assert(argc==7 && (fast || !strcmp(argv[2],\"oracle\")));\n+    uint32_t h=(uint32_t)number(argv[3]), d=(uint32_t)number(argv[4]), r=(uint32_t)number(argv[5]), pos=(uint32_t)number(argv[6]);\n+    assert(h && h<=128 && d && d<=256 && r && r<=d && r%2==0);\n+    @autoreleasepool {\n+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);\n+        NSError *error=nil;\n+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);\n+        Q38DGpu *g=NULL; assert(q38d_gpu_create((__bridge void *)dev,(__bridge void *)lib,&g,NULL)==Q38_OK);\n+        q38d_gpu_set_reference(g,!fast);\n+        id<MTLBuffer> x=shared(dev,4*h*d), y=shared(dev,4*h*d), word=shared(dev,4);\n+        assert(fread(x.contents,4,h*d,stdin)==h*d && fgetc(stdin)==EOF);\n+        memset(y.contents,0xa5,y.length); memset(word.contents,0,4);\n+        id<MTLCommandQueue> queue=[dev newCommandQueue];\n+        id<MTLCommandBuffer> command=[queue commandBuffer];\n+        id<MTLComputeCommandEncoder> enc=[command computeCommandEncoder];\n+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)enc,{(__bridge void *)word,0,4},false};\n+        Q38DGpuArgs a={.h=h,.d=d,.r=r,.pos=pos,.theta=1e7f};\n+        assert(q38d_gpu_encode(g,cmd,Q38D_ROPE,&a,(Qwen38GpuSpan[]){{(__bridge void *)x,0,4*h*d},{(__bridge void *)y,0,4*h*d}},2,NULL)==Q38_OK);\n+        [enc endEncoding]; [command commit]; [command waitUntilCompleted];\n+        assert(command.status==MTLCommandBufferStatusCompleted && !command.error);\n+        assert(fwrite(word.contents,4,1,stdout)==1 && fwrite(y.contents,4,h*d,stdout)==h*d);\n+        q38d_gpu_destroy(g);\n+    }\n+    return 0;\n+}\n+\n /* R2.6 fused HC read tail against the fast sequence (HC_LOW, F16 up, HC_READ, HC_INJECT):\n  *   hctail t K h E inject poison: seeded F16 up [h*E, K], low [t,K], normed [t,h*E], il [t,h];\n  *     poison 1 puts a NaN in low[t-1, K-1]. Runs both on the same inputs, prints one line:\n@@ -1227,6 +1257,7 @@ int main(int argc,char **argv) {\n     if (argc>2 && (!strcmp(argv[1],\"attend\") || !strcmp(argv[1],\"attbench\"))) return attend_main(argc,argv,library);\n     if (argc>2 && !strcmp(argv[1],\"index\")) return index_main(argc,argv,library);\n     if (argc>2 && (!strcmp(argv[1],\"scan\") || !strcmp(argv[1],\"scanbench\"))) return scan_main(argc,argv,library);\n+    if (argc>2 && !strcmp(argv[1],\"rope\")) return rope_main(argc,argv,library);\n     if (argc>2 && (!strcmp(argv[1],\"hctail\") || !strcmp(argv[1],\"hcbench\"))) return hctail_main(argc,argv,library);\n     Request r=request(argc,argv);\n     bool timing=!strcmp(argv[1],\"bench\");\ndiff --git a/tests/test_qwen38_fast_kernels.py b/tests/test_qwen38_fast_kernels.py\nindex 0d849b9..4c642bf 100644\n--- a/tests/test_qwen38_fast_kernels.py\n+++ b/tests/test_qwen38_fast_kernels.py\n@@ -559,6 +559,19 @@ def run_attend(mode, q, gate, k, v, ids, env=None):\n     return word, dispatches, np.frombuffer(result.stdout[8:], \"<f4\").reshape(h, d)\n \n \n+def run_rope(mode, x, r, pos):\n+    \"\"\"R2.8: q38d ROPE fast or oracle on x [h, d]: (error word, y [h, d]).\"\"\"\n+    h, d = x.shape\n+    environment = {k: v for k, v in os.environ.items() if k != \"Q38_REF_KERNELS\"}\n+    lock = os.environ.get(\"PICOFORGE_GPU_LOCK_FD\")\n+    result = subprocess.run([str(NATIVE), \"rope\", mode, str(h), str(d), str(r), str(pos)],\n+                            input=np.ascontiguousarray(x, \"<f4\").tobytes(), capture_output=True, timeout=60,\n+                            pass_fds=(int(lock),) if lock else (), env=environment)\n+    if result.returncode or len(result.stdout) != 4 + 4 * h * d:\n+        raise AssertionError(f\"rope {mode}: exit {result.returncode}, {result.stderr!r}\")\n+    return int(np.frombuffer(result.stdout[:4], \"<u4\")[0]), np.frombuffer(result.stdout[4:], \"<f4\").reshape(h, d)\n+\n+\n def run_hctail(shape, inject=True, poison=False, env=None):\n     \"\"\"R2.6: the native hctail mode (fused HC tail and the fast sequence on the same seeded inputs):\n     {status, equal, words, dispatches} parsed from its one line.\"\"\"\n@@ -2198,6 +2211,21 @@ class FastKernelTests(unittest.TestCase):\n         for family in (\"linear\", \"fuse\", \"1\"):\n             with self.subTest(reference=family):\n                 self.assertEqual(run_hctail((1, 320, 4, 2560), env={\"Q38_REF_KERNELS\": family})[\"status\"], 8)\n+    def test_rope_fast_bit_identical_to_oracle(self):\n+        \"\"\"R2.8: the one-thread-per-element RoPE gives the oracle's bits (same per-element FP32\n+        expression) for the QSA q, k, index q and pooled-key shapes and a rotary width equal to d,\n+        at positions 0, 7, 8191 and 32767; a NaN sets bit 1 in both.\"\"\"\n+        rng = np.random.default_rng(4201)\n+        for h, d, r in ((24, 256, 64), (2, 256, 64), (4, 128, 64), (1, 128, 64), (3, 32, 32)):\n+            for pos in (0, 7, 8191, 32767):\n+                with self.subTest(h=h, d=d, r=r, pos=pos):\n+                    x = rng.standard_normal((h, d)).astype(np.float32)\n+                    fast, oracle = run_rope(\"fast\", x, r, pos), run_rope(\"oracle\", x, r, pos)\n+                    self.assertEqual((fast[0], oracle[0]), (0, 0))\n+                    self.assertEqual(fast[1].tobytes(), oracle[1].tobytes())\n+        x = rng.standard_normal((24, 256)).astype(np.float32)\n+        x[5, 17] = np.nan\n+        self.assertEqual((run_rope(\"fast\", x, 64, 9)[0], run_rope(\"oracle\", x, 64, 9)[0]), (1, 1))\n \n if __name__ == \"__main__\":\n     parser = argparse.ArgumentParser(description=__doc__)\n",
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "checkpoint": "models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "checkpoint_sha256_recomputed": false,
+  "sha256": {
+    "picoforge": "8385fbe9aae89978fb32326943a6d6464e71d6dd24b794c521ad4432b16b08f1",
+    "picoforge.metallib": "6446af544ed7dfb9de8284c654a8ebf13ddc7c0363c12bb6c1ba3abd706b12e6",
+    "ds4-bench": "27e2c3666d82123ca3d3bd93f6fff09545df4de91e606ee52c78445c99a4e5d0",
+    "ds4": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+    "tool": "9c1dac97b43da670f775a6eba11e812584ef4e98eb1082b25109dae1aead0fde"
+  },
+  "before": {
+    "batt": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=7864419)\t84%; discharging; 2:39 remaining present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 0,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": false,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "allow_battery": true,
+    "thermal_state": "nominal"
+  },
+  "after": {
+    "batt": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=7864419)\t84%; discharging; 2:39 remaining present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 0,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": false,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "allow_battery": true,
+    "thermal_state": "nominal"
+  }
+}

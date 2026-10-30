@@ -8,6 +8,21 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2.8 — QSA small stages: RoPE per element, scores per head
+
+At the short prompt qsa.core cost 185 us per layer for a few keys. A
+20-encode microbench found two latency chains: RoPE ran one thread per
+head (24 threads, each 256 precise cos/sin in series: 33 us per call at
+any context, three calls per token) and the R2.2 fast scores one thread
+per block (4 head dots interleaved over 128 columns: 31 us even at 3
+blocks). RoPE now runs one thread per element with the oracle's
+expression (7 us; test_rope_fast_bit_identical_to_oracle), the scores 8
+lanes per block, lane h running head h's dot in increasing d, the first
+lane adding the clamped dots in head order (10-14 us short, 62 -> 15-21 us
+at 8K; the index scores test unchanged). Graph (,
+battery): qsa.core 2.33 -> 0.95 ms/token; real short decode 24.04 tok/s
+().
+
 ### R2.7 — routed down: four rows per simdgroup
 
 The Q2_K down (K 640 = 40 chunks of 16) gave each output row one

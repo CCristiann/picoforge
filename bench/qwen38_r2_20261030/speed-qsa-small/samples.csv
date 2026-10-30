@@ -1,0 +1,5 @@
+index,engine,warmup,tok_s,decode_tokens,ac_power,swap_delta_bytes,peak_footprint_bytes,process_s
+0,picoforge,True,23.189640897540556,128,False,0,1629458440,6.306128000000001
+1,picoforge,False,24.04366329253925,128,False,0,1629704248,5.993786
+2,picoforge,False,24.037617368831135,128,False,0,1629573176,5.978677000000005
+3,picoforge,False,24.047060096609062,128,False,0,1629474776,5.974534999999946

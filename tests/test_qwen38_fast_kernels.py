@@ -559,6 +559,19 @@ def run_attend(mode, q, gate, k, v, ids, env=None):
     return word, dispatches, np.frombuffer(result.stdout[8:], "<f4").reshape(h, d)
 
 
+def run_rope(mode, x, r, pos):
+    """R2.8: q38d ROPE fast or oracle on x [h, d]: (error word, y [h, d])."""
+    h, d = x.shape
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"}
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "rope", mode, str(h), str(d), str(r), str(pos)],
+                            input=np.ascontiguousarray(x, "<f4").tobytes(), capture_output=True, timeout=60,
+                            pass_fds=(int(lock),) if lock else (), env=environment)
+    if result.returncode or len(result.stdout) != 4 + 4 * h * d:
+        raise AssertionError(f"rope {mode}: exit {result.returncode}, {result.stderr!r}")
+    return int(np.frombuffer(result.stdout[:4], "<u4")[0]), np.frombuffer(result.stdout[4:], "<f4").reshape(h, d)
+
+
 def run_hctail(shape, inject=True, poison=False, env=None):
     """R2.6: the native hctail mode (fused HC tail and the fast sequence on the same seeded inputs):
     {status, equal, words, dispatches} parsed from its one line."""
@@ -2198,6 +2211,21 @@ class FastKernelTests(unittest.TestCase):
         for family in ("linear", "fuse", "1"):
             with self.subTest(reference=family):
                 self.assertEqual(run_hctail((1, 320, 4, 2560), env={"Q38_REF_KERNELS": family})["status"], 8)
+    def test_rope_fast_bit_identical_to_oracle(self):
+        """R2.8: the one-thread-per-element RoPE gives the oracle's bits (same per-element FP32
+        expression) for the QSA q, k, index q and pooled-key shapes and a rotary width equal to d,
+        at positions 0, 7, 8191 and 32767; a NaN sets bit 1 in both."""
+        rng = np.random.default_rng(4201)
+        for h, d, r in ((24, 256, 64), (2, 256, 64), (4, 128, 64), (1, 128, 64), (3, 32, 32)):
+            for pos in (0, 7, 8191, 32767):
+                with self.subTest(h=h, d=d, r=r, pos=pos):
+                    x = rng.standard_normal((h, d)).astype(np.float32)
+                    fast, oracle = run_rope("fast", x, r, pos), run_rope("oracle", x, r, pos)
+                    self.assertEqual((fast[0], oracle[0]), (0, 0))
+                    self.assertEqual(fast[1].tobytes(), oracle[1].tobytes())
+        x = rng.standard_normal((24, 256)).astype(np.float32)
+        x[5, 17] = np.nan
+        self.assertEqual((run_rope("fast", x, 64, 9)[0], run_rope("oracle", x, 64, 9)[0]), (1, 1))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

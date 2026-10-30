@@ -28,7 +28,7 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
     NSString *names[]={@"q38d_rope_gpu",@"q38d_pool_gpu",@"q38d_scores_gpu",@"q38d_attend_gpu",
         @"q38d_rank_gpu",@"q38d_compact_gpu",@"q38d_tail_gpu",@"q38d_copy_gpu",
         @"q38d_attend_split_gpu",@"q38d_attend_merge_gpu",
-        @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu"};
+        @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu",@"q38d_rope_fast_gpu"};
     g->scalar_attention=getenv("Q38_QSA_SCALAR")!=NULL;
     g->reference=q38_ref_kernels("attention");
     if (g->scalar_attention) names[Q38D_ATTEND]=@"q38d_attend_scalar_gpu";
@@ -117,17 +117,21 @@ Qwen38Status q38d_gpu_encode(Q38DGpu *g,Qwen38GpuCommand cmd,uint32_t op,
     Qwen38Status code=admit(g,cmd,op,a,v,count,&work);
     if (code || !work) return result(e,code);
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
-    /* R2.2: the exact fast scores (same bits) unless the oracle is selected. */
-    if (op==Q38D_SCORES && !g->reference && a->h<=8 && a->d%16==0 && (size_t)a->h*a->d<=1024) op=Q38D_SCORES_FAST;
+    /* R2.2/R2.8: the exact fast scores and RoPE (same bits) unless the oracle is selected:
+     * scores Q38D_SCORE_LANES threads per block (one per head), RoPE one per element. */
+    if (op==Q38D_SCORES && !g->reference && a->h<=Q38D_SCORE_LANES) { op=Q38D_SCORES_FAST; work=(size_t)a->n*Q38D_SCORE_LANES; }
+    if (op==Q38D_ROPE && !g->reference) { op=Q38D_ROPE_FAST; work=(size_t)a->h*a->d; }
     id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)g->pipeline[op];
     bind(g,cmd,op,a,v,count);
-    if (op==Q38D_ROPE) {
+    if (op==Q38D_ROPE || op==Q38D_ROPE_FAST) {
         float frequencies[128];
         for (uint32_t i=0;i<a->r/2;++i) frequencies[i]=q38d_rope_frequency(a->theta,i,a->r);
         [enc setBytes:frequencies length:a->r/2*sizeof(float) atIndex:8];
     }
     if (op==Q38D_ATTEND && !g->scalar_attention)
         [enc dispatchThreadgroups:MTLSizeMake(a->h,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    else if (op==Q38D_SCORES_FAST || op==Q38D_ROPE_FAST) /* whole 8-lane groups per threadgroup */
+        [enc dispatchThreads:MTLSizeMake(work,1,1) threadsPerThreadgroup:MTLSizeMake(MIN(work,(size_t)256),1,1)];
     else [enc dispatchThreads:MTLSizeMake(work,1,1)
         threadsPerThreadgroup:MTLSizeMake(MIN(work,p.maxTotalThreadsPerThreadgroup),1,1)];
     return result(e,Q38_OK);
