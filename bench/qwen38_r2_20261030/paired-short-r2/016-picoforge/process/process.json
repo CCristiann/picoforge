@@ -1,0 +1,82 @@
+{
+  "command": [
+    "/path/to/picoforge-perf-decode/picoforge",
+    "--qwen38",
+    "/path/to/picoforge-perf-decode/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "--tokens",
+    "727,884,2784,11,292,1590,198,262,460,264,478,292,271,727,31192,2784,11,292,1590,198,262,460,264,471,292,271,727,29283,2784,11,292,1590,198,262,460,264,348,292,271,727,21078,2784,11,292,1590,198,262,413,292,606,220,15,25,198,285,4673,14953,437,16928,21078,539,6942,871,198,262,460,264,593,292,271,727,57844,2784,11,292,1590,198,262,413,292,606,220,15,25,198,285,4673,14953,437,16928,57844,539,6942,871,198,262,460,264,984,292,271,727,2279,2784,11,292,1590,198,262,460,264,2972,292,271,727,6220,15759,1753,2784,11,292,1590,198,262,413,292,606,220,15,25,198,285,4673,14953,437,16928,6220",
+    "--teacher-forced",
+    "128",
+    "--context",
+    "8192",
+    "--chunk",
+    "1024",
+    "--runs-jsonl",
+    "/path/to/picoforge-perf-decode/bench/qwen38_r2_20261030/paired-short-r2/016-picoforge/runs.jsonl",
+    "--token-ids",
+    "/path/to/picoforge-perf-decode/bench/qwen38_r2_20261030/paired-short-r2/016-picoforge/ids.json"
+  ],
+  "cwd": "/path/to/picoforge-perf-decode",
+  "pilot": true,
+  "complete": true,
+  "recorded_utc": "2026-10-30T10:05:47.628784+00:00",
+  "executable_sha256": "c6ac8b5e2c818fd924739122e7d11610249b857092880478a71cc6e09cc88c69",
+  "environment": {
+    "DS4_METAL_MEMORY_REPORT": "1"
+  },
+  "removed_environment_names": [],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "sample_interval_s": 0.25,
+  "system_before": {
+    "pid": 82104,
+    "monotonic_s": 3923.025473,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1409432,
+    "lifetime_peak_phys_footprint_bytes": 1442200,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 262144,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 16,
+    "system_swapouts_pages": 16,
+    "page_bytes": 16384,
+    "system_wired_pages": 245087,
+    "system_compressor_pages": 252545
+  },
+  "guard": "stop after 2 samples: pressure level >= 2 or swap growth > 256 MiB",
+  "guard_limits": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "pid": 82106,
+  "start_monotonic_s": 3923.032997,
+  "process_s": 6.888224000000264,
+  "returncode": 0,
+  "stop_reason": null,
+  "first_stream_bytes_s": {
+    "stderr": 0.18936200000007375,
+    "stdout": 6.878900000000158
+  },
+  "system_after": {
+    "pid": 82345,
+    "monotonic_s": 3929.923741,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1409432,
+    "lifetime_peak_phys_footprint_bytes": 1442200,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 262144,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 16,
+    "system_swapouts_pages": 16,
+    "page_bytes": 16384,
+    "system_wired_pages": 2803014,
+    "system_compressor_pages": 251705
+  },
+  "samples": 23,
+  "max_sample_gap_s": 0.3302690000000439,
+  "sampled_peak_footprint_bytes": 1629098064,
+  "lifetime_peak_footprint_bytes": 1629098064
+}

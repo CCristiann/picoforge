@@ -8,6 +8,19 @@ Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at
 8K (R1 ended at 0.62x and 0.37x). Same numerics rules as R1; one closure at
 the end. Notes below are newest first.
 
+### R2 close — 0.75x short, 0.72x at 8K
+
+Paired on AC at `9ae6e02` (`bench/qwen38_r2_20261030`, README): short
+24.15 tok/s vs DwarfStar 32.33 = 0.747x (R1 0.623x), 8K 21.73 vs 30.14 =
+0.721x (R1 0.372x). The 8K target (0.60x) is met; the short one (0.80x) is
+not. All gates green: test-qwen38, MTP, speculative, fast-kernels (80) in
+both modes, G3 scaled 2.1e-7, `Q38_REF_KERNELS=1` logits bit-identical to
+360acf0, default within 4.9e-5 (argmax 9/9). Only two new tolerances in R2
+(attend_fast 2^-12, gdn_scan_fast 2^-21); every other step is
+bit-identical to the path it replaces. What is left on the short prompt is
+mostly the routed MoE (6.5 ms, ALU-bound decode of IQ2_XXS/Q2_K) and the
+HC F16 matvecs; no cheap exact rewrite remains there.
+
 ### R2.9 — check folded into HC_ADD and the activations
 
 HC_ADD (96 per token), ACT (MoE shared SiLU and sigmoid, QSA gate) and
