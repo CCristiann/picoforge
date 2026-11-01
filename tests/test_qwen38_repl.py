@@ -96,5 +96,21 @@ class ReplTests(unittest.TestCase):
         if len(users) == 1:                       # dropped: only "second" remains, replayed from 0
             self.assertEqual(users, [0])
 
+    def test_read_ctx_and_reset(self):
+        _, fresh = self.repl(['hello from a file'])
+        with tempfile.NamedTemporaryFile('w', dir=ROOT / 'build/qwen38-g2', suffix='.txt') as f:
+            f.write('hello from a file\n'); f.flush()
+            done, state = self.repl([f'/read {f.name}', '/read /nonexistent/x', '/read'])
+        self.assertEqual(state['ids'], fresh['ids'])          # file text == typed text (trimmed)
+        self.assertIn(b'cannot open /nonexistent/x', done.stderr)
+        self.assertIn(b'/read needs a file path', done.stderr)
+        done, state = self.repl(['first', '/ctx 1', '/ctx 300', 'hello from a file'])
+        self.assertIn(b'/ctx needs N in [2,', done.stderr)
+        self.assertIn(b'Context 300 tokens', done.stdout)
+        self.assertEqual(state['ids'], fresh['ids'])          # a new graph, a new conversation
+        done, state = self.repl(['first', '/reset', 'hello from a file'], '--mtp')
+        self.assertEqual(state['ids'], fresh['ids'])
+        self.assertEqual(state['kv'], len(fresh['ids']) - 1)
+
 if __name__ == '__main__':
     unittest.main()

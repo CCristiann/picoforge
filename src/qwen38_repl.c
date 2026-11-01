@@ -26,6 +26,9 @@ static void interrupt(int signum) {
 static void help(void) {
     puts("Commands:\n"
          "  /help          Show this help.\n"
+         "  /read FILE     Send a text file as your message.\n"
+         "  /ctx N         New context size (clears the conversation).\n"
+         "  /reset         Start a new conversation.\n"
          "  /quit, /exit   Leave (Ctrl+D too).\n"
          "  Ctrl+C         Stop the reply and come back here.\n"
          "Anything else is your next chat message.");
@@ -101,6 +104,33 @@ static void reply(Chat *ch, size_t added) {
         ch->n,r->capacity,cancelled ? " [interrupted]" : "");
     dump_ids(ch);
 }
+/* Text file as one message: bounded, NUL-free (UTF-8 is checked by the
+ * renderer). Errors are reported, never fatal. */
+static char *read_file(const char *path) {
+    FILE *f=fopen(path,"rb");
+    if (!f) { fprintf(stderr,"picoforge: cannot open %s: %s\n",path,strerror(errno)); return NULL; }
+    size_t limit=4u<<20; char *text=malloc(limit+1); if (!text) die("file allocation");
+    size_t n=fread(text,1,limit+1,f); bool bad=ferror(f) || n>limit || memchr(text,0,n); fclose(f);
+    if (bad) { fprintf(stderr,"picoforge: %s must be NUL-free text <= 4 MiB\n",path); free(text); return NULL; }
+    text[n]=0; return text;
+}
+static void forget(Chat *ch) {
+    Qwen38Error e; q38_check(qwen38_gpu_forward_reset(ch->r->graph,&e),&e);
+    ch->n=0; ch->r->last_count=0; dump_ids(ch);
+}
+/* A new graph for N tokens. The old one goes first, so peak memory does not
+ * double; the model weights stay mapped. */
+static void resize(Chat *ch, const char *arg) {
+    char *end; errno=0; unsigned long n=strtoul(arg,&end,10);
+    uint32_t top=ch->r->c->max_positions<32768 ? ch->r->c->max_positions : 32768;
+    if (errno || end==arg || *end || n<2 || n>top) { fprintf(stderr,"picoforge: /ctx needs N in [2,%u]\n",top); return; }
+    q38_run_graph(ch->r,(uint32_t)n);
+    int32_t *ids=realloc(ch->ids,n*sizeof *ids); if (!ids) die("transcript allocation"); ch->ids=ids;
+    ids=realloc(ch->generated,n*sizeof *ids); if (!ids) die("transcript allocation"); ch->generated=ids;
+    ch->n=0; dump_ids(ch);
+    printf("Context %lu tokens, graph buffers %.1f MiB. New conversation.\n",n,
+        (double)qwen38_gpu_forward_bytes(ch->r->graph)/1048576.0);
+}
 int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
     Chat ch={.r=r,.thinking=thinking,.max_new=max_new,.ids_path=ids_path,.im_end=-1};
     ch.ids=malloc((size_t)r->capacity*sizeof *ch.ids); ch.generated=malloc((size_t)r->capacity*sizeof *ch.ids);
@@ -123,6 +153,15 @@ int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
         if (!*cmd) continue;
         if (!strcmp(cmd,"/help")) help();
         else if (!strcmp(cmd,"/quit") || !strcmp(cmd,"/exit")) break;
+        else if (!strcmp(cmd,"/reset")) { forget(&ch); puts("New conversation."); }
+        else if (!strncmp(cmd,"/ctx",4) && (!cmd[4] || isspace((unsigned char)cmd[4]))) resize(&ch,trim(cmd+4));
+        else if (!strncmp(cmd,"/read",5) && (!cmd[5] || isspace((unsigned char)cmd[5]))) {
+            char *text=*trim(cmd+5) ? read_file(trim(cmd+5)) : NULL;
+            if (!cmd[5]) fprintf(stderr,"picoforge: /read needs a file path\n");
+            size_t added=text ? user_turn(&ch,text) : 0;
+            if (added) reply(&ch,added);
+            free(text);
+        }
         else if (*cmd=='/') fprintf(stderr,"picoforge: unknown command %s (try /help)\n",cmd);
         else { size_t added=user_turn(&ch,cmd); if (added) reply(&ch,added); }
     }

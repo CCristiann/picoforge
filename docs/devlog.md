@@ -8,6 +8,18 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### T-R2.4 — `/read FILE`, `/ctx N`, `/reset`
+
+`/read` sends a text file (<= 4 MiB, NUL-free; the renderer checks UTF-8)
+as one message; errors are reported and the chat goes on. `/ctx N`
+destroys the graph first and builds one for N tokens (peak memory does not
+double; the weights stay mapped), which starts a new conversation, as ds4's
+`/ctx` does. `/reset` zeroes the graph and the transcript. Tests: a file
+gives the same IDs as the typed text; after `/ctx` or `/reset` (also with
+`--mtp`) the next turn equals a fresh chat. Real Flash-Next Q2: `/read` of
+a note summarized, `/ctx 2048` (graph 1096.6 MiB vs 1207.6 at 4096), and
+the next turn knows nothing of the old conversation.
+
 ### T-R2.3 — Ctrl+C stops the reply, not the program
 
 SIGINT only raises the cooperative stop flag that `q38_turn()` checks
