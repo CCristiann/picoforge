@@ -6,6 +6,7 @@
  * cannot rewind to an arbitrary position, so a rollback is reset + replay. */
 #include "qwen38_run.h"
 #include <ctype.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -14,10 +15,19 @@ typedef struct {
     bool thinking; uint32_t max_new; int32_t im_end; const char *ids_path;
 } Chat;
 
+/* Ctrl+C only raises the cooperative stop flag (checked between appends).
+ * SA_RESTART keeps stdout writes and the line read free of EINTR; at the
+ * prompt the terminal already drops the typed line, we just redraw. */
+static volatile sig_atomic_t at_prompt;
+static void interrupt(int signum) {
+    (void)signum; q38_stopped=1;
+    if (at_prompt) { ssize_t ignored=write(STDOUT_FILENO,"\npicoforge> ",12); (void)ignored; }
+}
 static void help(void) {
     puts("Commands:\n"
          "  /help          Show this help.\n"
          "  /quit, /exit   Leave (Ctrl+D too).\n"
+         "  Ctrl+C         Stop the reply and come back here.\n"
          "Anything else is your next chat message.");
 }
 static char *trim(char *s) {
@@ -80,11 +90,15 @@ static void reply(Chat *ch, size_t added) {
     Q38Turn t; q38_stopped=0; qwen38_decoder_reset(r->decoder);
     q38_turn(r,ch->ids+pos,total-pos,(Q38TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=max_new,
         .stop_after=UINT32_MAX},ch->generated,&t);
-    memcpy(ch->ids+total,ch->generated,t.got*sizeof *ch->ids); ch->n=total+t.got;
+    /* Stopped before the first token: drop the user turn too (as ds4). The
+     * graph is then ahead of the transcript, so the next turn replays. */
+    bool cancelled=!strcmp(t.reason,"cancelled");
+    memcpy(ch->ids+total,ch->generated,t.got*sizeof *ch->ids);
+    if (t.got || !cancelled) ch->n=total+t.got;
     double prefill=t.prefill_end-t.prefill_start,decode=t.end-t.decode_start;
     fprintf(stderr,"picoforge: prefill %.2f t/s, generation %.2f t/s, context %zu/%u%s\n",
         prefill>0 ? (double)(total-pos)/prefill : 0.0,decode>0 && t.got>1 ? (double)(t.got-1)/decode : 0.0,
-        ch->n,r->capacity,strcmp(t.reason,"cancelled") ? "" : " [interrupted]");
+        ch->n,r->capacity,cancelled ? " [interrupted]" : "");
     dump_ids(ch);
 }
 int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
@@ -93,11 +107,16 @@ int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
     if (!ch.ids || !ch.generated) die("transcript allocation");
     Qwen38Error e; size_t one=0; int32_t probe[2];
     if (!qwen38_encode(r->tok,(Qwen38Bytes){(const uint8_t *)"<|im_end|>",10},probe,2,&one,&e) && one==1) ch.im_end=probe[0];
+    struct sigaction action={0},old; action.sa_handler=interrupt; action.sa_flags=SA_RESTART;
+    sigemptyset(&action.sa_mask); if (sigaction(SIGINT,&action,&old)) die("cannot install Ctrl+C handler");
     bool tty=isatty(STDIN_FILENO); char *line=NULL; size_t cap=0;
     if (tty) help();
     for (;;) {
         if (tty) { fputs("picoforge> ",stdout); fflush(stdout); }
+        at_prompt=tty; errno=0;
         ssize_t got=getline(&line,&cap,stdin);
+        at_prompt=0;
+        if (got<0 && errno==EINTR) { clearerr(stdin); continue; }
         if (got<0) break;
         if (got>(4<<20)) { fprintf(stderr,"picoforge: line longer than 4 MiB\n"); continue; }
         char *cmd=trim(line);
@@ -107,6 +126,7 @@ int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
         else if (*cmd=='/') fprintf(stderr,"picoforge: unknown command %s (try /help)\n",cmd);
         else { size_t added=user_turn(&ch,cmd); if (added) reply(&ch,added); }
     }
-    free(line); free(ch.ids); free(ch.generated);
+    if (tty) fputc('\n',stdout);
+    sigaction(SIGINT,&old,NULL); free(line); free(ch.ids); free(ch.generated);
     return 0;
 }

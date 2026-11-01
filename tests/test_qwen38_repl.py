@@ -1,5 +1,7 @@
 """Qwen3.8 interactive chat: multi-turn KV reuse against a fresh one-shot run."""
 import json
+import signal
+import time
 from pathlib import Path
 import subprocess
 import tempfile
@@ -19,11 +21,11 @@ class ReplTests(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
             return done, json.loads(ids.read_text()) if ids.exists() else None
 
-    def one_shot(self, prompt, max_new):
+    def one_shot(self, prompt, max_new, context=160):
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             ids = Path(directory) / 'ids.json'
             subprocess.run([ENGINE, '--qwen38', str(GGUF), '--tokens', ','.join(map(str, prompt)),
-                            '--context', '160', '--chunk', '7', '--max-new', str(max_new), '--token-ids', str(ids)],
+                            '--context', str(context), '--chunk', '7', '--max-new', str(max_new), '--token-ids', str(ids)],
                            cwd=ROOT, check=True, capture_output=True)
             return json.loads(ids.read_text())['generated_ids']
 
@@ -55,6 +57,44 @@ class ReplTests(unittest.TestCase):
         done, state = self.repl(['short', 'x' * 400])
         self.assertIn(b'context is full', done.stderr)
         self.assertLessEqual(len(state['ids']), 160)
+
+    def interrupted(self, wait_for_text, *flags):
+        """Ctrl+C mid-turn, then one more turn: the process survives, the transcript stays coherent."""
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
+            ids = Path(directory) / 'ids.json'
+            p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--context', '1024', '--chunk', '1',
+                                  '--token-ids', str(ids), *flags], cwd=ROOT, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            p.stdin.write(b'a long first turn ' * 20 + b'\n'); p.stdin.flush()
+            if wait_for_text: p.stdout.read(1)   # the reply has started streaming
+            else: time.sleep(0.3)                 # load + first chunks of the prefill
+            p.send_signal(signal.SIGINT)
+            out, err = p.communicate(b'second\n', timeout=120)
+            self.assertEqual(p.returncode, 0, err.decode(errors='replace'))
+            state = json.loads(ids.read_text())
+            return err.decode(), state
+
+    def test_ctrl_c_keeps_the_partial_reply(self):
+        for flags in ((), ('--mtp',)):
+            err, state = self.interrupted(True, *flags)
+            self.assertEqual(err.count('[interrupted]'), 1, err)
+            self.assertEqual(err.count('generation'), 2)
+            ids = state['ids']
+            self.assertLessEqual(state['kv'], len(ids))
+            # The second turn closed the cut reply: <|im_end|>\n then <|im_start|>user.
+            second = max(i for i, t in enumerate(ids) if t == 257 and ids[i + 1:i + 5] == [117, 115, 101, 114])
+            self.assertEqual(ids[second - 2:second], [258, 10])
+            # The reply after the cut equals a fresh run of everything before it.
+            k = max(i for i in range(len(ids) - 2) if ids[i:i + 3] == [281, 10, 10]) + 3
+            self.assertEqual(self.one_shot(ids[:k], 6, 1024), ids[k:k + 6])
+
+    def test_ctrl_c_in_prefill_drops_the_turn(self):
+        err, state = self.interrupted(False)
+        if '[interrupted]' not in err: self.skipTest('the signal landed after the first turn')
+        ids = state['ids']
+        users = [i for i, t in enumerate(ids) if t == 257 and ids[i + 1:i + 5] == [117, 115, 101, 114]]
+        if len(users) == 1:                       # dropped: only "second" remains, replayed from 0
+            self.assertEqual(users, [0])
 
 if __name__ == '__main__':
     unittest.main()

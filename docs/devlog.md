@@ -8,6 +8,20 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### T-R2.3 — Ctrl+C stops the reply, not the program
+
+SIGINT only raises the cooperative stop flag that `q38_turn()` checks
+between appends (like SIGUSR1). `SA_RESTART` keeps stdout writes and the
+line read free of EINTR; at the prompt the terminal already drops the typed
+line and the handler redraws the prompt with `write()`. A cut reply stays in
+the transcript and the next turn closes it with `<|im_end|>\n`. A stop before
+the first token drops the user turn too (as ds4); the graph is then ahead
+of the transcript, so the next turn replays from 0. Tests: Ctrl+C mid-reply
+(plain and `--mtp`): one `[interrupted]`, the next reply equals a fresh run
+of the same IDs; Ctrl+C in the prefill drops the turn. Real Flash-Next Q2:
+a long story cut after ~70 tokens, then "what was the story about?" answers
+about the cut story.
+
 ### T-R2.2 — the interactive chat, with the cache kept between turns
 
 `picoforge --qwen38 FILE` with no prompt opens a chat (`src/qwen38_repl.c`;
