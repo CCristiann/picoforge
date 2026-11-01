@@ -140,6 +140,14 @@ class ReplTests(unittest.TestCase):
         self.assertNotEqual(none.returncode, 0)
         self.assertIn(b'no model', none.stderr)
 
+    def test_command_output_is_flushed(self):
+        """A piped stdout is fully buffered: /help must appear before the next reply's text."""
+        p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--context', '64'], cwd=ROOT,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        p.stdin.write(b'/help\n'); p.stdin.flush()
+        self.assertEqual(p.stdout.readline(), b'Commands:\n')   # blocks forever without the flush
+        p.stdin.close(); p.wait(timeout=60)
+
 class BenchTests(unittest.TestCase):
     def test_summary_matches_the_raw_rows(self):
         import numpy as np

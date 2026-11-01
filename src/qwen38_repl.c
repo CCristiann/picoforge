@@ -197,6 +197,7 @@ int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
         }
         else if (*cmd=='/') fprintf(stderr,"picoforge: unknown command %s (try /help)\n",cmd);
         else { size_t added=user_turn(&ch,cmd); if (added) reply(&ch,added); }
+        fflush(stdout);   /* a piped stdout is fully buffered: show command output now */
     }
     if (tty) fputc('\n',stdout);
     sigaction(SIGINT,&old,NULL); free(line); free(ch.ids); free(ch.generated);
