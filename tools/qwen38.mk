@@ -131,6 +131,7 @@ test-qwen38:
 	$(MAKE) test-qwen38-g2
 	$(MAKE) test-qwen38-g2-state
 	$(MAKE) test-qwen38-cli
+	$(MAKE) test-qwen38-repl
 
 .PHONY: qwen38-test-assets test-qwen38 test-qwen38-cpu test-qwen38-gpu test-qwen38-links \
  test-qwen38-a test-qwen38-b-cpu test-qwen38-c-cpu test-qwen38-d-cpu \

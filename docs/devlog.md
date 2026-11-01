@@ -8,6 +8,23 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### T-R2.2 — the interactive chat, with the cache kept between turns
+
+`picoforge --qwen38 FILE` with no prompt opens a chat (`src/qwen38_repl.c`;
+shape from ds4 fc80bd6, MIT, ds4_cli.c:run_repl/run_chat_turn). The
+conversation is an array of token IDs and the graph always holds a prefix
+of it. A turn renders only its own suffix (close the previous reply with
+`<|im_end|>\n` unless it already ended on it, then one user message), so the
+model's reply is never re-tokenized. GDN state cannot rewind, so anything
+inconsistent (the graph ahead of the transcript, the MTP predictor behind
+the last append) means reset + replay. The MTP predictor is caught up at a
+turn boundary by pairing the last append's pending rows with the IDs that
+follow. Oracle (`tests/test_qwen38_repl.py`): a reply after three turns of
+reuse equals a fresh one-shot run of the same IDs; `--mtp` gives the same
+transcript. Real Flash-Next Q2 (battery): two turns answer in context,
+plain and `--mtp` transcripts identical (161 IDs), generation 23.7 vs
+~30 t/s.
+
 ### T-R2.1 — one request is now `q38_turn()`
 
 The prefill + greedy/MTP decode loop moved out of `qwen38_cli()` into

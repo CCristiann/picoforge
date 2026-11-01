@@ -48,5 +48,6 @@ void q38_turn(Q38Run *, const int32_t *tokens, size_t count, Q38TurnOptions,
 void q38_run_graph(Q38Run *, uint32_t capacity);
 void q38_check(Qwen38Status, const Qwen38Error *);
 double q38_now(void);
-int q38_repl(Q38Run *, bool thinking, uint32_t max_new);
+/* Interactive chat on stdin (src/qwen38_repl.c). max_new 0 = until stop or full context. */
+int q38_repl(Q38Run *, bool thinking, uint32_t max_new, const char *ids_path);
 #endif

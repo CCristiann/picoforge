@@ -31,7 +31,8 @@ static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what
     return (uint32_t)n;
 }
 static void usage(void) {
-    fprintf(stderr,"usage: picoforge --qwen38 FILE (--chat TEXT | --complete TEXT | --tokens ID,ID,...)\n"
+    fprintf(stderr,"usage: picoforge --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
+        "       (no prompt: interactive chat; /help inside)\n"
         "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
@@ -271,7 +272,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
 int qwen38_cli(int argc,char **argv) {
     double entered=q38_now();
     if (argc==3 && !strcmp(argv[2],"--help")) { usage(); return 0; }
-    if (argc<4) { usage(); return 2; }
+    if (argc<3) { usage(); return 2; }
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
     const char *runs_path=NULL,*profile_path=NULL; char *owned_input=NULL;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
@@ -302,7 +303,11 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,32768,opt);
         else die("unknown Qwen3.8 option %s",opt);
     }
-    if (!mode) die("a prompt is required");
+    /* No prompt: the interactive chat. It owns its turns, so the measurement
+     * and replay options of a one-shot run do not apply. */
+    const bool repl=!mode; if (repl) mode="repl";
+    if (repl && (runs_path || profile_path || logits_path || encode_only || repeat!=1 || warmup || replay_chunk ||
+                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --thinking, --token-ids");
     if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
     if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
@@ -310,7 +315,7 @@ int qwen38_cli(int argc,char **argv) {
         owned_input=read_prompt(input); input=owned_input;
         mode=!strcmp(mode,"--chat-file") ? "--chat" : "--complete";
     }
-    if (thinking && strcmp(mode,"--chat")) die("--thinking requires --chat");
+    if (thinking && strcmp(mode,"--chat") && !repl) die("--thinking requires --chat or the interactive chat");
     chunk=MIN(chunk,capacity);
     if (mtp && capacity<2) die("MTP requires context >=2");
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
@@ -331,7 +336,7 @@ int qwen38_cli(int argc,char **argv) {
         int32_t *tokens=malloc((size_t)capacity*4),*generated=malloc((size_t)capacity*4);
         if (!tokens || !generated) die("token allocation");
         size_t count=0;
-        if (session) { /* Request arrives after the model is ready. */ }
+        if (session || repl) { /* Requests arrive after the model is ready. */ }
         else if (!strcmp(mode,"--tokens")) {
             const char *p=input;
             while (*p) {
@@ -352,7 +357,7 @@ int qwen38_cli(int argc,char **argv) {
             if (forced>=count) die("--teacher-forced N must leave at least one prompt token");
             count-=forced; max_new=forced;
         }
-        if (!session && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
+        if (!session && !repl && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
         if (encode_only) {
             fputs("{\"prompt_ids\":",stdout); ids_json(stdout,tokens,count);
             fprintf(stdout,",\"prompt_tokens\":%zu,\"context\":%u}\n",count,capacity);
@@ -371,8 +376,9 @@ int qwen38_cli(int argc,char **argv) {
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
             c->trunk_blocks,count,capacity,chunk,(double)qwen38_gpu_forward_bytes(graph)/1048576.0);
         double load_s=q38_now()-entered;
+        if (repl) q38_repl(r,thinking,max_new_given ? max_new : 0,ids_path);
         if (session) { runs=stdout; fprintf(stdout,"{\"event\":\"ready\",\"load_s\":%.9f,\"context\":%u}\n",load_s,capacity); fflush(stdout); }
-        for (uint32_t repetition=0;session || repetition<repeat+warmup;repetition++) {
+        for (uint32_t repetition=0;!repl && (session || repetition<repeat+warmup);repetition++) {
         if (session) {
             int request=session_request(tok,tokens,capacity,&count,&max_new);
             if (!request) break;
