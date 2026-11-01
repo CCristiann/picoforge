@@ -22,17 +22,21 @@ void q38_bench_report(const Q38BenchRow *rows, size_t n, double weight_mb) {
     if (!prefill || !decode || !ttft) die("bench allocation");
     for (size_t i=0;i<n;i++) {
         prefill[i]=rows[i].prefill_s>0 ? (double)rows[i].prompt_tokens/rows[i].prefill_s : 0;
-        decode[i]=rows[i].decode_s>0 ? (double)rows[i].decode_tokens/rows[i].decode_s : 0;
         ttft[i]=rows[i].ttft_s;
     }
+    /* A run that stopped on its first token has no decode rate: keep it out of
+     * the decode quantiles instead of counting it as 0 tok/s, and say so. */
+    size_t m=0;
+    for (size_t i=0;i<n;i++) if (rows[i].decode_tokens && rows[i].decode_s>0) decode[m++]=(double)rows[i].decode_tokens/rows[i].decode_s;
+    if (m<n) printf("note: %zu of %zu runs stopped before decoding and are left out of decode tok/s\n",n-m,n);
     printf("%-16s %10s %10s %10s\n","","median","p10","p90");
     printf("%-16s %10.2f %10.2f %10.2f\n","prefill tok/s",quantile(prefill,n,.5),quantile(prefill,n,.1),quantile(prefill,n,.9));
-    printf("%-16s %10.2f %10.2f %10.2f\n","decode tok/s",quantile(decode,n,.5),quantile(decode,n,.1),quantile(decode,n,.9));
+    if (m) printf("%-16s %10.2f %10.2f %10.2f\n","decode tok/s",quantile(decode,m,.5),quantile(decode,m,.1),quantile(decode,m,.9));
     printf("%-16s %10.4f %10.4f %10.4f\n","ttft s",quantile(ttft,n,.5),quantile(ttft,n,.1),quantile(ttft,n,.9));
     /* Decode reads every active weight once per token: GB/s = bytes x tok/s.
      * The bytes come from a measured profile summary, never from here. */
-    if (weight_mb>0) {
-        double gbps=weight_mb*quantile(decode,n,.5)/1000.0;
+    if (weight_mb>0 && m) {
+        double gbps=weight_mb*quantile(decode,m,.5)/1000.0;
         printf("decode weight traffic %.1f GB/s at the median, %.1f%% of 307 GB/s (%.2f MB/token given)\n",
                gbps,100.0*gbps/307.0,weight_mb);
     }

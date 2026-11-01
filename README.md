@@ -45,7 +45,10 @@ make ui-qwen38                # resident chat at http://127.0.0.1:8001 (secondar
 ```
 
 The long form `./picoforge --qwen38 FILE [--chat TEXT ...]` keeps every
-measurement flag; real runs in tests go through `tools/qwen38_gpu_lock.py`.
+measurement flag. Never run two processes with the checkpoint loaded at once
+(the UI counts): ~45 GiB of wired pages are released for ~1.5 s after exit,
+and mapping the file again in that window froze this Mac twice. Scripted
+real runs go through `tools/qwen38_gpu_lock.py` and the guarded launcher.
 
 Useful flags: `--mtp` (multi-token prediction with exact greedy verification),
 `--thinking`, `--complete TEXT`, `--logits FILE.f32`, `--token-ids FILE.json`.

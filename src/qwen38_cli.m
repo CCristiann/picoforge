@@ -248,6 +248,11 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
                     t->replay_s+=q38_now()-part; t->rollback_count++; t->target_appends++; residual_offset=0;
                 } else residual_offset=0;
             } else {
+                if (r->mtp && o.keep_predictor) {
+                    int32_t confirmed[2]={catchup ? catchup_id : id,id}; Qwen38F32Mut empty=*y; empty.dim[0]=0;
+                    q38_check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,empty,&e),&e);
+                    accumulate(&t->mtp,graph); catchup=false;
+                }
                 append(r,&id,1,"decode",use_id ? &next_id : NULL,&t->decode);
                 t->target_appends++; residual_offset=0;
             }
@@ -303,9 +308,10 @@ int qwen38_bench(int argc,char **argv) {
     bool has_prompt=false;
     for (int i=2;i<argc;i++) for (size_t j=0;prompts[j];j++) if (!strcmp(argv[i],prompts[j])) has_prompt=true;
     char **out=calloc((size_t)argc+12,sizeof *out); int n=0; if (!out) die("argument allocation");
+    bool forced=false; for (int i=2;i<argc;i++) if (!strcmp(argv[i],"--teacher-forced")) forced=true;
     const char *defaults[]={"--bench","--warmup","3","--repeat","20","-n","128"};
-    out[n++]=argv[0];
-    for (size_t i=0;i<sizeof defaults/sizeof *defaults;i++) out[n++]=(char *)defaults[i];
+    out[n++]=argv[0];   /* teacher forcing fixes its own length: no default -n */
+    for (size_t i=0;i<sizeof defaults/sizeof *defaults-(forced ? 2 : 0);i++) out[n++]=(char *)defaults[i];
     if (!has_prompt) { out[n++]="-p"; out[n++]="Write a long story about a lighthouse keeper."; }
     for (int i=2;i<argc;i++) out[n++]=argv[i];
     int rc=qwen38_short(n,out); free(out); return rc;
@@ -359,14 +365,14 @@ int qwen38_cli(int argc,char **argv) {
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
     if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
     if (weight_mb>0 && mtp) die("--weight-mb assumes one weight read per token; MTP verifies two rows per read");
-    if (bench && (session || !mode || encode_only)) die("bench needs a prompt and measures a one-shot run");
+    if (bench && (session || repl || encode_only)) die("bench needs a prompt and measures a one-shot run");
     if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
     if (!strcmp(mode,"--chat-file") || !strcmp(mode,"--complete-file")) {
         owned_input=read_prompt(input); input=owned_input;
         mode=!strcmp(mode,"--chat-file") ? "--chat" : "--complete";
     }
     if (thinking && strcmp(mode,"--chat") && !repl) die("--thinking requires --chat or the interactive chat");
-    chunk=MIN(chunk,capacity);
+    const uint32_t chunk_request=chunk; chunk=MIN(chunk,capacity);
     if (mtp && capacity<2) die("MTP requires context >=2");
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
     FILE *runs=runs_path ? fopen(runs_path,"wx") : NULL;
@@ -380,7 +386,7 @@ int qwen38_cli(int argc,char **argv) {
     struct sigaction action={0}; action.sa_handler=stop_generation; action.sa_flags=SA_RESTART; sigemptyset(&action.sa_mask);
     if (sigaction(SIGUSR1,&action,NULL)) die("cannot install stop handler");
     @autoreleasepool {
-        Q38Run run={.chunk=chunk,.mtp=mtp}; Q38Run *r=&run; Qwen38Error e;
+        Q38Run run={.chunk=chunk_request,.mtp=mtp}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
         gguf_open(argv[2],&r->g);
         q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
         q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);

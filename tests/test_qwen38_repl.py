@@ -49,6 +49,9 @@ class ReplTests(unittest.TestCase):
         _, mtp = self.repl(['one', 'two', 'three'], '--mtp')
         self.assertEqual(plain['ids'], mtp['ids'])
         self.assertEqual(mtp['kv'], len(mtp['ids']) - 1)
+        # Every turn ends on --max-new: the predictor must still be caught up
+        # across turns (cache reused), never a reset + replay of the conversation.
+        self.assertEqual((plain['replays'], mtp['replays']), (0, 0))
 
     def test_commands_and_full_context(self):
         done, state = self.repl(['/help', '/nope', '/quit', 'never sent'])
@@ -63,12 +66,13 @@ class ReplTests(unittest.TestCase):
         """Ctrl+C mid-turn, then one more turn: the process survives, the transcript stays coherent."""
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             ids = Path(directory) / 'ids.json'
-            p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--context', '1024', '--chunk', '1',
+            p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--context', '2048', '--chunk', '1',
                                   '--token-ids', str(ids), *flags], cwd=ROOT, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            p.stdin.write(b'a long first turn ' * 20 + b'\n'); p.stdin.flush()
+            while b'layers' not in p.stderr.readline(): pass   # loaded; the handler follows at once
+            p.stdin.write(b'a long first turn ' * (20 if wait_for_text else 70) + b'\n'); p.stdin.flush()
             if wait_for_text: p.stdout.read(1)   # the reply has started streaming
-            else: time.sleep(0.3)                 # load + first chunks of the prefill
+            else: time.sleep(0.1)                 # inside a ~1000-token prefill, one token per chunk
             p.send_signal(signal.SIGINT)
             out, err = p.communicate(b'second\n', timeout=120)
             self.assertEqual(p.returncode, 0, err.decode(errors='replace'))
@@ -87,15 +91,15 @@ class ReplTests(unittest.TestCase):
             self.assertEqual(ids[second - 2:second], [258, 10])
             # The reply after the cut equals a fresh run of everything before it.
             k = max(i for i in range(len(ids) - 2) if ids[i:i + 3] == [281, 10, 10]) + 3
-            self.assertEqual(self.one_shot(ids[:k], 6, 1024), ids[k:k + 6])
+            self.assertEqual(self.one_shot(ids[:k], 6, 2048), ids[k:k + 6])
 
     def test_ctrl_c_in_prefill_drops_the_turn(self):
         err, state = self.interrupted(False)
-        if '[interrupted]' not in err: self.skipTest('the signal landed after the first turn')
+        self.assertIn('[interrupted]', err)
         ids = state['ids']
         users = [i for i, t in enumerate(ids) if t == 257 and ids[i + 1:i + 5] == [117, 115, 101, 114]]
-        if len(users) == 1:                       # dropped: only "second" remains, replayed from 0
-            self.assertEqual(users, [0])
+        self.assertEqual(users, [0])              # dropped: only "second" remains...
+        self.assertEqual(state['replays'], 1)     # ...replayed from 0 on a reset graph
 
     def test_read_ctx_and_reset(self):
         _, fresh = self.repl(['hello from a file'])
@@ -168,9 +172,14 @@ class BenchTests(unittest.TestCase):
 
     def test_admission(self):
         for args in (['--qwen38', str(GGUF), '--chat', 'x', '--weight-mb', '1'],
+                     ['--qwen38', str(GGUF), '--bench'],
                      ['bench', '-m', str(GGUF), '--weight-mb', '-3'], ['bench', '-m', str(GGUF), '--mtp', '--weight-mb', '6000'], ['bench', '-m', str(GGUF), '--session']):
             done = subprocess.run([ENGINE, *args], cwd=ROOT, capture_output=True)
             self.assertNotEqual(done.returncode, 0, args)
+        forced = subprocess.run([ENGINE, 'bench', '-m', str(GGUF), '--tokens', '5,17,300,9', '--teacher-forced', '2',
+                                 '--warmup', '0', '--repeat', '2'], cwd=ROOT, capture_output=True)
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertIn(b'bench: 2 runs', forced.stdout)
 
 if __name__ == '__main__':
     unittest.main()

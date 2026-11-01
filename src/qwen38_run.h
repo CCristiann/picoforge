@@ -27,6 +27,10 @@ typedef struct {
     uint32_t chunk, max_new, stop_after, forced;
     FILE *logfile;                          /* --logits rows; forces the logits path */
     bool session;                           /* JSON events instead of raw text */
+    /* REPL only: before a plain decode append, pair the MTP predictor's pending
+     * rows (no logits read back), so the next turn can reuse the cache. The
+     * one-shot path leaves it off and stays call-for-call as before. */
+    bool keep_predictor;
     /* Optional text sink (REPL formatting); NULL writes the bytes to stdout. */
     void (*print)(void *, const uint8_t *, size_t); void *print_ctx;
 } Q38TurnOptions;
