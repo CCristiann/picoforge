@@ -8,6 +8,27 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### Terminal review — two Important, nine Minor, one fix wave
+
+One opus review of 55cc4ef..d1bc70f (`.superpowers/sdd/R0-R1-plan/tr2-final-review.md`):
+no Critical; the `q38_turn()` refactor confirmed call-for-call. I1: with
+`--mtp`, a reply ending on `-n` made its last decode a plain append, which
+left the MTP predictor behind, so the next turn reset and replayed the whole
+conversation. Fixed with a REPL-only `keep_predictor` option that pairs the
+pending rows (no logits read back) before a plain append; the one-shot path
+leaves it off. I2: no test reached the cross-turn catch-up; the chat now
+reports its replays and the MTP test requires 0 (it fails without the fix:
+2). Minor fixed: the Ctrl+C-in-prefill test waits for the load and asserts
+the drop (5/5 runs), the stop flag is cleared at the top of a turn, `/ctx`
+can raise the chunk again, `--bench` without a prompt is refused, `bench
+--teacher-forced` works, encode errors are reported as such, the chat dies
+early if `<|im_end|>` is not one token, header deps, decode quantiles skip
+runs that never decoded, README warns against two loaded processes. Real:
+`--mtp` chat with three length-ended turns, 0 replays, transcript equal to
+plain, 30.8 vs 23.6 t/s. `Q38_REF_KERNELS=1` oracle still bit-identical at
+03a4f8a. Left: M6 (the `"\n"` close after a stop token is exercised only by
+real sessions; the synthetic model never stops).
+
 ### T-R2.7 — stage closed: `./picoforge` is the daily terminal
 
 Gates at 05d88fd (battery): test-qwen38 (with the new test-qwen38-repl),

@@ -40,4 +40,11 @@ decode 24.37 tok/s median (R2 close, paired AC protocol: 24.15), 148.8 GB/s
 `--mtp` on the story prompt: 18.27 tok/s, slower than plain — low draft
 acceptance on free text (adaptive MTP is roadmap stage R4).
 
+## After the review (03a4f8a)
+
+The final review's I1 (MTP chat replayed the conversation after a reply that
+ended on `-n`) is fixed; `Q38_REF_KERNELS=1` oracle re-checked at 03a4f8a:
+BIT-IDENTICAL (sha256 36e67ce6…). The recorded session above predates the
+fix; its turns ran without `--mtp`, so it is unaffected.
+
 Personal paths are redacted to `/path/to/`.
