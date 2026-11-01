@@ -2,17 +2,15 @@
 #import <Metal/Metal.h>
 #include "picoforge.h"
 #include "qwen38_cli.h"
-#include "qwen38_forward_gpu.h"
-#include "qwen38_g_internal.h"
-#include "qwen38_text.h"
+#include "qwen38_run.h"
 #include <errno.h>
 #include <math.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <time.h>
-static volatile sig_atomic_t stopped;
-static void stop_generation(int signum) { (void)signum; stopped=1; }
-static double now(void) {
+volatile sig_atomic_t q38_stopped;
+static void stop_generation(int signum) { (void)signum; q38_stopped=1; }
+double q38_now(void) {
     struct timespec t; if (clock_gettime(CLOCK_MONOTONIC,&t)) die("clock_gettime");
     return (double)t.tv_sec+(double)t.tv_nsec*1e-9;
 }
@@ -24,7 +22,7 @@ static char *read_prompt(const char *path) {
     if (ferror(f) || n>limit || memchr(s,0,n)) die("prompt file must be NUL-free text <=4 MiB");
     fclose(f); s[n]=0; return s;
 }
-static void check(Qwen38Status rc,const Qwen38Error *e) {
+void q38_check(Qwen38Status rc,const Qwen38Error *e) {
     if (rc) die("Qwen3.8 status %d %s: %s",rc,e->subject,e->detail);
 }
 static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what) {
@@ -33,7 +31,10 @@ static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what
     return (uint32_t)n;
 }
 static void usage(void) {
-    fprintf(stderr,"usage: picoforge --qwen38 FILE (--chat TEXT | --complete TEXT | --tokens ID,ID,...)\n"
+    fprintf(stderr,"usage: picoforge --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
+        "       (no prompt: interactive chat; /help inside)\n"
+        "   or: picoforge [-m FILE] [-p TEXT] [-c CONTEXT] [-n MAX_NEW] [--mtp] [--thinking] ...\n"
+        "       (FILE defaults to $PICOFORGE_MODEL; -p is --chat, no -p is the chat)\n"
         "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
@@ -62,9 +63,9 @@ static uint8_t *chat(Qwen38Tokenizer *tok,const char *text,bool thinking,size_t 
     Qwen38Json message={.kind=Q38_JSON_OBJECT,.as.object={fields,2}};
     Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={&message,1}};
     Qwen38ChatOptions options={.enable_thinking=thinking ? Q38_TRUE : Q38_FALSE,.add_generation_prompt=true};
-    Qwen38Error e; check(qwen38_chat_render(tok,&messages,NULL,options,NULL,0,n,&e),&e);
+    Qwen38Error e; q38_check(qwen38_chat_render(tok,&messages,NULL,options,NULL,0,n,&e),&e);
     uint8_t *out=malloc(*n ? *n : 1); if (!out) die("chat allocation");
-    check(qwen38_chat_render(tok,&messages,NULL,options,out,*n,n,&e),&e); return out;
+    q38_check(qwen38_chat_render(tok,&messages,NULL,options,out,*n,n,&e),&e); return out;
 }
 /* Local worker protocol: G <max-new> <messages> followed by U/A + hex lines.
  * The parent owns the conversation. We render the complete typed message tree
@@ -120,18 +121,6 @@ static int session_request(Qwen38Tokenizer *tok,int32_t *tokens,uint32_t capacit
     return 1;
 }
 
-static void emit(Qwen38Decoder *d,const int32_t *id,bool session) {
-    Qwen38Error e; size_t n;
-    if (id) check(qwen38_decoder_append(d,id,1,NULL,0,&n,&e),&e);
-    else check(qwen38_decoder_finish(d,NULL,0,&n,&e),&e);
-    uint8_t *out=malloc(n ? n : 1); if (!out) die("decoder allocation");
-    if (id) check(qwen38_decoder_append(d,id,1,out,n,&n,&e),&e);
-    else check(qwen38_decoder_finish(d,out,n,&n,&e),&e);
-    if (session && n) {
-        fputs("{\"event\":\"token\",\"hex\":\"",stdout); hex(stdout,out,n); fputs("\"}\n",stdout);
-    } else if (!session && n && fwrite(out,1,n,stdout)!=n) die("stdout write failed");
-    fflush(stdout); free(out);
-}
 static void ids_json(FILE *file,const int32_t *ids,size_t n) {
     fputc('[',file);
     for (size_t i=0;i<n;i++) fprintf(file,"%s%d",i ? "," : "",ids[i]);
@@ -148,20 +137,200 @@ static void stats_json(FILE *file,const char *name,Qwen38GpuForwardStats s) {
         "\"ngram_calls\":%zu,\"ngram_bytes\":%zu,\"ngram_rows\":%zu}",name,
         s.prepare_s,s.encode_s,s.wait_s,s.gpu_s,s.ngram_calls,s.ngram_bytes,s.ngram_rows);
 }
+static void emit(Qwen38Decoder *d,const int32_t *id,const Q38TurnOptions *o) {
+    Qwen38Error e; size_t n;
+    if (id) q38_check(qwen38_decoder_append(d,id,1,NULL,0,&n,&e),&e);
+    else q38_check(qwen38_decoder_finish(d,NULL,0,&n,&e),&e);
+    uint8_t *out=malloc(n ? n : 1); if (!out) die("decoder allocation");
+    if (id) q38_check(qwen38_decoder_append(d,id,1,out,n,&n,&e),&e);
+    else q38_check(qwen38_decoder_finish(d,out,n,&n,&e),&e);
+    if (o->session && n) {
+        fputs("{\"event\":\"token\",\"hex\":\"",stdout); hex(stdout,out,n); fputs("\"}\n",stdout);
+    } else if (n && o->print) o->print(o->print_ctx,out,n);
+    else if (!o->session && n && fwrite(out,1,n,stdout)!=n) die("stdout write failed");
+    fflush(stdout); free(out);
+}
+/* Every trunk append goes through here: profile row, stats, and the count
+ * a following REPL turn needs to catch the MTP predictor up. */
+static void append(Q38Run *r,const int32_t *ids,size_t n,const char *phase,int32_t *id,Qwen38GpuForwardStats *stats) {
+    Qwen38Error e;
+    q38_profile_begin_append(r->profile,phase,qwen38_gpu_forward_info(r->graph).next_pos);
+    if (id) q38_check(qwen38_gpu_forward_argmax(r->graph,ids,n,r->c->trunk_blocks,id,&e),&e);
+    else q38_check(qwen38_gpu_forward(r->graph,ids,n,r->c->trunk_blocks,r->y,NULL,NULL,&e),&e);
+    r->last_count=n; accumulate(stats,r->graph);
+}
+void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
+    const Qwen38ConfigView *c=r->c; Qwen38GpuForward *graph=r->graph; Qwen38Error e;
+    float *logits=r->logits; Qwen38F32Mut *y=&r->y; *t=(Q38Turn){.reason="length"};
+    size_t residual_offset=0,got=0; bool queued=false,catchup=false; int32_t catchup_id=0;
+    /* T15c: plain greedy reads back only the id (GPU argmax). Logits rows stay for --logits
+     * and MTP, which verify against them. */
+    const bool use_id=!r->mtp && !o.logfile; int32_t next_id=0;
+    t->prefill_start=q38_now();
+    for (size_t start=0;start<count && !q38_stopped;start+=o.chunk) {
+        size_t n=MIN((size_t)o.chunk,count-start); y->dim[0]=start+n==count ? 1 : 0;
+        append(r,tokens+start,n,"prefill",use_id && start+n==count ? &next_id : NULL,&t->prefill);
+        residual_offset=n-1;
+        if (r->mtp && !q38_stopped) {
+            size_t pairs=MIN(n,count-start-1); Qwen38F32Mut empty=*y; empty.dim[0]=0;
+            double mtp_start=q38_now();
+            if (pairs) q38_check(qwen38_gpu_mtp(graph,0,tokens+start+1,pairs,empty,&e),&e);
+            t->mtp_prefill_s+=q38_now()-mtp_start;
+            if (pairs) accumulate(&t->mtp,graph);
+        }
+        if (o.session) {
+            fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
+            fflush(stdout);
+        }
+    }
+    t->prefill_end=q38_now(); y->dim[0]=1;
+    if (q38_stopped) t->reason="cancelled";
+    if (o.forced) {
+        /* Teacher-forced decode, the same work as ds4-bench --teacher-forced-decode
+         * (ds4 fc80bd6, MIT, ds4_bench.c:main): each forced ID is its own
+         * one-token append with one logits row and a greedy argmax, never a
+         * batch, and stop tokens do not end the run. --logits keeps the
+         * prefill row first, so it lines up with an ordinary run. */
+        if (!q38_stopped) {
+            if (o.logfile && fwrite(logits,4,c->vocab_size,o.logfile)!=c->vocab_size) die("logits write failed");
+            t->first_token=t->decode_start=q38_now();
+        }
+        for (uint32_t i=0;i<o.forced && !q38_stopped;i++) {
+            append(r,tokens+count+i,1,"decode",use_id ? &next_id : NULL,&t->decode); t->target_appends++;
+            if (o.logfile && fwrite(logits,4,c->vocab_size,o.logfile)!=c->vocab_size) die("logits write failed");
+            generated[got++]=use_id ? next_id : greedy(logits,c->vocab_size);
+        }
+    } else for (uint32_t step=0;step<MAX(o.max_new,1u) && !q38_stopped;step++) {
+        if (got==o.stop_after) { t->reason="cancelled"; break; }
+        if (o.logfile && fwrite(logits,4,c->vocab_size,o.logfile)!=c->vocab_size) die("logits write failed");
+        if (!o.max_new) break;
+        int32_t id=use_id ? next_id : greedy(logits,c->vocab_size);
+        generated[got++]=id;
+        if (qwen38_token_is_stop(r->tok,id)) t->reason="stop";
+        else emit(r->decoder,&id,&o);
+        if (t->first_token==0) { t->first_token=q38_now(); t->decode_start=t->first_token; }
+        if (!strcmp(t->reason,"stop")) break;
+        if (got==o.stop_after) { t->reason="cancelled"; break; }
+        if (step+1<o.max_new) {
+            if (queued) {
+                /* Both rows were already verified causally. The first has
+                 * just emitted b; the next iteration emits c from row 1. */
+                memcpy(logits,logits+c->vocab_size,(size_t)c->vocab_size*4);
+                queued=false; catchup=true; catchup_id=id;
+            } else if (r->mtp && o.max_new-got>=2 && o.stop_after-got>=2 &&
+                       r->capacity-qwen38_gpu_forward_info(graph).next_pos>=2) {
+                int32_t confirmed[2]={catchup ? catchup_id : id,id};
+                double part=q38_now();
+                q38_check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,*y,&e),&e);
+                t->draft_s+=q38_now()-part; accumulate(&t->mtp,graph); catchup=false;
+                if (q38_stopped) break;
+                int32_t draft=0;
+                for (uint32_t j=0;j<c->vocab_size;j++) {
+                    if (!isfinite(logits[j])) die("nonfinite MTP logit");
+                    if (logits[j]>logits[draft]) draft=(int32_t)j;
+                }
+                t->proposed++;
+                /* A proposed stop is checked using only a. It must never
+                 * enter the trunk cache, even when it is accepted. */
+                bool draft_stop=qwen38_token_is_stop(r->tok,draft);
+                Qwen38GpuCheckpoint snapshot; part=q38_now();
+                q38_check(qwen38_gpu_checkpoint_save(graph,&snapshot,&e),&e); t->snapshot_s+=q38_now()-part;
+                int32_t pair[2]={id,draft}; y->dim[0]=draft_stop ? 1 : 2; part=q38_now(); size_t saved_count=r->last_count;
+                append(r,pair,y->dim[0],"decode",NULL,&t->decode);
+                t->verify_s+=q38_now()-part; t->verified_tokens+=y->dim[0]; t->target_appends++; y->dim[0]=1;
+                if (q38_stopped) { q38_check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e); r->last_count=saved_count; break; }
+                int32_t target=0;
+                for (uint32_t j=1;j<c->vocab_size;j++) if (logits[j]>logits[target]) target=(int32_t)j;
+                if (target==draft) { t->accepted++; queued=!draft_stop; residual_offset=draft_stop ? 0 : 1; }
+                else if (!draft_stop) {
+                    part=q38_now(); q38_check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e);
+                    append(r,&id,1,"decode",NULL,&t->decode);
+                    t->replay_s+=q38_now()-part; t->rollback_count++; t->target_appends++; residual_offset=0;
+                } else residual_offset=0;
+            } else {
+                if (r->mtp && o.keep_predictor) {
+                    int32_t confirmed[2]={catchup ? catchup_id : id,id}; Qwen38F32Mut empty=*y; empty.dim[0]=0;
+                    q38_check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,empty,&e),&e);
+                    accumulate(&t->mtp,graph); catchup=false;
+                }
+                append(r,&id,1,"decode",use_id ? &next_id : NULL,&t->decode);
+                t->target_appends++; residual_offset=0;
+            }
+        }
+    }
+    t->end=q38_now(); if (q38_stopped) t->reason="cancelled";
+    emit(r->decoder,NULL,&o); if (!o.session && !o.print) fputc('\n',stdout);
+    t->got=got;
+}
+void q38_run_graph(Q38Run *r,uint32_t capacity) {
+    Qwen38Error e; uint32_t chunk=MIN(r->chunk,capacity);
+    if (r->graph) qwen38_gpu_forward_destroy(r->graph);
+    free(r->logits); r->graph=NULL; r->capacity=capacity; r->last_count=0;
+    q38_check(qwen38_gpu_forward_create(&r->g,r->config,r->weights,r->store,r->device,r->library,
+        r->mtp ? MAX(chunk,2u) : chunk,capacity,r->mtp ? 2 : 1,&r->graph,&e),&e);
+    if (r->mtp) q38_check(qwen38_gpu_mtp_enable(r->graph,&e),&e);
+    if (r->profile) q38_check(q38g_forward_set_profile(r->graph,r->profile,&e),&e);
+    const uint32_t vocab=r->c->vocab_size; size_t bytes=(size_t)vocab*4*(r->mtp ? 2u : 1u);
+    r->logits=malloc(bytes); if (!r->logits) die("logits allocation");
+    r->y=(Qwen38F32Mut){.data=r->logits,.capacity_bytes=bytes,.rank=2,.dim={1,vocab},.stride_bytes={(size_t)vocab*4,4}};
+    if (r->decoder) qwen38_decoder_reset(r->decoder);
+    else q38_check(qwen38_decoder_create(r->tok,true,&r->decoder,&e),&e);
+}
+/* ds4-style short form (`./ds4 -p ...`): -m FILE, -p TEXT, -c N, -n N, the rest
+ * as in the long form. The model defaults to $PICOFORGE_MODEL. A bare
+ * ./picoforge keeps its old meaning (Qwen3-0.6B) unless that is set. */
+bool qwen38_short_form(int argc,char **argv) {
+    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--thinking",NULL};
+    if (argc==1) return getenv("PICOFORGE_MODEL")!=NULL;
+    for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
+    return false;
+}
+int qwen38_short(int argc,char **argv) {
+    const char *model=getenv("PICOFORGE_MODEL"); char **out=calloc((size_t)argc+3,sizeof *out); int n=3;
+    if (!out) die("argument allocation");
+    for (int i=1;i<argc;i++) {
+        const char *a=argv[i],*as=!strcmp(a,"-p") ? "--chat" : !strcmp(a,"-c") ? "--context" : !strcmp(a,"-n") ? "--max-new" : NULL;
+        if ((as || !strcmp(a,"-m")) && i+1==argc) die("missing value for %s",a);
+        if (!strcmp(a,"-m")) model=argv[++i];
+        else if (as) { out[n++]=(char *)as; out[n++]=argv[++i]; }
+        else out[n++]=argv[i];
+    }
+    if (!model) die("no model: pass -m FILE.gguf or set PICOFORGE_MODEL");
+    out[0]=argv[0]; out[1]="--qwen38"; out[2]=(char *)model;
+    int rc=qwen38_cli(n,out); free(out); return rc;
+}
+/* `picoforge bench [short-form options]`: protocol defaults (3 warm-up, 20
+ * measured, 128 new tokens), a fixed prompt unless one is given; generated
+ * text is discarded, the summary goes to stdout. Later options win. */
+static void discard(void *ctx,const uint8_t *s,size_t n) { (void)ctx; (void)s; (void)n; }
+int qwen38_bench(int argc,char **argv) {
+    static const char *const prompts[]={"-p","--chat","--chat-file","--complete","--complete-file","--tokens",NULL};
+    bool has_prompt=false;
+    for (int i=2;i<argc;i++) for (size_t j=0;prompts[j];j++) if (!strcmp(argv[i],prompts[j])) has_prompt=true;
+    char **out=calloc((size_t)argc+12,sizeof *out); int n=0; if (!out) die("argument allocation");
+    bool forced=false; for (int i=2;i<argc;i++) if (!strcmp(argv[i],"--teacher-forced")) forced=true;
+    const char *defaults[]={"--bench","--warmup","3","--repeat","20","-n","128"};
+    out[n++]=argv[0];   /* teacher forcing fixes its own length: no default -n */
+    for (size_t i=0;i<sizeof defaults/sizeof *defaults-(forced ? 2 : 0);i++) out[n++]=(char *)defaults[i];
+    if (!has_prompt) { out[n++]="-p"; out[n++]="Write a long story about a lighthouse keeper."; }
+    for (int i=2;i<argc;i++) out[n++]=argv[i];
+    int rc=qwen38_short(n,out); free(out); return rc;
+}
 int qwen38_cli(int argc,char **argv) {
-    double entered=now();
+    double entered=q38_now();
     if (argc==3 && !strcmp(argv[2],"--help")) { usage(); return 0; }
-    if (argc<4) { usage(); return 2; }
+    if (argc<3) { usage(); return 2; }
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
-    const char *runs_path=NULL,*profile_path=NULL; char *owned_input=NULL;
+    const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
-    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false;
+    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false;
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
         if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
         if (!strcmp(opt,"--thinking")) { thinking=true; continue; }
         if (!strcmp(opt,"--encode-only")) { encode_only=true; continue; }
+        if (!strcmp(opt,"--bench")) { bench=true; continue; }
         if (i+1==argc) die("missing value for %s",opt);
         const char *value=argv[++i];
         if (!strcmp(opt,"--chat") || !strcmp(opt,"--complete") || !strcmp(opt,"--tokens") ||
@@ -180,37 +349,54 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
         else if (!strcmp(opt,"--profile")) profile_path=value;
         else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,32768,opt);
+        else if (!strcmp(opt,"--bench-csv")) bench_csv=value;
+        else if (!strcmp(opt,"--weight-mb")) {
+            char *end; errno=0; weight_mb=strtod(value,&end);
+            if (errno || end==value || *end || !(weight_mb>0 && weight_mb<1e6)) die("--weight-mb must be a positive number of MB");
+        }
         else die("unknown Qwen3.8 option %s",opt);
     }
-    if (!mode) die("a prompt is required");
+    /* No prompt: the interactive chat. It owns its turns, so the measurement
+     * and replay options of a one-shot run do not apply. */
+    const bool repl=!mode; if (repl) mode="repl";
+    if (repl && (runs_path || profile_path || logits_path || encode_only || repeat!=1 || warmup || replay_chunk ||
+                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --thinking, --token-ids");
     if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
+    if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
+    if (weight_mb>0 && mtp) die("--weight-mb assumes one weight read per token; MTP verifies two rows per read");
+    if (bench && (session || repl || encode_only)) die("bench needs a prompt and measures a one-shot run");
     if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
     if (!strcmp(mode,"--chat-file") || !strcmp(mode,"--complete-file")) {
         owned_input=read_prompt(input); input=owned_input;
         mode=!strcmp(mode,"--chat-file") ? "--chat" : "--complete";
     }
-    if (thinking && strcmp(mode,"--chat")) die("--thinking requires --chat");
-    chunk=MIN(chunk,capacity);
+    if (thinking && strcmp(mode,"--chat") && !repl) die("--thinking requires --chat or the interactive chat");
+    const uint32_t chunk_request=chunk; chunk=MIN(chunk,capacity);
     if (mtp && capacity<2) die("MTP requires context >=2");
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
     FILE *runs=runs_path ? fopen(runs_path,"wx") : NULL;
     if (runs_path && !runs) die("runs output must be a new file");
-    FILE *profile_csv=profile_path ? fopen(profile_path,"wx") : NULL; Q38Profile *profile=NULL;
+    FILE *bench_out=bench_csv ? fopen(bench_csv,"wx") : NULL;
+    if (bench_csv && !bench_out) die("bench CSV must be a new file");
+    Q38BenchRow *bench_rows=bench ? calloc(repeat,sizeof *bench_rows) : NULL; size_t bench_n=0;
+    if (bench && !bench_rows) die("bench allocation");
+    FILE *profile_csv=profile_path ? fopen(profile_path,"wx") : NULL;
     if (profile_path && !profile_csv) die("profile output must be a new file");
     struct sigaction action={0}; action.sa_handler=stop_generation; action.sa_flags=SA_RESTART; sigemptyset(&action.sa_mask);
     if (sigaction(SIGUSR1,&action,NULL)) die("cannot install stop handler");
     @autoreleasepool {
-        Gguf g; gguf_open(argv[2],&g); Qwen38Config *config; Qwen38Weights *weights; Qwen38Tokenizer *tok;
-        Qwen38Error e; check(qwen38_config_load(&g,&config,&e),&e);
-        check(qwen38_weights_describe(&g,config,&weights,&e),&e);
-        check(qwen38_tokenizer_load(&g,config,&tok,&e),&e);
-        const Qwen38ConfigView *c=qwen38_config_view(config);
+        Q38Run run={.chunk=chunk_request,.mtp=mtp}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
+        gguf_open(argv[2],&r->g);
+        q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
+        q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);
+        q38_check(qwen38_tokenizer_load(&r->g,r->config,&r->tok,&e),&e);
+        const Qwen38ConfigView *c=r->c=qwen38_config_view(r->config); Qwen38Tokenizer *tok=r->tok;
         if (capacity>c->max_positions) die("context exceeds model maximum");
         int32_t *tokens=malloc((size_t)capacity*4),*generated=malloc((size_t)capacity*4);
         if (!tokens || !generated) die("token allocation");
         size_t count=0;
-        if (session) { /* Request arrives after the model is ready. */ }
+        if (session || repl) { /* Requests arrive after the model is ready. */ }
         else if (!strcmp(mode,"--tokens")) {
             const char *p=input;
             while (*p) {
@@ -224,166 +410,59 @@ int qwen38_cli(int argc,char **argv) {
         } else {
             size_t n=strlen(input); uint8_t *rendered=NULL; Qwen38Bytes prompt=bytes(input);
             if (!strcmp(mode,"--chat")) { rendered=chat(tok,input,thinking,&n); prompt=(Qwen38Bytes){rendered,n}; }
-            check(qwen38_encode(tok,prompt,tokens,capacity,&count,&e),&e); free(rendered);
+            q38_check(qwen38_encode(tok,prompt,tokens,capacity,&count,&e),&e); free(rendered);
         }
         /* Teacher forcing: tokens[count..count+forced) stay in the array, outside the prompt. */
         if (forced) {
             if (forced>=count) die("--teacher-forced N must leave at least one prompt token");
             count-=forced; max_new=forced;
         }
-        if (!session && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
+        if (!session && !repl && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
         if (encode_only) {
             fputs("{\"prompt_ids\":",stdout); ids_json(stdout,tokens,count);
             fprintf(stdout,",\"prompt_tokens\":%zu,\"context\":%u}\n",count,capacity);
-            qwen38_tokenizer_free(tok); qwen38_weights_free(weights); qwen38_config_free(config); gguf_close(&g);
+            qwen38_tokenizer_free(tok); qwen38_weights_free(r->weights); qwen38_config_free(r->config); gguf_close(&r->g);
             free(tokens); free(generated); free(owned_input); if (runs) fclose(runs); if (profile_csv) fclose(profile_csv); return 0;
         }
         id<MTLDevice> device=MTLCreateSystemDefaultDevice();
         if (!device) die("Metal device unavailable");
         NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
         if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
-        GpuWeightStore *store=gpu_weights_open((__bridge void *)device,&g,0);
-        check(qwen38_weights_attach(weights,&g,gpu_weights_plan(store),&e),&e);
-        Qwen38GpuForward *graph;
-        check(qwen38_gpu_forward_create(&g,config,weights,store,(__bridge void *)device,(__bridge void *)lib,mtp ? MAX(chunk,2u) : chunk,capacity,mtp ? 2 : 1,&graph,&e),&e);
-        if (mtp) check(qwen38_gpu_mtp_enable(graph,&e),&e);
-        if (profile_csv) { check(q38_profile_create((__bridge void *)device,profile_csv,&profile,&e),&e); check(q38g_forward_set_profile(graph,profile,&e),&e); }
+        r->device=(__bridge void *)device; r->library=(__bridge void *)lib;
+        r->store=gpu_weights_open(r->device,&r->g,0);
+        q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
+        if (profile_csv) q38_check(q38_profile_create(r->device,profile_csv,&r->profile,&e),&e);
+        q38_run_graph(r,capacity); Qwen38GpuForward *graph=r->graph;
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
             c->trunk_blocks,count,capacity,chunk,(double)qwen38_gpu_forward_bytes(graph)/1048576.0);
-        size_t logits_bytes=(size_t)c->vocab_size*4*(mtp ? 2u : 1u);
-        float *logits=malloc(logits_bytes); if (!logits) die("logits allocation");
-        Qwen38F32Mut y={.data=logits,.capacity_bytes=logits_bytes,.rank=2,.dim={1,c->vocab_size},.stride_bytes={(size_t)c->vocab_size*4,4}};
-        double load_s=now()-entered;
-        Qwen38Decoder *decoder; check(qwen38_decoder_create(tok,true,&decoder,&e),&e);
+        double load_s=q38_now()-entered;
+        if (repl) q38_repl(r,thinking,max_new_given ? max_new : 0,ids_path);
         if (session) { runs=stdout; fprintf(stdout,"{\"event\":\"ready\",\"load_s\":%.9f,\"context\":%u}\n",load_s,capacity); fflush(stdout); }
-        for (uint32_t repetition=0;session || repetition<repeat+warmup;repetition++) {
+        for (uint32_t repetition=0;!repl && (session || repetition<repeat+warmup);repetition++) {
         if (session) {
             int request=session_request(tok,tokens,capacity,&count,&max_new);
             if (!request) break;
             if (request<0) continue;
             if (request==2) {
-                check(qwen38_gpu_forward_reset(graph,&e),&e); qwen38_decoder_reset(decoder);
+                q38_check(qwen38_gpu_forward_reset(graph,&e),&e); qwen38_decoder_reset(r->decoder);
                 fputs("{\"event\":\"reset\"}\n",stdout); fflush(stdout); continue;
             }
         }
         /* Warm-up repetitions write no profile rows: detached, the graph never splits. */
-        if (profile) check(q38g_forward_set_profile(graph,repetition<warmup ? NULL : profile,&e),&e);
-        double request_start=now(),reset_s=0;
+        if (r->profile) q38_check(q38g_forward_set_profile(graph,repetition<warmup ? NULL : r->profile,&e),&e);
+        double request_start=q38_now(),reset_s=0;
         if (session || repetition) {
-            check(qwen38_gpu_forward_reset(graph,&e),&e); qwen38_decoder_reset(decoder);
-            reset_s=now()-request_start;
+            q38_check(qwen38_gpu_forward_reset(graph,&e),&e); qwen38_decoder_reset(r->decoder);
+            reset_s=q38_now()-request_start;
         }
-        stopped=0;
+        q38_stopped=0;
         if (session) { fprintf(stdout,"{\"event\":\"started\",\"prompt_tokens\":%zu}\n",count); fflush(stdout); }
         uint32_t current_chunk=repetition && replay_chunk ? replay_chunk : chunk;
-        Qwen38GpuForwardStats prefill_stats={0},decode_stats={0},mtp_stats={0};
-        size_t proposed=0,accepted=0,target_appends=0,rollback_count=0,verified_tokens=0;
-        double mtp_prefill_s=0,draft_s=0,verify_s=0,snapshot_s=0,replay_s=0;
-        size_t residual_offset=0; bool queued=false,catchup=false; int32_t catchup_id=0;
-        /* T15c: plain greedy reads back only the id (GPU argmax). Logits rows stay for --logits
-         * and MTP, which verify against them. */
-        const bool use_id=!mtp && !logits_path; int32_t next_id=0;
-        double prefill_start=now();
-        for (size_t start=0;start<count && !stopped;start+=current_chunk) {
-            size_t n=MIN((size_t)current_chunk,count-start); y.dim[0]=start+n==count ? 1 : 0;
-            q38_profile_begin_append(profile,"prefill",start);
-            if (use_id && start+n==count) check(qwen38_gpu_forward_argmax(graph,tokens+start,n,c->trunk_blocks,&next_id,&e),&e);
-            else check(qwen38_gpu_forward(graph,tokens+start,n,c->trunk_blocks,y,NULL,NULL,&e),&e);
-            accumulate(&prefill_stats,graph);
-            residual_offset=n-1;
-            if (mtp && !stopped) {
-                size_t pairs=MIN(n,count-start-1); Qwen38F32Mut empty=y; empty.dim[0]=0;
-                double mtp_start=now();
-                if (pairs) check(qwen38_gpu_mtp(graph,0,tokens+start+1,pairs,empty,&e),&e);
-                mtp_prefill_s+=now()-mtp_start;
-                if (pairs) accumulate(&mtp_stats,graph);
-            }
-            if (session) {
-                fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
-                fflush(stdout);
-            }
-        }
-        double prefill_end=now(),first_token=0,decode_start=0;
-        y.dim[0]=1; FILE *logfile=logits_path ? fopen(logits_path,"wb") : NULL;
+        FILE *logfile=logits_path ? fopen(logits_path,"wb") : NULL;
         if (logits_path && !logfile) die("cannot open logits output");
-        size_t got=0; const char *reason=stopped ? "cancelled" : "length";
-        if (forced) {
-            /* Teacher-forced decode, the same work as ds4-bench --teacher-forced-decode
-             * (ds4 fc80bd6, MIT, ds4_bench.c:main): each forced ID is its own
-             * one-token append with one logits row and a greedy argmax, never a
-             * batch, and stop tokens do not end the run. --logits keeps the
-             * prefill row first, so it lines up with an ordinary run. */
-            if (!stopped) {
-                if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
-                first_token=decode_start=now();
-            }
-            for (uint32_t i=0;i<forced && !stopped;i++) {
-                q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
-                if (use_id) check(qwen38_gpu_forward_argmax(graph,tokens+count+i,1,c->trunk_blocks,&next_id,&e),&e);
-                else check(qwen38_gpu_forward(graph,tokens+count+i,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
-                target_appends++; accumulate(&decode_stats,graph);
-                if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
-                generated[got++]=use_id ? next_id : greedy(logits,c->vocab_size);
-            }
-        } else for (uint32_t step=0;step<MAX(max_new,1u) && !stopped;step++) {
-            if (got==stop_after) { reason="cancelled"; break; }
-            if (logfile && fwrite(logits,4,c->vocab_size,logfile)!=c->vocab_size) die("logits write failed");
-            if (!max_new) break;
-            int32_t id=use_id ? next_id : greedy(logits,c->vocab_size);
-            generated[got++]=id;
-            if (qwen38_token_is_stop(tok,id)) reason="stop";
-            else emit(decoder,&id,session);
-            if (first_token==0) { first_token=now(); decode_start=first_token; }
-            if (!strcmp(reason,"stop")) break;
-            if (got==stop_after) { reason="cancelled"; break; }
-            if (step+1<max_new) {
-                if (queued) {
-                    /* Both rows were already verified causally. The first has
-                     * just emitted b; the next iteration emits c from row 1. */
-                    memcpy(logits,logits+c->vocab_size,(size_t)c->vocab_size*4);
-                    queued=false; catchup=true; catchup_id=id;
-                } else if (mtp && max_new-got>=2 && stop_after-got>=2 &&
-                           capacity-qwen38_gpu_forward_info(graph).next_pos>=2) {
-                    int32_t confirmed[2]={catchup ? catchup_id : id,id};
-                    double part=now();
-                    check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,y,&e),&e);
-                    draft_s+=now()-part; accumulate(&mtp_stats,graph); catchup=false;
-                    if (stopped) break;
-                    int32_t draft=0;
-                    for (uint32_t j=0;j<c->vocab_size;j++) {
-                        if (!isfinite(logits[j])) die("nonfinite MTP logit");
-                        if (logits[j]>logits[draft]) draft=(int32_t)j;
-                    }
-                    proposed++;
-                    /* A proposed stop is checked using only a. It must never
-                     * enter the trunk cache, even when it is accepted. */
-                    bool draft_stop=qwen38_token_is_stop(tok,draft);
-                    Qwen38GpuCheckpoint snapshot; part=now();
-                    check(qwen38_gpu_checkpoint_save(graph,&snapshot,&e),&e); snapshot_s+=now()-part;
-                    int32_t pair[2]={id,draft}; y.dim[0]=draft_stop ? 1 : 2; part=now();
-                    q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
-                    check(qwen38_gpu_forward(graph,pair,y.dim[0],c->trunk_blocks,y,NULL,NULL,&e),&e);
-                    verify_s+=now()-part; verified_tokens+=y.dim[0]; target_appends++; accumulate(&decode_stats,graph); y.dim[0]=1;
-                    if (stopped) { check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e); break; }
-                    int32_t target=0;
-                    for (uint32_t j=1;j<c->vocab_size;j++) if (logits[j]>logits[target]) target=(int32_t)j;
-                    if (target==draft) { accepted++; queued=!draft_stop; residual_offset=draft_stop ? 0 : 1; }
-                    else if (!draft_stop) {
-                        part=now(); check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e);
-                        q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
-                        check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
-                        replay_s+=now()-part; rollback_count++; target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
-                    } else residual_offset=0;
-                } else {
-                    q38_profile_begin_append(profile,"decode",qwen38_gpu_forward_info(graph).next_pos);
-                    if (use_id) check(qwen38_gpu_forward_argmax(graph,&id,1,c->trunk_blocks,&next_id,&e),&e);
-                    else check(qwen38_gpu_forward(graph,&id,1,c->trunk_blocks,y,NULL,NULL,&e),&e);
-                    target_appends++; accumulate(&decode_stats,graph); residual_offset=0;
-                }
-            }
-        }
-        double generation_end=now(); if (stopped) reason="cancelled";
-        emit(decoder,NULL,session); if (!session) fputc('\n',stdout);
+        Q38Turn t; q38_turn(r,tokens,count,(Q38TurnOptions){.chunk=current_chunk,.max_new=max_new,
+            .stop_after=stop_after,.forced=forced,.logfile=logfile,.session=session,.print=bench ? discard : NULL},generated,&t);
+        size_t got=t.got;
         if (logfile && fclose(logfile)) die("logits close failed");
         if (ids_path) {
             FILE *out=fopen(ids_path,"w"); if (!out) die("cannot open token IDs output");
@@ -395,18 +474,21 @@ int qwen38_cli(int argc,char **argv) {
         fprintf(stderr,"Qwen3.8: generated %zu tokens%s\n",got,got && qwen38_token_is_stop(tok,generated[got-1]) ? " (stop)" : "");
         fprintf(stderr,"Qwen3.8 memory: {\"metal_allocated_bytes\":%zu,\"metal_recommended_bytes\":%zu,\"graph_buffer_bytes\":%zu}\n",
             (size_t)device.currentAllocatedSize,(size_t)device.recommendedMaxWorkingSetSize,qwen38_gpu_forward_bytes(graph));
+        if (bench && repetition>=warmup) bench_rows[bench_n++]=(Q38BenchRow){count,forced ? got : got ? got-1 : 0,
+            t.prefill_end-t.prefill_start,t.first_token>0 ? t.end-t.decode_start : 0,
+            t.first_token>0 ? t.first_token-request_start : 0};
         if (runs) {
             fprintf(runs,"{\"event\":\"done\",\"repetition\":%u,\"warmup\":%s,\"load_s\":%.9f,\"reset_s\":%.9f,"
                 "\"prefill_s\":%.9f,\"decode_s\":%.9f,\"request_s\":%.9f,\"ttft_request_s\":",
-                repetition,repetition<warmup ? "true":"false",load_s,reset_s,prefill_end-prefill_start,
-                first_token>0 ? generation_end-decode_start : 0,generation_end-request_start);
-            if (first_token>0) fprintf(runs,"%.9f",first_token-request_start); else fputs("null",runs);
+                repetition,repetition<warmup ? "true":"false",load_s,reset_s,t.prefill_end-t.prefill_start,
+                t.first_token>0 ? t.end-t.decode_start : 0,t.end-request_start);
+            if (t.first_token>0) fprintf(runs,"%.9f",t.first_token-request_start); else fputs("null",runs);
             fprintf(runs,",\"first_token_from_entry_s\":");
-            if (first_token>0 && !repetition) fprintf(runs,"%.9f",first_token-entered); else fputs("null",runs);
+            if (t.first_token>0 && !repetition) fprintf(runs,"%.9f",t.first_token-entered); else fputs("null",runs);
             fprintf(runs,",\"prompt_tokens\":%zu,\"generated_tokens\":%zu,\"decode_tokens\":%zu,"
                 "\"context\":%u,\"chunk\":%u,\"stop_reason\":\"%s\",\"position\":%llu,"
                 "\"metal_allocated_bytes\":%zu,\"metal_recommended_bytes\":%zu,\"graph_buffer_bytes\":%zu,\"generated_ids\":",
-                count,got,forced ? got : got ? got-1 : 0,capacity,current_chunk,reason,
+                count,got,forced ? got : got ? got-1 : 0,capacity,current_chunk,t.reason,
                 (unsigned long long)qwen38_gpu_forward_info(graph).next_pos,
                 (size_t)device.currentAllocatedSize,(size_t)device.recommendedMaxWorkingSetSize,qwen38_gpu_forward_bytes(graph));
             ids_json(runs,generated,got);
@@ -414,17 +496,24 @@ int qwen38_cli(int argc,char **argv) {
             fprintf(runs,",\"mtp\":{\"enabled\":%s,\"proposed\":%zu,\"accepted\":%zu,\"rollback_count\":%zu,"
                 "\"target_decode_appends\":%zu,\"verified_tokens\":%zu,\"prefill_s\":%.9f,\"draft_s\":%.9f,"
                 "\"verify_s\":%.9f,\"snapshot_s\":%.9f,\"replay_s\":%.9f,\"checkpoint_host_bytes\":%zu}",
-                mtp ? "true":"false",proposed,accepted,rollback_count,target_appends,verified_tokens,
-                mtp_prefill_s,draft_s,verify_s,snapshot_s,replay_s,qwen38_gpu_checkpoint_bytes(graph));
-            stats_json(runs,"mtp_profile",mtp_stats);
-            stats_json(runs,"prefill_profile",prefill_stats); stats_json(runs,"decode_profile",decode_stats);
+                mtp ? "true":"false",t.proposed,t.accepted,t.rollback_count,t.target_appends,t.verified_tokens,
+                t.mtp_prefill_s,t.draft_s,t.verify_s,t.snapshot_s,t.replay_s,qwen38_gpu_checkpoint_bytes(graph));
+            stats_json(runs,"mtp_profile",t.mtp);
+            stats_json(runs,"prefill_profile",t.prefill); stats_json(runs,"decode_profile",t.decode);
             fputs("}\n",runs); fflush(runs);
         }
         }
-        qwen38_decoder_free(decoder); qwen38_gpu_forward_destroy(graph); qwen38_tokenizer_free(tok);
-        if (!q38_profile_close(profile)) die("profile write failed");
-        qwen38_weights_free(weights); gpu_weights_close(store); qwen38_config_free(config); gguf_close(&g);
-        free(tokens); free(generated); free(logits);
+        if (bench) {
+            printf("bench: %zu runs (+%u warm-up), prompt %zu tokens, context %u, chunk %u, mtp %s\n",
+                   bench_n,warmup,count,capacity,chunk,mtp ? "on" : "off");
+            q38_bench_report(bench_rows,bench_n,weight_mb);
+            if (bench_out) { q38_bench_csv(bench_out,bench_rows,bench_n); if (fclose(bench_out)) die("bench CSV write failed"); }
+            free(bench_rows);
+        }
+        qwen38_decoder_free(r->decoder); qwen38_gpu_forward_destroy(r->graph); qwen38_tokenizer_free(tok);
+        if (!q38_profile_close(r->profile)) die("profile write failed");
+        qwen38_weights_free(r->weights); gpu_weights_close(r->store); qwen38_config_free(r->config); gguf_close(&r->g);
+        free(tokens); free(generated); free(r->logits);
     }
     free(owned_input); if (runs && runs!=stdout && fclose(runs)) die("runs close failed");
     return 0;

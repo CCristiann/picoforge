@@ -2,6 +2,131 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Roadmap stage R2 "Terminal" — `./picoforge` like `./ds4` (from 2026-10-30)
+
+Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
+interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
+The decode path is not touched: only host orchestration. Newest first.
+
+### Terminal review — two Important, nine Minor, one fix wave
+
+One opus review of 55cc4ef..d1bc70f (`.superpowers/sdd/R0-R1-plan/tr2-final-review.md`):
+no Critical; the `q38_turn()` refactor confirmed call-for-call. I1: with
+`--mtp`, a reply ending on `-n` made its last decode a plain append, which
+left the MTP predictor behind, so the next turn reset and replayed the whole
+conversation. Fixed with a REPL-only `keep_predictor` option that pairs the
+pending rows (no logits read back) before a plain append; the one-shot path
+leaves it off. I2: no test reached the cross-turn catch-up; the chat now
+reports its replays and the MTP test requires 0 (it fails without the fix:
+2). Minor fixed: the Ctrl+C-in-prefill test waits for the load and asserts
+the drop (5/5 runs), the stop flag is cleared at the top of a turn, `/ctx`
+can raise the chunk again, `--bench` without a prompt is refused, `bench
+--teacher-forced` works, encode errors are reported as such, the chat dies
+early if `<|im_end|>` is not one token, header deps, decode quantiles skip
+runs that never decoded, README warns against two loaded processes. Real:
+`--mtp` chat with three length-ended turns, 0 replays, transcript equal to
+plain, 30.8 vs 23.6 t/s. `Q38_REF_KERNELS=1` oracle still bit-identical at
+03a4f8a. Left: M6 (the `"\n"` close after a stop token is exercised only by
+real sessions; the synthetic model never stops).
+
+### T-R2.7 — stage closed: `./picoforge` is the daily terminal
+
+Gates at 05d88fd (battery): test-qwen38 (with the new test-qwen38-repl),
+MTP, speculative, fast-kernels and compare in both modes, G3 scaled 2.08e-7,
+`Q38_REF_KERNELS=1` logits bit-identical to the R0 oracle (360acf0),
+default 4.95e-5 argmax 9/9 — all as at the R2 close. A recorded real
+session (`bench/qwen38_terminal_20261101/transcript.md`) covers every
+command, Ctrl+C mid-reply and `/think`; it exposed one bug, fixed in
+3fa96fb: on a piped stdout, command output (fully buffered) appeared one
+turn late; the chat now flushes after each command (new test). README
+shows the short form.
+
+### T-R2.6 — `picoforge bench`
+
+`picoforge bench [short-form options]` runs the ordinary one-shot request
+with the protocol defaults (3 warm-up, 20 measured, 128 new tokens, a fixed
+story prompt unless one is given), discards the text and prints median and
+p10/p90 of prefill tok/s, decode tok/s and TTFT (`src/qwen38_bench.c`,
+linear-interpolation quantiles as numpy). `--bench-csv F` keeps the raw
+rows. GB/s against 307 only with `--weight-mb MB`, the weight bytes per
+token measured by a profile summary (6104.78 MB for Flash-Next Q2 in
+`bench/qwen38_r2_20261030/*/summary`); the engine never guesses it, and it
+is refused with `--mtp` (two rows per weight read). Test: the printed
+quantiles equal numpy's on the CSV rows. Real, battery, 1+3 runs (NOT the
+protocol): decode 24.37 tok/s median (R2 close: 24.15), 148.8 GB/s = 48.5%
+of 307; with `--mtp` on this story prompt 18.27 tok/s, slower than plain
+(low draft acceptance on free text; on a counting chat MTP gave ~30 vs
+23.7). That is R4's subject (adaptive MTP), not changed here.
+
+### T-R2.5 — `-m`/`-p`, `$PICOFORGE_MODEL`, `/think`, grey reasoning
+
+Short form as `./ds4`: `picoforge [-m FILE] [-p TEXT] [-c N] [-n N] [--mtp]`,
+rewritten to the long form (`-p` is `--chat`, no `-p` is the chat). The
+model defaults to `$PICOFORGE_MODEL`; a bare `./picoforge` keeps its old
+meaning (Qwen3-0.6B) unless that is set, so no existing path changes.
+`/think` and `/nothink` switch reasoning for the next turns: later turns
+render one user message with effort "medium", which emits no system block,
+so nothing is inserted mid-conversation. In the chat the `<think>` tags
+are dropped and the reasoning is grey on a terminal (idea from ds4
+fc80bd6, MIT, ds4_cli.c:token_printer_process; a tag split across tokens
+waits in an 8-byte buffer). Tests: short form == long form, the env
+default, the three generation prompts of a /think//nothink chat. Real:
+`-p` and `-p --mtp` give the same answer; a /think turn reasons, then
+answers.
+
+### T-R2.4 — `/read FILE`, `/ctx N`, `/reset`
+
+`/read` sends a text file (<= 4 MiB, NUL-free; the renderer checks UTF-8)
+as one message; errors are reported and the chat goes on. `/ctx N`
+destroys the graph first and builds one for N tokens (peak memory does not
+double; the weights stay mapped), which starts a new conversation, as ds4's
+`/ctx` does. `/reset` zeroes the graph and the transcript. Tests: a file
+gives the same IDs as the typed text; after `/ctx` or `/reset` (also with
+`--mtp`) the next turn equals a fresh chat. Real Flash-Next Q2: `/read` of
+a note summarized, `/ctx 2048` (graph 1096.6 MiB vs 1207.6 at 4096), and
+the next turn knows nothing of the old conversation.
+
+### T-R2.3 — Ctrl+C stops the reply, not the program
+
+SIGINT only raises the cooperative stop flag that `q38_turn()` checks
+between appends (like SIGUSR1). `SA_RESTART` keeps stdout writes and the
+line read free of EINTR; at the prompt the terminal already drops the typed
+line and the handler redraws the prompt with `write()`. A cut reply stays in
+the transcript and the next turn closes it with `<|im_end|>\n`. A stop before
+the first token drops the user turn too (as ds4); the graph is then ahead
+of the transcript, so the next turn replays from 0. Tests: Ctrl+C mid-reply
+(plain and `--mtp`): one `[interrupted]`, the next reply equals a fresh run
+of the same IDs; Ctrl+C in the prefill drops the turn. Real Flash-Next Q2:
+a long story cut after ~70 tokens, then "what was the story about?" answers
+about the cut story.
+
+### T-R2.2 — the interactive chat, with the cache kept between turns
+
+`picoforge --qwen38 FILE` with no prompt opens a chat (`src/qwen38_repl.c`;
+shape from ds4 fc80bd6, MIT, ds4_cli.c:run_repl/run_chat_turn). The
+conversation is an array of token IDs and the graph always holds a prefix
+of it. A turn renders only its own suffix (close the previous reply with
+`<|im_end|>\n` unless it already ended on it, then one user message), so the
+model's reply is never re-tokenized. GDN state cannot rewind, so anything
+inconsistent (the graph ahead of the transcript, the MTP predictor behind
+the last append) means reset + replay. The MTP predictor is caught up at a
+turn boundary by pairing the last append's pending rows with the IDs that
+follow. Oracle (`tests/test_qwen38_repl.py`): a reply after three turns of
+reuse equals a fresh one-shot run of the same IDs; `--mtp` gives the same
+transcript. Real Flash-Next Q2 (battery): two turns answer in context,
+plain and `--mtp` transcripts identical (161 IDs), generation 23.7 vs
+~30 t/s.
+
+### T-R2.1 — one request is now `q38_turn()`
+
+The prefill + greedy/MTP decode loop moved out of `qwen38_cli()` into
+`q38_turn()` (`src/qwen38_run.h`), so the REPL can drive the same code. Every
+trunk append goes through one `append()` helper (profile row, stats, and the
+length of the last append, which the REPL needs to catch the MTP predictor
+up between turns). Same graph calls in the same order: generated IDs on the
+synthetic model identical before/after (plain and `--mtp`), test-qwen38-cli
+7/7, session tests green, a real `--chat` run on Flash-Next Q2 answers.
+
 ## R2 — close the gap to DwarfStar, short prompt and 8K (from 2026-10-28)
 
 Target (ruling R44): >= 0.80x DwarfStar on the short prompt and >= 0.60x at

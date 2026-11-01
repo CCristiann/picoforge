@@ -36,6 +36,10 @@ test-qwen38-cli: picoforge build/qwen38-g1/test_forward build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_cli.py -v
 .PHONY: test-qwen38-cli
 
+test-qwen38-repl: picoforge build/qwen38-g2/cli.gguf
+	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_repl.py -v
+.PHONY: test-qwen38-repl
+
 # Explicit, heavyweight real-checkpoint gate. Never part of the tiny suite.
 # G3_OUTPUT must name a fresh directory; the script retains failed evidence.
 G3_OUTPUT ?= build/qwen38-g3

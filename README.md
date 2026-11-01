@@ -37,11 +37,18 @@ make ui                       # local UI at http://127.0.0.1:8000
 Qwen3.8 runs from its GGUF file (8K context, greedy, thinking off by default):
 
 ```sh
-tools/venv/bin/python tools/qwen38_gpu_lock.py -- \
-  ./picoforge --qwen38 models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf \
-  --chat "What is 2 + 2?" --max-new 32
-make ui-qwen38                # resident chat at http://127.0.0.1:8001
+export PICOFORGE_MODEL=models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+./picoforge                   # interactive chat: /help /read FILE /ctx N /think /quit, Ctrl+C stops a reply
+./picoforge -p "What is 2 + 2?" -n 32 [--mtp]   # one answer, then exit
+./picoforge bench             # 3 warm-up + 20 runs: median, p10/p90 tok/s
+make ui-qwen38                # resident chat at http://127.0.0.1:8001 (secondary)
 ```
+
+The long form `./picoforge --qwen38 FILE [--chat TEXT ...]` keeps every
+measurement flag. Never run two processes with the checkpoint loaded at once
+(the UI counts): ~45 GiB of wired pages are released for ~1.5 s after exit,
+and mapping the file again in that window froze this Mac twice. Scripted
+real runs go through `tools/qwen38_gpu_lock.py` and the guarded launcher.
 
 Useful flags: `--mtp` (multi-token prediction with exact greedy verification),
 `--thinking`, `--complete TEXT`, `--logits FILE.f32`, `--token-ids FILE.json`.

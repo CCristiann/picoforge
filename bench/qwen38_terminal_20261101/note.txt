@@ -1,0 +1,2 @@
+Summarize this note in one sentence:
+picoforge is a small C and Metal inference engine for Apple Silicon. It runs Qwen3.8 Flash-Next Q2 from the terminal and checks every fast kernel against a reference oracle.
