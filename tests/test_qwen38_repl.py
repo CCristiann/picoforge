@@ -1,5 +1,6 @@
 """Qwen3.8 interactive chat: multi-turn KV reuse against a fresh one-shot run."""
 import json
+import os
 import signal
 import time
 from pathlib import Path
@@ -111,6 +112,33 @@ class ReplTests(unittest.TestCase):
         done, state = self.repl(['first', '/reset', 'hello from a file'], '--mtp')
         self.assertEqual(state['ids'], fresh['ids'])
         self.assertEqual(state['kv'], len(fresh['ids']) - 1)
+
+    def test_thinking_toggle(self):
+        _, state = self.repl(['plain', '/think', 'reason', '/nothink', 'plain again'])
+        ids = state['ids']
+        prompts = [ids[i + 11:i + 15] for i in range(len(ids) - 14)
+                   if ids[i:i + 10] == [257, 97, 115, 115, 105, 115, 116, 97, 110, 116]]
+        # <think>\n\n</think> when off; an open <think>\n when on. No system block later.
+        closed = [280, 10, 10, 281]
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual((prompts[0], prompts[2]), (closed, closed))
+        self.assertEqual(prompts[1][:2], [280, 10]); self.assertNotEqual(prompts[1], closed)
+        self.assertEqual(ids[:4], [257, 117, 115, 101])
+
+    def test_short_form(self):
+        long = subprocess.run([ENGINE, '--qwen38', str(GGUF), '--chat', 'hi', '--context', '64', '--max-new', '4'],
+                              cwd=ROOT, capture_output=True, check=True)
+        short = subprocess.run([ENGINE, '-m', str(GGUF), '-p', 'hi', '-c', '64', '-n', '4'],
+                               cwd=ROOT, capture_output=True, check=True)
+        self.assertEqual(short.stdout, long.stdout)
+        env = dict(os.environ, PICOFORGE_MODEL=str(GGUF))
+        chat = subprocess.run([ENGINE, '-c', '64', '-n', '4'], cwd=ROOT, input=b'hi\n', env=env,
+                              capture_output=True, check=True)
+        self.assertEqual(chat.stdout, long.stdout)
+        env.pop('PICOFORGE_MODEL')
+        none = subprocess.run([ENGINE, '-p', 'hi'], cwd=ROOT, env=env, capture_output=True)
+        self.assertNotEqual(none.returncode, 0)
+        self.assertIn(b'no model', none.stderr)
 
 if __name__ == '__main__':
     unittest.main()

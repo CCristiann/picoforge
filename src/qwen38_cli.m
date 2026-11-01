@@ -33,6 +33,8 @@ static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what
 static void usage(void) {
     fprintf(stderr,"usage: picoforge --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
         "       (no prompt: interactive chat; /help inside)\n"
+        "   or: picoforge [-m FILE] [-p TEXT] [-c CONTEXT] [-n MAX_NEW] [--mtp] [--thinking] ...\n"
+        "       (FILE defaults to $PICOFORGE_MODEL; -p is --chat, no -p is the chat)\n"
         "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
@@ -268,6 +270,29 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
     r->y=(Qwen38F32Mut){.data=r->logits,.capacity_bytes=bytes,.rank=2,.dim={1,vocab},.stride_bytes={(size_t)vocab*4,4}};
     if (r->decoder) qwen38_decoder_reset(r->decoder);
     else q38_check(qwen38_decoder_create(r->tok,true,&r->decoder,&e),&e);
+}
+/* ds4-style short form (`./ds4 -p ...`): -m FILE, -p TEXT, -c N, -n N, the rest
+ * as in the long form. The model defaults to $PICOFORGE_MODEL. A bare
+ * ./picoforge keeps its old meaning (Qwen3-0.6B) unless that is set. */
+bool qwen38_short_form(int argc,char **argv) {
+    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--thinking",NULL};
+    if (argc==1) return getenv("PICOFORGE_MODEL")!=NULL;
+    for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
+    return false;
+}
+int qwen38_short(int argc,char **argv) {
+    const char *model=getenv("PICOFORGE_MODEL"); char **out=calloc((size_t)argc+3,sizeof *out); int n=3;
+    if (!out) die("argument allocation");
+    for (int i=1;i<argc;i++) {
+        const char *a=argv[i],*as=!strcmp(a,"-p") ? "--chat" : !strcmp(a,"-c") ? "--context" : !strcmp(a,"-n") ? "--max-new" : NULL;
+        if ((as || !strcmp(a,"-m")) && i+1==argc) die("missing value for %s",a);
+        if (!strcmp(a,"-m")) model=argv[++i];
+        else if (as) { out[n++]=(char *)as; out[n++]=argv[++i]; }
+        else out[n++]=argv[i];
+    }
+    if (!model) die("no model: pass -m FILE.gguf or set PICOFORGE_MODEL");
+    out[0]=argv[0]; out[1]="--qwen38"; out[2]=(char *)model;
+    int rc=qwen38_cli(n,out); free(out); return rc;
 }
 int qwen38_cli(int argc,char **argv) {
     double entered=q38_now();

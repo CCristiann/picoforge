@@ -8,6 +8,22 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### T-R2.5 — `-m`/`-p`, `$PICOFORGE_MODEL`, `/think`, grey reasoning
+
+Short form as `./ds4`: `picoforge [-m FILE] [-p TEXT] [-c N] [-n N] [--mtp]`,
+rewritten to the long form (`-p` is `--chat`, no `-p` is the chat). The
+model defaults to `$PICOFORGE_MODEL`; a bare `./picoforge` keeps its old
+meaning (Qwen3-0.6B) unless that is set, so no existing path changes.
+`/think` and `/nothink` switch reasoning for the next turns: later turns
+render one user message with effort "medium", which emits no system block,
+so nothing is inserted mid-conversation. In the chat the `<think>` tags
+are dropped and the reasoning is grey on a terminal (idea from ds4
+fc80bd6, MIT, ds4_cli.c:token_printer_process; a tag split across tokens
+waits in an 8-byte buffer). Tests: short form == long form, the env
+default, the three generation prompts of a /think//nothink chat. Real:
+`-p` and `-p --mtp` give the same answer; a /think turn reasons, then
+answers.
+
 ### T-R2.4 — `/read FILE`, `/ctx N`, `/reset`
 
 `/read` sends a text file (<= 4 MiB, NUL-free; the renderer checks UTF-8)

@@ -29,6 +29,7 @@ static void help(void) {
          "  /read FILE     Send a text file as your message.\n"
          "  /ctx N         New context size (clears the conversation).\n"
          "  /reset         Start a new conversation.\n"
+         "  /think, /nothink  Reasoning on or off for the next turns.\n"
          "  /quit, /exit   Leave (Ctrl+D too).\n"
          "  Ctrl+C         Stop the reply and come back here.\n"
          "Anything else is your next chat message.");
@@ -75,6 +76,33 @@ static size_t user_turn(Chat *ch, const char *text) {
     }
     return count;
 }
+/* Reply text: the <think>/</think> tags are dropped and the reasoning is
+ * grey on a terminal (idea from ds4 fc80bd6, MIT, ds4_cli.c:token_printer_process).
+ * A tag can arrive split across tokens, so a possible prefix waits. */
+typedef struct { bool color, in_think, newline; char pending[8]; size_t n; } Printer;
+static const char think_open[]="<think>",think_close[]="</think>";
+static bool tag_prefix(const char *p, size_t n) {
+    return (n<=7 && !memcmp(p,think_open,n)) || (n<=8 && !memcmp(p,think_close,n));
+}
+static void shade(Printer *p, bool think) {
+    if (p->color && think!=p->in_think) fputs(think ? "\x1b[90m" : "\x1b[0m",stdout);
+    p->in_think=think;
+}
+static void print_text(void *ctx, const uint8_t *s, size_t len) {
+    Printer *p=ctx;
+    for (size_t i=0;i<len;i++) {
+        p->pending[p->n++]=(char)s[i];
+        if (p->n==7 && !memcmp(p->pending,think_open,7)) { shade(p,true); p->n=0; }
+        else if (p->n==8 && !memcmp(p->pending,think_close,8)) {
+            shade(p,false); if (!p->newline) fputc('\n',stdout);
+            p->newline=true; p->n=0;
+        }
+        while (p->n && !tag_prefix(p->pending,p->n)) {
+            p->newline=p->pending[0]=='\n'; fputc(p->pending[0],stdout); memmove(p->pending,p->pending+1,--p->n);
+        }
+    }
+}
+static void print_end(Printer *p) { fwrite(p->pending,1,p->n,stdout); p->n=0; shade(p,false); fflush(stdout); }
 /* Prefill what the graph does not hold yet, then decode the reply. */
 static void reply(Chat *ch, size_t added) {
     Q38Run *r=ch->r; Qwen38Error e; size_t total=ch->n+added;
@@ -91,8 +119,10 @@ static void reply(Chat *ch, size_t added) {
     }
     size_t room=r->capacity-total; uint32_t max_new=ch->max_new && ch->max_new<room ? ch->max_new : (uint32_t)room;
     Q38Turn t; q38_stopped=0; qwen38_decoder_reset(r->decoder);
+    Printer printer={.color=isatty(STDOUT_FILENO)}; shade(&printer,ch->thinking);
     q38_turn(r,ch->ids+pos,total-pos,(Q38TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=max_new,
-        .stop_after=UINT32_MAX},ch->generated,&t);
+        .stop_after=UINT32_MAX,.print=print_text,.print_ctx=&printer},ch->generated,&t);
+    print_end(&printer); fputc('\n',stdout);
     /* Stopped before the first token: drop the user turn too (as ds4). The
      * graph is then ahead of the transcript, so the next turn replays. */
     bool cancelled=!strcmp(t.reason,"cancelled");
@@ -153,6 +183,9 @@ int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
         if (!*cmd) continue;
         if (!strcmp(cmd,"/help")) help();
         else if (!strcmp(cmd,"/quit") || !strcmp(cmd,"/exit")) break;
+        else if (!strcmp(cmd,"/think") || !strcmp(cmd,"/nothink")) {
+            ch.thinking=!strcmp(cmd,"/think"); printf("Thinking %s.\n",ch.thinking ? "on" : "off");
+        }
         else if (!strcmp(cmd,"/reset")) { forget(&ch); puts("New conversation."); }
         else if (!strncmp(cmd,"/ctx",4) && (!cmd[4] || isspace((unsigned char)cmd[4]))) resize(&ch,trim(cmd+4));
         else if (!strncmp(cmd,"/read",5) && (!cmd[5] || isspace((unsigned char)cmd[5]))) {
