@@ -8,6 +8,18 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### T-R2.7 — stage closed: `./picoforge` is the daily terminal
+
+Gates at 05d88fd (battery): test-qwen38 (with the new test-qwen38-repl),
+MTP, speculative, fast-kernels and compare in both modes, G3 scaled 2.08e-7,
+`Q38_REF_KERNELS=1` logits bit-identical to the R0 oracle (360acf0),
+default 4.95e-5 argmax 9/9 — all as at the R2 close. A recorded real
+session (`bench/qwen38_terminal_20261101/transcript.md`) covers every
+command, Ctrl+C mid-reply and `/think`; it exposed one bug, fixed in
+3fa96fb: on a piped stdout, command output (fully buffered) appeared one
+turn late; the chat now flushes after each command (new test). README
+shows the short form.
+
 ### T-R2.6 — `picoforge bench`
 
 `picoforge bench [short-form options]` runs the ordinary one-shot request
