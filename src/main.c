@@ -53,6 +53,7 @@ static void fingerprint(const SafeTensors *st, const char *name, int n) {
 int main(int argc, char **argv) {
     if (argc > 1 && !strcmp(argv[1], "--qwen38")) return qwen38_cli(argc, argv);
     if (qwen38_short_form(argc, argv)) return qwen38_short(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "bench")) return qwen38_bench(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "--inspect-gguf")) {
         if (argc != 3) die("usage: picoforge --inspect-gguf FILE");
         Gguf g;

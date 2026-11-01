@@ -8,6 +8,23 @@ Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
 interactive multi-turn chat in the terminal, `-p`, `--mtp`, a bench command.
 The decode path is not touched: only host orchestration. Newest first.
 
+### T-R2.6 — `picoforge bench`
+
+`picoforge bench [short-form options]` runs the ordinary one-shot request
+with the protocol defaults (3 warm-up, 20 measured, 128 new tokens, a fixed
+story prompt unless one is given), discards the text and prints median and
+p10/p90 of prefill tok/s, decode tok/s and TTFT (`src/qwen38_bench.c`,
+linear-interpolation quantiles as numpy). `--bench-csv F` keeps the raw
+rows. GB/s against 307 only with `--weight-mb MB`, the weight bytes per
+token measured by a profile summary (6104.78 MB for Flash-Next Q2 in
+`bench/qwen38_r2_20261030/*/summary`); the engine never guesses it, and it
+is refused with `--mtp` (two rows per weight read). Test: the printed
+quantiles equal numpy's on the CSV rows. Real, battery, 1+3 runs (NOT the
+protocol): decode 24.37 tok/s median (R2 close: 24.15), 148.8 GB/s = 48.5%
+of 307; with `--mtp` on this story prompt 18.27 tok/s, slower than plain
+(low draft acceptance on free text; on a counting chat MTP gave ~30 vs
+23.7). That is R4's subject (adaptive MTP), not changed here.
+
 ### T-R2.5 — `-m`/`-p`, `$PICOFORGE_MODEL`, `/think`, grey reasoning
 
 Short form as `./ds4`: `picoforge [-m FILE] [-p TEXT] [-c N] [-n N] [--mtp]`,

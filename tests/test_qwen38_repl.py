@@ -1,4 +1,4 @@
-"""Qwen3.8 interactive chat: multi-turn KV reuse against a fresh one-shot run."""
+"""Qwen3.8 terminal: the interactive chat (KV reuse against a fresh one-shot run) and bench."""
 import json
 import os
 import signal
@@ -139,6 +139,30 @@ class ReplTests(unittest.TestCase):
         none = subprocess.run([ENGINE, '-p', 'hi'], cwd=ROOT, env=env, capture_output=True)
         self.assertNotEqual(none.returncode, 0)
         self.assertIn(b'no model', none.stderr)
+
+class BenchTests(unittest.TestCase):
+    def test_summary_matches_the_raw_rows(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
+            csv = Path(directory) / 'bench.csv'
+            done = subprocess.run([ENGINE, 'bench', '-m', str(GGUF), '-c', '128', '-n', '8', '--bench-csv', str(csv)],
+                                  cwd=ROOT, capture_output=True, check=True)
+            rows = np.genfromtxt(csv, delimiter=',', names=True)
+        out = done.stdout.decode()
+        self.assertIn('bench: 20 runs (+3 warm-up)', out)       # protocol defaults
+        self.assertEqual(len(rows), 20)
+        self.assertNotIn('lighthouse', out)                      # generated text is discarded
+        table = {l[:16].strip(): [float(x) for x in l[16:].split()] for l in out.splitlines()[2:5]}
+        for name, values in (('prefill tok/s', rows['prompt_tokens'] / rows['prefill_s']),
+                             ('decode tok/s', rows['decode_tokens'] / rows['decode_s']), ('ttft s', rows['ttft_s'])):
+            expected = [np.percentile(values, q) for q in (50, 10, 90)]
+            np.testing.assert_allclose(table[name], expected, rtol=1e-3, atol=1e-4)
+
+    def test_admission(self):
+        for args in (['--qwen38', str(GGUF), '--chat', 'x', '--weight-mb', '1'],
+                     ['bench', '-m', str(GGUF), '--weight-mb', '-3'], ['bench', '-m', str(GGUF), '--mtp', '--weight-mb', '6000'], ['bench', '-m', str(GGUF), '--session']):
+            done = subprocess.run([ENGINE, *args], cwd=ROOT, capture_output=True)
+            self.assertNotEqual(done.returncode, 0, args)
 
 if __name__ == '__main__':
     unittest.main()

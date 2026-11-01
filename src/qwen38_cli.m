@@ -294,20 +294,37 @@ int qwen38_short(int argc,char **argv) {
     out[0]=argv[0]; out[1]="--qwen38"; out[2]=(char *)model;
     int rc=qwen38_cli(n,out); free(out); return rc;
 }
+/* `picoforge bench [short-form options]`: protocol defaults (3 warm-up, 20
+ * measured, 128 new tokens), a fixed prompt unless one is given; generated
+ * text is discarded, the summary goes to stdout. Later options win. */
+static void discard(void *ctx,const uint8_t *s,size_t n) { (void)ctx; (void)s; (void)n; }
+int qwen38_bench(int argc,char **argv) {
+    static const char *const prompts[]={"-p","--chat","--chat-file","--complete","--complete-file","--tokens",NULL};
+    bool has_prompt=false;
+    for (int i=2;i<argc;i++) for (size_t j=0;prompts[j];j++) if (!strcmp(argv[i],prompts[j])) has_prompt=true;
+    char **out=calloc((size_t)argc+12,sizeof *out); int n=0; if (!out) die("argument allocation");
+    const char *defaults[]={"--bench","--warmup","3","--repeat","20","-n","128"};
+    out[n++]=argv[0];
+    for (size_t i=0;i<sizeof defaults/sizeof *defaults;i++) out[n++]=(char *)defaults[i];
+    if (!has_prompt) { out[n++]="-p"; out[n++]="Write a long story about a lighthouse keeper."; }
+    for (int i=2;i<argc;i++) out[n++]=argv[i];
+    int rc=qwen38_short(n,out); free(out); return rc;
+}
 int qwen38_cli(int argc,char **argv) {
     double entered=q38_now();
     if (argc==3 && !strcmp(argv[2],"--help")) { usage(); return 0; }
     if (argc<3) { usage(); return 2; }
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
-    const char *runs_path=NULL,*profile_path=NULL; char *owned_input=NULL;
+    const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
-    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false;
+    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false;
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
         if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
         if (!strcmp(opt,"--thinking")) { thinking=true; continue; }
         if (!strcmp(opt,"--encode-only")) { encode_only=true; continue; }
+        if (!strcmp(opt,"--bench")) { bench=true; continue; }
         if (i+1==argc) die("missing value for %s",opt);
         const char *value=argv[++i];
         if (!strcmp(opt,"--chat") || !strcmp(opt,"--complete") || !strcmp(opt,"--tokens") ||
@@ -326,6 +343,11 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
         else if (!strcmp(opt,"--profile")) profile_path=value;
         else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,32768,opt);
+        else if (!strcmp(opt,"--bench-csv")) bench_csv=value;
+        else if (!strcmp(opt,"--weight-mb")) {
+            char *end; errno=0; weight_mb=strtod(value,&end);
+            if (errno || end==value || *end || !(weight_mb>0 && weight_mb<1e6)) die("--weight-mb must be a positive number of MB");
+        }
         else die("unknown Qwen3.8 option %s",opt);
     }
     /* No prompt: the interactive chat. It owns its turns, so the measurement
@@ -335,6 +357,9 @@ int qwen38_cli(int argc,char **argv) {
                  stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --thinking, --token-ids");
     if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
+    if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
+    if (weight_mb>0 && mtp) die("--weight-mb assumes one weight read per token; MTP verifies two rows per read");
+    if (bench && (session || !mode || encode_only)) die("bench needs a prompt and measures a one-shot run");
     if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
     if (!strcmp(mode,"--chat-file") || !strcmp(mode,"--complete-file")) {
         owned_input=read_prompt(input); input=owned_input;
@@ -346,6 +371,10 @@ int qwen38_cli(int argc,char **argv) {
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
     FILE *runs=runs_path ? fopen(runs_path,"wx") : NULL;
     if (runs_path && !runs) die("runs output must be a new file");
+    FILE *bench_out=bench_csv ? fopen(bench_csv,"wx") : NULL;
+    if (bench_csv && !bench_out) die("bench CSV must be a new file");
+    Q38BenchRow *bench_rows=bench ? calloc(repeat,sizeof *bench_rows) : NULL; size_t bench_n=0;
+    if (bench && !bench_rows) die("bench allocation");
     FILE *profile_csv=profile_path ? fopen(profile_path,"wx") : NULL;
     if (profile_path && !profile_csv) die("profile output must be a new file");
     struct sigaction action={0}; action.sa_handler=stop_generation; action.sa_flags=SA_RESTART; sigemptyset(&action.sa_mask);
@@ -426,7 +455,7 @@ int qwen38_cli(int argc,char **argv) {
         FILE *logfile=logits_path ? fopen(logits_path,"wb") : NULL;
         if (logits_path && !logfile) die("cannot open logits output");
         Q38Turn t; q38_turn(r,tokens,count,(Q38TurnOptions){.chunk=current_chunk,.max_new=max_new,
-            .stop_after=stop_after,.forced=forced,.logfile=logfile,.session=session},generated,&t);
+            .stop_after=stop_after,.forced=forced,.logfile=logfile,.session=session,.print=bench ? discard : NULL},generated,&t);
         size_t got=t.got;
         if (logfile && fclose(logfile)) die("logits close failed");
         if (ids_path) {
@@ -439,6 +468,9 @@ int qwen38_cli(int argc,char **argv) {
         fprintf(stderr,"Qwen3.8: generated %zu tokens%s\n",got,got && qwen38_token_is_stop(tok,generated[got-1]) ? " (stop)" : "");
         fprintf(stderr,"Qwen3.8 memory: {\"metal_allocated_bytes\":%zu,\"metal_recommended_bytes\":%zu,\"graph_buffer_bytes\":%zu}\n",
             (size_t)device.currentAllocatedSize,(size_t)device.recommendedMaxWorkingSetSize,qwen38_gpu_forward_bytes(graph));
+        if (bench && repetition>=warmup) bench_rows[bench_n++]=(Q38BenchRow){count,forced ? got : got ? got-1 : 0,
+            t.prefill_end-t.prefill_start,t.first_token>0 ? t.end-t.decode_start : 0,
+            t.first_token>0 ? t.first_token-request_start : 0};
         if (runs) {
             fprintf(runs,"{\"event\":\"done\",\"repetition\":%u,\"warmup\":%s,\"load_s\":%.9f,\"reset_s\":%.9f,"
                 "\"prefill_s\":%.9f,\"decode_s\":%.9f,\"request_s\":%.9f,\"ttft_request_s\":",
@@ -464,6 +496,13 @@ int qwen38_cli(int argc,char **argv) {
             stats_json(runs,"prefill_profile",t.prefill); stats_json(runs,"decode_profile",t.decode);
             fputs("}\n",runs); fflush(runs);
         }
+        }
+        if (bench) {
+            printf("bench: %zu runs (+%u warm-up), prompt %zu tokens, context %u, chunk %u, mtp %s\n",
+                   bench_n,warmup,count,capacity,chunk,mtp ? "on" : "off");
+            q38_bench_report(bench_rows,bench_n,weight_mb);
+            if (bench_out) { q38_bench_csv(bench_out,bench_rows,bench_n); if (fclose(bench_out)) die("bench CSV write failed"); }
+            free(bench_rows);
         }
         qwen38_decoder_free(r->decoder); qwen38_gpu_forward_destroy(r->graph); qwen38_tokenizer_free(tok);
         if (!q38_profile_close(r->profile)) die("profile write failed");

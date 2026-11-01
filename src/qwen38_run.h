@@ -50,4 +50,10 @@ void q38_check(Qwen38Status, const Qwen38Error *);
 double q38_now(void);
 /* Interactive chat on stdin (src/qwen38_repl.c). max_new 0 = until stop or full context. */
 int q38_repl(Q38Run *, bool thinking, uint32_t max_new, const char *ids_path);
+/* One measured repetition of `picoforge bench` (src/qwen38_bench.c). */
+typedef struct { size_t prompt_tokens, decode_tokens; double prefill_s, decode_s, ttft_s; } Q38BenchRow;
+/* Median and p10/p90 of prefill tok/s, decode tok/s and TTFT on stdout;
+ * weight_mb > 0 (measured bytes/token, in MB) adds GB/s against 307. */
+void q38_bench_report(const Q38BenchRow *, size_t, double weight_mb);
+void q38_bench_csv(FILE *, const Q38BenchRow *, size_t);
 #endif
