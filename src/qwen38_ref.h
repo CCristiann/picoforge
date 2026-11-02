@@ -24,7 +24,7 @@ static inline bool q38_ref_token(const char *p, size_t n, const char *name) {
 /* Pure parser, separate from getenv so tests can feed any value. */
 static inline bool q38_ref_parse(const char *value, const char *family) {
     static const char *const known[] = {"linear", "indexed", "moe", "fuse",
-                                        "barrier", "claim", "argmax", "attention"};
+                                        "barrier", "claim", "argmax", "attention", "gemm"};
     if (!value || !*value || !strcmp(value, "0")) return false;
     if (!strcmp(value, "1") || !strcmp(value, "all")) return true;
     bool listed = false;

@@ -251,3 +251,158 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
     }
     if (a.norm && !tid) for (uint s = 0; s < a.k; s++) w[s] /= selected;
 }
+
+/* ---- R3.2 grouped MoE for prefill. The kernels above read an expert's rows
+ * once per (token, slot) pair, so a 1024-token chunk read each active expert
+ * ~20 times. Here the pairs are grouped by expert (counting sort) and each
+ * expert runs one GEMM over its rows: its weights are decoded once per tile.
+ * Group buffer g (uint): counts[E], cursor[E], offsets[E+1], tiles[E+1],
+ * order[pairs]; expert e owns order[offsets[e] .. offsets[e+1]) and the GEMM
+ * row tiles tiles[e] .. tiles[e+1]. The order inside an expert depends on
+ * atomics, but a GEMM row's bits do not depend on its place in the tile, so
+ * the outputs are deterministic. */
+struct GroupArgs { uint pairs, experts, tile, reserved; };
+kernel void q38_moe_group_clear(device uint *g [[buffer(0)]], constant GroupArgs &a [[buffer(1)]],
+        uint e [[thread_position_in_grid]]) {
+    if (e < a.experts) g[e] = 0;
+}
+/* An expert id past the tensor sets bit 2 and its pair joins no group. */
+kernel void q38_moe_group_count(device const uint *ids [[buffer(0)]], device atomic_uint *g [[buffer(1)]],
+        device atomic_uint *error [[buffer(2)]], constant GroupArgs &a [[buffer(3)]], uint q [[thread_position_in_grid]]) {
+    if (q >= a.pairs) return;
+    const uint e = ids[q];
+    if (e >= a.experts) { atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); return; }
+    atomic_fetch_add_explicit(g + e, 1u, memory_order_relaxed);
+}
+/* One thread: E is 512, a few microseconds. */
+kernel void q38_moe_group_scan(device uint *g [[buffer(0)]], constant GroupArgs &a [[buffer(1)]],
+        uint i [[thread_position_in_grid]]) {
+    if (i) return;
+    const uint E = a.experts;
+    device uint *cursor = g + E, *offsets = g + 2 * E, *tiles = g + 3 * E + 1;
+    uint o = 0, t = 0;
+    for (uint e = 0; e < E; e++) {
+        offsets[e] = o; tiles[e] = t; cursor[e] = o;
+        o += g[e]; t += (g[e] + a.tile - 1) / a.tile;
+    }
+    offsets[E] = o; tiles[E] = t;
+}
+kernel void q38_moe_group_scatter(device const uint *ids [[buffer(0)]], device atomic_uint *g [[buffer(1)]],
+        device uint *order [[buffer(2)]], constant GroupArgs &a [[buffer(3)]], uint q [[thread_position_in_grid]]) {
+    if (q >= a.pairs) return;
+    const uint e = ids[q];
+    if (e < a.experts) order[atomic_fetch_add_explicit(g + a.experts + e, 1u, memory_order_relaxed)] = q;
+}
+
+/* Grouped GEMM tile: GG_M rows of one expert x GG_N outputs, K in GG_K steps,
+ * 4 simdgroups of 16 rows x 32 outputs (64 rows: a decoded weight serves twice
+ * the rows of a 32-row tile; measured below in the devlog, R3.3). PAIR: gate and up together, act = silu(g) * u as
+ * the fused kernel (same q38_silu, same checks); else one matrix (down).
+ * x row of pair q: q / x_divisor; y row: q. Weights decode exactly (F), so
+ * only the order of the sums differs from the indexed kernels. */
+#define GG_M 64
+#define GG_N 32
+#define GG_K 32
+#define GG_THREADS 128
+template <typename F, bool PAIR>
+static inline void grouped(device const uchar *gw, device const uchar *uw, device const float *x, device float *y,
+        device atomic_uint *error, constant IndexedArgs &ga, constant IndexedArgs &ua, device const uint *g,
+        uint2 group, uint tid, uint sg, threadgroup float *buf) {
+    /* x and weight tiles during the K loop, then the same 16 KB stage the results. */
+    threadgroup float *xs = buf, *ws = buf + GG_M * GG_K, *cs = buf;
+    constant PackedArgs &p = ga.base, &q = ua.base;
+    const uint E = ga.experts;
+    device const uint *offsets = g + 2 * E, *tiles = g + 3 * E + 1, *order = g + 4 * E + 2;
+    const uint ti = group.y;
+    if (ti >= tiles[E]) return; /* uniform over the threadgroup, as every return below */
+    uint lo = 0, hi = E; /* the expert whose tile range holds ti: last e with tiles[e] <= ti */
+    while (hi - lo > 1) { const uint mid = (lo + hi) / 2; if (tiles[mid] <= ti) lo = mid; else hi = mid; }
+    const uint e = lo, r0 = offsets[e] + (ti - tiles[e]) * GG_M, mt = min(uint(GG_M), offsets[e + 1] - r0);
+    const ulong n0 = ulong(group.x) * GG_N;
+    if (n0 >= p.n_out) return;
+    const uint nt = uint(min(ulong(GG_N), p.n_out - n0));
+    const ulong gbase = p.weight_offset + ulong(e) * ga.expert_bytes, ubase = q.weight_offset + ulong(e) * ua.expert_bytes;
+    const ulong gl = gbase + (n0 + nt - 1) * p.row_bytes, ul = ubase + (n0 + nt - 1) * q.row_bytes;
+    if (e >= ga.experts || e >= ua.experts || gl > p.weight_end || p.row_bytes > p.weight_end - gl ||
+        (PAIR && (ul > q.weight_end || q.row_bytes > q.weight_end - ul))) {
+        if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    const uint sr = sg * 16, M = PAIR ? 2 : 1;
+    simdgroup_float8x8 acc[2][2][4];
+    for (uint m = 0; m < 2; m++)
+        for (uint i = 0; i < 2; i++)
+            for (uint j = 0; j < 4; j++) acc[m][i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    constexpr uint CPS = GG_K / F::CHUNK; /* chunks per K step: 1, or 2 for Q2_K */
+    for (uint k0 = 0; k0 < p.k_logical; k0 += GG_K) {
+        const uint kc = min(uint(GG_K), p.k_logical - k0);
+        for (uint i = tid; i < GG_M * GG_K; i += GG_THREADS) {
+            const uint r = i / GG_K, c = i % GG_K;
+            float v = 0.0f;
+            if (r < mt && c < kc) {
+                const ulong xi = ulong(order[r0 + r] / ga.x_divisor) * (p.x_stride / 4);
+                if (xi <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xi) v = x[xi + k0 + c];
+                else if (!c) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+            }
+            xs[i] = v;
+        }
+        for (uint job = tid; job < M * GG_N * CPS; job += GG_THREADS) {
+            const uint m = job / (GG_N * CPS), r = job / CPS % GG_N, j = job % CPS;
+            threadgroup float *dst = ws + (m * GG_N + r) * GG_K + j * F::CHUNK;
+            float w[F::CHUNK];
+            if (r < nt) F::decode((m ? uw + ubase + (n0 + r) * q.row_bytes : gw + gbase + (n0 + r) * p.row_bytes),
+                                  k0 / F::CHUNK + j, w);
+            for (uint i = 0; i < F::CHUNK; i++) dst[i] = r < nt && j * F::CHUNK + i < kc ? w[i] : 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk < GG_K; kk += 8) {
+            simdgroup_float8x8 a[2], b[4];
+            for (uint i = 0; i < 2; i++) simdgroup_load(a[i], xs + (sr + i * 8) * GG_K + kk, GG_K);
+            for (uint m = 0; m < M; m++) {
+                for (uint j = 0; j < 4; j++)
+                    simdgroup_load(b[j], ws + (m * GG_N + j * 8) * GG_K + kk, GG_K, ulong2(0, 0), true);
+                for (uint i = 0; i < 2; i++)
+                    for (uint j = 0; j < 4; j++) simdgroup_multiply_accumulate(acc[m][i][j], a[i], b[j], acc[m][i][j]);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (uint m = 0; m < M; m++)
+        for (uint i = 0; i < 2; i++)
+            for (uint j = 0; j < 4; j++)
+                simdgroup_store(acc[m][i][j], cs + m * GG_M * GG_N + (sr + i * 8) * GG_N + j * 8, GG_N);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < GG_M * GG_N; i += GG_THREADS) {
+        const uint r = i / GG_N, c = i % GG_N;
+        if (r >= mt || c >= nt) continue;
+        const ulong yi = ulong(order[r0 + r]) * (p.y_stride / 4) + n0 + c;
+        if (yi >= p.y_bytes / 4) { atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); continue; }
+        const float gv = cs[i];
+        if (PAIR) {
+            const float u = cs[GG_M * GG_N + i], s = q38_silu(gv), h = s * u;
+            y[yi] = h;
+            if (!isfinite(gv) || !isfinite(u) || !isfinite(s) || !isfinite(h))
+                atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        } else {
+            y[yi] = gv;
+            if (!isfinite(gv)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        }
+    }
+}
+#define GROUPED_KERNEL(name, F, PAIR) \
+kernel void name(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]], \
+        device const float *x [[buffer(2)]], device float *y [[buffer(3)]], device atomic_uint *error [[buffer(4)]], \
+        constant IndexedArgs &ga [[buffer(5)]], constant IndexedArgs &ua [[buffer(6)]], device const uint *g [[buffer(7)]], \
+        uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
+        uint sg [[simdgroup_index_in_threadgroup]]) { \
+    threadgroup float buf[2 * GG_M * GG_N]; /* >= xs + ws: GG_M*GG_K + 2*GG_N*GG_K */ \
+    grouped<F, PAIR>(gw, uw, x, y, error, ga, ua, g, group, tid, sg, buf); \
+}
+GROUPED_KERNEL(q38_moe_grouped_gate_up_iq2_xxs, Q38Iq2Xxs, true)
+GROUPED_KERNEL(q38_moe_grouped_gate_up_q2_k, Q38Q2K, true)
+GROUPED_KERNEL(q38_moe_grouped_gate_up_q4_k, Q38Q4K, true)
+GROUPED_KERNEL(q38_moe_grouped_gate_up_mxfp4, Q38Mxfp4, true)
+GROUPED_KERNEL(q38_moe_grouped_down_iq2_xxs, Q38Iq2Xxs, false)
+GROUPED_KERNEL(q38_moe_grouped_down_q2_k, Q38Q2K, false)
+GROUPED_KERNEL(q38_moe_grouped_down_q4_k, Q38Q4K, false)
+GROUPED_KERNEL(q38_moe_grouped_down_mxfp4, Q38Mxfp4, false)

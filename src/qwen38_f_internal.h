@@ -45,6 +45,7 @@ typedef struct {
      * hook may replace cmd->compute_encoder). */
     void (*mark)(void *ctx, Qwen38GpuCommand *cmd, const char *op, uint32_t type, uint64_t bytes);
     void *mark_ctx;
+    Qwen38GpuSpan group;                          /* R3.2: q38_packed_group_bytes(E, P); empty: never grouped */
 } Q38FRoutedWork;
 typedef struct Q38FRouted Q38FRouted;
 /* R1.5d parallel router (q38_moe_route_fast): one threadgroup of this many

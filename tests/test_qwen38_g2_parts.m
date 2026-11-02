@@ -126,7 +126,7 @@ static void check_moe(uint32_t layer, size_t t) {
     Q38FRoutedWork rwk = {gview(bl,0,t,c->experts), gview(bp,0,t,c->experts), gview(bw,0,t,k),
         gview(bg,0,p,i), gview(bu,0,p,i), gview(ba,0,p,i), gview(bd,0,p,h), gview(sg,0,t,s), gview(su,0,t,s),
         gview(sa,0,t,s), gview(sh,0,t,h), gview(sl,0,t,1), gview(ss,0,t,1), gview(br,0,t,h),
-        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL};
+        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL, {0}};
     /* R1.5b/c selection (Q38_REF_KERNELS read at creation, unset for the default
      * whatever the caller's environment): by default gate+up+SwiGLU and
      * down+reduce are fused (the gate/up and down scratch are never written)
@@ -267,10 +267,14 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
         qn = shared(total*h*d*4), qr = shared(total*h*d*4), gt = shared(total*h*d*4), kn = shared(total*w_kv*4),
         iqn = shared(total*w_iq*4), iqr = shared(total*w_iq*4), pl = shared(di*4), pn = shared(di*4),
         sc = shared(cap/c.ratio*4 + 4), kp = shared(cap/c.ratio*4 + 4), ids = shared((c.token_budget + c.ratio)*4),
-        bo = shared(total*h*d*4), pt = shared((size_t)Q38D_MAX_SPLITS*h*(d+2)*4);
+        bo = shared(total*h*d*4), pt = shared((size_t)Q38D_MAX_SPLITS*h*(d+2)*4),
+        /* R3.3 batched prefill scratch: appends from 32 tokens take the batch stages */
+        bsc = shared(total*(cap/c.ratio)*4 + 4), bkp = shared(total*(cap/c.ratio)*4 + 4),
+        bid = shared(total*(c.token_budget + c.ratio)*4), bpt = shared((size_t)Q38D_BATCH_SPLIT_TOKENS*Q38D_MAX_SPLITS*h*(d+2)*4),
+        bpl = shared((total/c.ratio + 1)*di*4), bpn = shared((total/c.ratio + 1)*di*4);
     memcpy(gq.contents, gamma[0], d*4); memcpy(gk.contents, gamma[1], d*4);
     memcpy(giq.contents, gamma[2], di*4); memcpy(gik.contents, gamma[3], di*4);
-    NSArray *scratch=@[kc,vc,ic,bc,qn,qr,gt,kn,iqn,iqr,pl,pn,sc,kp,ids,bo];
+    NSArray *scratch=@[kc,vc,ic,bc,qn,qr,gt,kn,iqn,iqr,pl,pn,sc,kp,ids,bo,bsc,bkp,bid,bpt,bpl,bpn];
     NSArray *inputs=@[bq,bk,bv,bi,bik,gq,gk,giq,gik];
     double errors[8]={0}; bool exact[8]={true,true,true,true,true,true,true,true},exact_ids=true,replay=true;
     for (uint64_t pass=0;pass<3;++pass) {
@@ -301,7 +305,10 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
             g3(qn, n, h, d), g3(qr, n, h, d), g3(gt, n, h, d), g3(kn, n, j, d), g3(iqn, n, hi, di), g3(iqr, n, hi, di),
             g3(pl, 1, 1, di), g3(pn, 1, 1, di), g1(sc, cap/c.ratio),
             {(__bridge void *)kp, 0, kp.length}, {(__bridge void *)ids, 0, ids.length}, g3(bo, n, h, d),
-            {(__bridge void *)pt, 0, pt.length}};  /* R2.1: the graph's split attention */
+            {(__bridge void *)pt, 0, pt.length},  /* R2.1: the graph's split attention */
+            {(__bridge void *)bsc, 0, bsc.length}, {(__bridge void *)bkp, 0, bkp.length},
+            {(__bridge void *)bid, 0, bid.length}, {(__bridge void *)bpt, 0, bpt.length},
+            g3(bpl, total/c.ratio + 1, 1, di), g3(bpn, total/c.ratio + 1, 1, di)};
         __block Qwen38Status rc = Q38_OK; __block Qwen38Error inner;
         size_t pos0 = start, count = n; Q38DGpuLayer *lp = &l;
         if (!pass && !start) qsa_admission(dg,ops,&c,lp,scratch,inputs);
@@ -332,14 +339,18 @@ static void check_qsa(uint32_t layer, size_t total, size_t chunk, uint32_t budge
         const float *cq,*cg,*ci,*cs; const uint32_t *ci_ids;
         q38d_last_query(work,&cq,&cg,&ci,&cs,&ci_ids);
         size_t end=start+n,blocks=end/c.ratio,selected=MIN(blocks,c.token_budget/c.ratio)*c.ratio+end%c.ratio;
+        /* R3.3: a batched append keeps per-token scores and ids; the last token's rows are checked */
+        const bool batched=n>=Q38D_BATCH_MIN_TOKENS;
+        const float *last_scores=batched ? (float *)bsc.contents+(n-1)*(cap/c.ratio) : (float *)sc.contents;
+        const uint32_t *last_ids=batched ? (uint32_t *)bid.contents+(n-1)*(c.token_budget+c.ratio-1) : (uint32_t *)ids.contents;
         const float *got[]={bo.contents,(float *)qr.contents+(n-1)*h*d,(float *)gt.contents+(n-1)*h*d,
-            (float *)iqr.contents+(n-1)*hi*di,kc.contents,ic.contents,bc.contents,sc.contents};
+            (float *)iqr.contents+(n-1)*hi*di,kc.contents,ic.contents,bc.contents,last_scores};
         const float *ref[]={out+start*h*d,cq,cg,ci,q38d_cache_keys(state),q38d_cache_raw_index(state),q38d_cache_blocks(state),cs};
         size_t sizes[]={n*h*d,h*d,h*d,hi*di,end*j*d,end*di,blocks*di,blocks};
         for (size_t i=0;i<8;++i) {
             errors[i]=fmax(errors[i],scaled(got[i],ref[i],sizes[i],&bitwise)); exact[i]&=bitwise;
         }
-        exact_ids &= !memcmp(ids.contents,ci_ids,selected*4);
+        exact_ids &= !memcmp(last_ids,ci_ids,selected*4);
         if (!pass) memcpy(baseline+start*h*d,bo.contents,n*h*d*4);
         else replay &= !memcmp(baseline+start*h*d,bo.contents,n*h*d*4);
     }
@@ -573,7 +584,9 @@ int main(int argc, char **argv) {
             const Qwen38Layer *kind; Qwen38Error le;
             ok(qwen38_config_layer(config, layer, &kind, &le), &le, "kind");
             check_moe(layer, 24);
-            if (kind->has_ple) { check_ple(layer,40,13); check_ple(layer,17,1); }
+            /* R3.1: whole appends stay under the 32-row GEMM threshold, so the chunk replay
+             * compares the per-row kernels bit for bit (the GEMM has its own tests). */
+            if (kind->has_ple) { check_ple(layer,31,13); check_ple(layer,17,1); }
             if (kind->kind == Q38_LAYER_QSA) {
                 check_qsa(layer,40,13,0,false);
                 check_qsa(layer,17,1,0,true);

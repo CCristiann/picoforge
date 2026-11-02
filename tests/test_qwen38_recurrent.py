@@ -4,6 +4,7 @@ import argparse
 import ctypes as ct
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -947,17 +948,25 @@ def run_composition_tests(args):
 
         def test_04_metal_composition(self):
             # Explicit opt-in below removes this test from CPU-only suites.
-            whole = None
-            for size, suffix in ((0, "whole"), (1, "token"), (7, "chunks")):
+            # R3.1: from 32 rows the linears run the GEMM (another order of the sums), so the
+            # whole/token/chunk runs are bit for bit only with Q38_REF_KERNELS=gemm; the default
+            # whole run is checked against the references below.
+            whole, base = None, None
+            gemm = dict(os.environ, Q38_REF_KERNELS="gemm")
+            for size, suffix, env in ((0, "whole", None), (0, "whole-gemm", gemm), (1, "token", gemm), (7, "chunks", gemm)):
                 out = directory / ("gpu-" + suffix)
                 out.mkdir(exist_ok=True)
                 result = subprocess.run([str(args.composed_gpu.resolve()), str(args.metallib.resolve()), "--compose", m["checkpoint"],
-                    str(m["layer"]), str(directory), str(out), str(m["tokens"]), str(size)], text=True, capture_output=True, check=True)
+                    str(m["layer"]), str(directory), str(out), str(m["tokens"]), str(size)], text=True, capture_output=True,
+                    check=True, env=env)
                 native_reports.append(dict(backend="Metal", **json.loads(result.stdout)))
                 actual = load_output(out)
-                if whole is not None:
+                if base is not None:
                     for name, value in actual.items():
-                        self.assertTrue(torch.equal(value, whole[name]), f"GPU {suffix}/{name} not bitwise equal")
+                        self.assertTrue(torch.equal(value, base[name]), f"GPU {suffix}/{name} not bitwise equal")
+                    continue
+                if whole is not None:
+                    base = actual
                     continue
                 whole = actual
                 measurements.extend(dict(scope="gpu_projection", **v) for v in oracle.composition_projection_gate(weights, actual))

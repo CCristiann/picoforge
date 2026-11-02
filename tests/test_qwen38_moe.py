@@ -538,8 +538,23 @@ class NativeForwardTests(unittest.TestCase):
                 x, weights = moe.synthetic(c,tokens=t,seed=3813+t+k)
                 with self.subTest(t=t,k=k): self.verify(c,x,weights)
         c=moe.FixtureConfig(); x,weights=moe.synthetic(c,tokens=65,seed=44)
+        # R3.1/R3.2: from 32 rows the linears and the routed experts run GEMMs, which sum in
+        # another order than the per-row kernels: the split is bit for bit only with
+        # Q38_REF_KERNELS=gemm, and within the stage tolerance on the default path.
+        spans = ((0,1),(1,8),(8,40),(40,65))
         full,_ = self.verify(c,x,weights)
-        parts = [self.verify(c,x[a:b],weights)[0] for a,b in ((0,1),(1,8),(8,40),(40,65))]
+        parts = [self.verify(c,x[a:b],weights)[0] for a,b in spans]
+        for key in full:
+            joined = np.concatenate([p[key] for p in parts])
+            if key == "ids": np.testing.assert_array_equal(full[key],joined)
+            else: np.testing.assert_allclose(full[key],joined,atol=2e-6,rtol=2e-5)
+        saved = os.environ.get("Q38_REF_KERNELS"); os.environ["Q38_REF_KERNELS"] = "gemm"
+        try:
+            full,_ = self.verify(c,x,weights)
+            parts = [self.verify(c,x[a:b],weights)[0] for a,b in spans]
+        finally:
+            if saved is None: os.environ.pop("Q38_REF_KERNELS")
+            else: os.environ["Q38_REF_KERNELS"] = saved
         for key in full: np.testing.assert_array_equal(full[key],np.concatenate([p[key] for p in parts]))
         for name in ("experts.down_proj","shared_expert.down_proj.weight","shared_expert_gate.weight"):
             changed={n:v.copy() for n,v in weights.items()}; changed[name][:]=0

@@ -309,8 +309,14 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
      * would not match the oracle indexed sequence; so does a format without a
      * row dot. Then the unfused sequence. */
     MARK("moe.gate_up",Q38_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
-    Qwen38Status fused=r->ref_moe ? Q38_UNSUPPORTED :
+    /* R3.2: a prefill-sized group of pairs runs one GEMM per expert instead
+     * (then down too, below); the per-pair kernels otherwise. */
+    const bool grouped=!r->ref_moe && w->group.buffer && q38_packed_grouped_rows(b,wl[1].gguf_type,p) &&
+        q38_packed_grouped_rows(b,wl[3].gguf_type,p) && wl[1].gguf_type==wl[2].gguf_type;
+    Qwen38Status fused=r->ref_moe ? Q38_UNSUPPORTED : grouped ?
+        q38_packed_encode_grouped_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->ids,k,x,w->act,w->group,err) :
         q38_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->ids,k,x,w->act,err);
+    if (grouped && fused==Q38_UNSUPPORTED) return q38c_error(err,Q38_GPU_ERROR,"grouped gate+up refused");
     if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     else if (fused!=Q38_UNSUPPORTED) return fused;
     else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
@@ -327,12 +333,15 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
      * a row dot), else IDX down then q38f_reduce, as before R1.5c. */
     MARK("moe.down",Q38_PROFILE_MIXED,p*wl[3].expert_bytes);
     const Q38DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed};
-    fused=r->ref_moe ? Q38_UNSUPPORTED : q38_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],w->ids,w->act,&dv,y,err);
+    fused=r->ref_moe || grouped ? Q38_UNSUPPORTED : q38_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],w->ids,w->act,&dv,y,err);
     if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     else if (fused!=Q38_UNSUPPORTED) return fused;
     else { /* the identity map is read only by q38f_reduce */
         at(enc,w->identity,0); run(enc,r->iota,p);
-        IDX(3,w->act,w->down,1);
+        if (grouped) { /* R3.2: down[pair] by expert GEMMs, then the same q38f_reduce */
+            Q38C_TRY(q38_packed_encode_grouped_down(b,&cmd,store,wb[3],&wl[3],w->ids,w->act,w->down,w->group,err));
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        } else IDX(3,w->act,w->down,1);
         FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
         at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
         at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];

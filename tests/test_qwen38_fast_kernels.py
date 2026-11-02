@@ -909,6 +909,71 @@ class FastKernelTests(unittest.TestCase):
                 _, shifted, _ = native("fast", kind, k, k, raw[1:].tobytes(), x)  # weight row j+1 becomes row j
                 np.testing.assert_array_equal(shifted.view("<u4"), full[:, 1:].view("<u4"))
 
+    # ---- R3.1 prefill GEMM: the fast path from 32 rows of x ----
+    def test_gemm_shapes_within_tolerance(self):
+        """R3.1: M >= 32 runs the GEMM; tails of M, N and K off the 32x64x32 tile meet (a) and (b)."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3830, kind)
+            shapes = [(64, 640, 640, 32), (33, 2560, 2560, 33), (130, 320, 320, 100), (5, 64, 40, 47)]
+            if kind != 8:
+                shapes += [(7, 37, 37, 40), (4, 10240, 10240, 64)]
+            for n, physical, logical, m in shapes:
+                with self.subTest(kernel=name, n=n, logical=logical, m=m):
+                    x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
+                    self.fast_case(f"gemm:{name}:N{n}:K{logical}/{physical}:M{m}", kind, physical, logical,
+                                   weight_rows(kind, physical, n, rng).tobytes(), x)
+
+    def test_gemm_real_tensors_within_tolerance(self):
+        """R3.1: every real dense slice group (router, ssm_alpha, HC, Q8_0) through the GEMM, x repeated to 40 rows."""
+        for case in [c for c in CASES if c[0].startswith("real:") and NAMES[c[1]] in ("q8_0", "f16", "f32")]:
+            label, kind, physical, logical, data, x, _ = case
+            with self.subTest(case=label):
+                self.fast_case(f"gemm-{label}:M40", kind, physical, logical, data, np.resize(x, (40, logical)))
+
+    def test_gemm_rows_bit_independent(self):
+        """R3.1: inside the GEMM a row's bits depend neither on M nor on its place in the tile."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3831, kind)
+            n, k, m = 70, 640, 75
+            raw, x = weight_rows(kind, k, n, rng), rng.uniform(-1, 1, (m, k)).astype(np.float32)
+            with self.subTest(kernel=name):
+                full = self.fast_case(f"gemm-rows:{name}:N{n}:K{k}:M{m}", kind, k, k, raw.tobytes(), x)
+                for rows in (list(range(40)), list(range(m - 1, m - 41, -1)), [3] * 33 + list(range(10))):
+                    _, y, _ = native("fast", kind, k, k, raw.tobytes(), x[rows])
+                    np.testing.assert_array_equal(y.view("<u4"), full[rows].view("<u4"))
+
+    def test_gemm_padding_and_nonfinite(self):
+        """R3.1: nonfinite K padding never reaches y; NaN/Inf in x or a used weight sets bit 1."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3832, kind)
+            n, physical, logical, m = 33, 768, 640, 40
+            raw = weight_rows(kind, physical, n, rng)
+            first = -(-logical // 32) * 32 if kind == 8 else logical
+            for column in range(first, physical, 32 if kind == 8 else 1):
+                raw = poison(kind, raw, slice(None), column, np.nan)
+            x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
+            with self.subTest(kernel=name, case="padding"):
+                self.fast_case(f"gemm-padding:{name}", kind, physical, logical, raw.tobytes(), x,
+                               view=(logical + 1, n, 0), decoded=decode_rows(kind, raw, physical))
+            clean, x = weight_rows(kind, 640, 33, rng), rng.uniform(-1, 1, (m, 640)).astype(np.float32)
+            poisoned = x.copy()
+            poisoned[35, 100] = np.inf
+            with self.subTest(kernel=name, case="nonfinite"):
+                self.assert_nonfinite("fast", 640, 640, clean.tobytes(), poisoned, "x inf", kind)
+                self.assert_nonfinite("fast", 640, 640, poison(kind, clean, 5, 96, np.nan).tobytes(), x, "w nan", kind)
+
+    def test_gemm_reference_selects_matvec(self):
+        """R3.1: Q38_REF_KERNELS=gemm keeps the matvec at any M, bit for bit as below 32 rows."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3833, kind)
+            raw, x = weight_rows(kind, 640, 33, rng).tobytes(), rng.uniform(-1, 1, (40, 640)).astype(np.float32)
+            with self.subTest(kernel=name):
+                _, matvec, _ = native("encode", kind, 640, 640, raw, x, {"Q38_REF_KERNELS": "gemm"})
+                pieces = [native("encode", kind, 640, 640, raw, x[i:i + 20])[1] for i in (0, 20)]
+                np.testing.assert_array_equal(matvec.view("<u4"), np.concatenate(pieces).view("<u4"))
+                _, gemm, _ = native("encode", kind, 640, 640, raw, x)
+                self.assertFalse(np.array_equal(gemm.view("<u4"), matvec.view("<u4")), "the GEMM did not run")
+
     def test_strided_offset_views(self):
         """Review Focus 5: pitches above K*4 and n*4 and nonzero offsets (an LM head on a slice) change no bit."""
         for name, kind in sorted(KINDS.items()):
@@ -928,7 +993,10 @@ class FastKernelTests(unittest.TestCase):
         code, ys, stderr, dispatches = run_multi(projections, x, env, view)
         self.assertEqual((code, stderr), (0, b""), label)
         fast = {p[0] for p in projections if NAMES[p[0]] in FAST} if mode == "fast" else set()
-        self.assertEqual(dispatches, len(fast) + sum(p[0] not in fast for p in projections), label)
+        gemm = mode == "fast" and x.shape[0] >= 32 and (env or {}).get("Q38_REF_KERNELS", "") in ("", "0")
+        # R3.1: from 32 rows each fast projection is its own GEMM dispatch
+        want = len(projections) if gemm else len(fast) + sum(p[0] not in fast for p in projections)
+        self.assertEqual(dispatches, want, label)
         for i, ((kind, physical, n, data), y) in enumerate(zip(projections, ys, strict=True)):
             single = mode if NAMES[kind] in FAST else "oracle"  # no fast kernel: q38_packed_encode's oracle
             _, want, _ = native(single, kind, physical, x.shape[1], data, x)
@@ -1446,6 +1514,51 @@ class FastKernelTests(unittest.TestCase):
                 with self.subTest(case=label):
                     self.gate_up_case(f"gate-up-{label}", kind, physical, logical, 1, experts, data, up,
                                       np.tile(np.arange(experts), len(x)), x, experts)
+
+    # ---- R3.2 grouped MoE: one GEMM per expert from 256 pairs ----
+    def test_grouped_gate_up_and_down_against_oracle(self):
+        """R3.2: grouped gate+up (act) and grouped down (divisor 1) meet (a) and (b) of the per-pair
+        families on 40 tokens x 10 slots over 24 experts, K off the chunk, every routed format."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3850, kind), oracle.FORMATS[kind][0]
+            for n, physical, logical, experts in ((70, 768, 640, 24), (33, 2560 if block == 256 else 96,
+                                                                       2560 if block == 256 else 72, 24)):
+                tokens, slots = 40, 10
+                ids = np.concatenate([rng.permutation(experts)[:slots] for _ in range(tokens)])
+                x = rng.uniform(-2, 2, (tokens, logical)).astype(np.float32)
+                gate, up = (quant_rows(kind, physical, experts * n, rng).tobytes() for _ in range(2))
+                label = f"grouped:{name}:N{n}:K{logical}/{physical}:T{tokens}x{slots}"
+                with self.subTest(case=label, part="gate_up"):
+                    code, act, dg, du, stderr = run_gate_up("grouped", kind, physical, logical, n, experts, gate, up, ids, x, slots)
+                    self.assertEqual((code, stderr), (0, b""), label)
+                    _, y_oracle, _, _, _ = run_gate_up("oracle", kind, physical, logical, n, experts, gate, up, ids, x, slots)
+                    ref, magnitude, flush = gate_up_fp64(dg, du, ids, x, slots, logical, n)
+                    stats = gate_up_against_fp64(act, ref, magnitude, flush, logical) | dict(vs_oracle=against_oracle(act, y_oracle, magnitude))
+                    RESULTS.setdefault(label, {})["grouped"] = stats
+                    self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+                    self.assertLessEqual(stats["vs_oracle"]["max"], TOLERANCES["kernels"]["moe_gate_up"]["tol"], label)
+                with self.subTest(case=label, part="down"):
+                    rows = rng.uniform(-2, 2, (len(ids), logical)).astype(np.float32)
+                    code, y, decoded, stderr = run_indexed("grouped", kind, physical, logical, n, experts, gate, ids, rows, 1)
+                    self.assertEqual((code, stderr), (0, b""), label)
+                    _, y_oracle, _, _ = run_indexed("oracle", kind, physical, logical, n, experts, gate, ids, rows, 1)
+                    ref, magnitude = indexed_fp64(decoded, ids, rows, 1, logical, n)
+                    stats = against_fp64(y, ref, magnitude, logical) | dict(vs_oracle=against_oracle(y, y_oracle, magnitude))
+                    self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+                    self.assertLessEqual(stats["vs_oracle"]["max"], TOLERANCES["kernels"][name]["tol"], label)
+                    # bits of a pair do not depend on the others (group sizes, tile places)
+                    keep = np.arange(len(ids)) < 300
+                    _, part, _, _ = run_indexed("grouped", kind, physical, logical, n, experts, gate, ids[keep], rows[keep], 1)
+                    np.testing.assert_array_equal(part.view("<u4"), y[keep].view("<u4"), label)
+
+    def test_grouped_refused_below_threshold_and_under_reference(self):
+        """R3.2: fewer than 256 pairs, or Q38_REF_KERNELS=indexed / gemm: UNSUPPORTED, nothing encoded."""
+        kind, rng = 16, seeded(3851, 16)
+        data = quant_rows(kind, 256, 4 * 8, rng).tobytes()
+        for rows, env in ((255, None), (400, {"Q38_REF_KERNELS": "indexed"}), (400, {"Q38_REF_KERNELS": "gemm"})):
+            with self.subTest(rows=rows, env=env):
+                ids, x = rng.integers(0, 4, rows), rng.uniform(-1, 1, (rows, 256)).astype(np.float32)
+                self.assertEqual(run_indexed("grouped", kind, 256, 256, 8, 4, data, ids, x, 1, env)[0], UNSUPPORTED)
 
     def test_logical_k_padding_gate_up(self):
         """Review Focus 2 (gate+up): poisoned padding past k_logical (the 256-column
