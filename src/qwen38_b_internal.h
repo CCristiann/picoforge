@@ -136,6 +136,10 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *up, const Q38PackedLayout *up_layout, size_t streams,
     Qwen38GpuF32 low, Qwen38GpuF32 normed, Qwen38GpuF32 il, Qwen38GpuF32 act, Qwen38GpuF32 gate,
     Qwen38GpuF32 mixed, Qwen38GpuF32 inject, Qwen38Error *);
+/* R3.1: true when a linear of this GGUF type over this many rows of x runs the
+ * prefill GEMM (then the HC tail answers UNSUPPORTED and the caller, which
+ * opens profile groups before encoding, takes the sequence directly). */
+bool q38_packed_gemm_rows(const Q38PackedGpu *, uint32_t gguf_type, size_t rows);
 /* R1.4 multi-GEMV: count (1..Q38_MULTI_MAX) projections of the same x, each
  * with q38_packed_encode's admission (expert 0). One dispatch per format;
  * every y[i] is bit-identical to q38_packed_encode_fast(bindings[i], x, y[i]).

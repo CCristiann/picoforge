@@ -423,7 +423,9 @@ static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t l
     if (hc->inject.binding)
         TRY(linears(f,cmd,layer,n[1],(G2Weight[]){hc->down,hc->inject},2,V(normed),(Qwen38GpuF32[]){V(low),V(il)},e));
     else TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
-    { /* R2.6: low, up, read and inject in one dispatch, bit-identical; the sequence when unsupported */
+    if (!q38_packed_gemm_rows(f->b,hc->up.binding->tensor.type,t)) {
+        /* R2.6: low, up, read and inject in one dispatch, bit-identical; the sequence when
+         * unsupported. R3.1: a prefill (GEMM rows) goes straight to the sequence. */
         MARK(layer,n[3],hc->up.binding->tensor.type,hc->up.binding->tensor.bytes);
         bool inj=hc->inject.binding!=NULL; const Qwen38GpuF32 none={0};
         Qwen38Status status=q38_packed_encode_hc_tail(f->b,cmd,f->store,hc->up.binding,&hc->up.layout,f->c.hc.streams,

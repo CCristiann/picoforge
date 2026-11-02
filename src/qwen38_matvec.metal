@@ -419,3 +419,108 @@ kernel void q38_hc_tail_f16(device const uchar *weights [[buffer(0)]], device co
     }
     if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
 }
+
+/* R3.1 prefill GEMM: Y[m,n] = sum_k W[n,k] X[m,k] for many rows of x at once.
+ * The matvecs above reread the whole matrix every Q8_T/DENSE_T rows, so a
+ * 1024-row chunk read each weight ~256 times. Here a threadgroup of 4
+ * simdgroups owns a GEMM_M x GEMM_N tile of Y and walks K in GEMM_K steps:
+ * it decodes GEMM_N weight rows to FP32 into threadgroup memory once and
+ * reuses them for GEMM_M rows of x, with 8x8 FP32 simdgroup matrix products.
+ * Every weight still decodes exactly (as the matvecs), so only the order of
+ * the sum changes; it depends on K alone, never on M or on the row's place
+ * in the tile (padding adds +0 products). Used from GEMM_MIN_ROWS rows of x
+ * (qwen38_packed_gpu.m); below, decode and MTP keep the matvecs bit for bit. */
+#define GEMM_M 32
+#define GEMM_N 64
+#define GEMM_K 32
+#define GEMM_THREADS 128
+
+/* Weight (n, c) of a dense row as FP32: F16 through the hardware conversion
+ * on a 2-byte aligned row (exact, subnormals included, as dense_chunk), else
+ * byte by byte; F32 is its bits. */
+template <uint TYPE>
+static inline float gemm_dense(device const uchar *row, bool aligned, uint c) {
+    if (TYPE == 1) return aligned ? float(as_type<half>(((device const ushort *)row)[c])) : q38_fp16(row + 2 * c);
+    device const uchar *q = row + 4 * c;
+    return as_type<float>(uint(q[0]) | (uint(q[1]) << 8) | (uint(q[2]) << 16) | (uint(q[3]) << 24));
+}
+
+template <uint TYPE>
+static inline void gemm(device const uchar *weights, device const float *x, device float *y,
+        device atomic_uint *error, constant PackedArgs &p, uint2 group, uint tid, uint sg,
+        threadgroup float *xs, threadgroup float *ws, threadgroup float *cs) {
+    const ulong n0 = ulong(group.x) * GEMM_N, m0 = ulong(group.y) * GEMM_M;
+    if (n0 >= p.n_out || m0 >= p.rows) return; /* uniform over the threadgroup, as every return below */
+    const uint nt = uint(min(ulong(GEMM_N), p.n_out - n0)), mt = uint(min(ulong(GEMM_M), p.rows - m0));
+    /* Bounds as the matvecs, on the tile's last weight row, x row and y
+     * element: offsets grow with n and m, so the rest lie inside too. */
+    const ulong last = p.weight_offset + (n0 + nt - 1) * p.row_bytes, xl = (m0 + mt - 1) * (p.x_stride / 4);
+    const bool inside = last <= p.weight_end && p.row_bytes <= p.weight_end - last &&
+        xl <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xl &&
+        (m0 + mt - 1) * (p.y_stride / 4) + n0 + nt - 1 < p.y_bytes / 4;
+    if (!inside) {
+        if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    /* Simdgroup sg: rows (sg/2)*16 .. +16, columns (sg%2)*32 .. +32 of the tile. */
+    const uint sr = (sg / 2) * 16, sc = (sg % 2) * 32;
+    simdgroup_float8x8 acc[2][4];
+    for (uint i = 0; i < 2; i++)
+        for (uint j = 0; j < 4; j++) acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    for (uint k0 = 0; k0 < p.k_logical; k0 += GEMM_K) {
+        /* Columns past k_logical are read neither from x nor from the weights:
+         * zeros in the tile. Rows past mt / nt are zeros as well. */
+        const uint kc = min(uint(GEMM_K), p.k_logical - k0);
+        for (uint i = tid; i < GEMM_M * GEMM_K; i += GEMM_THREADS) {
+            const uint r = i / GEMM_K, c = i % GEMM_K;
+            xs[i] = r < mt && c < kc ? x[(m0 + r) * (p.x_stride / 4) + k0 + c] : 0.0f;
+        }
+        if (TYPE == 8) { /* one Q8_0 block per weight row; two threads per block */
+            const uint r = tid / 2, h = (tid % 2) * 16;
+            device const uchar *q = weights + p.weight_offset + (n0 + r) * p.row_bytes + ulong(k0 / 32) * 34;
+            const float d = r < nt ? q38_fp16(q) : 0.0f;
+            for (uint i = 0; i < 16; i++) {
+                const uint c = h + i;
+                ws[r * GEMM_K + c] = r < nt && c < kc ? d * float(as_type<char>(q[2 + c])) : 0.0f;
+            }
+        } else {
+            for (uint i = tid; i < GEMM_N * GEMM_K; i += GEMM_THREADS) {
+                const uint r = i / GEMM_K, c = i % GEMM_K;
+                device const uchar *row = weights + p.weight_offset + (n0 + r) * p.row_bytes;
+                ws[i] = r < nt && c < kc ? gemm_dense<TYPE>(row, (p.weight_offset + (n0 + r) * p.row_bytes) % 2 == 0, k0 + c) : 0.0f;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk < GEMM_K; kk += 8) {
+            simdgroup_float8x8 a[2], b[4];
+            for (uint i = 0; i < 2; i++) simdgroup_load(a[i], xs + (sr + i * 8) * GEMM_K + kk, GEMM_K);
+            /* ws holds W rows (n major); loaded transposed it is the k x n operand. */
+            for (uint j = 0; j < 4; j++) simdgroup_load(b[j], ws + (sc + j * 8) * GEMM_K + kk, GEMM_K, ulong2(0, 0), true);
+            for (uint i = 0; i < 2; i++)
+                for (uint j = 0; j < 4; j++) simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (uint i = 0; i < 2; i++)
+        for (uint j = 0; j < 4; j++) simdgroup_store(acc[i][j], cs + (sr + i * 8) * GEMM_N + sc + j * 8, GEMM_N);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    /* Finiteness on the output (bit 1), as in the matvecs. */
+    for (uint i = tid; i < GEMM_M * GEMM_N; i += GEMM_THREADS) {
+        const uint r = i / GEMM_N, c = i % GEMM_N;
+        if (r >= mt || c >= nt) continue;
+        const float v = cs[i];
+        y[(m0 + r) * (p.y_stride / 4) + n0 + c] = v;
+        if (!isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    }
+}
+#define GEMM_KERNEL(name, TYPE) \
+kernel void name(device const uchar *weights [[buffer(0)]], device const float *x [[buffer(1)]], \
+        device float *y [[buffer(2)]], device atomic_uint *error [[buffer(3)]], \
+        constant PackedArgs &p [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]], \
+        uint tid [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]]) { \
+    threadgroup float xs[GEMM_M * GEMM_K], ws[GEMM_N * GEMM_K], cs[GEMM_M * GEMM_N]; \
+    gemm<TYPE>(weights, x, y, error, p, group, tid, sg, xs, ws, cs); \
+}
+GEMM_KERNEL(q38_gemm_q8_0, 8)
+GEMM_KERNEL(q38_gemm_f16, 1)
+GEMM_KERNEL(q38_gemm_f32, 0)

@@ -2,6 +2,46 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Roadmap stage R3 "Prefill" (from 2026-11-02)
+
+Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
+~40 tok/s against DwarfStar ~580; 55% of it in dense linears that are matvecs
+rereading every matrix every 4 rows of x. Newest first.
+
+### R3.1 — prefill GEMM for the dense formats (Q8_0, F16, F32)
+
+`q38_gemm_{q8_0,f16,f32}` (`src/qwen38_matvec.metal`): a 32x64 tile of Y per
+threadgroup of 4 simdgroups, K in steps of 32, weights decoded exactly to FP32
+in threadgroup memory once per tile and multiplied with 8x8 FP32
+`simdgroup_matrix` products. From 32 rows of x (`Q38_GEMM_MIN_ROWS`):
+`encode_linear`, the multi (one GEMM per projection) and the HC up (the
+sequence instead of the fused tail). Below 32 rows (decode, MTP verify) the
+matvecs run unchanged, bit for bit. `Q38_REF_KERNELS=gemm` keeps the matvecs.
+Unit: 5 new tests (shapes off the tile, real slices at M 40, rows bit
+independent inside the GEMM, padding/nonfinite, selector); max (b) ratio
+1.6e-7, under the existing 2^-21 / 2^-20 tolerances (not widened). Suite
+86/86. A profile-only bug found on the way: the HC up group was opened before
+the fused tail refused, leaving an empty sampled encoder; `hc_read` now asks
+`q38_packed_gemm_rows` first.
+
+End to end, real Flash-Next Q2 (AC), the first N IDs of the 8K prompt + 16
+forced, default against `Q38_REF_KERNELS=gemm` (the R2 matvecs, oracle of the
+GEMM): N 64 / 194 / 200 / 210 agree within scaled 1.3e-5, argmax 17/17. From
+N 224 on the logits differ by 0.04-0.14 scaled (argmax 15-17/17). Bisected to
+one event, not a drift: layer 19, token 220, the MoE input differs by 5e-5 and
+the output by 20%. FP64 router logits there (weights from the GGUF, input from
+the trace): experts 366 and 231 sit at the top-10 boundary 5.8e-7 apart, with
+sum|w x| = 13.7, a relative gap of 4e-8, below u32 = 6e-8. Any change of
+summation order may pick either: a routing near-tie, as in `G2.md` (there a
+top-10 flip moved the logits by 0.04). Explained, not widened; the matvec and
+the oracle linear agree on this one (5e-6 at N 1000) only by chance.
+
+Speed, N 1000 prefill (one run each, AC): 24.3 s -> 11.4 s (2.14x). Profile:
+gdn.proj 5.0 -> 0.9 s, gdn.hc_pre 2.4 -> 0.3, hc_ffn.down 2.2 -> 0.2,
+gdn.out 2.0 -> 0.4. Now first: moe.gate_up + moe.down 48%, then gdn.scan and
+qsa.core (8% each). moe.shared_in rose 0.48 -> 0.82 s: the router at 32 rows
+is only 8 GEMM threadgroups; R3.2 moves router and shared expert to the whole chunk.
+
 ## Roadmap stage R2 "Terminal" — `./picoforge` like `./ds4` (from 2026-10-30)
 
 Tasks are named T-R2.x (the "R2" above is the decode-speed round). Goal: an
