@@ -74,6 +74,28 @@ def native(mode, kind, physical, logical, data, x, env=None, view=()):
     return 0, values[:len(x) * n].reshape(len(x), n), values[len(x) * n:].reshape(n, physical)
 
 
+# ---- R3.5 reduced-precision prefill (PICOFORGE_PREFILL_PRECISION=half) ----
+HALF = {"PICOFORGE_PREFILL_PRECISION": "half"}
+U_HALF = 2.0**-11  # unit roundoff of half (round to nearest even)
+
+
+def against_fp64_half(y, ref, magnitude, abs_x, abs_w, logical):
+    """Condition (a_half): each operand is rounded to half once, |e| <= u_h |v| + 2^-25 (the
+    subnormal spacing), so a product is off by at most (2 u_h + u_h^2) |w x| + 2^-25 (1 + u_h)
+    (|x| + |w|) + 2^-50; the sum adds FP32's gamma(2K+8) on top. abs_x / abs_w: sum_k |x| per row
+    and sum_k |w| per output. (b_half) = |y - r| / S, the number the tolerance bounds."""
+    n, u = 2 * logical + 8, 2.0**-24
+    per = 2 * U_HALF + U_HALF**2 + n * u / (1 - n * u)
+    aw = abs_w if abs_w.ndim == 2 else abs_w[None, :]  # per output, or per (row, output) for routed rows
+    bound = per * magnitude + 2.0**-25 * (1 + U_HALF) * (abs_x[:, None] + aw) + logical * 2.0**-50
+    bound += 2 * np.spacing(np.abs(ref.astype(np.float32))).astype(np.float64)
+    delta = np.abs(y.astype(np.float64) - ref)
+    relative = delta / np.maximum(magnitude, 2.0**-126)
+    return dict(outputs=int(y.size), finite=bool(np.isfinite(y).all()), condition_a=bool((delta <= bound).all()),
+                max_rel=float(relative.max()), p50_rel=float(np.percentile(relative, 50)),
+                p99_rel=float(np.percentile(relative, 99)), max_bound_fraction=float((delta / bound).max()))
+
+
 def cases():
     """(label, kind, physical, logical, packed bytes, x, saved decode or None)."""
     rng = np.random.default_rng(3813)
@@ -973,6 +995,115 @@ class FastKernelTests(unittest.TestCase):
                 np.testing.assert_array_equal(matvec.view("<u4"), np.concatenate(pieces).view("<u4"))
                 _, gemm, _ = native("encode", kind, 640, 640, raw, x)
                 self.assertFalse(np.array_equal(gemm.view("<u4"), matvec.view("<u4")), "the GEMM did not run")
+
+    # ---- R3.5 reduced-precision prefill GEMMs on the tensor units ----
+    def half_case(self, label, kind, physical, logical, data, x):
+        """Dense half-mode GEMM: finite, (a_half), (b_half) <= nax_half tol, and not the FP32 GEMM."""
+        status, y, decoded = native("fast", kind, physical, logical, data, x, HALF)
+        self.assertNotEqual(status, UNSUPPORTED, label)
+        ref, magnitude = fp64(decoded, x, logical)
+        w = decoded[:, :logical].astype(np.float64)
+        stats = against_fp64_half(y, ref, magnitude, np.abs(x.astype(np.float64)).sum(1), np.abs(w).sum(1), logical)
+        RESULTS.setdefault(label, {})["nax_half"] = stats
+        CORPUS.setdefault("nax_half", {})[label] = (np.abs(y.astype(np.float64) - ref) / np.maximum(magnitude, 2.0**-126)).ravel()
+        tol = TOLERANCES["kernels"].get("nax_half", {}).get("tol")
+        self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+        self.assertIsNotNone(tol, "nax_half: reduced-precision mode without a measured tolerance")
+        self.assertLessEqual(stats["max_rel"], tol, label)
+        _, fp32, _ = native("fast", kind, physical, logical, data, x)
+        self.assertFalse(np.array_equal(y.view("<u4"), fp32.view("<u4")), f"{label}: the half GEMM did not run")
+
+    def test_half_gemm_shapes(self):
+        """R3.5: half GEMM on M, N, K off the 64x64x32 tile (K tails zero-padded, M multiple of 16 or not)."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3870, kind)
+            shapes = [(64, 640, 640, 64), (33, 2560, 2560, 33), (130, 320, 320, 100), (70, 2560, 2560, 1024)]
+            if kind != 8:
+                shapes += [(7, 37, 37, 40), (4, 10240, 10240, 64)]
+            for n, physical, logical, m in shapes:
+                with self.subTest(kernel=name, n=n, logical=logical, m=m):
+                    x = rng.uniform(-1, 1, (m, logical)).astype(np.float32)
+                    self.half_case(f"half:{name}:N{n}:K{logical}/{physical}:M{m}", kind, physical, logical,
+                                   weight_rows(kind, physical, n, rng).tobytes(), x)
+
+    def test_half_gemm_real_tensors(self):
+        """R3.5: every real dense slice group through the half GEMM, x repeated to 64 rows."""
+        for case in [c for c in CASES if c[0].startswith("real:") and NAMES[c[1]] in ("q8_0", "f16", "f32")]:
+            label, kind, physical, logical, data, x, _ = case
+            with self.subTest(case=label):
+                self.half_case(f"half-{label}:M64", kind, physical, logical, data, np.resize(x, (64, logical)))
+
+    def test_half_leaves_decode_and_reference_alone(self):
+        """R3.5: below 32 rows (decode, MTP) and under Q38_REF_KERNELS=gemm the half mode changes no bit."""
+        for name, kind in sorted(KINDS.items()):
+            rng = seeded(3871, kind)
+            raw, x = weight_rows(kind, 640, 33, rng).tobytes(), rng.uniform(-1, 1, (40, 640)).astype(np.float32)
+            with self.subTest(kernel=name):
+                for rows in (1, 2, 31):
+                    _, a, _ = native("encode", kind, 640, 640, raw, x[:rows])
+                    _, b, _ = native("encode", kind, 640, 640, raw, x[:rows], HALF)
+                    np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
+                _, a, _ = native("encode", kind, 640, 640, raw, x, {"Q38_REF_KERNELS": "gemm"})
+                _, b, _ = native("encode", kind, 640, 640, raw, x, {"Q38_REF_KERNELS": "gemm"} | HALF)
+                np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
+                _, c, _ = native("encode", kind, 640, 640, raw, x, {"PICOFORGE_PREFILL_PRECISION": "fp32"})
+                _, d, _ = native("encode", kind, 640, 640, raw, x)
+                np.testing.assert_array_equal(c.view("<u4"), d.view("<u4"))
+
+    def test_half_overflow_sets_nonfinite(self):
+        """R3.5: |x| above the half range (65504) becomes inf in the operand: bit 1, never a silent value."""
+        kind, rng = 8, seeded(3872, 8)
+        raw, x = weight_rows(kind, 640, 33, rng).tobytes(), rng.uniform(-1, 1, (40, 640)).astype(np.float32)
+        x[7, 3] = 70000.0
+        code, stdout, stderr, _ = run_native("fast", kind, 640, 640, raw, x, HALF)
+        self.assertEqual((code, stdout, stderr), (NONFINITE, b"", b"qwen38 Metal: error bits 1\n"))
+        _, y, _ = native("fast", kind, 640, 640, raw, x)  # the FP32 GEMM takes the same input
+        self.assertTrue(np.isfinite(y).all())
+
+    def test_half_grouped_gate_up_and_down(self):
+        """R3.5: half grouped gate+up (act) and down on 40 tokens x 10 slots over 24 experts, every
+        routed format: finite, (b_half) <= nax_half tol against FP64; down also (a_half)."""
+        tol = TOLERANCES["kernels"].get("nax_half", {}).get("tol")
+        self.assertIsNotNone(tol)
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3873, kind), oracle.FORMATS[kind][0]
+            for n, physical, logical, experts in ((70, 768, 640, 24), (33, 2560 if block == 256 else 96,
+                                                                       2560 if block == 256 else 72, 24)):
+                tokens, slots = 40, 10
+                ids = np.concatenate([rng.permutation(experts)[:slots] for _ in range(tokens)])
+                x = rng.uniform(-2, 2, (tokens, logical)).astype(np.float32)
+                gate, up = (quant_rows(kind, physical, experts * n, rng).tobytes() for _ in range(2))
+                label = f"half-grouped:{name}:N{n}:K{logical}/{physical}:T{tokens}x{slots}"
+                with self.subTest(case=label, part="gate_up"):
+                    code, act, dg, du, stderr = run_gate_up("grouped", kind, physical, logical, n, experts, gate, up, ids, x, slots, HALF)
+                    self.assertEqual((code, stderr), (0, b""), label)
+                    _, fp32, _, _, _ = run_gate_up("grouped", kind, physical, logical, n, experts, gate, up, ids, x, slots)
+                    self.assertFalse(np.array_equal(act.view("<u4"), fp32.view("<u4")), f"{label}: half did not run")
+                    ref, magnitude, flush = gate_up_fp64(dg, du, ids, x, slots, logical, n)
+                    # gate_up_fp64's S is first order. With half operands the dot errors are ~1e-3 of
+                    # S_g, S_u, so the product of the two (dg du, slope <= 1.1) is no longer negligible
+                    # where S vanishes (g ~ 0 and u ~ 0): it joins the scale, as the per-dot bound.
+                    _, sg = indexed_fp64(dg, ids, x, slots, logical, n)
+                    _, su = indexed_fp64(du, ids, x, slots, logical, n)
+                    per = 2 * U_HALF + U_HALF**2
+                    magnitude = magnitude + 1.1 * per * sg * su
+                    rel = np.abs(act.astype(np.float64) - ref) / np.maximum(magnitude, 2.0**-126)
+                    CORPUS.setdefault("nax_half", {})[label] = rel.ravel()
+                    RESULTS.setdefault(label, {})["nax_half"] = dict(max_rel=float(rel.max()), p99_rel=float(np.percentile(rel, 99)))
+                    self.assertTrue(np.isfinite(act).all(), label)
+                    self.assertLessEqual(float(rel.max()), tol, label)
+                with self.subTest(case=label, part="down"):
+                    rows = rng.uniform(-2, 2, (len(ids), logical)).astype(np.float32)
+                    code, y, decoded, stderr = run_indexed("grouped", kind, physical, logical, n, experts, gate, ids, rows, 1, HALF)
+                    self.assertEqual((code, stderr), (0, b""), label)
+                    ref, magnitude = indexed_fp64(decoded, ids, rows, 1, logical, n)
+                    w = np.abs(decoded[:, :logical].astype(np.float64)).sum(1).reshape(experts, n)[np.asarray(ids)]
+                    xs = np.abs(rows.astype(np.float64)).sum(1)
+                    stats = against_fp64_half(y, ref, magnitude, xs, w, logical)
+                    CORPUS.setdefault("nax_half", {})[label + ":down"] = (np.abs(y.astype(np.float64) - ref) / np.maximum(magnitude, 2.0**-126)).ravel()
+                    RESULTS.setdefault(label + ":down", {})["nax_half"] = stats
+                    self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+                    self.assertLessEqual(stats["max_rel"], tol, label)
 
     def test_strided_offset_views(self):
         """Review Focus 5: pitches above K*4 and n*4 and nonzero offsets (an LM head on a slice) change no bit."""

@@ -44,6 +44,25 @@ class CliTests(unittest.TestCase):
             last = np.fromfile(path/'gpu.f32', '<f4')
             np.testing.assert_array_equal(last, actual[0])
 
+    def test_half_prefill_mode(self):
+        """R3.5: --prefill-precision half changes a 40-row prefill (GEMM rows) within its reduced-precision
+        bound, never a 3-row one (decode-sized appends stay FP32 bit for bit)."""
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
+            path = Path(directory)
+            def logits(prompt, chunk, mode):
+                out = path/f'{mode}-{len(prompt)}.f32'
+                self.run_cli([str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, prompt)),
+                              '--context', '64', '--chunk', str(chunk), '--max-new', '0', '--logits', str(out),
+                              '--prefill-precision', mode])
+                return np.fromfile(out, '<f4')
+            short = [5, 17, 300]
+            np.testing.assert_array_equal(logits(short, 3, 'half').view('<u4'), logits(short, 3, 'fp32').view('<u4'))
+            long = [(7 * i + 5) % 500 for i in range(40)]
+            half, fp32 = logits(long, 40, 'half'), logits(long, 40, 'fp32')
+            self.assertTrue(np.isfinite(half).all())
+            self.assertFalse(np.array_equal(half.view('<u4'), fp32.view('<u4')), 'the half GEMMs did not run')
+            self.assertLessEqual(np.abs(half-fp32).max()/max(1, np.abs(fp32).max()), 1e-2)  # measured 5.0e-4
+
     def test_text_modes(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
             ids = Path(directory)/'ids.json'
@@ -63,6 +82,13 @@ class CliTests(unittest.TestCase):
             with self.subTest(args=args):
                 done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
                 self.assertNotEqual(done.returncode, 0)
+        # R3.5: the precision switch takes fp32 or half, as flag or environment
+        for args, env in ((['--prefill-precision', 'bf16'], {}), ([], {'PICOFORGE_PREFILL_PRECISION': 'fp16'})):
+            with self.subTest(args=args, env=env):
+                done = subprocess.run(base+['--tokens', '5', '--max-new', '0', *args], cwd=ROOT, capture_output=True,
+                                      env=os.environ | env)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(b'fp32 or half', done.stderr)
         self.assertEqual(subprocess.run([str(ROOT/'picoforge'), '--qwen38', '--help'],
                          cwd=ROOT, capture_output=True).returncode, 0)
 

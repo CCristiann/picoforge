@@ -113,6 +113,14 @@
       "samples": 2391840,
       "commit": "79dc4d7 + the R2.4 working tree, measured with the harness of 'Add a simdgroup GDN scan'",
       "note": "Per token the two dots (prediction S.k, output S.q) sum dk/32 products per lane then simd_sum instead of dk serial products; everything else (decay, delta, update) is the same expression per element. Outputs: S = sum|s' q| of the last token. State: S = the running sum M <- M exp(g) + |delta k_j| + |k_j| |beta| sum|s exp(g) k| (scan_magnitudes), the absolute values each state rounding scales with, so the error that delta carries from the prediction is counted. Max 2.5e-7 (4.3 u) on the final state after 3 tokens at the real dims; outputs <= 2.2e-7. Condition (a) for one token holds for fast and oracle at <= 0.33 of the bound."
+    },
+    "nax_half": {
+      "tol": 0.00048828125,
+      "max": 0.00041453271465440007,
+      "p99": 7.266833908788657e-05,
+      "samples": 603659,
+      "commit": "R3.5 kernels (perf/qwen38-prefill-nax), measured with tests/test_qwen38_fast_kernels.py -k half",
+      "note": "R3.5 reduced-precision prefill (PICOFORGE_PREFILL_PRECISION=half): dense GEMM (Q8_0, F16, F32) and grouped MoE gate+up / down (IQ2_XXS, Q2_K, Q4_K, MXFP4) on the tensor units, both operands rounded to half, FP32 accumulation. Measured against FP64, not against the FP32 kernel: (b_half) = |y - r| / S. The error is the input rounding, at most (2 u_h + u_h^2) S with u_h = 2^-11 plus the half subnormal spacing 2^-25 (|x| + |w|) (condition a_half, checked on every dense and down case); the sum itself is FP32. Measured max 4.1e-4 (a real Q8_0 slice) is ~0.4 of 2^-10, the worst case of the rounding; tol is the power of two above it, 2^-11. Gate+up uses S + 1.1 (2 u_h + u_h^2) S_g S_u: the product of the two dot errors, negligible in FP32, is not with half operands where silu(g) u has a vanishing first-order scale. This is a separate mode: the FP32 tolerances above are unchanged."
     }
   }
 }
