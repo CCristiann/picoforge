@@ -8,6 +8,61 @@ Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
 ~40 tok/s against DwarfStar ~580; 55% of it in dense linears that are matvecs
 rereading every matrix every 4 rows of x. Newest first.
 
+### R3.5 — reduced-precision prefill on the Neural Accelerators (opt-in)
+
+Authorised by the user as a separate mode. `--prefill-precision half` (or
+`PICOFORGE_PREFILL_PRECISION=half`; default `fp32`) runs the prefill GEMMs with
+Metal 4 TensorOps (`mpp::tensor_ops::matmul2d`, `execution_simdgroups<4>`):
+both operands staged in threadgroup memory as half, FP32 accumulation in a
+cooperative tensor. Dense linears (Q8_0/F16/F32 decoded exactly, then rounded
+to half; 64x64 tiles) and the R3.2 grouped MoE (same counting-sort groups,
+64-row tiles, 64 outputs; SiLU(g)*u formed on the cooperative tensors, one
+FP32 tile through threadgroup memory). Admission is the GEMM's (>= 32 rows), so
+decode, MTP and `Q38_REF_KERNELS=gemm|1` never see it. API checked first: the
+SDK 26.5 header (type table: half x half -> float; the descriptor; the scope
+rule) and `tools/probe/tensorops_gemm_probe` (5.4e-7 against FP64 of the half
+inputs: layout and accumulation right). The descriptor k (32) is a fixed step,
+so the K tail is zero-padded in the kernel. Idea from DwarfStar fc80bd6 (MIT),
+`kernel_qwen4_moe_mm_*_nax_t`; nothing copied.
+
+First version was *slower* (N 1000: 7.15 -> 8.64 s): staging, not the MMA,
+dominated, at 24 KB of threadgroup memory per group. Reusing the staging area
+for the result tile (16 KB), float4 loads of x and N 64 in the MoE: 7.26 ->
+4.31 s at N 1000 (profile: moe.gate_up 1.45 -> 0.63 s, moe.down 1.01 -> 0.43,
+gdn.proj 0.90 -> 0.36), 8K prefill 65.2 -> 37.7 s (1.73x, 214 tok/s).
+
+Own gate (`tests/qwen38_kernel_tolerances.json` "nax_half"): against FP64,
+not against the FP32 kernel. Analytic bound (a_half): each operand off by
+u_h = 2^-11 relative plus the half subnormal spacing 2^-25, so a product by
+(2u_h + u_h^2)|wx| + 2^-25(|x| + |w|); held on every dense and down case. Gate+up
+needed one more term: where SiLU(g)*u has a vanishing first-order scale the
+product of the two dot errors (negligible in FP32, ~1e-6 S_g S_u here) dominates.
+Measured max (b) 4.1e-4 over 603,659 outputs, tol 2^-11. The FP32 tolerances,
+G3 and the REF bit-identity are untouched.
+
+End to end (real Q2 checkpoint, AC; `bench/qwen38_r3_20261102/half-gate/`): half
+against FP32 on the first N IDs of the 8K prompt + 16 forced, N 64..4000, and the
+8K frontier + 128 forced: logits scaled 0.06-0.16, KL(fp32||half) max 0.04-0.37,
+mean 0.008-0.035, argmax 14-17/17 and 122/129; every changed argmax has an FP32
+top-1/top-2 margin <= 0.27 (an output near-tie). Greedy: short identical (9-ID
+prompt, under the GEMM threshold), 8K identical for 11 of 64 tokens. Unlike R3.1
+this is not one near-tie: at N 64 the FP32 reorder moved the logits by 4.7e-6,
+half by 0.088. Bisecting the length finds no clean onset; the explanation is
+the router: a top-10 boundary with a relative gap under ~1e-4 (half's operand
+rounding, on the router GEMM itself and on its input) flips, and at 48 layers x
+N tokens such gaps are common, each flip moving that token's MoE output by a few
+percent. Not shown flip by flip (the R3.1 trace was a local hack, not kept);
+backlog. Quality, the number that matters: mean NLL of the true next IDs over
+264 positions +0.0011 nat (half - fp32); alone, the 8K window +0.045 nat (ppl
++4.5%), the shorter ones -0.14..+0.01.
+
+Default: **fp32**. The roadmap keeps FP32 the default and half an explicit
+mode; the mode is measured, bounded and explained statistically, but it moves
+the trajectory (KL up to 0.37, greedy diverging after 11 tokens at 8K) and its
+only quality signal, +0.001 nat overall but +0.045 at 8K, is too small a sample
+to call neutral. For local use on long prompts `PICOFORGE_PREFILL_PRECISION=half`
+is the 1.7x switch.
+
 ### R3.3 — batched QSA prefill (bit-identical) and 64-row grouped tiles
 
 8K profile after R3.2: prefill 78.7 s (R2: ~215), qsa.core 14.4 s first. Its
