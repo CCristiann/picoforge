@@ -12,6 +12,9 @@ class DeviceGraphTests(unittest.TestCase):
     def test_microbatch_state_and_fault(self):
         tokens = gate.TOKENS * 3  # 72 > 2 * MoE microbatch 32; tail 8
         os.environ['Q38_G2_STATE_CHECKS'] = '1'
+        # R3.1/R3.2: a 72-token append runs GEMMs, 1-token appends the per-row kernels (another
+        # order of the sums): the bit-for-bit state replay holds with Q38_REF_KERNELS=gemm.
+        saved = os.environ.get('Q38_REF_KERNELS'); os.environ['Q38_REF_KERNELS'] = 'gemm'
         try:
             info, one = gate.run_native(4, len(tokens), tokens, replay=True)
             self.assertEqual(info['replay'], 'identical')
@@ -22,6 +25,8 @@ class DeviceGraphTests(unittest.TestCase):
                 np.testing.assert_array_equal(one[key], chunks[key], err_msg=key)
         finally:
             os.environ.pop('Q38_G2_STATE_CHECKS', None)
+            if saved is None: os.environ.pop('Q38_REF_KERNELS', None)
+            else: os.environ['Q38_REF_KERNELS'] = saved
 
     def test_concurrent_encoder_is_deterministic(self):
         """R1.6b: the concurrent encoder (default) and the serial one with a

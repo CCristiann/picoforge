@@ -1515,6 +1515,51 @@ class FastKernelTests(unittest.TestCase):
                     self.gate_up_case(f"gate-up-{label}", kind, physical, logical, 1, experts, data, up,
                                       np.tile(np.arange(experts), len(x)), x, experts)
 
+    # ---- R3.2 grouped MoE: one GEMM per expert from 256 pairs ----
+    def test_grouped_gate_up_and_down_against_oracle(self):
+        """R3.2: grouped gate+up (act) and grouped down (divisor 1) meet (a) and (b) of the per-pair
+        families on 40 tokens x 10 slots over 24 experts, K off the chunk, every routed format."""
+        for name, kind in sorted(INDEXED_KINDS.items()):
+            rng, block = seeded(3850, kind), oracle.FORMATS[kind][0]
+            for n, physical, logical, experts in ((70, 768, 640, 24), (33, 2560 if block == 256 else 96,
+                                                                       2560 if block == 256 else 72, 24)):
+                tokens, slots = 40, 10
+                ids = np.concatenate([rng.permutation(experts)[:slots] for _ in range(tokens)])
+                x = rng.uniform(-2, 2, (tokens, logical)).astype(np.float32)
+                gate, up = (quant_rows(kind, physical, experts * n, rng).tobytes() for _ in range(2))
+                label = f"grouped:{name}:N{n}:K{logical}/{physical}:T{tokens}x{slots}"
+                with self.subTest(case=label, part="gate_up"):
+                    code, act, dg, du, stderr = run_gate_up("grouped", kind, physical, logical, n, experts, gate, up, ids, x, slots)
+                    self.assertEqual((code, stderr), (0, b""), label)
+                    _, y_oracle, _, _, _ = run_gate_up("oracle", kind, physical, logical, n, experts, gate, up, ids, x, slots)
+                    ref, magnitude, flush = gate_up_fp64(dg, du, ids, x, slots, logical, n)
+                    stats = gate_up_against_fp64(act, ref, magnitude, flush, logical) | dict(vs_oracle=against_oracle(act, y_oracle, magnitude))
+                    RESULTS.setdefault(label, {})["grouped"] = stats
+                    self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+                    self.assertLessEqual(stats["vs_oracle"]["max"], TOLERANCES["kernels"]["moe_gate_up"]["tol"], label)
+                with self.subTest(case=label, part="down"):
+                    rows = rng.uniform(-2, 2, (len(ids), logical)).astype(np.float32)
+                    code, y, decoded, stderr = run_indexed("grouped", kind, physical, logical, n, experts, gate, ids, rows, 1)
+                    self.assertEqual((code, stderr), (0, b""), label)
+                    _, y_oracle, _, _ = run_indexed("oracle", kind, physical, logical, n, experts, gate, ids, rows, 1)
+                    ref, magnitude = indexed_fp64(decoded, ids, rows, 1, logical, n)
+                    stats = against_fp64(y, ref, magnitude, logical) | dict(vs_oracle=against_oracle(y, y_oracle, magnitude))
+                    self.assertTrue(stats["finite"] and stats["condition_a"], (label, stats))
+                    self.assertLessEqual(stats["vs_oracle"]["max"], TOLERANCES["kernels"][name]["tol"], label)
+                    # bits of a pair do not depend on the others (group sizes, tile places)
+                    keep = np.arange(len(ids)) < 300
+                    _, part, _, _ = run_indexed("grouped", kind, physical, logical, n, experts, gate, ids[keep], rows[keep], 1)
+                    np.testing.assert_array_equal(part.view("<u4"), y[keep].view("<u4"), label)
+
+    def test_grouped_refused_below_threshold_and_under_reference(self):
+        """R3.2: fewer than 256 pairs, or Q38_REF_KERNELS=indexed / gemm: UNSUPPORTED, nothing encoded."""
+        kind, rng = 16, seeded(3851, 16)
+        data = quant_rows(kind, 256, 4 * 8, rng).tobytes()
+        for rows, env in ((255, None), (400, {"Q38_REF_KERNELS": "indexed"}), (400, {"Q38_REF_KERNELS": "gemm"})):
+            with self.subTest(rows=rows, env=env):
+                ids, x = rng.integers(0, 4, rows), rng.uniform(-1, 1, (rows, 256)).astype(np.float32)
+                self.assertEqual(run_indexed("grouped", kind, 256, 256, 8, 4, data, ids, x, 1, env)[0], UNSUPPORTED)
+
     def test_logical_k_padding_gate_up(self):
         """Review Focus 2 (gate+up): poisoned padding past k_logical (the 256-column
         formats: K 600 of 1024, the block 768..1023 wholly padded, a partial chunk at 600) never

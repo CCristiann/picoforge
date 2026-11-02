@@ -126,7 +126,7 @@ static void check_moe(uint32_t layer, size_t t) {
     Q38FRoutedWork rwk = {gview(bl,0,t,c->experts), gview(bp,0,t,c->experts), gview(bw,0,t,k),
         gview(bg,0,p,i), gview(bu,0,p,i), gview(ba,0,p,i), gview(bd,0,p,h), gview(sg,0,t,s), gview(su,0,t,s),
         gview(sa,0,t,s), gview(sh,0,t,h), gview(sl,0,t,1), gview(ss,0,t,1), gview(br,0,t,h),
-        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL};
+        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL, {0}};
     /* R1.5b/c selection (Q38_REF_KERNELS read at creation, unset for the default
      * whatever the caller's environment): by default gate+up+SwiGLU and
      * down+reduce are fused (the gate/up and down scratch are never written)
@@ -573,7 +573,9 @@ int main(int argc, char **argv) {
             const Qwen38Layer *kind; Qwen38Error le;
             ok(qwen38_config_layer(config, layer, &kind, &le), &le, "kind");
             check_moe(layer, 24);
-            if (kind->has_ple) { check_ple(layer,40,13); check_ple(layer,17,1); }
+            /* R3.1: whole appends stay under the 32-row GEMM threshold, so the chunk replay
+             * compares the per-row kernels bit for bit (the GEMM has its own tests). */
+            if (kind->has_ple) { check_ple(layer,31,13); check_ple(layer,17,1); }
             if (kind->kind == Q38_LAYER_QSA) {
                 check_qsa(layer,40,13,0,false);
                 check_qsa(layer,17,1,0,true);

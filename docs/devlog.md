@@ -8,6 +8,43 @@ Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
 ~40 tok/s against DwarfStar ~580; 55% of it in dense linears that are matvecs
 rereading every matrix every 4 rows of x. Newest first.
 
+### R3.2 — grouped MoE: one GEMM per expert over the whole chunk
+
+The per-pair kernels read an expert's rows once per (token, slot): a
+1024-token chunk read each active expert ~20 times, in 32-token microbatches.
+Now (`src/qwen38_moe_fused.metal`), from 256 pairs: the pairs are grouped by
+expert on the GPU (clear, count, scan, scatter: a counting sort into
+`order[]`), then `q38_moe_grouped_gate_up_*` (gate, up and SwiGLU as the fused
+kernel: same `q38_silu`, same checks) and `q38_moe_grouped_down_*` run one
+32x32 FP32 simdgroup GEMM tile per (expert, row block), weights decoded exactly
+by the format's `F::decode`. The order inside an expert comes from atomics,
+but a GEMM row's bits do not depend on its place: outputs are deterministic.
+The down rows go to the unchanged `q38f_reduce`; `moe()` calls the routed
+block once per chunk (router and shared expert are GEMMs over the chunk too),
+so the MoE scratch is sized for `max_tokens` (+~190 MiB). `indexed`, `moe` or
+`gemm` in `Q38_REF_KERNELS` keep the per-pair kernels. Unit: grouped gate+up
+and down against the oracle in every routed format (max (b) 1.0e-7, under the
+existing tolerances), bits of a pair independent of the others, refusal below
+256 pairs and under the reference selectors; suite 88/88.
+
+Bit-for-bit chunk invariance (one append of N tokens = N appends of one) no
+longer holds on the default path from 32 rows: declared in the spec. Four
+tests assumed it (MoE chunk split, GDN composition whole/token/chunks, PLE
+replay at 40 rows, graph state replay at 72 tokens, MTP at chunk 33); they now
+compare bit for bit under `Q38_REF_KERNELS=gemm` (or below 32 rows) and the
+default within the stage tolerances.
+
+Gates (AC): test-qwen38, MTP, speculative, compare green; G3 scaled 2.08e-7
+(R2: 2.08e-7); `Q38_REF_KERNELS=1` logits bit-identical to the R0 oracle;
+default 4.95e-5 scaled 1.96e-6, argmax 9/9 (as R2). Long prefill, default
+against R2 (`gemm`): N 64 / 200 within 5e-6 / 1.1e-5, N 1000 6.3e-6 (the
+layer-19 near-tie of R3.1 falls the other way here), argmax 17/17.
+
+Speed, N 1000 prefill: 11.4 s (R3.1) -> 7.85 s, 3.1x the R2 24.4 s
+(~127 tok/s). moe.gate_up 2.87 -> 1.38 s, moe.down 2.27 -> 1.14,
+moe.shared_in 0.82 -> 0.17. Now: MoE 35%, gdn.proj 12%, gdn.scan 12%,
+qsa.core 11%.
+
 ### R3.1 — prefill GEMM for the dense formats (Q8_0, F16, F32)
 
 `q38_gemm_{q8_0,f16,f32}` (`src/qwen38_matvec.metal`): a 32x64 tile of Y per

@@ -400,8 +400,9 @@ static int indexed_main(int argc,char **argv,const char *library) {
     r.experts=number(argv[at++]);
     size_t rows=number(argv[at++]), divisor=number(argv[at++]);
     r.reps=timing ? number(argv[at++]) : 1;
-    assert(pair ? !strcmp(r.mode,"fused") || !strcmp(r.mode,"sequence") || (!timing && !strcmp(r.mode,"oracle")) :
-           !strcmp(r.mode,"oracle") || !strcmp(r.mode,"fast") || (!timing && !strcmp(r.mode,"encode")));
+    const bool grouped=!strcmp(r.mode,"grouped"); /* R3.2: grouped gate+up (pair) or grouped down */
+    assert(grouped || (pair ? !strcmp(r.mode,"fused") || !strcmp(r.mode,"sequence") || (!timing && !strcmp(r.mode,"oracle")) :
+           !strcmp(r.mode,"oracle") || !strcmp(r.mode,"fast") || (!timing && !strcmp(r.mode,"encode"))));
     assert(r.n && r.experts && rows && divisor && rows%divisor==0 && r.reps && r.reps<=1000);
     r.m=rows/divisor;
     r.xpitch=argc==13 ? number(argv[10]) : r.logical;
@@ -410,7 +411,7 @@ static int indexed_main(int argc,char **argv,const char *library) {
     const size_t limit=timing ? 1024u*1024u*1024u : 32u*1024u*1024u;
     assert(r.xpitch>=r.logical && r.ypitch>=r.n && r.offset<=limit/4 && r.m<=limit/4/r.xpitch && rows<=limit/4/r.ypitch);
     assert(r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts/(1+pair)));
-    assert(!pair || !strcmp(r.mode,"fused") || r.ypitch==r.n); /* q38f_product needs a dense act */
+    assert(!pair || grouped || !strcmp(r.mode,"fused") || r.ypitch==r.n); /* q38f_product needs a dense act */
     Request t[2]={r,r};
     size_t total=0;
     for (size_t i=0;i<1+pair;i++) {
@@ -455,6 +456,8 @@ static int indexed_main(int argc,char **argv,const char *library) {
         id<MTLBuffer> input=shared(dev,xw*4),output=shared(dev,yw*4),word=shared(dev,4),route=shared(dev,rows*4);
         id<MTLBuffer> scratch[2]={shared(dev,rows*r.n*4),shared(dev,rows*r.n*4)}; /* the sequence's gate and up */
         memcpy(route.contents,ids,rows*4);
+        id<MTLBuffer> groups=shared(dev,q38_packed_group_bytes(r.experts,rows));
+        Qwen38GpuSpan gspan={(__bridge void *)groups,0,q38_packed_group_bytes(r.experts,rows)};
         float *x=(float *)input.contents+4, *y=(float *)output.contents+4;
         for (size_t i=0;i<xw;i++) ((float *)input.contents)[i]=NAN; /* guards and gaps */
         for (size_t i=0;i<r.m;i++) {
@@ -480,7 +483,11 @@ static int indexed_main(int argc,char **argv,const char *library) {
             Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)encoder,{(__bridge void *)word,0,4},false};
             for (size_t rep=0;rep<r.reps && !status;rep++) {
                 Qwen38Error err={0};
-                if (!pair) status=(int)(!strcmp(r.mode,"fast") ?
+                if (grouped) status=(int)(pair ?
+                    q38_packed_encode_grouped_gate_up(ctx,&cmd,store,bindings[0],&layouts[0],bindings[1],&layouts[1],
+                                                      span,divisor,xv,yv,gspan,&err) :
+                    q38_packed_encode_grouped_down(ctx,&cmd,store,bindings[0],&layouts[0],span,xv,yv,gspan,&err));
+                else if (!pair) status=(int)(!strcmp(r.mode,"fast") ?
                     q38_packed_encode_indexed_fast(ctx,&cmd,store,bindings[0],&layouts[0],span,divisor,xv,yv,&err) :
                     q38_packed_encode_indexed(ctx,&cmd,store,bindings[0],&layouts[0],span,divisor,xv,yv,&err));
                 else if (!strcmp(r.mode,"fused"))

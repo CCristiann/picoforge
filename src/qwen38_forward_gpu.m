@@ -196,13 +196,15 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     Qwen38GpuF32 ids,keep; ALLOC(ids,false,(size_t)a->token_budget+tail); ALLOC(keep,false,f->capacity);
     f->dw.ids=ids.span; f->dw.keep=keep.span;
     Qwen38GpuF32 part; ALLOC(part,false,Q38D_MAX_SPLITS,a->heads,a->head_dim+2); f->dw.part=part.span;
-    const Qwen38MoeConfig *m=&f->c.moe; size_t mt=MIN(t,32),p=mt*m->top_k;
+    /* R3.2: MoE scratch for a whole chunk (the grouped prefill path), not one 32-token microbatch. */
+    const Qwen38MoeConfig *m=&f->c.moe; size_t mt=t,p=mt*m->top_k;
     ALLOC(f->fw.logits,false,mt,m->experts); ALLOC(f->fw.probs,false,mt,m->experts); ALLOC(f->fw.weights,false,mt,m->top_k);
     ALLOC(f->fw.gate,false,p,m->intermediate); ALLOC(f->fw.up,false,p,m->intermediate); ALLOC(f->fw.act,false,p,m->intermediate);
     ALLOC(f->fw.down,false,p,d); ALLOC(f->fw.sgate,false,mt,m->shared_intermediate);
     ALLOC(f->fw.sup,false,mt,m->shared_intermediate); ALLOC(f->fw.sact,false,mt,m->shared_intermediate);
     ALLOC(f->fw.shared,false,mt,d); ALLOC(f->fw.slogit,false,mt,1); ALLOC(f->fw.ssig,false,mt,1); ALLOC(f->fw.routed,false,mt,d);
     ALLOC(ids,false,p); ALLOC(keep,false,p); f->fw.ids=ids.span; f->fw.identity=keep.span;
+    Qwen38GpuF32 group; ALLOC(group,false,q38_packed_group_bytes(m->experts,p)/4); f->fw.group=group.span;
     return Q38_OK;
 }
 /* T15c: greedy id on the GPU, one threadgroup over the logits row. The idea, not the
@@ -492,8 +494,10 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
     Qwen38MoeConfig mc=f->c.moe;
     if (i>=f->c.trunk_blocks) mc.down_physical=mc.intermediate;
     MoeMark mark={f,i};
-    for (size_t start=0;start<t;start+=32) {
-        size_t n=MIN(t-start,32),p=n*f->c.moe.top_k; Q38FRoutedWork w=f->fw;
+    /* R3.2: a prefill chunk that the grouped kernels take goes in one call; else 32-token microbatches. */
+    const size_t micro=q38_packed_grouped_rows(f->b,l->fl[1].gguf_type,t*f->c.moe.top_k) ? t : 32;
+    for (size_t start=0;start<t;start+=micro) {
+        size_t n=MIN(t-start,micro),p=n*f->c.moe.top_k; Q38FRoutedWork w=f->fw;
 #define W(x,rows) w.x=time_view(w.x,rows)
         W(logits,n); W(probs,n); W(weights,n); W(gate,p); W(up,p); W(act,p); W(down,p);
         W(sgate,n); W(sup,n); W(sact,n); W(shared,n); W(slogit,n); W(ssig,n); W(routed,n);
