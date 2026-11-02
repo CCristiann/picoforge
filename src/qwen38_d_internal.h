@@ -57,7 +57,15 @@ typedef uint Q38DUint;
 #endif
 enum { Q38D_ROPE, Q38D_POOL, Q38D_SCORES, Q38D_ATTEND, Q38D_GPU_OPS };
 enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT, Q38D_MERGE,
-       Q38D_SCORES_FAST, Q38D_RANK_FAST, Q38D_COMPACT_FAST, Q38D_ROPE_FAST, Q38D_ALL_OPS };
+       Q38D_SCORES_FAST, Q38D_RANK_FAST, Q38D_COMPACT_FAST, Q38D_ROPE_FAST,
+       Q38D_ROPE_BATCH, Q38D_POOL_BATCH, Q38D_SCORES_BATCH, Q38D_RANK_BATCH, Q38D_COMPACT_BATCH,
+       Q38D_TAIL_BATCH, Q38D_SPLIT_BATCH, Q38D_MERGE_BATCH, Q38D_ALL_OPS };
+/* R3.3 batched prefill: the wire record of the batch kernels (Q38DBatch in the
+ * kernel), tokens per split-attention dispatch, and the append size from which
+ * q38d_layer_encode batches. */
+typedef struct { Q38DUint pos0, step, x_stride, y_stride, ratio, budget, scores_stride, ids_stride, first, count; } Q38DBatchArgs;
+#define Q38D_BATCH_SPLIT_TOKENS 32u
+#define Q38D_BATCH_MIN_TOKENS 32u
 typedef struct { Q38DUint h,j,d,n,m,r,pos; float theta; } Q38DGpuArgs;
 #ifndef __METAL_VERSION__
 _Static_assert(sizeof(Q38DGpuArgs)==32, "D Metal wire ABI");
@@ -103,6 +111,11 @@ typedef struct {
     Qwen38GpuSpan keep, ids;                      /* uint32 [cap/r], [budget+r-1] */
     Qwen38GpuF32 out;                             /* [T,H,D] gated attention */
     Qwen38GpuSpan part;   /* R2.1 split partials, Q38D_MAX_SPLITS*H*(D+2) floats; empty: oracle attention */
+    /* R3.3 batched prefill scratch (all empty: the per-token loop): per token
+     * scores and keep [T, cap/r], ids [T, budget+r-1], split partials for
+     * Q38D_BATCH_SPLIT_TOKENS tokens, pooled blocks [T/r+1, 1, Di] x2. */
+    Qwen38GpuSpan bscores, bkeep, bids, bpart;
+    Qwen38GpuF32 bpooled, bpooled_n;
 } Q38DGpuLayer;
 typedef struct Q38CGpu Q38CGpu;
 Qwen38Status q38d_layer_encode(Q38DGpu *, Q38CGpu *, Qwen38GpuCommand,

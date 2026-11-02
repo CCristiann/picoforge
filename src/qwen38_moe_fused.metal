@@ -295,18 +295,21 @@ kernel void q38_moe_group_scatter(device const uint *ids [[buffer(0)]], device a
 }
 
 /* Grouped GEMM tile: GG_M rows of one expert x GG_N outputs, K in GG_K steps,
- * 4 simdgroups of 16 x 16. PAIR: gate and up together, act = silu(g) * u as
+ * 4 simdgroups of 16 rows x 32 outputs (64 rows: a decoded weight serves twice
+ * the rows of a 32-row tile; measured below in the devlog, R3.3). PAIR: gate and up together, act = silu(g) * u as
  * the fused kernel (same q38_silu, same checks); else one matrix (down).
  * x row of pair q: q / x_divisor; y row: q. Weights decode exactly (F), so
  * only the order of the sums differs from the indexed kernels. */
-#define GG_M 32
+#define GG_M 64
 #define GG_N 32
 #define GG_K 32
 #define GG_THREADS 128
 template <typename F, bool PAIR>
 static inline void grouped(device const uchar *gw, device const uchar *uw, device const float *x, device float *y,
         device atomic_uint *error, constant IndexedArgs &ga, constant IndexedArgs &ua, device const uint *g,
-        uint2 group, uint tid, uint sg, threadgroup float *xs, threadgroup float *ws, threadgroup float *cs) {
+        uint2 group, uint tid, uint sg, threadgroup float *buf) {
+    /* x and weight tiles during the K loop, then the same 16 KB stage the results. */
+    threadgroup float *xs = buf, *ws = buf + GG_M * GG_K, *cs = buf;
     constant PackedArgs &p = ga.base, &q = ua.base;
     const uint E = ga.experts;
     device const uint *offsets = g + 2 * E, *tiles = g + 3 * E + 1, *order = g + 4 * E + 2;
@@ -325,11 +328,11 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
         if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    const uint sr = (sg / 2) * 16, sc = (sg % 2) * 16, M = PAIR ? 2 : 1;
-    simdgroup_float8x8 acc[2][2][2];
+    const uint sr = sg * 16, M = PAIR ? 2 : 1;
+    simdgroup_float8x8 acc[2][2][4];
     for (uint m = 0; m < 2; m++)
         for (uint i = 0; i < 2; i++)
-            for (uint j = 0; j < 2; j++) acc[m][i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+            for (uint j = 0; j < 4; j++) acc[m][i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
     constexpr uint CPS = GG_K / F::CHUNK; /* chunks per K step: 1, or 2 for Q2_K */
     for (uint k0 = 0; k0 < p.k_logical; k0 += GG_K) {
         const uint kc = min(uint(GG_K), p.k_logical - k0);
@@ -353,21 +356,21 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint kk = 0; kk < GG_K; kk += 8) {
-            simdgroup_float8x8 a[2], b[2];
+            simdgroup_float8x8 a[2], b[4];
             for (uint i = 0; i < 2; i++) simdgroup_load(a[i], xs + (sr + i * 8) * GG_K + kk, GG_K);
             for (uint m = 0; m < M; m++) {
-                for (uint j = 0; j < 2; j++)
-                    simdgroup_load(b[j], ws + (m * GG_N + sc + j * 8) * GG_K + kk, GG_K, ulong2(0, 0), true);
+                for (uint j = 0; j < 4; j++)
+                    simdgroup_load(b[j], ws + (m * GG_N + j * 8) * GG_K + kk, GG_K, ulong2(0, 0), true);
                 for (uint i = 0; i < 2; i++)
-                    for (uint j = 0; j < 2; j++) simdgroup_multiply_accumulate(acc[m][i][j], a[i], b[j], acc[m][i][j]);
+                    for (uint j = 0; j < 4; j++) simdgroup_multiply_accumulate(acc[m][i][j], a[i], b[j], acc[m][i][j]);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     for (uint m = 0; m < M; m++)
         for (uint i = 0; i < 2; i++)
-            for (uint j = 0; j < 2; j++)
-                simdgroup_store(acc[m][i][j], cs + m * GG_M * GG_N + (sr + i * 8) * GG_N + sc + j * 8, GG_N);
+            for (uint j = 0; j < 4; j++)
+                simdgroup_store(acc[m][i][j], cs + m * GG_M * GG_N + (sr + i * 8) * GG_N + j * 8, GG_N);
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint i = tid; i < GG_M * GG_N; i += GG_THREADS) {
         const uint r = i / GG_N, c = i % GG_N;
@@ -392,8 +395,8 @@ kernel void name(device const uchar *gw [[buffer(0)]], device const uchar *uw [[
         constant IndexedArgs &ga [[buffer(5)]], constant IndexedArgs &ua [[buffer(6)]], device const uint *g [[buffer(7)]], \
         uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
         uint sg [[simdgroup_index_in_threadgroup]]) { \
-    threadgroup float xs[GG_M * GG_K], ws[2 * GG_N * GG_K], cs[2 * GG_M * GG_N]; \
-    grouped<F, PAIR>(gw, uw, x, y, error, ga, ua, g, group, tid, sg, xs, ws, cs); \
+    threadgroup float buf[2 * GG_M * GG_N]; /* >= xs + ws: GG_M*GG_K + 2*GG_N*GG_K */ \
+    grouped<F, PAIR>(gw, uw, x, y, error, ga, ua, g, group, tid, sg, buf); \
 }
 GROUPED_KERNEL(q38_moe_grouped_gate_up_iq2_xxs, Q38Iq2Xxs, true)
 GROUPED_KERNEL(q38_moe_grouped_gate_up_q2_k, Q38Q2K, true)

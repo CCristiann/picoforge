@@ -22,14 +22,18 @@ kernel void q38d_rope_gpu(device const float *x [[buffer(0)]], device float *y [
         y[h*a.d+d]=value;
     }
 }
-kernel void q38d_pool_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    uint d [[thread_position_in_grid]]) {
+static inline void pool(device const float *x, device float *y, constant Q38DGpuArgs &a,
+    device atomic_uint *error, uint d) {
     float sum=0;
     for (uint t=0;t<a.n;++t) {
         float x0=x[t*a.d+d]; if (!isfinite(x0)) { fail(error,1); return; } sum+=x0;
     }
     float v=sum/float(a.n); if (!isfinite(v)) { fail(error,1); return; } y[d]=v;
+}
+kernel void q38d_pool_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint d [[thread_position_in_grid]]) {
+    pool(x,y,a,error,d);
 }
 kernel void q38d_scores_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
     device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
@@ -167,12 +171,12 @@ kernel void q38d_attend_gpu(device const float *q [[buffer(0)]], device const fl
  * like the oracle; more write (max, sum, acc[d]) partials that the merge combines in
  * split order. Same error bits as the oracle (1 nonfinite, 2 ids or gate range). */
 #define Q38D_SPLIT_HEADS 4
-kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
-    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
-    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    device float *part [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]],
-    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+/* Body shared with the R3.3 batch kernel: Q38DSplit carries the per-call m, n,
+ * keys per split (r) and split count (pos) that a.* holds for one token. */
+struct Q38DSplit { uint h, j, d, n, m, r, pos; };
+static inline void attend_split(device const float *q, device const float *gate, device const float *k,
+    device const float *v, device const uint *ids, device float *out, Q38DSplit a, device atomic_uint *error,
+    device float *part, uint2 tg, ushort sg, ushort lane) {
     const uint group=a.h/a.j, hps=(group+3)/4, g0=sg*hps, P=a.d/32, kv=tg.y;
     /* An invalid id anywhere: the oracle sets bit 2 alone and writes nothing (R2 review I1). */
     bool invalid=false;
@@ -228,13 +232,18 @@ kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device co
     if (bad) fail(error,1);
     if (range) fail(error,2);
 }
-/* Threadgroup h, thread f: combine the a.pos split partials of head h in split order. */
-kernel void q38d_attend_merge_gpu(device const float *gate [[buffer(1)]], device const uint *ids [[buffer(4)]],
-    device float *out [[buffer(5)]],
+kernel void q38d_attend_split_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    device const float *part [[buffer(8)]], uint h [[threadgroup_position_in_grid]],
-    uint f [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]]) {
-    threadgroup atomic_uint invalid;   /* the split kernel set bit 2 alone and wrote no partials */
+    device float *part [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    attend_split(q,gate,k,v,ids,out,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,part,tg,sg,lane);
+}
+/* Threadgroup h, thread f: combine the a.pos split partials of head h in split order. */
+static inline void attend_merge(device const float *gate, device const uint *ids, device float *out,
+    Q38DSplit a, device atomic_uint *error, device const float *part, uint h, uint f, uint tn,
+    threadgroup atomic_uint &invalid) {   /* the split kernel set bit 2 alone and wrote no partials */
     if (!f) atomic_store_explicit(&invalid,0,memory_order_relaxed);
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint i=f;i<a.m;i+=tn)
@@ -252,6 +261,14 @@ kernel void q38d_attend_merge_gpu(device const float *gate [[buffer(1)]], device
     if (!isfinite(l) || l<=0) { fail(error,1); return; }
     float y=o/l*gate[h*a.d+f]; if (!isfinite(y)) fail(error,1);
     out[h*a.d+f]=y;
+}
+kernel void q38d_attend_merge_gpu(device const float *gate [[buffer(1)]], device const uint *ids [[buffer(4)]],
+    device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device const float *part [[buffer(8)]], uint h [[threadgroup_position_in_grid]],
+    uint f [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]]) {
+    threadgroup atomic_uint invalid;
+    attend_merge(gate,ids,out,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,part,h,f,tn,invalid);
 }
 /* Device block selection, equivalent to q38d_select: block b is kept when
  * fewer than a.m blocks beat it (higher score, or equal score and smaller ID).
@@ -289,10 +306,8 @@ kernel void q38d_compact_gpu(device const uint *keep [[buffer(0)]], device uint 
  * ones in one thread: 31 us even at 3 blocks), then the block's first lane adds the
  * clamped dots in head order. Rank and compact: one simdgroup per block, lanes count
  * strided candidates, simd_sum adds them. */
-kernel void q38d_scores_fast_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
-    device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
-    device atomic_uint *error [[buffer(7)]], uint i [[thread_position_in_grid]],
-    uint lane [[thread_index_in_simdgroup]]) {
+static inline void scores_fast(device const float *q, device const float *k, device float *out,
+    Q38DSplit a, device atomic_uint *error, uint i, uint lane) {
     const uint b=i/Q38D_SCORE_LANES, h=i%Q38D_SCORE_LANES, first=lane-h;
     float dot=0; bool bad=false;
     if (b<a.n && h<a.h)
@@ -310,30 +325,38 @@ kernel void q38d_scores_fast_gpu(device const float *q [[buffer(0)]], device con
     if (bad || !isfinite(score)) { fail(error,1); return; }
     out[b]=score;
 }
+kernel void q38d_scores_fast_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
+    device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
+    device atomic_uint *error [[buffer(7)]], uint i [[thread_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    scores_fast(q,k,out,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,i,lane);
+}
 /* R2.8: q38d_rope_gpu with one thread per element instead of one per head (24 threads
  * each running 256 precise cos/sin in series: 33 us per call at any context). Each
  * element's arithmetic is the oracle's, so y is bit-identical; on a nonfinite value the
  * other elements are still written (outputs are unspecified once the word is set). */
-kernel void q38d_rope_fast_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    constant float *frequencies [[buffer(8)]], uint e [[thread_position_in_grid]]) {
+static inline void rope_fast(device const float *x, device float *y, constant Q38DGpuArgs &a, uint pos,
+    device atomic_uint *error, constant float *frequencies, uint e) {
     if (e>=a.h*a.d) return;
     uint h=e/a.d, d=e%a.d;
     float value=x[h*a.d+d];
     if (!isfinite(value)) { fail(error,1); return; }
     if (d<a.r) {
         uint i=d%(a.r/2); float frequency=frequencies[i];
-        float angle=float(a.pos)*frequency;
+        float angle=float(pos)*frequency;
         float other=x[h*a.d+(d<a.r/2 ? d+a.r/2 : d-a.r/2)];
         value=value*cos(angle)+(d<a.r/2 ? -other : other)*sin(angle);
     }
     if (!isfinite(value)) { fail(error,1); return; }
     y[h*a.d+d]=value;
 }
-kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
+kernel void q38d_rope_fast_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
-    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    constant float *frequencies [[buffer(8)]], uint e [[thread_position_in_grid]]) {
+    rope_fast(x,y,a,a.pos,error,frequencies,e);
+}
+static inline void rank_fast(device const float *scores, device uint *keep, Q38DSplit a,
+    device atomic_uint *error, uint g, ushort sg, ushort sn, ushort lane) {
     uint b=g*sn+sg;
     if (b>=a.n) return;
     float s=scores[b]; uint rank=0; bool bad=false;
@@ -345,10 +368,14 @@ kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device 
     if (simd_any(bad)) { if (!lane) { keep[b]=0; fail(error,1); } return; }
     if (!lane) keep[b]=rank<a.m ? 1u : 0u;
 }
-kernel void q38d_compact_fast_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
+kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
     uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
     ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    rank_fast(scores,keep,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,g,sg,sn,lane);
+}
+static inline void compact_fast(device const uint *keep, device uint *ids, Q38DSplit a,
+    device atomic_uint *error, uint g, ushort sg, ushort sn, ushort lane) {
     uint b=g*sn+sg;
     if (b>=a.n || !keep[b]) return;
     uint slot=0;
@@ -356,6 +383,12 @@ kernel void q38d_compact_fast_gpu(device const uint *keep [[buffer(0)]], device 
     slot=simd_sum(slot);
     if (slot>=a.m) { if (!lane) fail(error,2); return; }
     for (uint r=lane;r<a.r;r+=32) ids[slot*a.r+r]=b*a.r+r;
+}
+kernel void q38d_compact_fast_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    compact_fast(keep,ids,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,g,sg,sn,lane);
 }
 /* a.m = first tail slot, a.n = first tail token, a.pos = last visible token. */
 kernel void q38d_tail_gpu(device uint *ids [[buffer(0)]], constant Q38DGpuArgs &a [[buffer(6)]],
@@ -369,4 +402,100 @@ kernel void q38d_copy_gpu(device const float *x [[buffer(0)]], device float *y [
     float v=x[i];
     if (!isfinite(v)) fail(error,1);
     y[i]=v;
+}
+
+/* ---- R3.3 batched QSA prefill. The per-token loop of q38d_layer_encode ran
+ * ~9.5 dispatches per token, each behind a barrier. Here every stage covers
+ * the whole append: grid z is the token (or the completed block), and each
+ * kernel derives the token's position, visible blocks n, selection sel and
+ * tail exactly as the host loop does, then runs the same inline body as the
+ * per-token kernel: the bits are the loop's. Causality holds because a token
+ * reads only keys <= p and blocks < (p+1)/ratio, all written by earlier stages. */
+#define Q38D_MAX_SPLITS 64u /* mirror of qwen38_d_internal.h */
+struct Q38DBatch { uint pos0, step, x_stride, y_stride, ratio, budget, scores_stride, ids_stride, first, count; };
+static inline uint q38d_visible_blocks(constant Q38DBatch &b, uint z) { return (b.pos0+z+1)/b.ratio; }
+static inline uint q38d_selected(constant Q38DBatch &b, uint z) {
+    const uint n=q38d_visible_blocks(b,z), kb=b.budget/b.ratio; return n<kb ? n : kb;
+}
+kernel void q38d_rope_batch_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    constant float *frequencies [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]],
+    uint2 i [[thread_position_in_grid]]) {
+    if (i.y>=b.count) return;
+    rope_fast(x+(ulong)i.y*b.x_stride,y+(ulong)i.y*b.y_stride,a,b.pos0+i.y*b.step,error,frequencies,i.x);
+}
+kernel void q38d_pool_batch_gpu(device const float *x [[buffer(0)]], device float *y [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    constant Q38DBatch &b [[buffer(9)]], uint2 i [[thread_position_in_grid]]) {
+    if (i.x>=a.d || i.y>=b.count) return;
+    pool(x+(ulong)i.y*b.x_stride,y+(ulong)i.y*b.y_stride,a,error,i.x);
+}
+kernel void q38d_scores_batch_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
+    device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
+    device atomic_uint *error [[buffer(7)]], constant Q38DBatch &b [[buffer(9)]],
+    uint2 i [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    if (i.y>=b.count) return; /* uniform over the simdgroup: the grid's x is a multiple of 32 */
+    const uint n=q38d_visible_blocks(b,i.y);
+    scores_fast(q+(ulong)i.y*b.x_stride,k,out+(ulong)i.y*b.scores_stride,Q38DSplit{a.h,a.j,a.d,n,0,0,0},error,i.x,lane);
+}
+kernel void q38d_rank_batch_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    constant Q38DBatch &b [[buffer(9)]], uint2 g [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort sn [[simdgroups_per_threadgroup]],
+    ushort lane [[thread_index_in_simdgroup]]) {
+    if (g.y>=b.count) return;
+    const uint n=q38d_visible_blocks(b,g.y);
+    rank_fast(scores+(ulong)g.y*b.scores_stride,keep+(ulong)g.y*b.scores_stride,
+              Q38DSplit{0,0,0,n,q38d_selected(b,g.y),b.ratio,0},error,g.x,sg,sn,lane);
+}
+kernel void q38d_compact_batch_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    constant Q38DBatch &b [[buffer(9)]], uint2 g [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort sn [[simdgroups_per_threadgroup]],
+    ushort lane [[thread_index_in_simdgroup]]) {
+    if (g.y>=b.count) return;
+    const uint n=q38d_visible_blocks(b,g.y);
+    compact_fast(keep+(ulong)g.y*b.scores_stride,ids+(ulong)g.y*b.ids_stride,
+                 Q38DSplit{0,0,0,n,q38d_selected(b,g.y),b.ratio,0},error,g.x,sg,sn,lane);
+}
+/* The causal tail after the selected blocks: as q38d_tail_gpu with m = sel*ratio, n = blocks*ratio. */
+kernel void q38d_tail_batch_gpu(device uint *ids [[buffer(0)]], constant Q38DBatch &b [[buffer(9)]],
+    uint2 i [[thread_position_in_grid]]) {
+    if (i.y>=b.count) return;
+    const uint visible=b.pos0+i.y+1, n=visible/b.ratio;
+    if (n*b.ratio+i.x<=visible-1) ids[(ulong)i.y*b.ids_stride+q38d_selected(b,i.y)*b.ratio+i.x]=n*b.ratio+i.x;
+}
+/* Split attention of tokens first .. first+count-1 (grid z, one part slab each). */
+static inline Q38DSplit q38d_token_split(constant Q38DGpuArgs &a, constant Q38DBatch &b, uint z) {
+    const uint visible=b.pos0+z+1, m=q38d_selected(b,z)*b.ratio+visible%b.ratio;
+    uint s=(m+31)/32; s=s<1 ? 1 : (s>Q38D_MAX_SPLITS ? Q38D_MAX_SPLITS : s); /* q38d_attend_splits */
+    const uint keys=(m+s-1)/s;
+    return Q38DSplit{a.h,a.j,a.d,visible,m,keys,(m+keys-1)/keys};
+}
+kernel void q38d_split_batch_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device float *part [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]], uint3 tg [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint z=b.first+tg.z;
+    if (tg.z>=b.count) return;
+    const Q38DSplit s=q38d_token_split(a,b,z);
+    if (tg.x>=s.pos) return;
+    const ulong row=(ulong)z*a.h*a.d;
+    attend_split(q+row,gate+row,k,v,ids+(ulong)z*b.ids_stride,out+row,s,error,
+                 part+(ulong)tg.z*Q38D_MAX_SPLITS*a.h*(a.d+2),tg.xy,sg,lane);
+}
+kernel void q38d_merge_batch_gpu(device const float *gate [[buffer(1)]], device const uint *ids [[buffer(4)]],
+    device float *out [[buffer(5)]], constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device const float *part [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]], uint2 h [[threadgroup_position_in_grid]],
+    uint f [[thread_index_in_threadgroup]], uint2 tn [[threads_per_threadgroup]]) {
+    threadgroup atomic_uint invalid;
+    const uint z=b.first+h.y;
+    if (h.y>=b.count) return;
+    const Q38DSplit s=q38d_token_split(a,b,z);
+    if (s.pos==1) return; /* one split wrote out itself */
+    const ulong row=(ulong)z*a.h*a.d;
+    attend_merge(gate+row,ids+(ulong)z*b.ids_stride,out+row,s,error,part+(ulong)h.y*Q38D_MAX_SPLITS*a.h*(a.d+2),
+                 h.x,f,tn.x,invalid);
 }

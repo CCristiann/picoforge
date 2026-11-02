@@ -8,6 +8,36 @@ Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
 ~40 tok/s against DwarfStar ~580; 55% of it in dense linears that are matvecs
 rereading every matrix every 4 rows of x. Newest first.
 
+### R3.3 — batched QSA prefill (bit-identical) and 64-row grouped tiles
+
+8K profile after R3.2: prefill 78.7 s (R2: ~215), qsa.core 14.4 s first. Its
+cause: `q38d_layer_encode` ran ~9.5 dispatches per token behind barriers
+(113,580 per layer and chunk at N 1000). In an append each token reads only
+keys <= p and blocks < (p+1)/ratio, so all keys, index keys and completed
+blocks can be written first. From 32 tokens the layer now runs whole-append
+stages (`q38d_*_batch_gpu`): RoPE of q/k/iq for every token, pool + RMS + RoPE
+of the blocks completed in the append, then scores, rank, compact, tail per
+token in parallel and the split attention in groups of 32 tokens (bounded
+partials, 51 MB). Every batch kernel derives position, visible blocks,
+selection and tail as the host loop did and calls the per-token kernel's body,
+now an inline function: same bits. Checked: N 1000 logits bit-identical to the
+per-token run; `test-qwen38-g2-parts` (now given the batch scratch) passes its
+whole-append vs chunk-replay bitwise checks and the CPU tolerances, also at
+2053 tokens. qsa.core at N 1000: 826 -> 297 ms, 960 dispatches.
+
+Grouped MoE tiles 32 -> 64 rows (x and weights share one 16 KB stage with the
+results): N 1000 7.81 -> 7.69 s, small: the FP32 simdgroup GEMMs are bound by
+threadgroup loads and FP32 MMA (~2.2 TFLOPS on gate/up), not by the decode.
+
+Gates: fast-kernel attention/index/grouped subsets, g2, g2-state, g2-parts,
+MTP green; G3 scaled 2.08e-7; `Q38_REF_KERNELS=1` bit-identical to R0.
+
+8K prefill (one profiled run, AC): 69.9 s = 115 tok/s (R2 ~37, DwarfStar
+~580). Now: moe.gate_up 12.0 s, qsa.core 8.7, moe.down 8.3, gdn.proj 7.2,
+gdn.scan 7.1. The remaining 5x is mostly FP32 GEMM throughput: DwarfStar
+uses TensorOps (half inputs) for prefill, which is roadmap step R3.5, a
+reduced-precision mode that needs the user's go-ahead.
+
 ### R3.2 — grouped MoE: one GEMM per expert over the whole chunk
 
 The per-pair kernels read an expert's rows once per (token, slot): a
@@ -28,7 +58,7 @@ existing tolerances), bits of a pair independent of the others, refusal below
 256 pairs and under the reference selectors; suite 88/88.
 
 Bit-for-bit chunk invariance (one append of N tokens = N appends of one) no
-longer holds on the default path from 32 rows: declared in the spec. Four
+longer holds on the default path from 32 rows: declared in the spec. Five
 tests assumed it (MoE chunk split, GDN composition whole/token/chunks, PLE
 replay at 40 rows, graph state replay at 72 tokens, MTP at chunk 33); they now
 compare bit for bit under `Q38_REF_KERNELS=gemm` (or below 32 rows) and the

@@ -28,7 +28,9 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
     NSString *names[]={@"q38d_rope_gpu",@"q38d_pool_gpu",@"q38d_scores_gpu",@"q38d_attend_gpu",
         @"q38d_rank_gpu",@"q38d_compact_gpu",@"q38d_tail_gpu",@"q38d_copy_gpu",
         @"q38d_attend_split_gpu",@"q38d_attend_merge_gpu",
-        @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu",@"q38d_rope_fast_gpu"};
+        @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu",@"q38d_rope_fast_gpu",
+        @"q38d_rope_batch_gpu",@"q38d_pool_batch_gpu",@"q38d_scores_batch_gpu",@"q38d_rank_batch_gpu",
+        @"q38d_compact_batch_gpu",@"q38d_tail_batch_gpu",@"q38d_split_batch_gpu",@"q38d_merge_batch_gpu"};
     g->scalar_attention=getenv("Q38_QSA_SCALAR")!=NULL;
     g->reference=q38_ref_kernels("attention");
     if (g->scalar_attention) names[Q38D_ATTEND]=@"q38d_attend_scalar_gpu";
@@ -280,6 +282,95 @@ static Qwen38Status layer_check(Q38DGpu *g, Qwen38GpuCommand cmd,
     }
     return Q38_OK;
 }
+/* R3.3: one batch dispatch, grid (x, count); z rows of the batch kernel. */
+static void batch(Q38DGpu *g, Qwen38GpuCommand cmd, uint32_t op, const Q38DGpuArgs *a, const Q38DBatchArgs *b,
+        const Qwen38GpuSpan *v, size_t count, MTLSize grid, MTLSize threads, bool groups) {
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    bind(g,cmd,op,a,v,count);
+    if (count>6) [enc setBuffer:(__bridge id<MTLBuffer>)v[6].buffer offset:v[6].offset_bytes atIndex:8]; /* split partials */
+    [enc setBytes:b length:sizeof(*b) atIndex:9];
+    if (op==Q38D_ROPE_BATCH) {
+        float frequencies[128];
+        for (uint32_t i=0;i<a->r/2;++i) frequencies[i]=q38d_rope_frequency(a->theta,i,a->r);
+        [enc setBytes:frequencies length:a->r/2*sizeof(float) atIndex:8];
+    }
+    if (groups) [enc dispatchThreadgroups:grid threadsPerThreadgroup:threads];
+    else [enc dispatchThreads:grid threadsPerThreadgroup:threads];
+}
+static void wait_all(Qwen38GpuCommand cmd) {
+    [(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+static Qwen38GpuF32 rows3(Qwen38GpuF32 v, size_t n) { v.dim[0]=n; v.span.bytes=n*v.stride_bytes[0]; return v; }
+/* The per-token loop of q38d_layer_encode as whole-append stages (see
+ * qwen38_attention.metal, R3.3): keys, index keys and queries rotated for all
+ * tokens, then the blocks completed in the append pooled, normed and rotated,
+ * then scores, rank, compact, tail and split attention per token in parallel. */
+static Qwen38Status layer_batch(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
+        const Qwen38AttentionConfig *c, uint32_t pos0, uint32_t t, const Q38DGpuLayer *l, Qwen38Error *e) {
+    uint32_t h=c->heads, j=c->kv_heads, d=c->head_dim, hi=c->index_heads, di=c->index_dim, r=c->ratio;
+    uint32_t cap=(uint32_t)l->key_cache.dim[0], stride=cap/r, ids_stride=c->token_budget+r-1;
+    uint32_t n0=pos0/r, n1=(pos0+t)/r, nb=n1-n0;
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)cmd.device; Qwen38Status code;
+    const Qwen38GpuSpan need_v[]={l->bscores,l->bkeep,l->bids,l->bpart,l->bpooled.span,l->bpooled_n.span};
+    const size_t need[]={(size_t)t*stride*4,(size_t)t*stride*4,(size_t)t*ids_stride*4,
+        (size_t)Q38D_BATCH_SPLIT_TOKENS*Q38D_MAX_SPLITS*h*(d+2)*4,((size_t)nb+1)*di*4,((size_t)nb+1)*di*4};
+    for (size_t i=0;i<6;i++) {
+        if ((code=span(need_v[i],dev,need[i]))) return result(e,code);
+        if (overlaps(need_v[i],need[i],cmd.error_word,4)) return result(e,Q38_INVALID_ARGUMENT);
+    }
+    Q38DGpuArgs a={.h=h,.d=d,.r=c->rotary_dim,.theta=c->rope_theta};
+    Q38DBatchArgs b={.pos0=pos0,.step=1,.x_stride=h*d,.y_stride=h*d,.ratio=r,.budget=c->token_budget,
+        .scores_stride=stride,.ids_stride=ids_stride,.count=t};
+    batch(g,cmd,Q38D_ROPE_BATCH,&a,&b,(Qwen38GpuSpan[]){row(l->qn,0,t),row(l->qr,0,t)},2,
+          MTLSizeMake(h*d,t,1),MTLSizeMake(256,1,1),false);
+    a.h=j; b.x_stride=b.y_stride=j*d;
+    batch(g,cmd,Q38D_ROPE_BATCH,&a,&b,(Qwen38GpuSpan[]){row(l->kn,0,t),row(l->key_cache,pos0,t)},2,
+          MTLSizeMake(j*d,t,1),MTLSizeMake(256,1,1),false);
+    a.h=hi; a.d=di; b.x_stride=b.y_stride=hi*di;
+    batch(g,cmd,Q38D_ROPE_BATCH,&a,&b,(Qwen38GpuSpan[]){row(l->iqn,0,t),row(l->iqr,0,t)},2,
+          MTLSizeMake(hi*di,t,1),MTLSizeMake(256,1,1),false);
+    wait_all(cmd);
+    if (nb) { /* blocks n0 .. n1-1 complete in this append */
+        Q38DGpuArgs p={.h=1,.d=di,.n=r};
+        Q38DBatchArgs pb={.x_stride=r*di,.y_stride=di,.ratio=r,.count=nb};
+        batch(g,cmd,Q38D_POOL_BATCH,&p,&pb,(Qwen38GpuSpan[]){row(l->index_cache,(size_t)n0*r,(size_t)nb*r),l->bpooled.span},2,
+              MTLSizeMake(di,nb,1),MTLSizeMake(MIN(di,256u),1,1),false);
+        wait_all(cmd);
+        Q38CGpuSpec spec={.eps=c->rms_eps};
+        Qwen38GpuF32 vv[]={rows3(l->bpooled,nb),l->gamma_ik,rows3(l->bpooled_n,nb)};
+        if ((code=q38c_gpu_encode(ops,cmd,Q38C_RMS,&spec,vv,3,e))) return code;
+        wait_all(cmd);
+        Q38DGpuArgs rope={.h=1,.d=di,.r=c->rotary_dim,.theta=c->rope_theta};
+        Q38DBatchArgs rb={.pos0=n0*r,.step=r,.x_stride=di,.y_stride=di,.ratio=r,.count=nb};
+        batch(g,cmd,Q38D_ROPE_BATCH,&rope,&rb,(Qwen38GpuSpan[]){l->bpooled_n.span,row(l->block_cache,n0,nb)},2,
+              MTLSizeMake(di,nb,1),MTLSizeMake(MIN(di,256u),1,1),false);
+        wait_all(cmd);
+    }
+    if (n1) { /* token z sees blocks 0 .. (pos0+z+1)/r - 1 */
+        Q38DGpuArgs sa={.h=hi,.d=di}; b.x_stride=hi*di;
+        batch(g,cmd,Q38D_SCORES_BATCH,&sa,&b,(Qwen38GpuSpan[]){row(l->iqr,0,t),row(l->block_cache,0,n1),l->bscores},3,
+              MTLSizeMake((n1*Q38D_SCORE_LANES+31)/32*32,t,1),MTLSizeMake(256,1,1),false);
+        wait_all(cmd);
+        batch(g,cmd,Q38D_RANK_BATCH,&sa,&b,(Qwen38GpuSpan[]){l->bscores,l->bkeep},2,
+              MTLSizeMake((n1+7)/8,t,1),MTLSizeMake(256,1,1),true);
+        wait_all(cmd);
+        batch(g,cmd,Q38D_COMPACT_BATCH,&sa,&b,(Qwen38GpuSpan[]){l->bkeep,l->bids},2,
+              MTLSizeMake((n1+7)/8,t,1),MTLSizeMake(256,1,1),true);
+    }
+    batch(g,cmd,Q38D_TAIL_BATCH,&a,&b,&l->bids,1,MTLSizeMake(r,t,1),MTLSizeMake(MIN(r,256u),1,1),false);
+    wait_all(cmd);
+    Q38DGpuArgs at={.h=h,.j=j,.d=d};
+    for (uint32_t first=0;first<t;first+=Q38D_BATCH_SPLIT_TOKENS) {
+        b.first=first; b.count=MIN(Q38D_BATCH_SPLIT_TOKENS,t-first);
+        Qwen38GpuSpan v[]={row(l->qr,0,t),row(l->gate,0,t),row(l->key_cache,0,pos0+t),row(l->value_cache,0,pos0+t),
+            l->bids,row(l->out,0,t),l->bpart};
+        batch(g,cmd,Q38D_SPLIT_BATCH,&at,&b,v,7,MTLSizeMake(Q38D_MAX_SPLITS,j,b.count),MTLSizeMake(128,1,1),true);
+        wait_all(cmd);
+        batch(g,cmd,Q38D_MERGE_BATCH,&at,&b,v,7,MTLSizeMake(h,b.count,1),MTLSizeMake(d,1,1),true);
+        wait_all(cmd);
+    }
+    return result(e,Q38_OK);
+}
 Qwen38Status q38d_layer_encode(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
         const Qwen38AttentionConfig *c, uint32_t pos0, uint32_t t, const Q38DGpuLayer *l, Qwen38Error *e) {
     if (!g || !ops || !c || !l || !cmd.device || !cmd.compute_encoder) return result(e,Q38_INVALID_ARGUMENT);
@@ -304,6 +395,10 @@ Qwen38Status q38d_layer_encode(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
     helper(g,cmd,Q38D_COPY,&copy,(Qwen38GpuSpan[]){l->v.span,row(l->value_cache,pos0,t)},2,copy.n);
     copy.n=t*di;
     helper(g,cmd,Q38D_COPY,&copy,(Qwen38GpuSpan[]){l->ik.span,row(l->index_cache,pos0,t)},2,copy.n);
+    /* R3.3: a prefill append runs the same stages batched over its tokens, same bits. */
+    if (t>=Q38D_BATCH_MIN_TOKENS && !g->reference && !g->scalar_attention && hi<=Q38D_SCORE_LANES &&
+        l->bscores.buffer && l->part.buffer)
+        return layer_batch(g,ops,cmd,c,pos0,t,l,e);
     for (uint32_t i=0;i<t;++i) {
         uint32_t p=pos0+i, n=(p+1)/r, sel=n<kb ? n : kb;
         Q38DGpuArgs a={.h=h,.d=d,.r=c->rotary_dim,.pos=p,.theta=c->rope_theta};
