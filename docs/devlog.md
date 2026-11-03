@@ -8,6 +8,37 @@ Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
 ~40 tok/s against DwarfStar ~580; 55% of it in dense linears that are matvecs
 rereading every matrix every 4 rows of x. Newest first.
 
+### R3 closure — prefill 3.5x faster, 0.95x DwarfStar not reached
+
+Evidence: `bench/qwen38_r3_20261102/README.md`. 8K prefill (8063 IDs, chunk
+1024): R2 ~215 s -> **61.0 s FP32** (132 tok/s, paired 1+5) and **37.6 s
+with `--prefill-precision half`** (214 tok/s, a healthy alternating pair;
+three single runs 37.6-41.3 s). Against the same session's DwarfStar
+(365.9 tok/s, 3+6) that is 0.36x and 0.59x; against the ~580 tok/s of R2/R3,
+0.23x and 0.37x. The roadmap's 0.95x is not met, as R1's 0.95x was not.
+
+The run itself was poor and is recorded as such: the charger did not keep
+up (battery 12% -> 6% while "charging", one AC drop that aborted the first
+attempt), the machine slowed down near 6% (alternating pairs: FP32 60.8 ->
+106.8 -> 120.6 s, half 37.6 -> 75.2 -> 88.0 s, half faster in every pair),
+and DwarfStar was itself degraded (decode 17.5 tok/s against 30.1 in R2,
+prefill p10-p90 320-553) and stopped by the memory guard after 6 measured
+samples. The half 1+5 run fell entirely in the slow phase (decode 15.0 tok/s
+on the FP32 decode path) and is kept as evidence only.
+
+What R3 did: dense GEMM (R3.1), grouped MoE (R3.2), batched QSA (R3.3), and
+the opt-in TensorOps mode (R3.5). Where the 8K prefill goes now (N 1000
+profile, FP32 / half): moe.gate_up 1.45 / 0.63 s, moe.down 1.01 / 0.43,
+gdn.scan 0.88 / 0.89, gdn.proj 0.90 / 0.36, qsa.core 0.29 / 0.30. In half mode
+gdn.scan is first: the recurrence runs token by token. Backlog (not done,
+R3 step 4): chunked GDN delta rule, QSA attention with shared K/V, a router
+kept in FP32 inside the half mode (the likely source of most of its routing
+flips) and a flip-by-flip FP64 margin check of that mode.
+
+Gates at closure: test-qwen38, fast-kernels default and REF=1 (93 each),
+MTP, speculative, compare, CLI green; G3 PASS scaled 2.08e-7, 12/12;
+`Q38_REF_KERNELS=1` bit-identical to R0 (also with the half switch set).
+
 ### R3.5 — reduced-precision prefill on the Neural Accelerators (opt-in)
 
 Authorised by the user as a separate mode. `--prefill-precision half` (or
