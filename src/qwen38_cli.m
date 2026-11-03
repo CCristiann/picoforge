@@ -282,7 +282,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
  * as in the long form. The model defaults to $PICOFORGE_MODEL. A bare
  * ./picoforge keeps its old meaning (Qwen3-0.6B) unless that is set. */
 bool qwen38_short_form(int argc,char **argv) {
-    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--thinking",NULL};
+    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--thinking","--prefill-precision",NULL};
     if (argc==1) return getenv("PICOFORGE_MODEL")!=NULL;
     for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
     return false;
