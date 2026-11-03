@@ -41,7 +41,8 @@ static void usage(void) {
         "       [--repeat N] [--warmup N] [--replay-chunk N] [--runs-jsonl FILE]\n"
         "       [--session] (resident local worker protocol)\n"
         "       [--stop-after N] (SIGUSR1 also stops cooperatively)\n"
-        "       [--mtp] (one-token predictor, exact greedy verification)\n"
+        "       [--mtp] [--mtp-draft auto|0..3] (or $PICOFORGE_MTP_DRAFT; drafts per cycle, auto = cost model,\n"
+        "        $PICOFORGE_MTP_COST=c2,c3,c4,delta; exact greedy verification of up to 1+3 rows)\n"
         "       [--profile FILE.csv] (per-op GPU time of trunk appends; MTP appends are not profiled)\n"
         "       [--teacher-forced N] (--tokens only: prefill all but the last N IDs, append those one by one)\n"
         "       [--prefill-precision fp32|half] (or $PICOFORGE_PREFILL_PRECISION; half: prefill GEMMs on the\n"
@@ -161,13 +162,36 @@ static void append(Q38Run *r,const int32_t *ids,size_t n,const char *phase,int32
     else q38_check(qwen38_gpu_forward(r->graph,ids,n,r->c->trunk_blocks,r->y,NULL,NULL,&e),&e);
     r->last_count=n; accumulate(stats,r->graph);
 }
+/* Defaults measured in R4 (M2, docs/specs/qwen38/R4-mtp.md): n-row append cost
+ * relative to one row, and one draft. Priors start optimistic so drafting is tried. */
+void q38_policy_init(Q38Policy *p,const char *value,const char *costs) {
+    *p=(Q38Policy){.fixed=-1,.cost={0,1,1.63,2.22,2.68},.delta=0.10,.alpha={0.9,0.9,0.9}};
+    if (value && *value && strcmp(value,"auto")) p->fixed=(int)number(value,0,QWEN38_VERIFY_ROWS-1,"--mtp-draft");
+    if (costs && *costs) {
+        double v[4]; char tail;
+        if (sscanf(costs,"%lf,%lf,%lf,%lf%c",v,v+1,v+2,v+3,&tail)!=4 || !(v[0]>=1 && v[1]>=v[0] && v[2]>=v[1] && v[3]>=0))
+            die("PICOFORGE_MTP_COST must be c2,c3,c4,delta with 1 <= c2 <= c3 <= c4 and delta >= 0");
+        p->cost[2]=v[0]; p->cost[3]=v[1]; p->cost[4]=v[2]; p->delta=v[3];
+    }
+}
+/* k maximizing (1 + sum_j prod_{i<=j} alpha_i) / (cost[1+k] + k*delta); ties keep the smaller k. */
+size_t q38_policy_choose(const Q38Policy *p,size_t kmax) {
+    if (p->fixed>=0) return MIN((size_t)p->fixed,kmax);
+    size_t best=0; double best_v=1/p->cost[1],tokens=1,chain=1;
+    for (size_t k=1;k<=kmax;k++) {
+        chain*=p->alpha[k-1]; tokens+=chain;
+        double v=tokens/(p->cost[k+1]+(double)k*p->delta);
+        if (v>best_v*(1+1e-9)) { best=k; best_v=v; }
+    }
+    return best;
+}
 void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
     const Qwen38ConfigView *c=r->c; Qwen38GpuForward *graph=r->graph; Qwen38Error e;
     float *logits=r->logits; Qwen38F32Mut *y=&r->y; *t=(Q38Turn){.reason="length"};
-    size_t residual_offset=0,got=0; bool queued=false,catchup=false; int32_t catchup_id=0;
+    size_t residual_offset=0,got=0;
     /* T15c: plain greedy reads back only the id (GPU argmax). Logits rows stay for --logits
      * and MTP, which verify against them. */
-    const bool use_id=!r->mtp && !o.logfile; int32_t next_id=0;
+    const bool use_id=!o.logfile; int32_t next_id=0;
     t->prefill_start=q38_now();
     for (size_t start=0;start<count && !q38_stopped;start+=o.chunk) {
         size_t n=MIN((size_t)o.chunk,count-start); y->dim[0]=start+n==count ? 1 : 0;
@@ -202,63 +226,94 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
             if (o.logfile && fwrite(logits,4,c->vocab_size,o.logfile)!=c->vocab_size) die("logits write failed");
             generated[got++]=use_id ? next_id : greedy(logits,c->vocab_size);
         }
-    } else for (uint32_t step=0;step<MAX(o.max_new,1u) && !q38_stopped;step++) {
+    } else {
+    /* Decode. With MTP each cycle: catch the predictor up to the emitted id
+     * (pend: kept draft tokens whose pairs are still due), draft k tokens (k from
+     * the policy; chained after the first), verify [id, drafts] in one append,
+     * keep the accepted prefix (no replay) and emit it. k=0 is an ordinary append;
+     * the predictor still advances so later cycles can draft. */
+    Q38Policy *pol=&r->policy; const uint32_t vocab=c->vocab_size;
+    bool have_id=use_id; size_t pend_off=residual_offset,pend_n=0; int32_t pend[QWEN38_VERIFY_ROWS],probe=-1;
+    uint64_t mtp_done=r->mtp ? qwen38_gpu_mtp_info(graph).next_pos : 0;
+    for (uint32_t step=0;step<MAX(o.max_new,1u) && !q38_stopped;step++) {
         if (got==o.stop_after) { t->reason="cancelled"; break; }
-        if (o.logfile && fwrite(logits,4,c->vocab_size,o.logfile)!=c->vocab_size) die("logits write failed");
+        if (o.logfile && fwrite(logits,4,vocab,o.logfile)!=vocab) die("logits write failed");
         if (!o.max_new) break;
-        int32_t id=use_id ? next_id : greedy(logits,c->vocab_size);
+        int32_t id=have_id ? next_id : greedy(logits,vocab);
+        if (probe>=0) { pol->alpha[0]+=((probe==id)-pol->alpha[0])/8; probe=-1; }
         generated[got++]=id;
         if (qwen38_token_is_stop(r->tok,id)) t->reason="stop";
         else emit(r->decoder,&id,&o);
         if (t->first_token==0) { t->first_token=q38_now(); t->decode_start=t->first_token; }
         if (!strcmp(t->reason,"stop")) break;
         if (got==o.stop_after) { t->reason="cancelled"; break; }
-        if (step+1<o.max_new) {
-            if (queued) {
-                /* Both rows were already verified causally. The first has
-                 * just emitted b; the next iteration emits c from row 1. */
-                memcpy(logits,logits+c->vocab_size,(size_t)c->vocab_size*4);
-                queued=false; catchup=true; catchup_id=id;
-            } else if (r->mtp && o.max_new-got>=2 && o.stop_after-got>=2 &&
-                       r->capacity-qwen38_gpu_forward_info(graph).next_pos>=2) {
-                int32_t confirmed[2]={catchup ? catchup_id : id,id};
-                double part=q38_now();
-                q38_check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,*y,&e),&e);
-                t->draft_s+=q38_now()-part; accumulate(&t->mtp,graph); catchup=false;
-                if (q38_stopped) break;
-                int32_t draft=0;
-                for (uint32_t j=0;j<c->vocab_size;j++) {
-                    if (!isfinite(logits[j])) die("nonfinite MTP logit");
-                    if (logits[j]>logits[draft]) draft=(int32_t)j;
-                }
-                t->proposed++;
-                /* A proposed stop is checked using only a. It must never
-                 * enter the trunk cache, even when it is accepted. */
-                bool draft_stop=qwen38_token_is_stop(r->tok,draft);
-                Qwen38GpuCheckpoint snapshot; part=q38_now();
-                q38_check(qwen38_gpu_checkpoint_save(graph,&snapshot,&e),&e); t->snapshot_s+=q38_now()-part;
-                int32_t pair[2]={id,draft}; y->dim[0]=draft_stop ? 1 : 2; part=q38_now(); size_t saved_count=r->last_count;
-                append(r,pair,y->dim[0],"decode",NULL,&t->decode);
-                t->verify_s+=q38_now()-part; t->verified_tokens+=y->dim[0]; t->target_appends++; y->dim[0]=1;
-                if (q38_stopped) { q38_check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e); r->last_count=saved_count; break; }
-                int32_t target=0;
-                for (uint32_t j=1;j<c->vocab_size;j++) if (logits[j]>logits[target]) target=(int32_t)j;
-                if (target==draft) { t->accepted++; queued=!draft_stop; residual_offset=draft_stop ? 0 : 1; }
-                else if (!draft_stop) {
-                    part=q38_now(); q38_check(qwen38_gpu_checkpoint_restore(graph,snapshot,&e),&e);
-                    append(r,&id,1,"decode",NULL,&t->decode);
-                    t->replay_s+=q38_now()-part; t->rollback_count++; t->target_appends++; residual_offset=0;
-                } else residual_offset=0;
-            } else {
-                if (r->mtp && o.keep_predictor) {
-                    int32_t confirmed[2]={catchup ? catchup_id : id,id}; Qwen38F32Mut empty=*y; empty.dim[0]=0;
-                    q38_check(qwen38_gpu_mtp(graph,catchup ? 0 : residual_offset,confirmed,catchup ? 2 : 1,empty,&e),&e);
-                    accumulate(&t->mtp,graph); catchup=false;
-                }
-                append(r,&id,1,"decode",use_id ? &next_id : NULL,&t->decode);
-                t->target_appends++; residual_offset=0;
-            }
+        if (step+1>=o.max_new) break;
+        const uint64_t at=qwen38_gpu_forward_info(graph).next_pos;
+        size_t kmax=0;
+        if (r->mtp) {   /* drafts that can still be emitted, and verify rows that fit */
+            size_t room=MIN((size_t)o.max_new-got,(size_t)o.stop_after-got);
+            kmax=MIN((size_t)r->verify_rows-1,room ? room-1 : 0);
+            kmax=MIN(kmax,(size_t)(r->capacity-at)-1);
         }
+        size_t k=r->mtp ? q38_policy_choose(pol,kmax) : 0;
+        bool probing=r->mtp && !k && kmax && pol->fixed<0 && ++pol->idle>=8;
+        if (r->mtp && (k || kmax || o.keep_predictor)) {
+            int32_t pairs[QWEN38_VERIFY_ROWS+1]; memcpy(pairs,pend,pend_n*sizeof *pend); pairs[pend_n]=id;
+            Qwen38F32Mut row=*y; row.dim[0]=k || probing ? 1 : 0; double part=q38_now();
+            q38_check(qwen38_gpu_mtp_rewind(graph,mtp_done,&e),&e);
+            q38_check(qwen38_gpu_mtp(graph,pend_off,pairs,pend_n+1,row,&e),&e);
+            t->draft_s+=q38_now()-part; accumulate(&t->mtp,graph);
+            pend_n=0; mtp_done=qwen38_gpu_mtp_info(graph).next_pos;
+            if (probing) { probe=greedy(logits,vocab); pol->idle=0; }
+            if (q38_stopped) break;
+        }
+        t->depth[k]++;
+        if (!k) {
+            append(r,&id,1,"decode",use_id ? &next_id : NULL,&t->decode); have_id=use_id;
+            t->target_appends++; pend_off=0; continue;
+        }
+        int32_t d[QWEN38_VERIFY_ROWS]; size_t nd=0; double part=q38_now();
+        d[nd++]=greedy(logits,vocab);
+        while (nd<k && !qwen38_token_is_stop(r->tok,d[nd-1])) {
+            Qwen38F32Mut row=*y; row.dim[0]=1;
+            q38_check(qwen38_gpu_mtp_chain(graph,d[nd-1],row,&e),&e); accumulate(&t->mtp,graph);
+            d[nd++]=greedy(logits,vocab);
+        }
+        t->draft_s+=q38_now()-part;
+        /* A proposed stop is checked from the row before it and never enters the trunk. */
+        size_t live=nd; bool stop_draft=qwen38_token_is_stop(r->tok,d[nd-1]); if (stop_draft) live=nd-1;
+        int32_t rows_ids[QWEN38_VERIFY_ROWS]={id}; memcpy(rows_ids+1,d,live*sizeof *d);
+        size_t rows=1+live; y->dim[0]=rows; part=q38_now();
+        if (rows>1) {
+            q38_profile_begin_append(r->profile,"decode",at);
+            q38_check(qwen38_gpu_forward_verify(graph,rows_ids,rows,*y,&e),&e); accumulate(&t->decode,graph);
+        } else append(r,rows_ids,1,"decode",NULL,&t->decode);
+        y->dim[0]=1; t->verify_s+=q38_now()-part; t->verified_tokens+=rows; t->target_appends++;
+        size_t m=0; int32_t target=greedy(logits,vocab);
+        while (m<live && target==d[m]) { m++; target=greedy(logits+m*vocab,vocab); }
+        bool stop_ok=stop_draft && m==live && target==d[live];
+        for (size_t j=0;j<nd && j<=m;j++) {   /* each draft whose predecessors were all accepted */
+            bool ok=j<m || (j==live && stop_ok);
+            t->proposed_at[j]++; t->accepted_at[j]+=ok; pol->alpha[j]+=(ok-pol->alpha[j])/8;
+        }
+        t->proposed+=nd; t->accepted+=m+stop_ok; if (m<live) t->rollback_count++;
+        size_t keep=q38_stopped ? 1 : m+1;
+        if (rows>1) { part=q38_now(); q38_check(qwen38_gpu_forward_keep(graph,keep,&e),&e); t->replay_s+=q38_now()-part; }
+        r->last_count=keep; pend_off=0; have_id=false;
+        if (q38_stopped) break;
+        pend_n=m; memcpy(pend,d,m*sizeof *d);
+        bool done=false;
+        for (size_t j=0;j<m && !done;j++) {   /* row j's argmax is draft j */
+            if (o.logfile && fwrite(logits+j*vocab,4,vocab,o.logfile)!=vocab) die("logits write failed");
+            generated[got++]=d[j]; emit(r->decoder,&d[j],&o); step++;
+            if (got==o.stop_after) { t->reason="cancelled"; done=true; }
+        }
+        if (done) break;
+        if (m) memmove(logits,logits+m*vocab,(size_t)vocab*4);   /* row m: the next target token */
+    }
+    /* Leave the predictor at its confirmed position (a chained draft is speculative). */
+    if (r->mtp && qwen38_gpu_forward_info(graph).valid && qwen38_gpu_mtp_info(graph).next_pos>mtp_done)
+        q38_check(qwen38_gpu_mtp_rewind(graph,mtp_done,&e),&e);
     }
     t->end=q38_now(); if (q38_stopped) t->reason="cancelled";
     emit(r->decoder,NULL,&o); if (!o.session && !o.print) fputc('\n',stdout);
@@ -269,10 +324,12 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
     if (r->graph) qwen38_gpu_forward_destroy(r->graph);
     free(r->logits); r->graph=NULL; r->capacity=capacity; r->last_count=0;
     q38_check(qwen38_gpu_forward_create(&r->g,r->config,r->weights,r->store,r->device,r->library,
-        r->mtp ? MAX(chunk,2u) : chunk,capacity,r->mtp ? 2 : 1,&r->graph,&e),&e);
+        r->mtp ? MIN(MAX(chunk,(uint32_t)QWEN38_VERIFY_ROWS),capacity) : chunk,capacity,
+        r->mtp ? MIN((uint32_t)QWEN38_VERIFY_ROWS,capacity) : 1,&r->graph,&e),&e);
+    r->verify_rows=r->mtp ? MIN((uint32_t)QWEN38_VERIFY_ROWS,capacity) : 1;
     if (r->mtp) q38_check(qwen38_gpu_mtp_enable(r->graph,&e),&e);
     if (r->profile) q38_check(q38g_forward_set_profile(r->graph,r->profile,&e),&e);
-    const uint32_t vocab=r->c->vocab_size; size_t bytes=(size_t)vocab*4*(r->mtp ? 2u : 1u);
+    const uint32_t vocab=r->c->vocab_size; size_t bytes=(size_t)vocab*4*r->verify_rows;
     r->logits=malloc(bytes); if (!r->logits) die("logits allocation");
     r->y=(Qwen38F32Mut){.data=r->logits,.capacity_bytes=bytes,.rank=2,.dim={1,vocab},.stride_bytes={(size_t)vocab*4,4}};
     if (r->decoder) qwen38_decoder_reset(r->decoder);
@@ -282,7 +339,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
  * as in the long form. The model defaults to $PICOFORGE_MODEL. A bare
  * ./picoforge keeps its old meaning (Qwen3-0.6B) unless that is set. */
 bool qwen38_short_form(int argc,char **argv) {
-    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--thinking","--prefill-precision",NULL};
+    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision",NULL};
     if (argc==1) return getenv("PICOFORGE_MODEL")!=NULL;
     for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
     return false;
@@ -326,12 +383,14 @@ int qwen38_cli(int argc,char **argv) {
     const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
     bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false;
+    const char *mtp_draft=getenv("PICOFORGE_MTP_DRAFT");
     { const char *p=getenv("PICOFORGE_PREFILL_PRECISION");
       if (p && *p && strcmp(p,"fp32") && strcmp(p,"half")) die("PICOFORGE_PREFILL_PRECISION must be fp32 or half"); }
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
         if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
+        if (!strcmp(opt,"--mtp-draft")) { if (i+1==argc) die("missing value for %s",opt); mtp=true; mtp_draft=argv[++i]; continue; }
         if (!strcmp(opt,"--thinking")) { thinking=true; continue; }
         if (!strcmp(opt,"--encode-only")) { encode_only=true; continue; }
         if (!strcmp(opt,"--bench")) { bench=true; continue; }
@@ -397,6 +456,7 @@ int qwen38_cli(int argc,char **argv) {
     if (sigaction(SIGUSR1,&action,NULL)) die("cannot install stop handler");
     @autoreleasepool {
         Q38Run run={.chunk=chunk_request,.mtp=mtp}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
+        q38_policy_init(&r->policy,mtp_draft,getenv("PICOFORGE_MTP_COST"));
         gguf_open(argv[2],&r->g);
         q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
         q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);
@@ -505,9 +565,12 @@ int qwen38_cli(int argc,char **argv) {
             if (forced) fprintf(runs,",\"mode\":\"teacher-forced\",\"forced_tokens\":%u",forced);
             fprintf(runs,",\"mtp\":{\"enabled\":%s,\"proposed\":%zu,\"accepted\":%zu,\"rollback_count\":%zu,"
                 "\"target_decode_appends\":%zu,\"verified_tokens\":%zu,\"prefill_s\":%.9f,\"draft_s\":%.9f,"
-                "\"verify_s\":%.9f,\"snapshot_s\":%.9f,\"replay_s\":%.9f,\"checkpoint_host_bytes\":%zu}",
+                "\"verify_s\":%.9f,\"snapshot_s\":%.9f,\"replay_s\":%.9f,\"checkpoint_host_bytes\":%zu,"
+                "\"draft\":%d,\"depth\":[%zu,%zu,%zu,%zu],\"proposed_at\":[%zu,%zu,%zu],\"accepted_at\":[%zu,%zu,%zu]}",
                 mtp ? "true":"false",t.proposed,t.accepted,t.rollback_count,t.target_appends,t.verified_tokens,
-                t.mtp_prefill_s,t.draft_s,t.verify_s,t.snapshot_s,t.replay_s,qwen38_gpu_checkpoint_bytes(graph));
+                t.mtp_prefill_s,t.draft_s,t.verify_s,t.snapshot_s,t.replay_s,qwen38_gpu_checkpoint_bytes(graph),
+                r->policy.fixed,t.depth[0],t.depth[1],t.depth[2],t.depth[3],t.proposed_at[0],t.proposed_at[1],t.proposed_at[2],
+                t.accepted_at[0],t.accepted_at[1],t.accepted_at[2]);
             stats_json(runs,"mtp_profile",t.mtp);
             stats_json(runs,"prefill_profile",t.prefill); stats_json(runs,"decode_profile",t.decode);
             fputs("}\n",runs); fflush(runs);
