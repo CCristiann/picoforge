@@ -1,0 +1,78 @@
+{
+  "code": {
+    "picoforge": {
+      "median": 33.20059637919451,
+      "p10": 33.164698241722604,
+      "p90": 33.22392981013178,
+      "n": 8
+    },
+    "dwarfstar": {
+      "median": 45.795,
+      "p10": 45.74,
+      "p90": 45.88,
+      "n": 8
+    },
+    "ratio_picoforge_over_dwarfstar": 0.7249829976895842,
+    "warmups_excluded": 2,
+    "picoforge_acceptance": 0.7692307692307693,
+    "dwarfstar_acceptance": 0.9180327868852459,
+    "on_battery": false
+  },
+  "chat": {
+    "picoforge": {
+      "median": 25.635671308911732,
+      "p10": 25.619182352700292,
+      "p90": 25.64616730145979,
+      "n": 8
+    },
+    "dwarfstar": {
+      "median": 39.485,
+      "p10": 39.44,
+      "p90": 39.52,
+      "n": 8
+    },
+    "ratio_picoforge_over_dwarfstar": 0.6492508879045645,
+    "warmups_excluded": 2,
+    "picoforge_acceptance": 0.525,
+    "dwarfstar_acceptance": 0.6710526315789473,
+    "on_battery": false
+  },
+  "story": {
+    "picoforge": {
+      "median": 27.029022774382412,
+      "p10": 26.964771057416066,
+      "p90": 27.06511055777996,
+      "n": 8
+    },
+    "dwarfstar": {
+      "median": 35.67,
+      "p10": 35.45,
+      "p90": 35.79,
+      "n": 8
+    },
+    "ratio_picoforge_over_dwarfstar": 0.7577522504732944,
+    "warmups_excluded": 2,
+    "picoforge_acceptance": 0.5862068965517241,
+    "dwarfstar_acceptance": 0.5060240963855421,
+    "on_battery": false
+  },
+  "count": {
+    "picoforge": {
+      "median": 40.988580432424364,
+      "p10": 40.59728516044559,
+      "p90": 41.032772261329,
+      "n": 8
+    },
+    "dwarfstar": {
+      "median": 53.075,
+      "p10": 52.25,
+      "p90": 53.58,
+      "n": 8
+    },
+    "ratio_picoforge_over_dwarfstar": 0.7722765978789329,
+    "warmups_excluded": 2,
+    "picoforge_acceptance": 1.0,
+    "dwarfstar_acceptance": 1.0,
+    "on_battery": false
+  }
+}

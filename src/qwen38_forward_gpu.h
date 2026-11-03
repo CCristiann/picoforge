@@ -48,6 +48,22 @@ Qwen38StateInfo qwen38_gpu_mtp_info(const Qwen38GpuForward *);
  * predictor unchanged. Saving/reset/restore invalidates previous handles.
  * Restore advances the trunk epoch and restores PLE hash history as well as
  * all device histories and the last trunk residual. */
+/* R4 speculative verify: 1 confirmed token + up to 3 drafts in one append.
+ * Needs MTP enabled (it allocates the per-row snapshots). The append is an
+ * ordinary one (logits rows as qwen38_gpu_forward) that also records, for rows
+ * 0..count-2, the recurrent state and convolution/n-gram histories. keep(n)
+ * then keeps the first n rows (1..count) and drops the rest without replay:
+ * the state equals n ordinary appends of those tokens, bit for bit. A pending
+ * verify ends at keep, reset, or the next trunk append. */
+#define QWEN38_VERIFY_ROWS 4
+Qwen38Status qwen38_gpu_forward_verify(Qwen38GpuForward *,const int32_t *,size_t count,
+    Qwen38F32Mut logits,Qwen38Error *);
+Qwen38Status qwen38_gpu_forward_keep(Qwen38GpuForward *,size_t keep,Qwen38Error *);
+/* R4 chained draft: the predictor on its own last output row and `token`, one
+ * position past its last row. Speculative: mtp_rewind(position) must return the
+ * predictor to its confirmed position before the next qwen38_gpu_mtp. */
+Qwen38Status qwen38_gpu_mtp_chain(Qwen38GpuForward *,int32_t token,Qwen38F32Mut logits,Qwen38Error *);
+Qwen38Status qwen38_gpu_mtp_rewind(Qwen38GpuForward *,uint64_t position,Qwen38Error *);
 typedef struct { const void *owner; uint64_t epoch,serial,position,mtp_position; } Qwen38GpuCheckpoint;
 Qwen38Status qwen38_gpu_checkpoint_save(Qwen38GpuForward *,Qwen38GpuCheckpoint *,Qwen38Error *);
 Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *,Qwen38GpuCheckpoint,Qwen38Error *);

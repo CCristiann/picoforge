@@ -50,7 +50,8 @@ measurement flag. Never run two processes with the checkpoint loaded at once
 and mapping the file again in that window froze this Mac twice. Scripted
 real runs go through `tools/qwen38_gpu_lock.py` and the guarded launcher.
 
-Useful flags: `--mtp` (multi-token prediction with exact greedy verification),
+Useful flags: `--mtp` (multi-token prediction with exact greedy verification; up to 3
+drafts per cycle chosen by a measured cost model, `--mtp-draft 0..3` fixes the depth),
 `--thinking`, `--complete TEXT`, `--logits FILE.f32`, `--token-ids FILE.json`.
 
 ## How correctness is checked

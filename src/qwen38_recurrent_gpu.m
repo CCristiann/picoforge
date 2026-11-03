@@ -275,6 +275,10 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     return q38c_error(e,Q38_OK,NULL);
 }
 
+/* Row r of a [T,...] view, as a one-row view (R4 per-row scan). */
+static Qwen38GpuF32 row_view(Qwen38GpuF32 v, size_t r) {
+    v.span.offset_bytes+=r*v.stride_bytes[0]; v.dim[0]=1; v.span.bytes=v.stride_bytes[0]; return v;
+}
 static Qwen38GpuF32 group_view(Qwen38GpuF32 v, size_t groups, size_t width) {
     v.rank=3; v.dim[1]=groups; v.dim[2]=width; v.stride_bytes[1]=width*4; v.stride_bytes[2]=4; return v;
 }
@@ -364,7 +368,13 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     MARK("gdn.prep",Q38_PROFILE_NONE,0);
     OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));
     MARK("gdn.scan",Q38_PROFILE_NONE,0);
-    OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));
+    if (w->snap && w->snap_rows) {   /* R4: per-row scan, state copied after rows 0..snap_rows-1 */
+        for (size_t r=0;r<t;r++) {
+            OP(GDN_SCAN,row_view(V(PREP),r),row_view(V(LOGG),r),row_view(V(BETA),r),w->state,
+               group_view(row_view(V(SCAN),r),hv,dv));
+            if (r<w->snap_rows) { w->snap(w->snap_ctx,&cmd,r); enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; }
+        }
+    } else OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));
     MARK("gdn.norm",Q38_PROFILE_NONE,0);
     OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));
     MARK("gdn.out",TYPE(OUT),BYTES(OUT));

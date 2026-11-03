@@ -466,5 +466,40 @@ class CompareTests(unittest.TestCase):
             self.assertEqual(calls[0][1][0], str(old/'picoforge'))
 
 
+class MtpCompareTests(unittest.TestCase):
+    """R4 `mtp` mode: free greedy generation with each engine's own MTP."""
+    def test_mtp_run_commands_alternation_and_summary(self):
+        calls = []
+        def launch(d, cwd, cmd, timeout):
+            calls.append(cmd); (d/'process').mkdir(parents=True)
+            dump = lambda p, x: p.write_text(json.dumps(x))  # noqa: E731
+            dump(d/'conditions.json', dict(before=dict(ac_power=True), after=dict(ac_power=True)))
+            if cmd[0].endswith('picoforge'):
+                (d/'runs.jsonl').write_text(json.dumps(dict(decode_tokens=127, decode_s=127/25, generated_ids=[1],
+                    mtp=dict(proposed=10, accepted=8, depth=[0, 10, 0, 0]))) + '\n')
+            else:
+                (d/'process/stderr.log').write_text('ds4: Qwen3.8 mtp: 60 verify cycles, 45 drafts accepted (75.0%)\n'
+                                                    'ds4: prefill: 90.00 t/s, generation: 31.00 t/s\n')
+            return 0
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)/'out'
+            with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
+                    patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
+                qc.mtp_run(out, ['count'], {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 'auto', 10, launch, AWAKE)
+            self.assertEqual([c[0].split('/')[-1] for c in calls], ['picoforge', 'ds4']*3)
+            pico, ds4 = calls[0], calls[1]
+            self.assertEqual(pico[pico.index('--mtp-draft') + 1], 'auto')
+            self.assertEqual(pico[pico.index('--chat') + 1], qc.MTP_PROMPTS['count'])
+            for flag in ('--mtp', '--nothink'): self.assertIn(flag, ds4)
+            self.assertEqual(ds4[ds4.index('--temp') + 1], '0')
+            summary = json.loads((out/'summary.json').read_text())['count']
+            self.assertAlmostEqual(summary['ratio_picoforge_over_dwarfstar'], 25/31)
+            self.assertEqual((summary['picoforge_acceptance'], summary['dwarfstar_acceptance']), (0.8, 0.75))
+    def test_plain_mode_drops_mtp_flags(self):
+        for engine in qc.ENGINES:
+            cmd, _ = qc.mtp_command(engine, 'x', Path('/tmp/d'), None)
+            self.assertFalse(any(a.startswith('--mtp') for a in cmd))
+
+
 if __name__ == '__main__':
     unittest.main()

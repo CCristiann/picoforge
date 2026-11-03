@@ -439,6 +439,103 @@ def ssd_check(out, timeout, launch=None):
           (f" ({info['stop_reason']})" if info['stop_reason'] else ''))
 
 
+# R4: free greedy generation on chat prompts, both engines with their own MTP
+# (picoforge --mtp-draft X, ds4 --mtp) or both plain. Same texts as the R4 spec.
+MTP_PROMPTS = {
+    'code': 'Scrivi una funzione Python che legge un file CSV e restituisce la media di ogni colonna numerica. '
+            'Rispondi solo con il codice.',
+    'chat': 'Scrivi cinque consigli per verificare un backup.',
+    'story': 'Racconta una breve storia su un guardiano del faro che trova una lettera in una bottiglia.',
+    'count': 'Conta da 1 a 80, un numero per riga, senza altro testo.',
+}
+MTP_NEW = 128
+MTP_PROTOCOL = ('One process per sample, engines alternating in blocks: chat template, no thinking, greedy, '
+                f'{MTP_NEW} new tokens, context {CONTEXT}. tok/s: picoforge decode_tokens/decode_s, ds4 '
+                '"generation: X t/s". Both include draft, verify and rollback. Warm-ups discarded. '
+                'Free generation: the two engines need not emit the same tokens.')
+
+
+def mtp_command(engine, prompt, d, draft):
+    """draft: picoforge --mtp-draft value, or None for both engines without MTP."""
+    if engine == 'picoforge':
+        return [str(ENGINE), '--qwen38', str(CHECKPOINT), '--chat', prompt, '--max-new', str(MTP_NEW),
+                '--context', str(CONTEXT), '--chunk', '128', '--runs-jsonl', str(d/'runs.jsonl'),
+                '--token-ids', str(d/'ids.json'), *(['--mtp-draft', draft] if draft else [])], ROOT
+    return [str(DWARFSTAR/'ds4'), '-m', str(CHECKPOINT), '-p', prompt, '-n', str(MTP_NEW), '--ctx', str(CONTEXT),
+            '--temp', '0', '--nothink', *(['--mtp', '--mtp-timing'] if draft else [])], DWARFSTAR
+
+
+def mtp_result(engine, d):
+    """tok/s and draft acceptance of one free-generation sample."""
+    if engine == 'picoforge':
+        r = json.loads((d/'runs.jsonl').read_text().splitlines()[-1])
+        m = r['mtp']
+        return dict(tok_s=r['decode_tokens']/r['decode_s'], decode_tokens=r['decode_tokens'],
+                    generated_ids=r['generated_ids'], proposed=m['proposed'], accepted=m['accepted'],
+                    depth=m.get('depth'))
+    return ds4_result((d/'process/stderr.log').read_text())
+
+
+def ds4_result(stderr):
+    import re
+    speed = re.findall(r'generation: ([0-9.]+) t/s', stderr)
+    if not speed:
+        raise RuntimeError('ds4 printed no generation speed')
+    cycles = re.findall(r'mtp: (\d+) verify cycles, (\d+) drafts accepted', stderr)
+    out = dict(tok_s=float(speed[-1]), decode_tokens=None)
+    if cycles:
+        out.update(proposed=int(cycles[-1][0]), accepted=int(cycles[-1][1]))
+    return out
+
+
+def mtp_run(out, prompts, counts, block, draft, timeout, launch=None, awake=awake):
+    """Alternate engine blocks per prompt; summary per prompt in summary.json."""
+    launch = launch or Launcher()
+    require_awake(awake())
+    out.mkdir(parents=True, exist_ok=False)
+    plan = schedule(counts, block)
+    manifest = dict(complete=False, prompts={k: MTP_PROMPTS[k] for k in prompts}, counts=counts, block=block,
+                    plan=plan, draft=draft, protocol=MTP_PROTOCOL, guard=GUARD, **provenance(bounded()[1]),
+                    before=dict(conditions(), thermal_state=thermal()))
+    dump(out/'manifest.json', manifest)
+    n = 0
+    for name in prompts:
+        for engine, flags in plan:
+            for warmup in flags:
+                d = out/(f'{n:03d}-{name}-{engine}' + ('-warmup' if warmup else ''))
+                cmd, cwd = mtp_command(engine, MTP_PROMPTS[name], d, draft)
+                code = launch(d, cwd, cmd, timeout)
+                if code:
+                    raise RuntimeError(f'{d.name} failed (code {code}{stop_note(d)}); raw evidence retained')
+                around = json.loads((d/'conditions.json').read_text())
+                row = dict(index=n, prompt=name, engine=engine, warmup=warmup, **mtp_result(engine, d),
+                           ac_power=around['before']['ac_power'] and around['after']['ac_power'], command=cmd)
+                with (out/'samples.jsonl').open('a') as fh:
+                    fh.write(json.dumps(row) + '\n')
+                n += 1
+    manifest.update(complete=True, after=dict(conditions(), thermal_state=thermal()))
+    dump(out/'manifest.json', manifest)
+    mtp_summarize(out)
+
+
+def mtp_summarize(out):
+    samples = [json.loads(line) for line in (out/'samples.jsonl').read_text().splitlines()]
+    result = {}
+    for name in dict.fromkeys(s['prompt'] for s in samples):
+        rows = [s for s in samples if s['prompt'] == name]
+        r = summary(rows)
+        for e in ENGINES:
+            m = [s for s in rows if s['engine'] == e and not s['warmup'] and s.get('proposed')]
+            r[f'{e}_acceptance'] = sum(s['accepted'] for s in m)/sum(s['proposed'] for s in m) if m else None
+        r['on_battery'] = any(not s['ac_power'] for s in rows)
+        result[name] = r
+        p, d = r['picoforge'], r['dwarfstar']
+        print(f"{name}: picoforge {p['median']:.2f} [{p['p10']:.2f}, {p['p90']:.2f}] tok/s, "
+              f"DwarfStar {d['median']:.2f} [{d['p10']:.2f}, {d['p90']:.2f}], ratio "
+              f"{r['ratio_picoforge_over_dwarfstar']:.3f}" if p and d else f'{name}: {r}')
+    dump(out/'summary.json', result)
+
+
 def frozen_case(directory=FROZEN):
     """The 9-ID coding prompt and its recorded 32-ID greedy continuation."""
     command = json.loads((directory/'ordinary/process.json').read_text())['command']
@@ -467,6 +564,14 @@ def main():
     r.add_argument('--picoforge-bin', type=Path, metavar='DIR',
                    help='saved older build holding picoforge + picoforge.metallib (default: this tree)')
     r.add_argument('--timeout', type=float, default=RUN_TIMEOUT, help='seconds per process')
+    m = sub.add_parser('mtp', help='R4: free greedy generation, both engines with MTP (or --plain)')
+    m.add_argument('output', type=Path)
+    m.add_argument('--prompts', default=','.join(MTP_PROMPTS))
+    for name in ('warmup', 'measure', 'block'):
+        m.add_argument('--' + name, type=int, required=True)
+    m.add_argument('--draft', default='auto', help='picoforge --mtp-draft value (ds4 runs --mtp)')
+    m.add_argument('--plain', action='store_true', help='neither engine uses MTP')
+    m.add_argument('--timeout', type=float, default=RUN_TIMEOUT)
     sub.add_parser('summarize', help='recompute the summary of a run').add_argument('output', type=Path)
     s = sub.add_parser('ssd-check', help='one ds4 --ssd-streaming attempt')
     s.add_argument('output', type=Path)
@@ -474,9 +579,19 @@ def main():
     a = p.parse_args()
     out = a.output.resolve()
     if a.action == 'summarize':
-        return summarize(out)
+        free = 'prompts' in json.loads((out/'manifest.json').read_text())   # an `mtp` run
+        return mtp_summarize(out) if free else summarize(out)
     if out.exists():
         p.error(f'output exists, never overwritten: {out}')
+    if a.action == 'mtp':
+        prompts = a.prompts.split(',')
+        if any(k not in MTP_PROMPTS for k in prompts):
+            p.error(f'prompts must be among {",".join(MTP_PROMPTS)}')
+        counts = {e: (a.warmup, a.measure) for e in ENGINES}
+        try:
+            schedule(counts, a.block)
+        except ValueError as e:
+            p.error(str(e))
     if a.action == 'run':
         counts = {'picoforge': (a.warmup if a.picoforge_warmup is None else a.picoforge_warmup,
                                 a.measure if a.picoforge_measure is None else a.picoforge_measure),
@@ -492,6 +607,8 @@ def main():
     require_lock()
     if a.action == 'prepare':
         prepare(out, Engines(out), CORPUS, frozen_case())
+    elif a.action == 'mtp':
+        mtp_run(out, prompts, counts, a.block, None if a.plain else a.draft, a.timeout)
     elif a.action == 'run':
         run(a.suite.resolve(), out, a.frontier, counts, a.block, a.timeout,
             bin_dir=a.picoforge_bin and a.picoforge_bin.resolve())

@@ -15,6 +15,9 @@ import unittest
 import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 GGUF=ROOT/'build/qwen38-mtp/cli.gguf'
+# R4: fixed depths 1..3 (chained drafts) and the cost-model policy must all emit
+# exactly the ordinary greedy tokens and logits rows.
+DRAFTS=('1','2','3','auto')
 
 
 def control(path, predictor):
@@ -50,26 +53,33 @@ class Speculative(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-mtp'); self.path=Path(self.tmp.name); self.serial=0
     def tearDown(self): self.tmp.cleanup()
-    def run_cli(self,gguf,mtp=True,tokens=(1,),n=8,chunk=3,context=32,extra=()):
+    def run_cli(self,gguf,mtp=True,tokens=(1,),n=8,chunk=3,context=32,extra=(),draft='1'):
         self.serial+=1; out=self.path/f'run{self.serial}.jsonl'; logits=self.path/f'run{self.serial}.f32'
         cmd=[str(ROOT/'picoforge'),'--qwen38',str(gguf),'--tokens',','.join(map(str,tokens)),
              '--max-new',str(n),'--chunk',str(chunk),'--context',str(context),'--runs-jsonl',str(out),
-             '--logits',str(logits),*(['--mtp'] if mtp else []),*extra]
+             '--logits',str(logits),*(['--mtp-draft',draft] if mtp else []),*extra]
         p=subprocess.run(cmd,cwd=ROOT,capture_output=True,timeout=45)
         self.assertEqual(p.returncode,0,p.stderr.decode(errors='replace'))
         records=[json.loads(s) for s in out.read_text().splitlines()]
         return records,np.fromfile(logits,'<f4')
     def test_accept_reject_false_stop_and_verified_stop(self):
         for predictor in ('perfect','wrong','stop'):
-            with self.subTest(predictor=predictor):
-                gguf=self.path/f'{predictor}.gguf'; control(gguf,predictor)
-                ordinary,ref=self.run_cli(gguf,False)
-                rows,actual=self.run_cli(gguf)
+          gguf=self.path/f'{predictor}.gguf'; control(gguf,predictor)
+          ordinary,ref=self.run_cli(gguf,False)
+          for draft in DRAFTS:
+            with self.subTest(predictor=predictor,draft=draft):
+                rows,actual=self.run_cli(gguf,draft=draft)
                 self.assertEqual(rows[0]['generated_ids'],[2,3,4,5,258])
                 self.assertEqual(rows[0]['generated_ids'],ordinary[0]['generated_ids'])
                 np.testing.assert_array_equal(actual.view('<u4'),ref.view('<u4'))
                 metric=rows[0]['mtp']; self.assertGreater(metric['proposed'],0)
                 self.assertEqual(rows[0]['stop_reason'],'stop')
+                # proposed_at counts a draft only when all drafts before it were accepted
+                self.assertLessEqual(sum(metric['proposed_at']),metric['proposed'])
+                self.assertEqual(sum(metric['accepted_at']),metric['accepted'])
+                if predictor=='perfect':
+                    self.assertEqual(metric['accepted'],metric['proposed']); self.assertEqual(metric['rollback_count'],0)
+                if draft!='1': continue
                 if predictor=='perfect':
                     self.assertEqual(metric['accepted'],metric['proposed']); self.assertEqual(metric['rollback_count'],0)
                 elif predictor=='wrong':
@@ -82,9 +92,11 @@ class Speculative(unittest.TestCase):
         first,_=self.run_cli(gguf,tokens=(5,)); self.assertEqual(first[0]['generated_ids'],[258]); self.assertEqual(first[0]['mtp']['proposed'],0)
         for n in (0,1,2,3,4,5):
             for stop in (0,1,2,3,7):
-                with self.subTest(n=n,stop=stop):
-                    kw=dict(n=n,chunk=1,context=1+max(n,1),extra=('--stop-after',str(stop)))
-                    ref,_=self.run_cli(gguf,False,**kw); rows,_=self.run_cli(gguf,**kw)
+                kw=dict(n=n,chunk=1,context=1+max(n,1),extra=('--stop-after',str(stop)))
+                ref,_=self.run_cli(gguf,False,**kw)
+                for draft in DRAFTS:
+                  with self.subTest(n=n,stop=stop,draft=draft):
+                    rows,_=self.run_cli(gguf,draft=draft,**kw)
                     self.assertEqual(rows[0]['generated_ids'],ref[0]['generated_ids'])
                     self.assertEqual(rows[0]['stop_reason'],ref[0]['stop_reason'])
                     self.assertLessEqual(rows[0]['prompt_tokens']+rows[0]['generated_tokens'],rows[0]['context'])
@@ -92,17 +104,20 @@ class Speculative(unittest.TestCase):
         for predictor in ('perfect','wrong','stop'):
             gguf=self.path/f'{predictor}.gguf'; control(gguf,predictor)
             for first in (2,3,4,5):
-                with self.subTest(predictor=predictor,first=first):
-                    rows,_=self.run_cli(gguf,tokens=(first,))
+              for draft in DRAFTS:
+                with self.subTest(predictor=predictor,first=first,draft=draft):
+                    rows,_=self.run_cli(gguf,tokens=(first,),draft=draft)
                     self.assertEqual(rows[0]['generated_ids'],[*range(first+1,6),258])
                     self.assertEqual(rows[0]['stop_reason'],'stop')
                     # The terminal token is never fed back into trunk history.
                     self.assertEqual(rows[0]['position'],rows[0]['generated_tokens'])
     def test_seeded_state_rejection_and_replay(self):
         reference,_=self.run_cli(GGUF,False,tokens=(12,45,19,71,83),n=12,chunk=3)
-        rows,_=self.run_cli(GGUF,tokens=(12,45,19,71,83),n=12,chunk=3,extra=('--repeat','2','--replay-chunk','1'))
-        for row in rows: self.assertEqual(row['generated_ids'],reference[0]['generated_ids'])
-        self.assertGreater(rows[0]['mtp']['rollback_count'],0)
+        for draft in DRAFTS:
+            with self.subTest(draft=draft):
+                rows,_=self.run_cli(GGUF,tokens=(12,45,19,71,83),n=12,chunk=3,extra=('--repeat','2','--replay-chunk','1'),draft=draft)
+                for row in rows: self.assertEqual(row['generated_ids'],reference[0]['generated_ids'])
+                if draft!='auto': self.assertGreater(rows[0]['mtp']['rollback_count'],0)
     def test_streaming_signal_stop_and_reset(self):
         p=subprocess.Popen([str(ROOT/'picoforge'),'--qwen38',str(GGUF),'--session','--mtp','--context','512','--chunk','3'],
                            cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
