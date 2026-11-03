@@ -19,10 +19,11 @@ typedef struct {
     int fixed;                              /* 0..3, or -1 = auto (cost model) */
     double cost[QWEN38_VERIFY_ROWS+1];      /* cost[n]: n-row append in 1-row appends */
     double delta;                           /* one draft (predictor row + LM head) */
+    double mu;                              /* keeping the predictor aligned, paid at every k */
     double alpha[QWEN38_VERIFY_ROWS-1];     /* P(draft j accepted | drafts < j accepted) */
     uint32_t idle;                          /* k=0 tokens since the last probe draft */
 } Q38Policy;
-/* value: "auto" or "0".."3" (NULL = auto); costs: NULL or "c2,c3,c4,delta". Dies on bad input. */
+/* value: "auto" or "0".."3" (NULL = auto); costs: NULL or "c2,c3,c4,delta[,mu]". Dies on bad input. */
 void q38_policy_init(Q38Policy *, const char *value, const char *costs);
 size_t q38_policy_choose(const Q38Policy *, size_t kmax);
 

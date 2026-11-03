@@ -42,7 +42,7 @@ static void usage(void) {
         "       [--session] (resident local worker protocol)\n"
         "       [--stop-after N] (SIGUSR1 also stops cooperatively)\n"
         "       [--mtp] [--mtp-draft auto|0..3] (or $PICOFORGE_MTP_DRAFT; drafts per cycle, auto = cost model,\n"
-        "        $PICOFORGE_MTP_COST=c2,c3,c4,delta; exact greedy verification of up to 1+3 rows)\n"
+        "        $PICOFORGE_MTP_COST=c2,c3,c4,delta[,mu]; exact greedy verification of up to 1+3 rows)\n"
         "       [--profile FILE.csv] (per-op GPU time of trunk appends; MTP appends are not profiled)\n"
         "       [--teacher-forced N] (--tokens only: prefill all but the last N IDs, append those one by one)\n"
         "       [--prefill-precision fp32|half] (or $PICOFORGE_PREFILL_PRECISION; half: prefill GEMMs on the\n"
@@ -162,25 +162,27 @@ static void append(Q38Run *r,const int32_t *ids,size_t n,const char *phase,int32
     else q38_check(qwen38_gpu_forward(r->graph,ids,n,r->c->trunk_blocks,r->y,NULL,NULL,&e),&e);
     r->last_count=n; accumulate(stats,r->graph);
 }
-/* Defaults measured in R4 (M2, docs/specs/qwen38/R4-mtp.md): n-row append cost
- * relative to one row, and one draft. Priors start optimistic so drafting is tried. */
+/* Defaults measured in R4 (M3, docs/specs/qwen38/R4-mtp.md): a verify of n rows
+ * against one decode append (1.27/1.56/1.91 for 2/3/4 rows), one draft (0.095)
+ * and the per-token predictor catch-up (0.03), all in decode appends. Priors
+ * start optimistic so drafting is tried. */
 void q38_policy_init(Q38Policy *p,const char *value,const char *costs) {
-    *p=(Q38Policy){.fixed=-1,.cost={0,1,1.63,2.22,2.68},.delta=0.10,.alpha={0.9,0.9,0.9}};
+    *p=(Q38Policy){.fixed=-1,.cost={0,1,1.27,1.56,1.91},.delta=0.095,.mu=0.03,.alpha={0.9,0.9,0.9}};
     if (value && *value && strcmp(value,"auto")) p->fixed=(int)number(value,0,QWEN38_VERIFY_ROWS-1,"--mtp-draft");
     if (costs && *costs) {
-        double v[4]; char tail;
-        if (sscanf(costs,"%lf,%lf,%lf,%lf%c",v,v+1,v+2,v+3,&tail)!=4 || !(v[0]>=1 && v[1]>=v[0] && v[2]>=v[1] && v[3]>=0))
-            die("PICOFORGE_MTP_COST must be c2,c3,c4,delta with 1 <= c2 <= c3 <= c4 and delta >= 0");
-        p->cost[2]=v[0]; p->cost[3]=v[1]; p->cost[4]=v[2]; p->delta=v[3];
+        double v[5]={0,0,0,0,p->mu}; char tail; int n=sscanf(costs,"%lf,%lf,%lf,%lf,%lf%c",v,v+1,v+2,v+3,v+4,&tail);
+        if ((n!=4 && n!=5) || !(v[0]>=1 && v[1]>=v[0] && v[2]>=v[1] && v[3]>=0 && v[4]>=0))
+            die("PICOFORGE_MTP_COST must be c2,c3,c4,delta[,mu] with 1 <= c2 <= c3 <= c4 and delta, mu >= 0");
+        p->cost[2]=v[0]; p->cost[3]=v[1]; p->cost[4]=v[2]; p->delta=v[3]; p->mu=v[4];
     }
 }
-/* k maximizing (1 + sum_j prod_{i<=j} alpha_i) / (cost[1+k] + k*delta); ties keep the smaller k. */
+/* k maximizing (1 + sum_j prod_{i<=j} alpha_i) / (cost[1+k] + mu + k*delta); ties keep the smaller k. */
 size_t q38_policy_choose(const Q38Policy *p,size_t kmax) {
     if (p->fixed>=0) return MIN((size_t)p->fixed,kmax);
-    size_t best=0; double best_v=1/p->cost[1],tokens=1,chain=1;
+    size_t best=0; double best_v=1/(p->cost[1]+p->mu),tokens=1,chain=1;
     for (size_t k=1;k<=kmax;k++) {
         chain*=p->alpha[k-1]; tokens+=chain;
-        double v=tokens/(p->cost[k+1]+(double)k*p->delta);
+        double v=tokens/(p->cost[k+1]+p->mu+(double)k*p->delta);
         if (v>best_v*(1+1e-9)) { best=k; best_v=v; }
     }
     return best;
