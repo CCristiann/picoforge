@@ -253,6 +253,12 @@ typedef struct {
      * continue on (the hook may replace cmd->compute_encoder). */
     void (*mark)(void *ctx, Qwen38GpuCommand *cmd, const char *op, uint32_t type, uint64_t bytes);
     void *mark_ctx;
+    /* R4 MTP verify only (NULL otherwise): the scan runs one row at a time and
+     * snap is called after each of rows 0..snap_rows-1, with the state then
+     * holding that row's result, so the caller can copy it. Same FP32 steps as
+     * the one-dispatch scan: a row reads back the exact state the last wrote. */
+    void (*snap)(void *ctx, Qwen38GpuCommand *cmd, size_t row);
+    void *snap_ctx; size_t snap_rows;
 } Q38CGpuWork;
 Qwen38Status q38c_block_encode(Q38CGpu *, Q38PackedGpu *, Qwen38GpuCommand,
     const Q38CLayer *, const GpuWeightStore *, const GgufBinding *const[Q38CW_COUNT],

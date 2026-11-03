@@ -72,6 +72,55 @@ static void state_test(Qwen38GpuForward *g,const int32_t *tokens,uint32_t layers
     assert(qwen38_gpu_mtp_info(g).valid && !qwen38_gpu_mtp_info(g).next_pos);
     free(a); free(b); puts("snapshot: exact state/logits, PLE replay, busy/foreign/stale/window/predictor/fault PASS");
 }
+/* R4: verify of T rows then keep(k) == k ordinary one-token appends, bit for bit:
+ * the kept rows' logits, the recurrent histories (GDN state, conv, PLE), n-gram
+ * position, and the logits of two appends after it (they read KV/index/block caches). */
+static NSData *recurrent(Qwen38GpuForward *g,uint32_t layers) {
+    NSMutableData *out=[NSMutableData new]; const uint32_t slots[]={Q38GS_CONV,Q38GS_GDN,Q38GS_PLE};
+    for (uint32_t i=0;i<layers;i++) for (uint32_t j=0;j<3;j++) {
+        Qwen38GpuF32 v=q38g_gpu_state(g,i,slots[j]);
+        if (v.span.buffer) [out appendBytes:(char *)[(__bridge id<MTLBuffer>)v.span.buffer contents]+v.span.offset_bytes length:v.span.bytes];
+    }
+    return out;
+}
+static void verify_test(Qwen38GpuForward *g,const int32_t *tokens,uint32_t layers,size_t v,uint32_t chunk) {
+    Qwen38Error e; Qwen38F32Mut none=view(NULL,0,v); size_t cases=0;
+    float *rows=malloc(QWEN38_VERIFY_ROWS*v*4),*one=malloc(v*4),*a=malloc(2*v*4),*b=malloc(2*v*4); assert(rows && one && a && b);
+    for (size_t t=2;t<=MIN((size_t)QWEN38_VERIFY_ROWS,(size_t)chunk);t++) for (size_t k=1;k<=t;k++) {
+        check(qwen38_gpu_forward_reset(g,&e),&e);
+        check(qwen38_gpu_forward(g,tokens,3,layers,none,NULL,NULL,&e),&e);
+        assert(qwen38_gpu_forward_keep(g,1,&e)==Q38_BAD_STATE);
+        check(qwen38_gpu_forward_verify(g,tokens+3,t,view(rows,t,v),&e),&e);
+        assert(qwen38_gpu_forward_keep(g,0,&e)==Q38_RANGE && qwen38_gpu_forward_keep(g,t+1,&e)==Q38_RANGE);
+        check(qwen38_gpu_forward_keep(g,k,&e),&e);
+        assert(qwen38_gpu_forward_keep(g,k,&e)==Q38_BAD_STATE);
+        assert(qwen38_gpu_forward_info(g).next_pos==3+k);
+        NSData *got=recurrent(g,layers); uint64_t ngram=q38g_gpu_ngram_info(g,0).next_pos;
+        for (size_t j=0;j<2;j++) check(qwen38_gpu_forward(g,tokens+3+k+j,1,layers,view(a+j*v,1,v),NULL,NULL,&e),&e);
+        check(qwen38_gpu_forward_reset(g,&e),&e);
+        check(qwen38_gpu_forward(g,tokens,3,layers,none,NULL,NULL,&e),&e);
+        for (size_t j=0;j<k;j++) {
+            check(qwen38_gpu_forward(g,tokens+3+j,1,layers,view(one,1,v),NULL,NULL,&e),&e);
+            assert(!memcmp(one,rows+j*v,v*4));
+        }
+        assert([got isEqualToData:recurrent(g,layers)]); assert(ngram==q38g_gpu_ngram_info(g,0).next_pos);
+        for (size_t j=0;j<2;j++) check(qwen38_gpu_forward(g,tokens+3+k+j,1,layers,view(b+j*v,1,v),NULL,NULL,&e),&e);
+        assert(!memcmp(a,b,2*v*4)); cases++;
+    }
+    /* Chain: a speculative predictor row, then rewind and the confirmed pair. */
+    float *c1=malloc(v*4),*c2=malloc(v*4); assert(c1 && c2);
+    check(qwen38_gpu_forward_reset(g,&e),&e);
+    check(qwen38_gpu_forward(g,tokens,3,layers,none,NULL,NULL,&e),&e);
+    check(qwen38_gpu_mtp(g,0,tokens+1,2,none,&e),&e);
+    uint64_t at=qwen38_gpu_mtp_info(g).next_pos;
+    check(qwen38_gpu_mtp_chain(g,tokens[3],view(c1,1,v),&e),&e); assert(qwen38_gpu_mtp_info(g).next_pos==at+1);
+    check(qwen38_gpu_mtp_rewind(g,at,&e),&e); assert(qwen38_gpu_mtp_chain(g,tokens[3],view(c2,1,v),&e)==Q38_BAD_STATE);
+    check(qwen38_gpu_mtp(g,2,tokens+3,1,view(c2,1,v),&e),&e);   /* the confirmed pair (R_2, t_3) */
+    assert(qwen38_gpu_mtp_info(g).next_pos==at+1);
+    for (size_t j=0;j<v;j++) assert(isfinite(c1[j]) && isfinite(c2[j]));
+    free(c1); free(c2); free(rows); free(one); free(a); free(b);
+    printf("verify: %zu (rows,keep) cases bit-identical to ordinary appends; chain/rewind PASS\n",cases);
+}
 int main(int argc,char **argv) {
     if (argc<7) { fprintf(stderr,"usage: %s GGUF OUTDIR CHUNK CHECK TOKEN...\n",argv[0]); return 2; }
     uint32_t chunk=(uint32_t)strtoul(argv[3],NULL,10); bool checks=atoi(argv[4])!=0;
@@ -97,7 +146,7 @@ int main(int argc,char **argv) {
             }
             assert(qwen38_gpu_mtp_info(g).next_pos==n-1);
         }
-        if (checks) { assert(!memcmp(out,again,(n-1)*v*4)); assert(n>=6); state_test(g,tokens,cv->trunk_blocks,v); }
+        if (checks) { assert(!memcmp(out,again,(n-1)*v*4)); assert(n>=9); state_test(g,tokens,cv->trunk_blocks,v); verify_test(g,tokens,cv->trunk_blocks,v,chunk); }
         char path[1024]; snprintf(path,sizeof path,"%s/mtp.f32",argv[2]); FILE *f=fopen(path,"wb"); assert(f);
         assert(fwrite(out,4,(n-1)*v,f)==(n-1)*v && !fclose(f));
         snprintf(path,sizeof path,"%s/logits.f32",argv[2]); f=fopen(path,"wb"); assert(f);

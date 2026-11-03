@@ -5,6 +5,12 @@ kernel void q38g_copy(device const float *x [[buffer(0)]],device float *y [[buff
     constant uint4 &a [[buffer(2)]],uint i [[thread_position_in_grid]]) {
     if (i<a.x) y[i]=x[a.w ? (i/(a.y*a.z))*a.y+i%a.y : i];
 }
+/* R4 diagnostic (Q38_ROUTE_LOG): routed expert ids, copied as integers so
+ * small ids (denormal bit patterns as float) cannot be flushed. */
+kernel void q38g_copy_u32(device const uint *x [[buffer(0)]],device uint *y [[buffer(1)]],
+    constant uint &n [[buffer(2)]],uint i [[thread_position_in_grid]]) {
+    if (i<n) y[i]=x[i];
+}
 /* [e,0], [0,h_0], ..., [0,h_H-1] for each token. */
 kernel void q38g_mtp_cat(device const float *en [[buffer(0)]],device const float *hn [[buffer(1)]],
     device float *cat [[buffer(2)]],constant uint4 &a [[buffer(3)]],uint i [[thread_position_in_grid]]) {

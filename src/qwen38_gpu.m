@@ -418,7 +418,7 @@ Qwen38Status q38g_session_rewind(Qwen38GpuSession *g,const void *model,uint64_t 
     if (l->model!=model) return report(e,Q38_OWNER);
     if (busy(l)) return report(e,Q38_BUSY);
     if (l->epoch!=epoch) return report(e,Q38_STALE);
-    if (l->state==Q38_SESSION_INVALID || position>l->next_pos || l->next_pos-position>2)
+    if (l->state==Q38_SESSION_INVALID || position>l->next_pos || l->next_pos-position>4)   /* R4: 1+3 verify rows */
         return report(e,Q38_BAD_STATE);
     Qwen38Status rc=qwen38_gpu_ledger_reset(l,model,e);
     if (!rc) { l->next_pos=position; l->state=position ? Q38_SESSION_VALID : Q38_SESSION_IDLE; }
