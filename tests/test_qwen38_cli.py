@@ -89,6 +89,10 @@ class CliTests(unittest.TestCase):
                                       env=os.environ | env)
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(b'fp32 or half', done.stderr)
+        # the short form also starts with the switch ($PICOFORGE_MODEL names the model)
+        done = subprocess.run([str(ROOT/'picoforge'), '--prefill-precision', 'half', '--tokens', '5', '--max-new', '0'],
+                              cwd=ROOT, capture_output=True, env=os.environ | {'PICOFORGE_MODEL': str(GGUF)})
+        self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
         self.assertEqual(subprocess.run([str(ROOT/'picoforge'), '--qwen38', '--help'],
                          cwd=ROOT, capture_output=True).returncode, 0)
 
