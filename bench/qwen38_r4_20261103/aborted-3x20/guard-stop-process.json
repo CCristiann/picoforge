@@ -1,0 +1,81 @@
+{
+  "command": [
+    "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline/ds4",
+    "-m",
+    "/Users/cristiancirje/Desktop/Dev/picoforge-perf-decode/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "-p",
+    "Scrivi una funzione Python che legge un file CSV e restituisce la media di ogni colonna numerica. Rispondi solo con il codice.",
+    "-n",
+    "128",
+    "--ctx",
+    "8192",
+    "--temp",
+    "0",
+    "--nothink",
+    "--mtp",
+    "--mtp-timing"
+  ],
+  "cwd": "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline",
+  "pilot": true,
+  "complete": false,
+  "recorded_utc": "2026-11-03T17:36:35.589106+00:00",
+  "executable_sha256": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+  "environment": {
+    "DS4_METAL_MEMORY_REPORT": "1"
+  },
+  "removed_environment_names": [],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "sample_interval_s": 0.25,
+  "system_before": {
+    "pid": 61507,
+    "monotonic_s": 1453.110113,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1376616,
+    "lifetime_peak_phys_footprint_bytes": 1409384,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 3211264,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 172,
+    "system_swapouts_pages": 196,
+    "page_bytes": 16384,
+    "system_wired_pages": 228379,
+    "system_compressor_pages": 378371
+  },
+  "guard": "stop after 2 samples: pressure level >= 2 or swap growth > 256 MiB",
+  "guard_limits": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "pid": 61510,
+  "start_monotonic_s": 1453.118609,
+  "process_s": 2.095291999999972,
+  "returncode": -15,
+  "stop_reason": "memory guard",
+  "first_stream_bytes_s": {
+    "stderr": 0.0059819999999035645,
+    "stdout": 1.212048999999979
+  },
+  "system_after": {
+    "pid": 61538,
+    "monotonic_s": 1455.216487,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1376616,
+    "lifetime_peak_phys_footprint_bytes": 1409384,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 3211264,
+    "system_pressure_level": 2,
+    "system_swapins_pages": 172,
+    "system_swapouts_pages": 196,
+    "page_bytes": 16384,
+    "system_wired_pages": 3366511,
+    "system_compressor_pages": 370600
+  },
+  "samples": 8,
+  "max_sample_gap_s": 0.3440169999998943,
+  "sampled_peak_footprint_bytes": 6555031168,
+  "lifetime_peak_footprint_bytes": 6555031168
+}

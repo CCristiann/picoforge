@@ -1,0 +1,331 @@
+{
+  "complete": false,
+  "prompts": {
+    "code": "Scrivi una funzione Python che legge un file CSV e restituisce la media di ogni colonna numerica. Rispondi solo con il codice.",
+    "chat": "Scrivi cinque consigli per verificare un backup.",
+    "story": "Racconta una breve storia su un guardiano del faro che trova una lettera in una bottiglia.",
+    "count": "Conta da 1 a 80, un numero per riga, senza altro testo."
+  },
+  "counts": {
+    "picoforge": [
+      3,
+      20
+    ],
+    "dwarfstar": [
+      3,
+      20
+    ]
+  },
+  "block": 1,
+  "plan": [
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ]
+  ],
+  "draft": "auto",
+  "protocol": "One process per sample, engines alternating in blocks: chat template, no thinking, greedy, 128 new tokens, context 8192. tok/s: picoforge decode_tokens/decode_s, ds4 \"generation: X t/s\". Both include draft, verify and rollback. Warm-ups discarded. Free generation: the two engines need not emit the same tokens.",
+  "guard": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "revision": "816c9569c65169e3c1ebb5aae15db631da02491b",
+  "diff": "",
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "checkpoint": "models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "checkpoint_sha256_recomputed": false,
+  "sha256": {
+    "picoforge": "6623fb69111b0383f4ae3f613f96eaccf67d5c27345834ab315684acabd032ba",
+    "picoforge.metallib": "b151eb7993b811446f51df2ca854c65d766b0ff05ed1bd6d9085cc746cdc6665",
+    "ds4-bench": "27e2c3666d82123ca3d3bd93f6fff09545df4de91e606ee52c78445c99a4e5d0",
+    "ds4": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+    "tool": "476a848bb25d8279bc2f7855bcbcbb9fec5fcc823109016128357c2c86aa1faf"
+  },
+  "before": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t88%; charging; (no estimate) present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 3211264,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "thermal_state": "nominal"
+  }
+}

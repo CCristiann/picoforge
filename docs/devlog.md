@@ -8,9 +8,36 @@ Spec: `docs/specs/qwen38/R4-mtp.md`. Branch `perf/qwen38-mtp-adaptive` from
 main 66a6c2d. Starting point: `--mtp` with one draft was *slower* than plain
 decode on free text (18.3 vs 24.4 tok/s in R3's informal check). Newest first.
 
-### R4 closure
+### R4 closure — MTP now pays everywhere; DwarfStar gap unchanged
 
-(filled at closure)
+Evidence: `bench/qwen38_r4_20261103/README.md`. Paired with `ds4 --mtp`
+fc80bd6 on the same four chat prompts, AC throughout, **1+8 (reduced,
+declared)**: picoforge `--mtp` 33.20 / 25.64 / 27.03 / 40.99 tok/s (code,
+chat, story, count) against 45.80 / 39.48 / 35.67 / 53.08, i.e. 0.65-0.77x.
+Without MTP (1+3) the same pair is 0.73-0.74x, so R4 closes no part of the
+DwarfStar gap: that gap is the base decode. What R4 changes is our own MTP:
+from slower than plain on free text (0.55-0.97x in M1) to 1.05-1.68x, with
+gains on par with DwarfStar's (1.38/1.05/1.11/1.68 vs 1.40/1.19/1.08/1.58).
+
+Default: `--mtp` now means `--mtp-draft auto`. Reason, from M3/M3b: auto is
+never below plain (1.09-1.65x), best on code and close to the best fixed
+depth elsewhere (chat 1.09 vs 1.12 at k=2; count 1.65 vs 1.77 at k=3), while
+every fixed depth loses somewhere (k=3 0.92x on chat, k=1 leaves 0.35x on
+the table for counting). Plain decode without `--mtp` is unchanged to the bit.
+
+The first 3+20 attempt was stopped by the memory guard at sample 33 (wired
+~51 GiB at DwarfStar load, pressure 2, Chrome open); not retried as is: the
+user closed Chrome and the comparison restarted from scratch at 1+8.
+
+Gates at closure: test-qwen38, MTP (verify/keep bit-identity), speculative
+(depths 1, 2, 3, auto), CLI, compare green; fast-kernels default and REF=1
+93/93; G3 PASS scaled 2.08e-7, 12/12; `Q38_REF_KERNELS=1` bit-identical to R0;
+default logits bit-identical to R3; `make test-all` green at start and end.
+
+Backlog: dedupe routed experts across verify rows (the union is 1.5-2.8x, the
+kernels read n x), a GPU argmax for drafts, a reduced draft vocabulary
+(DwarfStar's `DS4_QWEN4_MTP_DRAFT_VOCAB`), faster probe recovery in `auto`
+after a bad stretch, MTP at 8K context.
 
 ### R4.3 — cost-aware draft depth, and why the first cost table was wrong
 

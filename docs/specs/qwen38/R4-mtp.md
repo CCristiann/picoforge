@@ -52,7 +52,8 @@ Unità: il tempo di un append a 1 riga. Con k bozze per ciclo:
 
     costo(k) = C(1+k) + k·δ + μ        token attesi(k) = 1 + Σ_{j=1..k} Π_{i≤j} α_i
 
-- C(n): tabella M2 (1; 1,63; 2,22; 2,68), sovrascrivibile con `PICOFORGE_MTP_COST`.
+- C(n): costo di una verifica a n righe; default dalla verifica reale M3 (1; 1,27; 1,56; 1,91),
+  non dal proxy M2 (vedi Stato); sovrascrivibile con `PICOFORGE_MTP_COST=c2,c3,c4,δ[,μ]`.
 - δ: una bozza (blocco MTP a 1 riga + LM head su tutto il vocabolario), ~0,10.
 - μ: tenere il predictor allineato a ogni token anche con k=0 (blocco MTP senza LM head).
 - α_j: accettazione della j-esima bozza data la precedente, stimata a runtime.
@@ -98,4 +99,10 @@ Deduplica degli esperti fra le righe della verifica, testa ridotta per la bozza 
 
 ## Stato
 
-In corso.
+**Chiusa il 2026-11-03.** Passi 1–5 fatti; evidenze in
+[bench/qwen38_r4_20261103](../../../bench/qwen38_r4_20261103/README.md).
+`--mtp` = `--mtp-draft auto`, 1,09–1,65× il decode plain sui quattro testi, token identici
+(36/36 run). Contro `ds4 --mtp` fc80bd6: 0,65–0,77× (1+8, ridotto e dichiarato), lo stesso
+divario del decode senza MTP (0,73×). Correzione al modello: i costi C(n) giusti sono quelli
+della verifica reale (1; 1,27; 1,56; 1,91), non il proxy M2; con μ = 0,03 per l'allineamento del
+predictor. Bozza δ = 0,095.
