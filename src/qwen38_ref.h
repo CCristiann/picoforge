@@ -44,4 +44,18 @@ static inline bool q38_ref_parse(const char *value, const char *family) {
 static inline __attribute__((unused)) bool q38_ref_kernels(const char *family) {
     return q38_ref_parse(getenv("Q38_REF_KERNELS"), family);
 }
+/* R3.5 prefill precision: PICOFORGE_PREFILL_PRECISION=fp32|half (the CLI's
+ * --prefill-precision sets it). "half" runs the prefill GEMMs on the Neural
+ * Accelerators with half operands and FP32 accumulation; decode is never
+ * affected. Unset or empty: Q38_PREFILL_HALF_DEFAULT. Any other value reads as
+ * fp32 (the oracle), never as half; the CLI rejects it. Q38_REF_KERNELS=gemm
+ * (or 1) wins over half: no GEMM, so no reduced-precision GEMM either. */
+#define Q38_PREFILL_HALF_DEFAULT 0
+static inline bool q38_prefill_half_parse(const char *value) {
+    if (!value || !*value) return Q38_PREFILL_HALF_DEFAULT;
+    return !strcmp(value, "half");
+}
+static inline __attribute__((unused)) bool q38_prefill_half(void) {
+    return q38_prefill_half_parse(getenv("PICOFORGE_PREFILL_PRECISION"));
+}
 #endif

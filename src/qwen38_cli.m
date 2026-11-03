@@ -44,6 +44,8 @@ static void usage(void) {
         "       [--mtp] (one-token predictor, exact greedy verification)\n"
         "       [--profile FILE.csv] (per-op GPU time of trunk appends; MTP appends are not profiled)\n"
         "       [--teacher-forced N] (--tokens only: prefill all but the last N IDs, append those one by one)\n"
+        "       [--prefill-precision fp32|half] (or $PICOFORGE_PREFILL_PRECISION; half: prefill GEMMs on the\n"
+        "        Neural Accelerators, half operands, FP32 accumulation; decode stays FP32)\n"
         "Greedy FP32 generation; defaults: context 8192, chunk 1024, max-new 32.\n");
 }
 /* Greedy choice shared by ordinary and teacher-forced decode: first maximum wins. */
@@ -324,6 +326,8 @@ int qwen38_cli(int argc,char **argv) {
     const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
     bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false;
+    { const char *p=getenv("PICOFORGE_PREFILL_PRECISION");
+      if (p && *p && strcmp(p,"fp32") && strcmp(p,"half")) die("PICOFORGE_PREFILL_PRECISION must be fp32 or half"); }
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
@@ -338,6 +342,12 @@ int qwen38_cli(int argc,char **argv) {
             if (mode) die("choose one prompt mode"); mode=opt; input=value;
         } else if (!strcmp(opt,"--max-new")) { max_new=number(value,0,32768,opt); max_new_given=true; }
         else if (!strcmp(opt,"--context")) capacity=number(value,1,32768,opt);
+        else if (!strcmp(opt,"--prefill-precision")) {
+            /* R3.5: one switch for flag and environment; the packed context
+             * reads PICOFORGE_PREFILL_PRECISION when the graph is built. */
+            if (strcmp(value,"fp32") && strcmp(value,"half")) die("--prefill-precision must be fp32 or half");
+            setenv("PICOFORGE_PREFILL_PRECISION",value,1);
+        }
         else if (!strcmp(opt,"--chunk")) chunk=number(value,1,1024,opt);
         else if (!strcmp(opt,"--logits")) logits_path=value;
         else if (!strcmp(opt,"--token-ids")) ids_path=value;

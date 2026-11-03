@@ -46,3 +46,13 @@ Causa principale: i kernel lineari sono matvec che leggono 4 righe di x per thre
 
 Obiettivo di roadmap: prefill 8K ≥ 0,95× DwarfStar. Misure rapide per passo con
 `picoforge bench` su un prompt lungo; il protocollo appaiato completo solo a chiusura.
+
+## Stato alla chiusura (3 novembre 2026)
+
+- R3.1 GEMM densa, R3.2 MoE raggruppata: fatti come scritto sopra.
+- R3.3 nel codice è diventato "QSA di prefill a blocchi" (bit-identica), cioè il punto R3.4
+  qui sopra; la GDN a chunk non è stata fatta (backlog).
+- R3.5 fatto come modalità opzionale: `--prefill-precision half` /
+  `PICOFORGE_PREFILL_PRECISION=half`, default `fp32`, gate proprio `nax_half` (2^-11 contro FP64).
+- Esito: prefill 8K 61,0 s FP32 e 37,6 s half (da ~215 s); 0,95× DwarfStar non raggiunto.
+  Numeri e condizioni in `bench/qwen38_r3_20261102/README.md`, lezioni nel devlog.

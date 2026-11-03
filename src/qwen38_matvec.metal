@@ -524,3 +524,116 @@ kernel void name(device const uchar *weights [[buffer(0)]], device const float *
 GEMM_KERNEL(q38_gemm_q8_0, 8)
 GEMM_KERNEL(q38_gemm_f16, 1)
 GEMM_KERNEL(q38_gemm_f32, 0)
+
+/* ---- R3.5 reduced-precision prefill GEMM on the Neural Accelerators (Metal 4
+ * TensorOps, matmul2d). Same product as gemm<TYPE> above, but both operands
+ * are staged as half (weights decoded exactly, then rounded to half; x rounded
+ * to half) and multiplied by the tensor units with FP32 accumulation. It is a
+ * different numeric mode, not a reordering: the input rounding (2^-11
+ * relative per operand) is the dominant error, so it has its own gate
+ * (tests/qwen38_kernel_tolerances.json, "nax_half") and the FP32 GEMM stays
+ * its oracle. Only the prefill uses it (PICOFORGE_PREFILL_PRECISION, from
+ * GEMM_MIN_ROWS rows); decode never does. Layout idea from DwarfStar fc80bd6
+ * (MIT), metal/qwen4.metal kernel_qwen4_moe_mm_mid_nax_t; checked by
+ * tools/probe/tensorops_gemm_probe. matmul2d constraints: its k (NAX_K, 32)
+ * is a fixed step and a shorter K is not padded by the op, so the K tail is
+ * zero-padded here; M and N are multiples of 16. |x| above 65504 becomes inf
+ * in half and trips the finiteness bit (error 1): the FP32 path is then the
+ * way out. */
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#define NAX_M 64
+#define NAX_N 64
+#define NAX_K 32
+#define NAX_THREADS 128
+using NaxMatmul = mpp::tensor_ops::matmul2d<
+    mpp::tensor_ops::matmul2d_descriptor(NAX_M, NAX_N, NAX_K, false, true, false,
+                                         mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
+    execution_simdgroups<4>>;
+
+template <uint TYPE>
+static inline void gemm_nax(device const uchar *weights, device const float *x, device float *y,
+        device atomic_uint *error, constant PackedArgs &p, uint2 group, uint tid,
+        threadgroup half *xs, threadgroup half *ws, threadgroup float *cs) {
+    const ulong n0 = ulong(group.x) * NAX_N, m0 = ulong(group.y) * NAX_M;
+    if (n0 >= p.n_out || m0 >= p.rows) return; /* uniform over the threadgroup */
+    const uint nt = uint(min(ulong(NAX_N), p.n_out - n0)), mt = uint(min(ulong(NAX_M), p.rows - m0));
+    const ulong last = p.weight_offset + (n0 + nt - 1) * p.row_bytes, xl = (m0 + mt - 1) * (p.x_stride / 4);
+    const bool inside = last <= p.weight_end && p.row_bytes <= p.weight_end - last &&
+        xl <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xl &&
+        (m0 + mt - 1) * (p.y_stride / 4) + n0 + nt - 1 < p.y_bytes / 4;
+    if (!inside) {
+        if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    /* left: x tile, k contiguous, one row of x per column; right: W rows
+     * (n major) read transposed; destination extents (N, M) as cs[m][n]. */
+    auto tx = tensor(xs, dextents<int32_t, 2>(NAX_K, NAX_M));
+    auto tw = tensor(ws, dextents<int32_t, 2>(NAX_K, NAX_N));
+    NaxMatmul mm;
+    /* float4 loads of x need 16-byte rows and a 16-byte aligned binding; the host sets
+     * p.reserved = 1 for the NAX dispatch when the x offset is aligned (else 0). */
+    const bool vec = p.reserved == 1 && p.x_stride % 16 == 0;
+    auto acc = mm.get_destination_cooperative_tensor<decltype(tx), decltype(tw), float>();
+    for (uint16_t i = 0; i < acc.get_capacity(); i++) if (acc.is_valid_element(i)) acc[i] = 0.0f;
+    for (uint k0 = 0; k0 < p.k_logical; k0 += NAX_K) {
+        const uint kc = min(uint(NAX_K), p.k_logical - k0);
+        if (vec && kc == NAX_K) { /* 4 columns per item: float4 in, half4 out */
+            for (uint i = tid; i < NAX_M * NAX_K / 4; i += NAX_THREADS) {
+                const uint r = i / (NAX_K / 4), c = (i % (NAX_K / 4)) * 4;
+                const float4 v = r < mt ? *(device const float4 *)(x + (m0 + r) * (p.x_stride / 4) + k0 + c) : float4(0.0f);
+                *(threadgroup half4 *)(xs + r * NAX_K + c) = half4(v);
+            }
+        } else {
+            for (uint i = tid; i < NAX_M * NAX_K; i += NAX_THREADS) {
+                const uint r = i / NAX_K, c = i % NAX_K;
+                xs[i] = r < mt && c < kc ? half(x[(m0 + r) * (p.x_stride / 4) + k0 + c]) : 0.0h;
+            }
+        }
+        if (TYPE == 8) { /* one Q8_0 block per weight row; two threads per block */
+            const uint r = tid / 2, h = (tid % 2) * 16;
+            device const uchar *q = weights + p.weight_offset + (n0 + r) * p.row_bytes + ulong(k0 / 32) * 34;
+            const float d = r < nt ? q38_fp16(q) : 0.0f;
+            for (uint i = 0; i < 16; i++) {
+                const uint c = h + i;
+                ws[r * NAX_K + c] = r < nt && c < kc ? half(d * float(as_type<char>(q[2 + c]))) : 0.0h;
+            }
+        } else {
+            for (uint i = tid; i < NAX_N * NAX_K; i += NAX_THREADS) {
+                const uint r = i / NAX_K, c = i % NAX_K;
+                device const uchar *row = weights + p.weight_offset + (n0 + r) * p.row_bytes;
+                ws[i] = r < nt && c < kc ? half(gemm_dense<TYPE>(row, (p.weight_offset + (n0 + r) * p.row_bytes) % 2 == 0, k0 + c)) : 0.0h;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        auto sx = tx.slice(0, 0);
+        auto sw = tw.slice(0, 0);
+        mm.run(sx, sw, acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    auto tc = tensor(cs, dextents<int32_t, 2>(NAX_N, NAX_M));
+    auto sc = tc.slice(0, 0);
+    acc.store(sc);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint i = tid; i < NAX_M * NAX_N; i += NAX_THREADS) {
+        const uint r = i / NAX_N, c = i % NAX_N;
+        if (r >= mt || c >= nt) continue;
+        const float v = cs[i];
+        y[(m0 + r) * (p.y_stride / 4) + n0 + c] = v;
+        if (!isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    }
+}
+#define GEMM_NAX_KERNEL(name, TYPE) \
+kernel void name(device const uchar *weights [[buffer(0)]], device const float *x [[buffer(1)]], \
+        device float *y [[buffer(2)]], device atomic_uint *error [[buffer(3)]], \
+        constant PackedArgs &p [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]], \
+        uint tid [[thread_index_in_threadgroup]]) { \
+    /* The FP32 result tile reuses the staging area after the K loop (16 KB, not 24): two \
+     * threadgroups fit per core. */ \
+    threadgroup float smem[NAX_M * NAX_N]; \
+    threadgroup half *xs = (threadgroup half *)smem, *ws = xs + NAX_M * NAX_K; \
+    gemm_nax<TYPE>(weights, x, y, error, p, group, tid, xs, ws, smem); \
+}
+GEMM_NAX_KERNEL(q38_gemm_nax_q8_0, 8)
+GEMM_NAX_KERNEL(q38_gemm_nax_f16, 1)
+GEMM_NAX_KERNEL(q38_gemm_nax_f32, 0)
