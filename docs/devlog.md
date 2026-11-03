@@ -16,7 +16,7 @@ declared)**: picoforge `--mtp` 33.20 / 25.64 / 27.03 / 40.99 tok/s (code,
 chat, story, count) against 45.80 / 39.48 / 35.67 / 53.08, i.e. 0.65-0.77x.
 Without MTP (1+3) the same pair is 0.73-0.74x, so R4 closes no part of the
 DwarfStar gap: that gap is the base decode. What R4 changes is our own MTP:
-from slower than plain on free text (0.55-0.97x in M1) to 1.05-1.68x, with
+from slower than plain on chat and prose (0.53-1.01x in M1) to 1.05-1.68x, with
 gains on par with DwarfStar's (1.38/1.05/1.11/1.68 vs 1.40/1.19/1.08/1.58).
 
 Default: `--mtp` now means `--mtp-draft auto`. Reason, from M3/M3b: auto is
