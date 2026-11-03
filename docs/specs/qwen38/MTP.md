@@ -6,6 +6,13 @@ blocco reale del checkpoint, con cache propria e verifica greedy di una proposta
 Gate indipendente, test di stato e confronto prestazionale completati.
 Non sono implementati draft multipli, sampling o riuso incrementale fra turni.
 
+> **Aggiornamento R4 (2026-11-03).** La CLI non usa più snapshot host e replay: verifica
+> fino a 1+3 righe con `qwen38_gpu_forward_verify` e tiene il prefisso accettato con
+> `qwen38_gpu_forward_keep` (stati per riga, bit-identici agli append ordinari); le bozze
+> oltre la prima sono a catena e la profondità è scelta da `--mtp-draft auto|0..3`. Vedi
+> [R4-mtp.md](R4-mtp.md). Snapshot e restore sotto restano come API e test, non come
+> percorso della CLI; il pilot qui sotto descrive il percorso di ottobre.
+
 ## Riferimenti verificati nel checkout locale
 
 DwarfStar invariato, commit `fc80bd695da76ee14bcb86820bf900a5cdfda806`,

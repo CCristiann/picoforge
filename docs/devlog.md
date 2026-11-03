@@ -2,6 +2,116 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Roadmap stage R4 "MTP" (from 2026-11-03)
+
+Spec: `docs/specs/qwen38/R4-mtp.md`. Branch `perf/qwen38-mtp-adaptive` from
+main 66a6c2d. Starting point: `--mtp` with one draft was *slower* than plain
+decode on free text (18.3 vs 24.4 tok/s in R3's informal check). Newest first.
+
+### R4 closure
+
+(filled at closure)
+
+### R4.3 — cost-aware draft depth, and why the first cost table was wrong
+
+`--mtp-draft auto|0..3` (or `PICOFORGE_MTP_DRAFT`) chooses k drafts per
+cycle. `auto` (the new default of `--mtp`) picks the k that maximizes
+
+    expected tokens / cost = (1 + a1 + a1 a2 + a1 a2 a3 ...) / (C(1+k) + mu + k delta)
+
+with C(n) the cost of an n-row verify append in decode appends, delta one
+draft, mu the per-token predictor catch-up (paid at every k, k=0 included),
+and a_j the acceptance of draft j given the previous ones, a moving average
+(1/8) per depth. With k=0 a probe draft every 8 tokens keeps a1 current: the
+next real token checks it for free. `PICOFORGE_MTP_COST=c2,c3,c4,delta[,mu]`
+overrides the defaults.
+
+The first table came from a prefill proxy (M2: 132 IDs with `--chunk n`):
+1.63/2.22/2.68 for 2/3/4 rows. With it `auto` fell back to k=0 on chat and
+prose and lost the 8-15% that k=1 gives there. The real verify, measured
+inside the MTP runs (M3), costs 1.27/1.56/1.91 decode appends; delta 0.095,
+mu 0.03. With those, the model predicts the measured ratios closely (code
+k=2 1.43 predicted vs 1.40 measured; count k=3 1.80 vs 1.77). Lesson: the
+cost model must be calibrated on the operation it prices, not on a proxy
+that shares its kernels (here the proxy skipped the LM head rows and ran at
+other positions; we did not chase which difference dominates).
+
+M3, 2026-11-03, AC (battery 97-88%, not draining), one process per run, 128
+tokens, chat template, ratios against plain of the same series; 24/24 runs
+emit exactly the plain greedy tokens:
+
+| Text | plain tok/s | k=1 | k=2 | k=3 | auto (M3b) |
+|---|---:|---:|---:|---:|---:|
+| code | 23.10 | 1.28 | **1.40** | 1.35 | 1.40 |
+| chat | 24.13 | 1.08 | **1.12** | 0.92 | 1.09 |
+| story | 23.21 | **1.15** | 1.05 | 0.94 | 1.09 |
+| count | 23.17 | 1.42 | 1.66 | **1.77** | 1.65 |
+
+Acceptance (draft 1 / 2 given 1 / 3 given 2): code 0.81/0.90/0.86, chat
+0.57-0.68/0.61, story 0.64/0.45, count 1.00/1.00/1.00. Deeper drafts only pay
+on deterministic text, as DwarfStar's own depth comment says.
+
+**Novelty check (2026-11-03).** Cost-aware draft length for MoE speculative
+decoding is now well covered: EcoSpec (arXiv 2607.12696, expert-activation
+cost in tree selection), EVICT (2605.00342, verification-budget prefix),
+SpecFit (2610.15417, reward over expert-union cost, offloaded MoE),
+DraftExpert (2607.24434) and S2-MoE (2608.15018) on edge devices, AcceptMoE
+(2608.02989). On Apple Silicon, mlx-optiq reports depth 1 best on an M4 Pro.
+What we did *not* find in that search: a depth policy that includes k=0,
+driven by a verify-cost table measured on the target machine, for a
+hybrid GDN/QSA MoE with an embedded MTP head on unified memory. That is a
+narrow engineering point, not a new idea; the September plan (expert-cost
+scheduler) is largely prior art now.
+
+### R4.2 — verify 1+k rows and keep a prefix without replay
+
+Concept. Greedy speculative decoding: a cheap predictor proposes d1..dk; the
+trunk runs [a, d1..dk] in one append and returns k+1 rows of logits; d_j is
+kept while it equals the argmax of row j-1, and the row after the last kept
+draft gives the next token for free. Exactness follows from the kernels:
+under 32 rows every per-row result is bit-identical to a 1-row append, so
+the kept tokens are exactly what plain greedy would emit.
+
+The hard part on this model is the rollback. Attention caches are indexed by
+position (a rejected row is simply overwritten later; the QSA compressed
+block is recomputed when it completes again). The GDN layers are not: their
+state is a recurrence. Before R4 every cycle copied 561 MiB to the host
+(9.9 ms, mostly KV cache the append never touches) and a rejection restored
+it and re-ran `a` (51 ms, a whole decode). Now `qwen38_gpu_forward_verify`
+records, for rows 0..k-1: the GDN state (the scan runs one row at a time and
+the state is copied to a slot after each row; same FP32 steps), the GDN and
+PLE convolution inputs next to their old history (the history after any
+row is a contiguous window of that), and the n-gram history. `keep(m)` swaps
+the slot buffer in as the state (no copy), rewrites the small histories and
+rewinds position and ledger. Measured: keep 0.02-0.1 ms per cycle. A test
+checks, for every rows/keep pair, that the result is bit-identical to m
+ordinary appends (states and the logits of two later appends).
+
+Instructive bug: the first keep restored the n-gram history in
+chronological order; `qwen38_ngram_ids` stores it newest first. States
+matched and the kept rows matched, only the *next* append differed -- the
+test that compares later logits caught it.
+
+Drafts after the first are chained (DwarfStar fc80bd6
+`qwen4_graph_mtp_chain_step`, MIT): the predictor runs on its own last
+output row and the previous draft, one position further in its own cache;
+that row is speculative and is overwritten by the catch-up with the trunk's
+real residuals (`qwen38_gpu_mtp_rewind`).
+
+### R4.1 — measure first
+
+M1 (battery 6-8%, ratios only): acceptance of one draft code 0.81, chat 0.57,
+story 0.64, count 1.00; old cycle = draft 4.5 + snapshot 9.9 + verify 52.8 ms
+(+51 ms replay per rejection). Even at 100% acceptance the old path lost.
+Expert union with `Q38_ROUTE_LOG` (opt-in diagnostic): n consecutive decode
+tokens use 1.53-1.79x (n=2), 1.98-2.43x (n=3), 2.38-2.76x (n=4) the experts of
+one, while the per-pair kernels read n x: deduplication is backlog. Profile
+at 2 rows: dense linears 1.4x (dequant shared across the tile, but the FP32
+multiply-adds are per row), routed MoE 2.1x, gdn.scan 1.85x.
+
+Regressions before any change: `make test-all` (Qwen3-0.6B and the
+Qwen3-30B-A3B-shaped MoE paths) green, 5 min 20 s.
+
 ## Roadmap stage R3 "Prefill" (from 2026-11-02)
 
 Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
