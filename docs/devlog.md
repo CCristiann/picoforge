@@ -2,6 +2,38 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode II (from 2026-11-05): close the gap to 0.95x DwarfStar
+
+Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6
+ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-up.
+
+### D0 — where the milliseconds are (analysis of existing evidence, no new runs)
+
+From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
+1356 dispatches and 1271 barriers per token) and the isolated MoE benchmarks in
+`bench/qwen38_r1_20261028/moe-*`:
+
+- The routed MoE is **instruction-bound, not bandwidth-bound**. In isolation
+  the fused gate+up runs at 130 GB/s at 10 slots and 132 GB/s at 40 slots: four
+  times the bytes take four times as long (65.3 -> 251 us), at a GB/s far below
+  307. That is 502 G weights/s, about 8 ALU instructions per IQ2_XXS weight if
+  the 20 cores issue ~4 T simple ops/s (an assumption, to confirm by ablation).
+  Reaching ~250 GB/s needs about 4 per weight: scale and sign applied once per
+  group of 8 instead of per weight, vector loads of grid and x. That changes
+  the rounding, so it needs a tolerance measured like R2's, not bit-identity.
+- The F16 HC matvecs (hc_pre, hc_ffn.up/down, hc_attn.up/down, 7.7 ms at
+  156-190 GB/s) are **not** ALU-bound (2 ops per 2-byte weight). Each call moves
+  ~6.5 MB in ~40 us, so ramp-up and ramp-down around the barrier dominate:
+  fusion or overlap helps more than a faster inner loop.
+- The ~1000 small dispatches with no weights (gdn.scan, moe.route, qsa.core,
+  gdn.conv, rms, hc_add, prep, ...) cost ~6-7.6 ms. Their lever is the number
+  of barriers, not the kernels. DwarfStar fuses the HC mixers the same way.
+- Not yet measured (needs a real run on AC with a charged battery): the
+  prepare/encode/wait/gpu split per token that the CLI stats JSON already
+  carries, i.e. how much of 41.4 ms is host time; and the ablation (kernel with
+  scale, sign or the x load removed) that turns the 8-instruction estimate
+  into a measurement.
+
 ## 2026-11-05 — R4.5 tidy-up: one model, one engine
 
 Done: the Qwen3 dense/MoE engine, its tests and tools left the tree (tag
