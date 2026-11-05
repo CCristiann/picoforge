@@ -1,18 +1,16 @@
 # Design
 
-**Direction update, 2026-10-11:** the next objective is a substantially larger
-model for coding and reasoning on the 64 GiB M5 Pro. The
-[large-model research and work order](large-model-research-2026-10-11.md)
-recommends validating Qwen3.8-Flash-Next with compressed resident weights and
-disk-only n-gram tables. This is a planned target, not implemented support.
-The architecture and milestones below describe the existing Qwen3 engine;
-the 30B remains its regression and kernel-development model.
-
 picoforge is a single-model LLM inference engine for Apple Silicon, written in
-C11 and Metal. It is deliberately narrow — one model family at a time, no ML
-framework inside the engine — and small enough to be read end to end. Its
-reference target is Qwen3: Qwen3-0.6B for the dense engine, Qwen3-30B-A3B for
-mixture-of-experts.
+C11 and Metal. It is deliberately narrow, one model family at a time with no ML
+framework inside the engine, and small enough to be read end to end. Its
+target is **Qwen3.8-Flash-Next** (a 48-layer mixture-of-experts model with a
+Gated DeltaNet / gated-attention layout and multi-token prediction), run from
+its quantised GGUF file.
+
+The stage plan, with what is done and what is next, is in
+[`specs/qwen38/roadmap.md`](specs/qwen38/roadmap.md). An earlier Qwen3
+dense/MoE engine (Qwen3-0.6B and Qwen3-30B-A3B) was removed from the tree and
+lives at the git tag `archive/pre-qwen38-focus`.
 
 ## Principles
 
@@ -21,10 +19,11 @@ Code comments refer to these by number.
 1. **Correctness before speed.** A faster path with unexplained drift in
    attention, the K/V cache or the logits is not accepted. Every numerical
    component is validated against a reference before it is optimised.
-2. **Chain of oracles.** HuggingFace transformers is the reference for the
-   NumPy oracle (`tools/oracle/`); the oracle is the reference for the C CPU
-   path; the CPU path is the reference for the Metal kernels. A divergence is
-   a bug until it is explained and documented.
+2. **Chain of oracles.** An independent FP32 reference (`tools/oracle/`) is
+   the reference for the C CPU path; the CPU path is the reference for the
+   Metal kernels. A divergence is a bug until it is explained and documented.
+   Fast kernels change the order of floating-point sums, so each gets a
+   tolerance fixed from the measured error distribution.
 3. **Small and readable.** Plain C11, Metal Shading Language for kernels,
    Objective-C only where Metal requires it. Few files, short functions,
    comments that explain why. No external dependencies in the engine; Python
@@ -33,9 +32,11 @@ Code comments refer to these by number.
    [`BENCHMARKS.md`](BENCHMARKS.md): warm-up by time, 25 repetitions, median
    with p10/p90, thermal state recorded, raw CSV and plotting script committed
    under `bench/`. Test tolerances are calibrated on measured values.
-5. **Read `config.json`, never hardcode.** Every model dimension is parsed at
-   load time and printed as an architecture summary, byte-identical to the
-   oracle's.
+5. **Read the model's metadata, never hardcode.** Every model dimension is
+   parsed from the GGUF metadata at load time and printed as an architecture
+   summary. A kernel specialised for today's shapes takes them as parameters
+   and asserts them at load, so a sibling model with the same architecture
+   needs a new configuration, not a rewrite.
 
 ## Fresh APIs
 
@@ -58,31 +59,21 @@ which is why checkpoints larger than that run quantised.
 
 | path | contents |
 |---|---|
-| `src/` | engine C sources, Objective-C Metal glue, `kernels.metal` |
-| `tools/oracle/` | NumPy reference implementation and its verification against transformers |
-| `tools/quant/` | quantisers (q8_row, q4_g32, ...) |
-| `tools/synth/` | synthetic checkpoints at real shapes, sharding |
-| `tools/eval/` | perplexity corpus, routing-overlap analysis |
+| `src/` | engine C sources, Objective-C Metal glue, `.metal` kernels (`qwen38_*`), GGUF reader |
+| `tools/oracle/` | independent reference implementations of the Qwen3.8 operators |
+| `tools/synth/` | synthetic GGUF checkpoints for tests |
+| `tools/eval/` | benchmark runners, grading and reports |
 | `tools/probe/` | standalone Metal 4 API probes |
-| `tools/ui/` | a local web UI in front of the engine binary |
-| `tests/` | correctness harnesses (`make test-all`) |
-| `bench/` | raw benchmark CSVs and plots |
-| `docs/` | this file, the benchmark protocol, the development log |
-
-## Roadmap
-
-| milestone | scope | status |
-|---|---|---|
-| 0 | NumPy oracle, logits matched against transformers | done |
-| 1 | C engine on CPU: safetensors, byte-level BPE, forward pass, K/V cache, sampling, chat template | done |
-| 2 | Metal: naive, simdgroup and TensorOps matmul kernels; full forward pass on the GPU | done |
-| 3 | Quantisation: q8 and q4 block formats, perplexity evaluation | done |
-| 4 | Qwen3-30B-A3B: MoE routing on the GPU, expert-cost-aware speculative decoding | in progress — see [`phase4-plan.md`](phase4-plan.md) |
+| `tools/microbench/` | the model-agnostic matmul and dispatch-cost benchmark |
+| `tools/ui/qwen38/` | a local web chat in front of the engine (secondary to the terminal) |
+| `tests/` | correctness harnesses (`make test-all`, `make test-qwen38`) |
+| `bench/` | raw benchmark CSVs, run evidence and plots |
+| `docs/` | this file, the benchmark protocol, the development log, specs |
 
 ## Conventions
 
 - Small commits, imperative subject lines, one logical change each.
 - Model weights are never committed; their SHA256 sums are recorded in
-  [`weights.lock`](weights.lock), and derived corpora in `corpus.lock`.
+  [`weights.lock`](weights.lock).
 - A negative result is committed with its measurement before the code is
   removed, so the comparison stays reproducible from history.
