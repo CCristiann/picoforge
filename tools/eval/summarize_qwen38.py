@@ -7,7 +7,10 @@ from pathlib import Path
 import re
 import statistics
 
-from bench_speculate import percentile
+
+def percentile(values, p):
+    values = sorted(values)
+    return values[int(p * (len(values) - 1) + 0.5)]
 
 
 def case_summary(directory, repeats, warmups):

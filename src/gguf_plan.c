@@ -1,6 +1,6 @@
 /* Choose page-aligned views at tensor boundaries, with at most one page of
  * overlap between adjacent views. Never expose disk-only n-grams to Metal. */
-#include "picoforge.h"
+#include "common.h"
 #include "gguf.h"
 #include <stdlib.h>
 

@@ -2,6 +2,17 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## 2026-11-05 — R4.5 tidy-up: one model, one engine
+
+Done: the Qwen3 dense/MoE engine, its tests and tools left the tree (tag
+`archive/pre-qwen38-focus`); `src/common.h` replaces `picoforge.h`; the BPE core
+Qwen3.8 shared with the old tokenizer is `src/qwen38_bpe.c`; the matmul benchmark
+is `tools/microbench` (`make microbench`); README and design rewritten; merged
+branches deleted locally and on origin. No weights or bench data deleted.
+`make test-all`, the CLI/REPL/session/speculative tests and `microbench --check`
+pass; the stage-B reference assets are not in this checkout, so
+`make test-qwen38-cpu` stops there. Next: the decode gap against DwarfStar.
+
 ## Roadmap stage R4 "MTP" (from 2026-11-03)
 
 Spec: `docs/specs/qwen38/R4-mtp.md`. Branch `perf/qwen38-mtp-adaptive` from

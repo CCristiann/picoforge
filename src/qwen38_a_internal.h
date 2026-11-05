@@ -2,7 +2,7 @@
 #ifndef QWEN38_A_INTERNAL_H
 #define QWEN38_A_INTERNAL_H
 #include "qwen38_text.h"
-#include "picoforge.h"
+#include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +45,43 @@ Q38A_INLINE bool q38a_mul(size_t a, size_t b, size_t *r) {
     *r = a*b;
     return true;
 }
-/* One shared BPE implementation. Qwen3 retains its original split profile. */
+/* ---- byte-level BPE tables (qwen38_bpe.c) ----
+ * Every token is the byte string it stands for; the GPT-2 alphabet used by
+ * the file format is undone at load time. */
+
+/* An added token: matched in the raw text before the pre-tokenizer and before
+ * BPE, because no merge rule can build one and none must ever be allowed to. */
+typedef struct { int id; int len; unsigned char text[64]; } SpecialToken;
+
+typedef struct {
+    unsigned char *blob;        /* every token's bytes, concatenated        */
+    int           *offset;      /* [n_tokens + 1] indices into blob         */
+    int            n_tokens;
+    int            n_merges;
+
+    /* byte string -> id. Open addressing, slot holds id + 1 (0 = empty). */
+    int           *str_slot;
+    unsigned       str_mask;
+
+    /* (left_id << 32 | right_id) -> merge rank. rank -1 marks an empty slot. */
+    uint64_t      *merge_key;
+    int           *merge_rank;
+    unsigned       merge_mask;
+
+    SpecialToken   specials[64];
+    int            n_specials;
+} Tokenizer;
+
+int  tokenizer_find(const Tokenizer *t, const unsigned char *b, int n); /* -1 absent */
+int  tokenizer_rank(const Tokenizer *t, int left, int right);          /* -1 absent */
+void tokenizer_free(Tokenizer *t);
+
+/* Unicode tables (qwen38_unicode.c): sorted codepoint ranges for the general
+ * categories L, N and M, and the NFC composition data. */
+typedef struct { unsigned lo, hi; } CodepointRange;
+typedef struct { unsigned a, b, cp; } Composition;
+typedef struct { unsigned cp; unsigned char ccc; } CombiningClass;
+
 Qwen38Status q38a_bpe_load(Tokenizer *, const Qwen38Bytes *, size_t,
     const Qwen38Bytes *, size_t, Qwen38Error *);
 int q38a_bpe_segment(const Tokenizer *, const char *, int, int *, int *, int *, int *,

@@ -247,37 +247,22 @@ real layers route differently from one another and attention is not included.
 
 ## Reproducing
 
+Current tool, model-agnostic (writes the matmul and dispatch CSVs):
+
 ```
-make
-./picoforge models/Qwen3-0.6B --bench bench/matmul_m5pro.csv
+make microbench
+./build/microbench --check                           # kernels against a CPU reference
+./build/microbench --matmul   bench/matmul_m5pro.csv
+./build/microbench --quant    bench/matmul_quant_m5pro.csv
+./build/microbench --dispatch bench/dispatch_m5pro.csv
 ./tools/venv/bin/python tools/plot_bench.py bench/matmul_m5pro.csv
 ```
 
-`--metal-check` runs the correctness comparison against the CPU oracle instead;
-its timings are single-shot and are printed for orientation only.
-
-Phase 3:
-
-```
-make quant-models
-./picoforge models/Qwen3-0.6B --bench-quant bench/matmul_quant_m5pro.csv
-for m in Qwen3-0.6B Qwen3-0.6B-q8_row-embed Qwen3-0.6B-q4_g32 Qwen3-0.6B-q4_g32-embed; do
-  ./picoforge models/$m --bench-e2e bench/e2e_quant_m5pro.csv; done
-tools/venv/bin/python tools/eval/build_local_corpus.py 8697213
-tools/venv/bin/python tools/quant/sweep.py build/corpus_local.txt bench/quant_quality_local.csv
-./picoforge models/Qwen3-0.6B-q4_g32 --ppl build/corpus_local.txt models/Qwen3-0.6B bench/quant_quality_engine.csv
-tools/venv/bin/python tools/plot_quant.py
-```
-
-Phase 4:
-
-```
-./picoforge models/Qwen3-0.6B --bench-dispatch bench/dispatch_m5pro.csv
-./picoforge models/Qwen3-0.6B --profile bench/profile_m5pro.csv
-make build/synth-30b-layer
-./picoforge build/synth-30b-layer --bench-moe bench/moe_verify_cost_m5pro.csv
-./tools/venv/bin/python tools/plot_moe.py
-```
+The Qwen3-era commands that produced the end-to-end, quality and MoE-verify
+CSVs (`--bench-e2e`, `--ppl`, `--bench-moe`, the quantisers and corpus builder)
+belong to the engine that was removed from the tree. To rerun them, check out
+the tag `archive/pre-qwen38-focus`; the sections above still describe exactly
+what those files contain.
 
 Thermal state was read with `pmset -g therm` before and after the Phase 3
 and Phase 4 runs: no thermal or performance warning recorded. (`powermetrics` needs root

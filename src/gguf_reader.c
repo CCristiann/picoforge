@@ -1,5 +1,5 @@
 /* Little-endian reads are checked before advancing; no unaligned casts. */
-#include "picoforge.h"
+#include "common.h"
 #include "gguf.h"
 
 _Static_assert(sizeof(size_t) == sizeof(uint64_t), "GGUF requires a 64-bit host");

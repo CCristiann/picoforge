@@ -1,7 +1,7 @@
 /* Teacher-forced MTP probe plus snapshot/state regressions. No reference math
  * is shared with the independent CPU oracle. Run under the common GPU lock. */
 #import <Metal/Metal.h>
-#include "picoforge.h"
+#include "common.h"
 #include "qwen38_g_internal.h"
 #include <assert.h>
 #include <math.h>

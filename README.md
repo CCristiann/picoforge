@@ -1,95 +1,103 @@
 # picoforge
 
-A small, readable LLM inference engine in C11 and Metal for Apple Silicon.
-Tokenizer, CPU reference path, GPU forward pass, quantisation, MoE routing and
-speculative decoding, with no ML framework in the engine. Python appears only
-in `tools/` for reference implementations, conversion and tests.
+A small, readable inference engine for **Qwen3.8-Flash-Next** on Apple Silicon,
+written in C11 and Metal. It runs the full 48-layer graph on the GPU from the
+quantised GGUF file, with no ML framework in the engine; Python appears only in
+`tools/` and `tests/` for reference implementations and checks.
 
 The goal is to understand where inference time and memory go, so correctness
 comes first and every number is measured. All results come from one machine
-(M5 Pro, 64 GiB) and make no claim of a lead over other runtimes.
+(MacBook Pro, M5 Pro, 64 GiB) and make no general claim of a lead over other
+runtimes. The design follows the philosophy of
+[DwarfStar](https://github.com/antirez/ds4): one model at a time, self-contained,
+small enough to read end to end.
 
-## What it runs
+## Status
 
-| Model | Status |
+| Area | State |
 |---|---|
-| Qwen3-0.6B (dense) | CPU and Metal; bf16, q8 and q4 weights; regression reference |
-| Qwen3-30B-A3B (MoE) | Metal with bf16/q8_row experts (~31 GB), greedy speculative decoding |
-| Qwen3.8-Flash-Next Q2 | Full 48-layer FP32 graph on Metal, read directly from GGUF; optional MTP |
+| Decode on the GPU | 0.73-0.75x of DwarfStar `fc80bd6` on the same file and machine |
+| Prefill, 8K prompt | 61.0 s in FP32, 37.6 s with the opt-in `--prefill-precision half` |
+| MTP (multi-token prediction) | Exact greedy verification; 1.09-1.65x over plain decode |
+| Terminal chat | Multi-turn with KV reuse, `/read`, `/ctx`, `/think`, Ctrl+C |
+| Next | Close the decode gap, then SSD expert streaming for the Q4K file |
+
+Support for the next Qwen generation (its 27B dense model and a Flash-Next
+sibling) is planned for after its release. Nothing for it exists yet.
+
+## Requirements
+
+An M5-family Mac, macOS 26.2 or later (the Neural Accelerators are reached through
+Metal 4 TensorOps), Xcode with the Metal 4 toolchain, and Python 3.12+ for the
+tooling. The Q2 checkpoint is 137 GiB and is never committed:
+[`docs/qwen38-q2-baseline.md`](docs/qwen38-q2-baseline.md) records its provenance,
+and `tools/eval/download_qwen38_q2.py` fetches and verifies it against
+[`docs/weights.lock`](docs/weights.lock). The weights use the Qwen Community License.
 
 ## Build and run
 
-Requires an M5-family Mac, macOS 26.2+, Xcode with the Metal 4 toolchain and
-Python 3.12+ for the tooling. Weights live in `models/` and are never committed.
-
 ```sh
 make
-python3 -m venv tools/venv
-tools/venv/bin/pip install -r tools/requirements.txt
-tools/venv/bin/hf download Qwen/Qwen3-0.6B --local-dir models/Qwen3-0.6B
-
-./picoforge models/Qwen3-0.6B --gpu-chat "Why does a cache help?"
-./picoforge --context 4096 models/Qwen3-0.6B --gpu-chat "Explain memory bandwidth." 128
-make test-all
-make ui                       # local UI at http://127.0.0.1:8000
-```
-
-Qwen3.8 runs from its GGUF file (8K context, greedy, thinking off by default):
-
-```sh
 export PICOFORGE_MODEL=models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
-./picoforge                   # interactive chat: /help /read FILE /ctx N /think /quit, Ctrl+C stops a reply
-./picoforge -p "What is 2 + 2?" -n 32 [--mtp]   # one answer, then exit
-./picoforge bench             # 3 warm-up + 20 runs: median, p10/p90 tok/s
-make ui-qwen38                # resident chat at http://127.0.0.1:8001 (secondary)
+
+./picoforge                            # interactive chat: /help /read FILE /ctx N /think /quit
+./picoforge -p "What is 2 + 2?" -n 32  # one answer, then exit
+./picoforge -p "..." --mtp             # with multi-token prediction
+./picoforge bench                      # 3 warm-up + 20 runs: median and p10/p90 tok/s
 ```
 
-The long form `./picoforge --qwen38 FILE [--chat TEXT ...]` keeps every
-measurement flag. Never run two processes with the checkpoint loaded at once
-(the UI counts): ~45 GiB of wired pages are released for ~1.5 s after exit,
-and mapping the file again in that window froze this Mac twice. Scripted
-real runs go through `tools/qwen38_gpu_lock.py` and the guarded launcher.
+Context is 8K by default, decoding is greedy and thinking is off unless `--thinking`
+or `/think` is used. `--mtp` drafts up to three tokens per cycle, chosen by a cost
+model measured on this machine (`--mtp-draft 0..3` fixes the depth); the output is
+always identical to plain greedy decoding. The long form
+`./picoforge --qwen38 FILE.gguf [flags]` keeps every measurement flag.
 
-Useful flags: `--mtp` (multi-token prediction with exact greedy verification; up to 3
-drafts per cycle chosen by a measured cost model, `--mtp-draft 0..3` fixes the depth),
-`--thinking`, `--complete TEXT`, `--logits FILE.f32`, `--token-ids FILE.json`.
+**Run one process at a time.** About 45 GiB of wired pages are released for roughly
+1.5 s after exit, and mapping the file again in that window froze this Mac twice.
+Scripted real runs go through `tools/qwen38_gpu_lock.py`.
 
 ## How correctness is checked
 
-A chain of oracles: Transformers → NumPy reference → C CPU path → Metal.
-Speculative and MTP paths must produce exactly the same tokens as plain greedy
-decoding. Attention is checked against an fp64 reference at long context, and
-the Qwen3.8 gate compares all 48 layer outputs and logits against an
-independent FP32 reference ([G2 spec](docs/specs/qwen38/G2.md)).
+Kernels are judged by a chain of oracles: an independent FP32 reference implementation,
+then the C CPU path, then the Metal kernels. A faster kernel changes the order of the
+floating-point sums, so bit-identity is not expected; instead each kernel gets a
+tolerance fixed from the measured error distribution. The end-to-end gate does not
+move: logits within 1e-3 of the FP32 reference and identical greedy output on a
+frozen suite ([G2 spec](docs/specs/qwen38/G2.md)). Speculative paths must emit
+exactly the tokens plain greedy decoding emits.
 
-## Selected measurements
+```sh
+make test-all          # offline checks: no checkpoint, no long GPU workload
+make test-qwen38       # the full Qwen3.8 gate (needs the reference assets, see tools/qwen38.mk)
+make microbench && ./build/microbench --check   # the matmul kernels against a CPU reference
+```
 
-| Experiment | Result | Details |
+## Measurements
+
+Benchmarks follow [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md): warm-up, at least 20
+repetitions, median with p10/p90, alternating order against DwarfStar, raw CSVs
+committed. They are small pilots, not general claims.
+
+| Stage | Result | Evidence |
 |---|---|---|
-| Speculative decoding, Qwen3-30B-A3B + 0.6B draft | 1.41× (k=2) / 1.43× (adaptive) decode; outputs identical to greedy | [protocol](docs/BENCHMARKS.md), [CSV](bench/spec_qwen3_30b_20261011_pilot.csv) |
-| Expert-cost-aware drafting (`auto-experts`) | 1.009× decode vs `auto`, below the adoption threshold | [writeup](docs/phase4-expert-experiment.md) |
-| Expert reuse across 8 tokens (30B) | 29.8 distinct experts/layer vs 51.6 uniform | [CSV](bench/routing_overlap_qwen3_30b_20261011.csv) |
-| Qwen3.8 Q2 decode on GPU (R1) | 20.7 tok/s short (0.62× DwarfStar), 11.7 tok/s at 8K (0.37×); 19.5× over R0 | [R1 close](bench/qwen38_r1_20261028/README.md), [ladder](bench/qwen38_r1_20261019/ladder.csv) |
-| Qwen3.8 native FP32 decode | ~1.07 tok/s ordinary; MTP 1.19–1.57× on two short pilots | [MTP results](bench/qwen38_mtp_20261013/README.md) |
-
-These are small pilots, not general claims. Raw CSVs, logs, hashes and the
-plotting scripts are committed under `bench/`; the
-[native report](bench/qwen38_native_20261013/report-mtp-final.html) is a
-self-contained HTML page (`python3 -m http.server --directory bench`).
+| R1 decode | 0.62x DwarfStar short prompt, 0.37x at 8K | [R1](bench/qwen38_r1_20261028/README.md) |
+| R2 decode | 24.15 vs 32.33 tok/s short (0.75x), 21.73 vs 30.14 at 8K (0.72x) | [R2](bench/qwen38_r2_20261030/README.md) |
+| R3 prefill | 8K prompt 215 s to 61.0 s (FP32) / 37.6 s (half) | [R3](bench/qwen38_r3_20261102/README.md) |
+| R4 MTP | 33.2 / 25.6 / 27.0 / 41.0 tok/s on code / chat / story / counting | [R4](bench/qwen38_r4_20261103/README.md) |
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `src/` | Engine sources and `.metal` kernels |
-| `tools/` | Python oracles, converters, benchmark runners, local UI |
+| `src/` | Engine C sources and Metal kernels (`qwen38_*`), GGUF reader |
+| `tools/` | Python oracles, fixtures, benchmark runners, probes, the matmul microbenchmark |
 | `tests/` | Correctness harnesses and fixtures |
 | `bench/` | Measured data, run evidence and plots |
-| `docs/` | [Design](docs/DESIGN.md), [benchmark protocol](docs/BENCHMARKS.md), [devlog](docs/devlog.md), specs |
+| `docs/` | [Design](docs/DESIGN.md), [benchmark protocol](docs/BENCHMARKS.md), [roadmap](docs/specs/qwen38/roadmap.md), [devlog](docs/devlog.md) |
+
+An earlier Qwen3 dense/MoE engine and its tools are no longer in the tree; they remain
+in git history at the tag `archive/pre-qwen38-focus`.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). Qwen3 weights are Apache-2.0; Qwen3.8 weights use
-the Qwen Community License (provenance in
-[the baseline report](docs/qwen38-q2-baseline.md)). The small-runtime approach
-was inspired by [DwarfStar](https://github.com/antirez/ds4).
+MIT, see [LICENSE](LICENSE).

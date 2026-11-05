@@ -4,7 +4,7 @@
  * is appended to OUTDIR/<layer>.<stage>.f32 so a file holds the whole prefix.
  * All operators run on GPU, with one completion per append.
  * Run under the common lock (tools/qwen38_gpu_lock.py). */
-#include "picoforge.h"
+#include "common.h"
 #include "qwen38_g_internal.h"
 #include <math.h>
 #import <Metal/Metal.h>

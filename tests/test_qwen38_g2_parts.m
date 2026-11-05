@@ -3,7 +3,7 @@
  *   test_qwen38_g2_parts GGUF METALLIB
  * Prints one JSON line per check; exits nonzero on any gate failure. */
 #import <Metal/Metal.h>
-#include "picoforge.h"
+#include "common.h"
 #include "qwen38_c_internal.h"
 #include "qwen38_f_internal.h"
 #include "qwen38_moe.h"

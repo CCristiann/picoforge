@@ -8,7 +8,7 @@
  * all need it now, and three private copies is the reliable way to make three
  * subtly different parsers.
  */
-#include "picoforge.h"
+#include "common.h"
 
 #include <ctype.h>
 #include <stdio.h>
