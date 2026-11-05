@@ -55,6 +55,7 @@ struct Qwen38GpuForward {
     void *snapshot; size_t snapshot_bytes;
     Qwen38GpuCheckpoint saved;
     Q38Profile *prof; const Qwen38GpuTicket *prof_ticket; bool prof_failed; /* R0.2, trunk appends only */
+    const Qwen38GpuTicket *flush_ticket; uint32_t cmd_split; /* D1: command buffers per decode token (1 = one) */
     /* R4 diagnostic, off unless Q38_ROUTE_LOG names a new file: the routed expert ids of
      * every trunk append, [layer][token][top_k], to count the experts a multi-row
      * verify reads beyond one row. Never read by the forward itself. */
@@ -302,6 +303,7 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
         if (rb) f->route_buf=(__bridge_retained void *)rb;
         if (!rb || !f->route_log) return fail(e,Q38_GPU_ERROR,"route log (Q38_ROUTE_LOG must name a new file)");
     }
+    { const char *sp=getenv("PICOFORGE_CMD_SPLIT"); long n=sp ? strtol(sp,NULL,10) : 4; f->cmd_split=n<1 ? 1 : n>8 ? 8 : (uint32_t)n; }
     f->gpu_argmax=!q38_ref_kernels("argmax");  /* oracle mode builds no argmax pipeline (as 360acf0) */
     if (f->gpu_argmax && !(f->argmax=argmax_pipeline(f->device,library))) return fail(e,Q38_GPU_ERROR,"graph argmax pipeline");
     TRY(bind_weight(f,QWEN38_GLOBAL_LAYER,Q38_TOKEN_EMBD,&f->embed,e));
@@ -616,6 +618,9 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
         emit(f,*cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
         TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
         MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
+        /* D1: a decode token (or a few verify rows) is split into cmd_split command buffers so the GPU starts early. */
+        if (f->flush_ticket && t<=4 && f->cmd_split>1 && i+1<layers && (i+1)*f->cmd_split%layers<f->cmd_split)
+            TRY(q38g_session_flush(f->session,f->flush_ticket,cmd,e));
     }
     TRY(hc_read(f,cmd,QWEN38_GLOBAL_LAYER,&f->final,HC_FINAL,t,e)); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));
     if (rows) TRY(linear(f,cmd,QWEN38_GLOBAL_LAYER,"lm_head",f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e));
@@ -712,9 +717,10 @@ static Qwen38Status forward(Qwen38GpuForward *f,const int32_t *tokens,size_t cou
     if (!rc) { rc=qwen38_gpu_session_begin(f->session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc; }
     if (!rc) rc=claim(f,f->session,&ticket,e);
     if (!rc) { f->prof_ticket=f->prof ? &ticket : NULL; f->prof_failed=false; }
+    f->flush_ticket=(!f->prof && !trace && layers==f->c.trunk_blocks) ? &ticket : NULL;
     if (!rc) rc=run(f,&cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
     if (!rc && f->prof_failed) rc=fail(e,Q38_GPU_ERROR,"profile encoder split");
-    f->prof_ticket=NULL; f->want_id=false;
+    f->prof_ticket=NULL; f->flush_ticket=NULL; f->want_id=false;
     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }
     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
     if (submitted) rc=qwen38_gpu_session_finish(f->session,&ticket,e);

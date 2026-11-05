@@ -7,6 +7,18 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6
 ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-up.
 
+### D1.1 — decode token in 4 command buffers: -2.1 ms/token, bit-identical
+
+Concept: one command buffer is committed only after the whole token is encoded, so the
+GPU sat idle for the ~2.3 ms of CPU encoding (wall - GPU = 3.0 ms). `q38g_session_flush`
+ends the current encoder, commits the buffer and continues the same logical command in a
+new one; the GPU runs the first quarter of the layers while the CPU encodes the rest. The
+queue runs buffers in order and the graph buffers are hazard-tracked, so nothing changes
+numerically (K = 1, 3, 4, 8 give identical ids and logits on the synthetic graph; test added).
+Measured on the real model (short frontier, `bench/qwen38_d1_20261105`): 41.0 -> 38.9
+ms/token (24.4 -> 25.7 tok/s), idle time 3.0 -> 0.9 ms, GPU time unchanged. Default K = 4,
+`PICOFORGE_CMD_SPLIT=1` restores the single buffer. Not re-paired with DwarfStar yet.
+
 ### D0 — where the milliseconds are (analysis of existing evidence, no new runs)
 
 From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,

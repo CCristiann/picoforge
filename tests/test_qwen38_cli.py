@@ -44,6 +44,23 @@ class CliTests(unittest.TestCase):
             last = np.fromfile(path/'gpu.f32', '<f4')
             np.testing.assert_array_equal(last, actual[0])
 
+    def test_command_split_is_bit_identical(self):
+        """D1: a decode token split into several command buffers (PICOFORGE_CMD_SPLIT) gives the same
+        ids and the same last-row logits, bit for bit, as one command buffer."""
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
+            path = Path(directory)
+            results = {}
+            for split in ('1', '3', '8'):
+                cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                       '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{split}.f32'),
+                       '--token-ids', str(path/f'{split}.json')]
+                done = subprocess.run(cmd, cwd=ROOT, capture_output=True, env={**os.environ, 'PICOFORGE_CMD_SPLIT': split})
+                self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                results[split] = ((path/f'{split}.f32').read_bytes(), json.loads((path/f'{split}.json').read_text())['generated_ids'])
+            self.assertGreater(len(results['1'][1]), 4)
+            self.assertEqual(results['3'], results['1'])
+            self.assertEqual(results['8'], results['1'])
+
     def test_half_prefill_mode(self):
         """R3.5: --prefill-precision half changes a 40-row prefill (GEMM rows) within its reduced-precision
         bound, never a 3-row one (decode-sized appends stay FP32 bit for bit)."""
