@@ -3,7 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 #ifdef Q38_A_GPU
-#include "picoforge.h"
+#include "common.h"
+#include "metal_device.h"
 #include "qwen38_packed.h"
 static void storage_bridge(const Gguf *g, const Qwen38Config *c) {
     /* Run ONLY with the small sparse fixture, under the common GPU lock. */

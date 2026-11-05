@@ -162,7 +162,7 @@ def verify(args):
         "config": ["tests/test_qwen38_config.c"]+common,
         "bindings": ["tests/test_qwen38_bindings.c","src/qwen38_weights.c","src/gguf_plan.c"]+common,
         "text": ["tests/test_qwen38_text.c","src/qwen38_tokenizer.c","src/qwen38_unicode.c","src/qwen38_chat.c",
-                 "src/tokenizer.c","src/unicode_tables.c","src/normalize.c","src/json.c"]+common}
+                 "src/qwen38_bpe.c","src/json.c"]+common}
     for name, sources in groups.items():
         subprocess.run(flags+["-Ibuild/qwen38-a"]+sources+["-lm","-o",str(build/f"test_{name}")],cwd=ROOT,check=True)
         paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn")]
@@ -183,7 +183,7 @@ def verify(args):
             env["QWEN38_A_NATIVE_INVENTORY"] = str(path)
         subprocess.run([sys.executable,"-B","tools/qwen38_test.py","tests/test_qwen38_a.py"],cwd=ROOT,env=env,check=True)
     if args.gpu:
-        sources = groups["bindings"]+["src/gpu_weights.m","src/metal.m"]
+        sources = groups["bindings"]+["src/gpu_weights.m","tests/metal_device.m"]
         exe = build/"test_storage"
         subprocess.run(flags+["-DQ38_A_GPU","-fobjc-arc"]+sources+
                        ["-framework","Metal","-framework","Foundation","-lm","-o",str(exe)],cwd=ROOT,check=True)

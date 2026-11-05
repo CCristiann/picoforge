@@ -1,0 +1,396 @@
+/* qwen38_bpe.c — the byte-level BPE core behind the Qwen3.8 tokenizer.
+ *
+ * The tokenizer metadata arrives inside the GGUF (qwen38_tokenizer.c reads it
+ * and calls q38a_bpe_load). What lives here is the part that does not depend
+ * on where the vocabulary came from: the string table, the merge table, and
+ * the pre-tokenizer plus merge loop that turns bytes into ids.
+ *
+ * GGUF spells tokens in GPT-2's 256-character alphabet so that every byte,
+ * control codes included, has a printable stand-in: ' ' is written 'Ġ',
+ * newline 'Ċ'. That mapping is a bijection, so we undo it at load time and
+ * keep every token as the byte string it actually means. The encoder never
+ * sees Unicode again, which removes a whole class of bug: BPE compares and
+ * concatenates strings, and doing that on UTF-8 by codepoint instead of by
+ * byte is wrong in ways that only show up on non-ASCII input.
+ */
+#include "common.h"
+#include "qwen38_a_internal.h"
+
+#include <ctype.h>
+#include <stdlib.h>
+
+/* ----------------------------------------------------------- alphabet */
+
+/* GPT-2's bytes_to_unicode, inverted: codepoint -> the byte it stands for.
+ *
+ * Bytes that are already printable ASCII or printable Latin-1 stand for
+ * themselves; the other 68 are pushed above the BMP-free zone at 256, in
+ * increasing byte order. Hence 0x20 -> U+0120 'Ġ' and 0x0A -> U+010A 'Ċ',
+ * and hence exactly 324 possible codepoints. */
+#define ALPHABET_CP 324
+
+static void build_alphabet(int *cp_to_byte) {
+    for (int i = 0; i < ALPHABET_CP; i++) cp_to_byte[i] = -1;
+
+    int extra = 0;
+    for (int b = 0; b < 256; b++) {
+        bool printable = (b >= 33 && b <= 126) || (b >= 161 && b <= 172)
+                      || (b >= 174 && b <= 255);
+        int cp = printable ? b : 256 + extra;
+        if (!printable) extra++;
+        cp_to_byte[cp] = b;
+    }
+}
+
+/* One UTF-8 sequence -> codepoint. Rejects overlong forms and truncation:
+ * a tokenizer that quietly accepts malformed UTF-8 produces token ids that
+ * cannot be decoded back, and the failure surfaces much later as garbled
+ * output rather than as a parse error here. */
+static const char *utf8_next(const char *p, int *cp) {
+    unsigned char c = (unsigned char)*p;
+    if (c < 0x80)        { *cp = c;            return p + 1; }
+    if ((c & 0xE0) == 0xC0) {
+        if ((p[1] & 0xC0) != 0x80) die("tokenizer: truncated UTF-8");
+        *cp = ((c & 0x1F) << 6) | (p[1] & 0x3F);
+        if (*cp < 0x80) die("tokenizer: overlong UTF-8");
+        return p + 2;
+    }
+    if ((c & 0xF0) == 0xE0) {
+        if ((p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80)
+            die("tokenizer: truncated UTF-8");
+        *cp = ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+        if (*cp < 0x800) die("tokenizer: overlong UTF-8");
+        return p + 3;
+    }
+    if ((c & 0xF8) == 0xF0) {
+        if ((p[1] & 0xC0) != 0x80 || (p[2] & 0xC0) != 0x80 || (p[3] & 0xC0) != 0x80)
+            die("tokenizer: truncated UTF-8");
+        *cp = ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12)
+            | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+        if (*cp < 0x10000) die("tokenizer: overlong UTF-8");
+        return p + 4;
+    }
+    die("tokenizer: invalid UTF-8 lead byte 0x%02X", c);
+    return p;                                          /* unreachable */
+}
+
+
+/* ------------------------------------------------------------- hashing */
+
+static unsigned fnv1a(const unsigned char *s, int n) {
+    unsigned h = 2166136261u;
+    for (int i = 0; i < n; i++) { h ^= s[i]; h *= 16777619u; }
+    return h;
+}
+
+/* splitmix64's finalizer: cheap, and it spreads the low bits of a packed
+ * (left, right) pair, which a plain xor-fold would leave clustered. */
+static unsigned hash64(uint64_t x) {
+    x ^= x >> 30; x *= 0xbf58476d1ce4e5b9ULL;
+    x ^= x >> 27; x *= 0x94d049bb133111ebULL;
+    return (unsigned)((x ^ (x >> 31)) & 0xFFFFFFFFu);
+}
+
+static unsigned pow2_at_least(int n) {
+    unsigned cap = 16;
+    while (cap < (unsigned)n * 2u) cap <<= 1;   /* keep the load factor < 0.5 */
+    return cap;
+}
+
+int tokenizer_find(const Tokenizer *t, const unsigned char *b, int n) {
+    unsigned i = fnv1a(b, n) & t->str_mask;
+    for (;;) {
+        int slot = t->str_slot[i];
+        if (slot == 0) return -1;
+        int id = slot - 1;
+        int len = t->offset[id + 1] - t->offset[id];
+        if (len == n && memcmp(t->blob + t->offset[id], b, (size_t)n) == 0) return id;
+        i = (i + 1) & t->str_mask;
+    }
+}
+
+static void str_insert(Tokenizer *t, int id) {
+    int len = t->offset[id + 1] - t->offset[id];
+    unsigned i = fnv1a(t->blob + t->offset[id], len) & t->str_mask;
+    while (t->str_slot[i] != 0) i = (i + 1) & t->str_mask;
+    t->str_slot[i] = id + 1;
+}
+
+int tokenizer_rank(const Tokenizer *t, int left, int right) {
+    uint64_t key = ((uint64_t)(unsigned)left << 32) | (unsigned)right;
+    unsigned i = hash64(key) & t->merge_mask;
+    for (;;) {
+        if (t->merge_rank[i] < 0) return -1;
+        if (t->merge_key[i] == key) return t->merge_rank[i];
+        i = (i + 1) & t->merge_mask;
+    }
+}
+
+static void merge_insert(Tokenizer *t, int left, int right, int rank) {
+    uint64_t key = ((uint64_t)(unsigned)left << 32) | (unsigned)right;
+    unsigned i = hash64(key) & t->merge_mask;
+    while (t->merge_rank[i] >= 0) {
+        if (t->merge_key[i] == key) return;   /* first rule wins: it ranks better */
+        i = (i + 1) & t->merge_mask;
+    }
+    t->merge_key[i] = key;
+    t->merge_rank[i] = rank;
+}
+
+
+void tokenizer_free(Tokenizer *t) {
+    free(t->blob); free(t->offset); free(t->str_slot);
+    free(t->merge_key); free(t->merge_rank);
+    memset(t, 0, sizeof *t);
+}
+
+/* GGUF adapter to the SAME string/merge tables and BPE loop as Qwen3.
+ * Inputs borrowed only during construction. No CLI die() on this path. */
+static int alphabet_bytes(Qwen38Bytes s, unsigned char *out, const int *alphabet) {
+    size_t pos = 0; int n = 0;
+    while (pos < s.len) {
+        unsigned cp; int k = q38a_utf8(s.data+pos, s.len-pos, &cp);
+        if (k <= 0 || cp >= ALPHABET_CP || alphabet[cp] < 0 || n >= 512) return -1;
+        out[n++] = (unsigned char)alphabet[cp]; pos += (size_t)k;
+    }
+    return n;
+}
+Qwen38Status q38a_bpe_load(Tokenizer *t, const Qwen38Bytes *tokens, size_t count,
+    const Qwen38Bytes *merges, size_t merge_count, Qwen38Error *e) {
+    int alphabet[ALPHABET_CP]; build_alphabet(alphabet);
+    if (!count || count > 1000000 || merge_count > 1000000)
+        return q38a_error(e, Q38_RANGE, "BPE", "table admission limit");
+    t->n_tokens = (int)count; t->n_merges = (int)merge_count;
+    t->offset = calloc(count+1, sizeof *t->offset);
+    if (!t->offset) return q38a_error(e, Q38_OOM, "BPE", "offsets");
+    unsigned char bytes[1024];
+    for (size_t i = 0; i < count; ++i) {
+        int len = alphabet_bytes(tokens[i], bytes, alphabet);
+        if (len <= 0) return q38a_error(e, Q38_FORMAT, "BPE", "invalid byte alphabet token");
+        if (t->offset[i] > 16*1024*1024-len) return q38a_error(e, Q38_RANGE, "BPE", "blob budget");
+        t->offset[i+1] = t->offset[i]+len;
+    }
+    t->blob = malloc((size_t)t->offset[count]);
+    t->str_mask = pow2_at_least((int)count)-1;
+    t->str_slot = calloc((size_t)t->str_mask+1, sizeof *t->str_slot);
+    t->merge_mask = pow2_at_least((int)merge_count)-1;
+    t->merge_key = calloc((size_t)t->merge_mask+1, sizeof *t->merge_key);
+    t->merge_rank = malloc(((size_t)t->merge_mask+1)*sizeof *t->merge_rank);
+    if (!t->blob || !t->str_slot || !t->merge_key || !t->merge_rank)
+        return q38a_error(e, Q38_OOM, "BPE", "tables");
+    for (unsigned i = 0; i <= t->merge_mask; ++i) t->merge_rank[i] = -1;
+    for (size_t i = 0; i < count; ++i) {
+        int n = alphabet_bytes(tokens[i], bytes, alphabet);
+        if (tokenizer_find(t, bytes, n) >= 0) return q38a_error(e, Q38_FORMAT, "BPE", "duplicate spelling");
+        memcpy(t->blob+t->offset[i], bytes, (size_t)n); str_insert(t, (int)i);
+    }
+    for (unsigned i = 0; i < 256; ++i) {
+        unsigned char b = (unsigned char)i;
+        if (tokenizer_find(t, &b, 1) < 0) return q38a_error(e, Q38_MISSING, "BPE", "byte token absent");
+    }
+    for (size_t i = 0; i < merge_count; ++i) {
+        Qwen38Bytes m = merges[i]; const uint8_t *space = memchr(m.data, ' ', m.len);
+        if (!space) return q38a_error(e, Q38_FORMAT, "BPE", "merge separator");
+        size_t left_len = (size_t)(space-m.data);
+        int ln = alphabet_bytes((Qwen38Bytes){m.data,left_len}, bytes, alphabet);
+        int rn = alphabet_bytes((Qwen38Bytes){space+1,m.len-left_len-1}, bytes+512, alphabet);
+        if (ln <= 0 || rn <= 0) return q38a_error(e, Q38_FORMAT, "BPE", "merge alphabet");
+        int left = tokenizer_find(t, bytes, ln), right = tokenizer_find(t, bytes+512, rn);
+        memmove(bytes+ln, bytes+512, (size_t)rn);
+        if (left < 0 || right < 0 || tokenizer_find(t, bytes, ln+rn) < 0 ||
+            tokenizer_rank(t, left, right) >= 0)
+            return q38a_error(e, Q38_FORMAT, "BPE", "invalid or duplicate merge");
+        merge_insert(t, left, right, (int)i);
+    }
+    return Q38_OK;
+}
+
+
+/* \s in the regex dialect HuggingFace uses is \p{White_Space}: a short and
+ * very stable list, so it is spelled out rather than generated. */
+static bool is_space(int cp) {
+    return (cp >= 0x09 && cp <= 0x0D) || cp == 0x20 || cp == 0x85 || cp == 0xA0
+        || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028
+        || cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+static bool is_nl(int cp) { return cp == '\r' || cp == '\n'; }
+
+static const char *cp_at(const char *p, const char *end, int *cp) {
+    if (p >= end) { *cp = -1; return p; }
+    return utf8_next(p, cp);
+}
+
+/* ------------------------------------------------------ pre-tokenizer */
+
+/* Length in bytes of the pre-token starting at p. This hand-codes Qwen3's
+ * split pattern:
+ *
+ *   (?i:'s|'t|'re|'ve|'m|'ll|'d)
+ *   | [^\r\n\p{L}\p{N}]?\p{L}+
+ *   | \p{N}
+ *   |  ?[^\s\p{L}\p{N}]+[\r\n]*
+ *   | \s*[\r\n]+
+ *   | \s+(?!\S)
+ *   | \s+
+ *
+ * Alternatives are tried in order and the FIRST that matches wins — regex
+ * alternation is ordered, not longest-match, and getting that backwards
+ * changes the segmentation of ordinary text.
+ *
+ * Why any of this exists: merges are forbidden from crossing these
+ * boundaries. Without the split, BPE would happily learn a single token for
+ * "the cat", and every word's tokenisation would depend on its neighbour. */
+static int pretoken_len(const char *p, const char *end, unsigned (*category)(unsigned)) {
+    int cp;
+
+    /* 1. contractions, case-insensitively */
+    if (*p == '\'' && p + 1 < end) {
+        int a = tolower((unsigned char)p[1]);
+        int b = (p + 2 < end) ? tolower((unsigned char)p[2]) : 0;
+        if (a == 's' || a == 't' || a == 'm' || a == 'd') return 2;
+        if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e')
+                                   || (a == 'l' && b == 'l')) return 3;
+    }
+
+    /* 2. one optional non-letter/non-digit/non-newline, then letters.
+     *
+     * This is the alternative that attaches a leading space to a word, which
+     * is why " the" is one token and "the" is another. No backtracking is
+     * needed: the prefix only matches when p is not a letter, in which case
+     * dropping it would leave \p{L}+ with nothing at p either. */
+    {
+        const char *q = p;
+        const char *after = cp_at(q, end, &cp);
+        if (cp >= 0 && !is_nl(cp) && !(category((unsigned)cp)&3)) q = after;
+
+        const char *r = q;
+        int letters = 0;
+        for (;;) {
+            const char *nx = cp_at(r, end, &cp);
+            if (cp < 0 || !(category((unsigned)cp)&5)) break;
+            r = nx;
+            letters++;
+        }
+        if (letters > 0) return (int)(r - p);
+        /* In qwen35 the optional prefix can itself be a mark. Regex must
+         * backtrack when it consumed the only mark in the segment. */
+        if (q != p) {
+            cp_at(p, end, &cp);
+            if (category((unsigned)cp)&4) return (int)(q-p);
+        }
+    }
+
+    /* 3. exactly ONE digit. Not \p{N}+ — Qwen splits numbers per digit, so
+     * "2026" is four tokens. Deliberate: it keeps arithmetic tractable. */
+    {
+        const char *q = cp_at(p, end, &cp);
+        if (cp >= 0 && (category((unsigned)cp)&2)) return (int)(q - p);
+    }
+
+    /* 4. optional space, then punctuation/symbols, then trailing newlines */
+    {
+        const char *q = p;
+        if (q < end && *q == ' ') q++;
+        const char *r = q;
+        int n = 0;
+        for (;;) {
+            const char *nx = cp_at(r, end, &cp);
+            if (cp < 0 || is_space(cp) || category((unsigned)cp)) break;
+            r = nx;
+            n++;
+        }
+        if (n > 0) {
+            while (r < end && (*r == '\r' || *r == '\n')) r++;
+            return (int)(r - p);
+        }
+    }
+
+    /* The whitespace run, measured once for alternatives 5-7. */
+    const char *ws_end = p, *last_nl_end = NULL, *last_ws_start = NULL;
+    for (const char *r = p;;) {
+        const char *nx = cp_at(r, end, &cp);
+        if (cp < 0 || !is_space(cp)) { ws_end = r; break; }
+        last_ws_start = r;
+        if (is_nl(cp)) last_nl_end = nx;
+        r = nx;
+    }
+
+    /* 5. \s*[\r\n]+ : greedy, so it runs through the LAST newline in the run */
+    if (last_nl_end) return (int)(last_nl_end - p);
+
+    /* 6. \s+(?!\S) : a whitespace run that is not followed by a non-space.
+     * Greedy \s+ then backtracking means: the whole run if it reaches the end
+     * of the text, otherwise all but its last character — which is what hands
+     * the final space to the word that follows it. */
+    if (ws_end > p) {
+        if (ws_end == end) return (int)(ws_end - p);
+        if (last_ws_start > p) return (int)(last_ws_start - p);
+    }
+
+    /* 7. \s+ */
+    if (ws_end > p) return (int)(ws_end - p);
+
+    die("pre-tokenizer: no alternative matched — the pattern should be total");
+    return 0;                                          /* unreachable */
+}
+
+/* ----------------------------------------------------------------- BPE */
+
+/* Merge one pre-token's bytes into ids, always taking the best-ranked pair.
+ *
+ * The rank order is not an optimisation, it is the definition. Ranks record
+ * the order in which merges were learned during the tokenizer's training,
+ * most frequent first. Applying them in any other order yields a different
+ * but entirely plausible segmentation: the same text, different ids, ids the
+ * model never saw in that arrangement. Nothing errors; the output just gets
+ * quietly worse. That is why tokenizer bugs are the most dangerous kind.
+ *
+ * O(n^2) in the chunk length, which is fine because chunks are words. */
+static int bpe_chunk(const Tokenizer *t, const unsigned char *b, int n,
+                     int *start, int *len, int *id, int *out, int cap) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        start[m] = i;
+        len[m] = 1;
+        id[m] = tokenizer_find(t, b + i, 1);   /* all 256 exist; checked at load */
+        m++;
+    }
+
+    for (;;) {
+        int best = -1, best_rank = 0;
+        for (int i = 0; i + 1 < m; i++) {
+            int r = tokenizer_rank(t, id[i], id[i + 1]);
+            if (r >= 0 && (best < 0 || r < best_rank)) { best = i; best_rank = r; }
+        }
+        if (best < 0) break;
+
+        int merged_len = len[best] + len[best + 1];
+        int merged = tokenizer_find(t, b + start[best], merged_len);
+        /* A merge rule exists for this pair, so its result must be a token.
+         * If it is not, the two files disagree with each other. */
+        if (merged < 0) return -1;
+
+        len[best] = merged_len;
+        id[best] = merged;
+        memmove(&start[best + 1], &start[best + 2], (size_t)(m - best - 2) * sizeof *start);
+        memmove(&len[best + 1],   &len[best + 2],   (size_t)(m - best - 2) * sizeof *len);
+        memmove(&id[best + 1],    &id[best + 2],    (size_t)(m - best - 2) * sizeof *id);
+        m--;
+    }
+
+    if (m > cap) return -1;
+    memcpy(out, id, (size_t)m * sizeof *out);
+    return m;
+}
+int q38a_bpe_segment(const Tokenizer *t, const char *text, int len,
+    int *start, int *sizes, int *ids, int *out, unsigned (*category)(unsigned)) {
+    int n = 0;
+    for (const char *p = text, *end = text+len; p < end;) {
+        int part = pretoken_len(p, end, category);
+        int got = bpe_chunk(t, (const unsigned char *)p, part, start, sizes, ids, out+n, len-n);
+        if (got < 0) return -1;
+        n += got; p += part;
+    }
+    return n;
+}
+

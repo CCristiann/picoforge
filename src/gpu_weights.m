@@ -2,7 +2,7 @@
  * that mapping alive even after the store and GGUF header have been closed. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "picoforge.h"
+#include "common.h"
 #include "gguf.h"
 #include "qwen38_packed.h"
 #include <stdatomic.h>

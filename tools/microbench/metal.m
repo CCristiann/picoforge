@@ -13,7 +13,7 @@
 #import <Metal/Metal.h>
 #import <Foundation/Foundation.h>
 
-#include "picoforge.h"
+#include "microbench.h"
 
 struct MetalContext {
     void *device;        /* id<MTLDevice>       */

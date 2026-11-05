@@ -4,7 +4,8 @@
  * is appended to OUTDIR/<layer>.<stage>.f32 so a file holds the whole prefix.
  * The Metal device only backs the existing no-copy weight mapping: no GPU
  * work is encoded. Run under the common lock (tools/qwen38_gpu_lock.py). */
-#include "picoforge.h"
+#include "common.h"
+#include "metal_device.h"
 #include "qwen38_forward.h"
 #include <assert.h>
 #include <stdbool.h>

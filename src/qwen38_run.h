@@ -3,7 +3,7 @@
  * optional MTP. Only orchestration lives here; the graph calls are the same. */
 #ifndef PICOFORGE_QWEN38_RUN_H
 #define PICOFORGE_QWEN38_RUN_H
-#include "picoforge.h"
+#include "common.h"
 #include "qwen38_forward_gpu.h"
 #include "qwen38_g_internal.h"
 #include "qwen38_text.h"

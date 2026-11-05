@@ -1,6 +1,6 @@
 /* Ordinary greedy Qwen3.8 generation using A's tokenizer/template and G2. */
 #import <Metal/Metal.h>
-#include "picoforge.h"
+#include "common.h"
 #include "qwen38_cli.h"
 #include "qwen38_run.h"
 #include <errno.h>
@@ -338,8 +338,8 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
     else q38_check(qwen38_decoder_create(r->tok,true,&r->decoder,&e),&e);
 }
 /* ds4-style short form (`./ds4 -p ...`): -m FILE, -p TEXT, -c N, -n N, the rest
- * as in the long form. The model defaults to $PICOFORGE_MODEL. A bare
- * ./picoforge keeps its old meaning (Qwen3-0.6B) unless that is set. */
+ * as in the long form. The model defaults to $PICOFORGE_MODEL; a bare
+ * ./picoforge without it prints the usage text (see main.c). */
 bool qwen38_short_form(int argc,char **argv) {
     static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision",NULL};
     if (argc==1) return getenv("PICOFORGE_MODEL")!=NULL;

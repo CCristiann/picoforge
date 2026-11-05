@@ -4,7 +4,7 @@
  * business, and the test binaries need them without dragging the JSON
  * scanner along, so they move here.
  */
-#include "picoforge.h"
+#include "common.h"
 
 #include <stdarg.h>
 #include <stdio.h>

@@ -1,6 +1,6 @@
 /* A deliberately narrow qwen4exp GGUF v3 loader. No tensor payload is read,
  * converted, or exposed to Metal here. File contents must remain immutable. */
-#include "picoforge.h"
+#include "common.h"
 #include "gguf.h"
 #include <fcntl.h>
 #include <stdio.h>
