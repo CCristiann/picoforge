@@ -7,6 +7,13 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6
 ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-up.
 
+### D1.1 paired with DwarfStar — 0.787x (R2: 0.747x)
+
+`bench/qwen38_d1_20261105/paired-short`, 3+20 per engine, alternating, AC: picoforge 25.161
+tok/s (p10 20.909, p90 25.551) against DwarfStar 31.970 (28.120, 33.020) = **0.787x**
+(pairwise median 0.781). Both engines drifted down over the last third of the run, so the
+spread is shared; the 0.95x target needs ~6 ms/token more. 8K was not re-measured.
+
 ### D1.1 — decode token in 4 command buffers: -2.1 ms/token, bit-identical
 
 Concept: one command buffer is committed only after the whole token is encoded, so the
