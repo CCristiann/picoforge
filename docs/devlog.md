@@ -13,14 +13,18 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
 1356 dispatches and 1271 barriers per token) and the isolated MoE benchmarks in
 `bench/qwen38_r1_20261028/moe-*`:
 
-- The routed MoE is **instruction-bound, not bandwidth-bound**. In isolation
-  the fused gate+up runs at 130 GB/s at 10 slots and 132 GB/s at 40 slots: four
-  times the bytes take four times as long (65.3 -> 251 us), at a GB/s far below
-  307. That is 502 G weights/s, about 8 ALU instructions per IQ2_XXS weight if
-  the 20 cores issue ~4 T simple ops/s (an assumption, to confirm by ablation).
-  Reaching ~250 GB/s needs about 4 per weight: scale and sign applied once per
-  group of 8 instead of per weight, vector loads of grid and x. That changes
-  the rounding, so it needs a tolerance measured like R2's, not bit-identity.
+- The routed MoE does **not** scale with bytes the way a DRAM-bound kernel would,
+  and it is **not** limited by the decode arithmetic either. Isolated, the fused
+  gate+up runs at 130 GB/s at 10 slots and 132 at 40 (time linear in bytes). My
+  first reading was "about 8 ALU instructions per IQ2_XXS weight; halve them and
+  double the speed". The ablation in `bench/qwen38_d0_20261105` refutes it:
+  removing the sign work, the scale multiply and the grid lookup together gains
+  9% (238 -> 217 us at 40 slots), loading x as float4 or the group as one 8-byte
+  load gains 0, and a streaming-only variant that reads the same rows with the
+  same geometry (uint4 contiguous loads, no decode) runs at 319 GB/s (106 us).
+  The kernel is 2.2x off a floor measured on its own bytes, and the cost is in
+  how loads are issued and overlapped (little work per simdgroup, few loads in
+  flight), not in the math. D3 should restructure the loads, not the decode.
 - The F16 HC matvecs (hc_pre, hc_ffn.up/down, hc_attn.up/down, 7.7 ms at
   156-190 GB/s) are **not** ALU-bound (2 ops per 2-byte weight). Each call moves
   ~6.5 MB in ~40 us, so ramp-up and ramp-down around the barrier dominate:
@@ -28,11 +32,16 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
 - The ~1000 small dispatches with no weights (gdn.scan, moe.route, qsa.core,
   gdn.conv, rms, hc_add, prep, ...) cost ~6-7.6 ms. Their lever is the number
   of barriers, not the kernels. DwarfStar fuses the HC mixers the same way.
-- Not yet measured (needs a real run on AC with a charged battery): the
-  prepare/encode/wait/gpu split per token that the CLI stats JSON already
-  carries, i.e. how much of 41.4 ms is host time; and the ablation (kernel with
-  scale, sign or the x load removed) that turns the 8-instruction estimate
-  into a measurement.
+- Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
+  41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
+  8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)
+  plus ~0.6 ms of submit/readback: the GPU sits idle while the next token is
+  encoded, because one command buffer is committed only after it is fully
+  encoded. Overlapping the encode of token t+1 with the GPU run of token t
+  (the next input comes from the GPU argmax) is bit-identical and worth up to
+  ~2.3 ms; fewer dispatches shrink the encode too.
+- Still to measure: the same streaming-floor test for the Q2_K down and for the
+  F16 HC matvecs, which decides how much D2 and D3 can really win.
 
 ## 2026-11-05 — R4.5 tidy-up: one model, one engine
 

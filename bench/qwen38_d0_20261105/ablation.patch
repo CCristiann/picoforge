@@ -1,0 +1,93 @@
+--- src/qwen38_quant_decode.h	2026-10-29 16:31:54
++++ /private/tmp/claude-501/-Users-cristiancirje-Desktop-Dev-picoforge/ed95b657-c412-4087-a1ea-6140fa78415c/scratchpad/ablate/qwen38_quant_decode.h	2026-11-05 15:57:49
+@@ -54,15 +54,44 @@
+     static constant constexpr uint CHUNK = 32;
+     static inline void decode(device const uchar *row, uint c, thread float *w) {
+         device const uchar *b = row + ulong(c / 8) * 66, *g = b + 2 + (c % 8) * 8;
++#ifdef A_WIDE
++        /* one 8-byte load of the group (2-byte aligned) instead of 8 byte loads */
++        const ushort4 gv = *(device const packed_ushort4 *)g;
++        const uint lo = uint(gv.x) | (uint(gv.y) << 16);
++        const uint bits = uint(gv.z) | (uint(gv.w) << 16);
++        const float dscale = float(as_type<half>(*(device const ushort *)b));
++        const float db = (dscale * float(2 * (bits >> 28) + 1)) * 0.125f;
++#else
+         const uint bits = q38_le32(g + 4);
+         const float db = (q38_fp16(b) * float(2 * (bits >> 28) + 1)) * 0.125f;
++#endif
+         for (uint s = 0; s < 4; s++) {
++#ifdef A_NOTABLE
++            const ulong grid = ulong(g[s]) * 0x0101010101010101ul;       /* no table lookup */
++#else
++            #ifdef A_WIDE
++            const ulong grid = q38_iq2_grid[(lo >> (8 * s)) & 255u];
++#else
++            const ulong grid = q38_iq2_grid[g[s]];
++#endif
++#endif
++#ifdef A_NOSIGN
++            const uint signs = 0u;                                       /* no sign work */
++#else
+             uint signs = (bits >> (7 * s)) & 127u;
+             signs |= (metal::popcount(signs) & 1u) << 7;
+-            const ulong grid = q38_iq2_grid[g[s]];
++#endif
+             for (uint i = 0; i < 8; i++) {
++#ifdef A_NOSCALE
++                const float v = float(uint(grid >> (8 * i)) & 255u);     /* no scale multiply */
++#else
+                 const float v = db * float(uint(grid >> (8 * i)) & 255u);
++#endif
++#ifdef A_NOSIGN
++                w[8 * s + i] = v;
++#else
+                 w[8 * s + i] = signs & (1u << i) ? -v : v;
++#endif
+             }
+         }
+     }
+@@ -147,9 +176,19 @@
+     F::decode(row, c, w);
+     device const float *xb = x + c * F::CHUNK;
+     float s = 0.0f;
+-    if (cols == F::CHUNK)
++    if (cols == F::CHUNK) {
++#ifdef A_NOXLOAD
++        for (uint i = 0; i < F::CHUNK; i++) s += w[i] * 0.5f;
++#elif defined(A_X4)
++        device const float4 *xv = (device const float4 *)xb;   /* same adds, same order */
++        for (uint i = 0; i < F::CHUNK / 4; i++) {
++            const float4 v = xv[i];
++            s += w[4 * i] * v.x; s += w[4 * i + 1] * v.y; s += w[4 * i + 2] * v.z; s += w[4 * i + 3] * v.w;
++        }
++#else
+         for (uint i = 0; i < F::CHUNK; i++) s += w[i] * xb[i];
+-    else
++#endif
++    } else
+         for (uint i = 0; i < cols; i++) s += w[i] * xb[i];
+     return s;
+ }
+--- src/qwen38_moe_fused.metal	2026-11-02 22:08:01
++++ /private/tmp/claude-501/-Users-cristiancirje-Desktop-Dev-picoforge/ed95b657-c412-4087-a1ea-6140fa78415c/scratchpad/ablate/qwen38_moe_fused.metal	2026-11-05 15:58:58
+@@ -68,6 +68,20 @@
+     const uint chunks = (p.k_logical + F::CHUNK - 1) / F::CHUNK, head = chunks / 32 * 32, tail = chunks - head;
+     float acc[2] = {0.0f, 0.0f}, pooled[2];
+     device const uchar *row[2] = {gw + grow, uw + urow};
++#ifdef A_STREAM
++    {   /* ablation: read the same two rows with wide contiguous loads, no decode */
++    for (uint r = 0; r < 2; r++) {
++        device const uint4 *rv = (device const uint4 *)row[r];
++        const uint nv = uint(p.row_bytes) / 16u;
++        float a = 0.0f;
++        for (uint o = lane; o < nv; o += 32) { const uint4 v = rv[o]; a += as_type<float>(v.x ^ v.y ^ v.z ^ v.w); }
++        acc[r] = a;
++    }
++    const float sg0 = simd_sum(acc[0]), su0 = simd_sum(acc[1]);
++    if (lane) return;
++    act[yi] = sg0 + su0;
++    return; }
++#endif
+     for (uint c = lane; c < head; c += 32)
+         for (uint r = 0; r < 2; r++) acc[r] += q38_quant_chunk<F>(row[r], x + xi, p.k_logical, c);
+     for (uint j = 0; j < 2; j++) {

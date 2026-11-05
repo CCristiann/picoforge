@@ -1,0 +1,7 @@
+git 85e9ad5
+2026-11-05T14:59:43Z
+Now drawing from 'AC Power'
+ -InternalBattery-0 (id=7864419)	31%; charging; 4:02 remaining present: true
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
