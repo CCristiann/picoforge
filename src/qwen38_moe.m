@@ -211,11 +211,11 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
 /* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up
  * or down+reduce. */
-struct Q38FRouted { void *device, *route, *iota, *product, *reduce, *route_fast; bool ref_moe; };
+struct Q38FRouted { void *device, *route, *iota, *product, *reduce, *route_fast, *shared_act; bool ref_moe; };
 void q38f_routed_destroy(Q38FRouted *r) {
     if (!r) return;
-    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->device};
-    for (size_t i=0;i<6;i++) if (all[i]) CFRelease(all[i]);
+    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->shared_act,r->device};
+    for (size_t i=0;i<7;i++) if (all[i]) CFRelease(all[i]);
     free(r);
 }
 Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen38Error *err) {
@@ -238,6 +238,11 @@ Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen
         id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
         if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38F_ROUTE_THREADS)
             r->route_fast=(__bridge_retained void *)p;
+    }
+    { /* D1.2: optional; `moe` or `fuse` oracles keep the three separate ops */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38f_shared_act"];
+        id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
+        if (p && !r->ref_moe && !q38_ref_kernels("fuse")) r->shared_act=(__bridge_retained void *)p;
     }
     *out=r; return q38c_error(err,Q38_OK,NULL);
 }
@@ -321,9 +326,17 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     else if (fused!=Q38_UNSUPPORTED) return fused;
     else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
     MARK("moe.shared",Q38_PROFILE_MIXED,WB(6));
+    if (r->shared_act) { /* D1.2: SILU, MUL and SIGMOID of the shared expert in one dispatch */
+        struct { uint32_t count,tokens; } sa={(uint32_t)(t*s),(uint32_t)t};
+        at(enc,w->sgate.span,0); at(enc,w->sup.span,1); at(enc,w->sact.span,2); at(enc,w->slogit.span,3);
+        at(enc,w->ssig.span,4); at(enc,cmd.error_word,5); [enc setBytes:&sa length:sizeof sa atIndex:6];
+        run(enc,r->shared_act,t*s+t);
+        LIN(6,w->sact,w->shared);
+    } else {
     ACT(Q38_SILU,w->sgate,w->sact); MUL(w->sact,w->sup,t*s);
     LIN(6,w->sact,w->shared);
     ACT(Q38_SIGMOID,w->slogit,w->ssig);
+    }
     /* R1.5c: the routed down projection and q38f_reduce in one fused dispatch
      * after the shared expert (it reads shared and ssig as q38f_reduce does);
      * y and routed are bit-identical to the unfused fast sequence below and

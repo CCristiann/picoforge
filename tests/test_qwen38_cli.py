@@ -61,6 +61,23 @@ class CliTests(unittest.TestCase):
             self.assertEqual(results['3'], results['1'])
             self.assertEqual(results['8'], results['1'])
 
+    def test_fused_shared_expert_matches_moe_oracle(self):
+        """D1.2: the shared expert's SILU, MUL and SIGMOID in one dispatch (q38f_shared_act) gives the same
+        ids and last-row logits, bit for bit, as the three separate ops that Q38_REF_KERNELS=moe selects."""
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
+            path = Path(directory)
+            results = {}
+            for mode in ('', 'moe'):
+                tag = mode or 'fast'
+                cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                       '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{tag}.f32'),
+                       '--token-ids', str(path/f'{tag}.json')]
+                done = subprocess.run(cmd, cwd=ROOT, capture_output=True, env={**os.environ, 'Q38_REF_KERNELS': mode})
+                self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                results[tag] = ((path/f'{tag}.f32').read_bytes(), json.loads((path/f'{tag}.json').read_text())['generated_ids'])
+            self.assertGreater(len(results['fast'][1]), 4)
+            self.assertEqual(results['fast'], results['moe'])
+
     def test_half_prefill_mode(self):
         """R3.5: --prefill-precision half changes a 40-row prefill (GEMM rows) within its reduced-precision
         bound, never a 3-row one (decode-sized appends stay FP32 bit for bit)."""

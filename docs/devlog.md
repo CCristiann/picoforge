@@ -7,6 +7,19 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6
 ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-up.
 
+### D1.2 — shared-expert SILU, MUL and SIGMOID in one dispatch: -0.4 ms/token, bit-identical
+
+Concept: each tiny dispatch costs ~3.6-5.7 us once its barrier is counted (the profile shows
+5.4-6.7 us per dispatch for the groups with no weights), so merging independent element-wise
+steps is a measurable win that needs no tolerance. The shared expert ran ACT SILU, MUL and
+ACT SIGMOID as three dispatches per layer; `q38f_shared_act` (qwen38_moe_fused.metal) does
+the three with `q38_silu`/`q38_sigmoid`, which are `q38c_activate`'s expressions, and
+`q38f_product`'s multiply, so every value has the same bits; the finiteness checks cover the
+same quantities. `Q38_REF_KERNELS=moe` or `fuse` keeps the three ops. Profile: the moe.shared
+group goes from 4 to 2 dispatches per layer (192 -> 96 per token). Measured (real model,
+short frontier, `bench/qwen38_d1_20261105/t*-sharedact`): 38.9 -> 38.5 ms/token (GPU 38.0 ->
+37.7), 0.4 ms for 96 dispatches. Test: `test_fused_shared_expert_matches_moe_oracle`.
+
 ### D1.1 paired with DwarfStar — 0.787x (R2: 0.747x)
 
 `bench/qwen38_d1_20261105/paired-short`, 3+20 per engine, alternating, AC: picoforge 25.161
