@@ -30,6 +30,33 @@ static float q38_silu(float g) {
     return s;
 }
 
+/* D1.2: the shared expert's three element-wise steps in one dispatch, bit-identical to the
+ * sequence ACT SILU (sgate -> sact), MUL (sact * sup -> sact), ACT SIGMOID (slogit -> ssig):
+ * q38_silu and q38_sigmoid are q38c_activate's expressions, the product is q38f_product's.
+ * Thread i < count handles one shared-intermediate element, the next `tokens` threads one
+ * token's sigmoid. A nonfinite sgate, silu, sup, product, slogit or sigmoid sets bit 1; the
+ * outputs are then unspecified (the sequence stops at its first failing op). One dispatch and
+ * one barrier instead of three of each, 48 times per token. */
+struct SharedActArgs { uint count, tokens; };
+kernel void q38f_shared_act(device const float *sgate [[buffer(0)]], device const float *sup [[buffer(1)]],
+        device float *sact [[buffer(2)]], device const float *slogit [[buffer(3)]], device float *ssig [[buffer(4)]],
+        device atomic_uint *error [[buffer(5)]], constant SharedActArgs &a [[buffer(6)]],
+        uint i [[thread_position_in_grid]]) {
+    if (i < a.count) {
+        const float g = sgate[i], u = sup[i];
+        const float y = q38_silu(g), v = y * u;
+        if (!isfinite(g) || !isfinite(y) || !isfinite(u) || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        sact[i] = v;
+    } else if (i - a.count < a.tokens) {
+        const uint j = i - a.count;
+        const float x = slogit[j];
+        float y = q38_sigmoid(x / 1.0f);
+        y *= 1.0f;
+        if (!isfinite(x) || !isfinite(y)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        ssig[j] = y;
+    }
+}
+
 /* act[p, n] = silu(gate_e[n] . x) * (up_e[n] . x), e = ids[p], x row
  * p / x_divisor: the unfused sequence IDX gate, IDX up, ACT SILU, MUL in one
  * pass. One simdgroup per output (p, n), as many along n per threadgroup as
