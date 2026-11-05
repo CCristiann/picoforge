@@ -1,0 +1,36 @@
+Un database relazionale è un sistema di gestione di dati basato sul **modello relazionale**, introdotto da Edgar F. Codd nel 1970. Il suo obiettivo principale è garantire l'integrità dei dati, la coerenza e l'efficienza nelle operazioni di lettura e scrittura.
+
+Di seguito una spiegazione dettagliata dei quattro pilastri che hai richiesto: **Tabelle**, **Indici**, **Transazioni** e **Join**.
+
+---
+
+### 1. Le Tabelle (Relazioni)
+
+Le tabelle sono la struttura fondamentale di un database relazionale. Ogni tabella rappresenta un'**entità** o un concetto nel mondo reale (es. `Clienti`, `Ordini`, `Prodotti`).
+
+#### Struttura di una Tabella
+*   **Righe (Record/Tuple):** Ogni riga rappresenta un singolo istanza dell'entità. Ad esempio, una riga nella tabella `Clienti` rappresenta un singolo cliente specifico.
+*   **Colonne (Attributi/Campi):** Ogni colonna rappresenta una caratteristica dell'entità. Ad esempio, `Nome`, `Cognome`, `Email`, `DataNascita`.
+*   **Schema:** Definisce il tipo di dato per ogni colonna (es. `VARCHAR`, `INTEGER`, `DATE`) e le regole di integrità (es. `NOT NULL`, `UNIQUE`).
+
+#### Chiavi Primarie e Esterne
+*   **Chiave Primaria (Primary Key - PK):** Un campo (o combinazione di campi) che identifica univocamente ogni riga nella tabella. Non può essere `NULL` e deve essere unico. Esempio: `ID_Cliente`.
+*   **Chiave Esterna (Foreign Key - FK):** Un campo in una tabella che fa riferimento alla chiave primaria di un'altra tabella. Questo crea la **relazione** tra le tabelle. Esempio: nella tabella `Ordini`, il campo `ID_Cliente` è una chiave esterna che punta alla tabella `Clienti`.
+
+> **Esempio Visivo:**
+>
+> **Tabella `Clienti`**
+> | ID_Cliente (PK) | Nome | Cognome |
+> |-----------------|------|---------|
+> | 1               | Mario| Rossi   |
+> | 2               | Anna | Bianchi |
+>
+> **Tabella `Ordini`**
+> | ID_Ordine (PK) | ID_Cliente (FK) | Importo |
+> |----------------|-----------------|---------|
+> | 101            | 1               | 50.00   |
+> | 102            | 2               | 120.00  |
+
+---
+
+### 2. Gli Indici (

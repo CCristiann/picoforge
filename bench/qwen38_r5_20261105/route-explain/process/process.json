@@ -1,0 +1,83 @@
+{
+  "command": [
+    "/Users/cristiancirje/Desktop/Dev/picoforge-perf-decode/picoforge",
+    "--qwen38",
+    "models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+    "--chat",
+    "Spiega in modo dettagliato come funziona un database relazionale: tabelle, indici, transazioni e join.",
+    "--max-new",
+    "600",
+    "--context",
+    "8192",
+    "--chunk",
+    "128",
+    "--runs-jsonl",
+    "/Users/cristiancirje/Desktop/Dev/picoforge-perf-decode/bench/qwen38_r5_20261105/route-explain/runs.jsonl",
+    "--token-ids",
+    "/Users/cristiancirje/Desktop/Dev/picoforge-perf-decode/bench/qwen38_r5_20261105/route-explain/ids.json"
+  ],
+  "cwd": "/Users/cristiancirje/Desktop/Dev/picoforge-perf-decode",
+  "pilot": true,
+  "complete": true,
+  "recorded_utc": "2026-11-05T19:25:12.600533+00:00",
+  "executable_sha256": "15d606f468e1cadcba57badc20db5dd816077806817a0e84098efaa6a584fd8d",
+  "environment": {
+    "DS4_METAL_MEMORY_REPORT": "1",
+    "Q38_ROUTE_LOG": "/Users/cristiancirje/Desktop/Dev/picoforge-perf-decode/bench/qwen38_r5_20261105/route-explain/route.bin"
+  },
+  "removed_environment_names": [],
+  "thermal_before": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+  "sample_interval_s": 0.25,
+  "system_before": {
+    "pid": 82596,
+    "monotonic_s": 16333.791922,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1409432,
+    "lifetime_peak_phys_footprint_bytes": 1442200,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 0,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 0,
+    "system_swapouts_pages": 0,
+    "page_bytes": 16384,
+    "system_wired_pages": 230482,
+    "system_compressor_pages": 148293
+  },
+  "guard": "stop after 2 samples: pressure level >= 2 or swap growth > 256 MiB",
+  "guard_limits": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "pid": 82598,
+  "start_monotonic_s": 16333.799672,
+  "process_s": 25.891483000001244,
+  "returncode": 0,
+  "stop_reason": null,
+  "first_stream_bytes_s": {
+    "stderr": 0.1783110000014858,
+    "stdout": 1.5814840000002732
+  },
+  "system_after": {
+    "pid": 82758,
+    "monotonic_s": 16359.693865,
+    "resident_bytes": 1851392,
+    "phys_footprint_bytes": 1409432,
+    "lifetime_peak_phys_footprint_bytes": 1442200,
+    "disk_read_bytes": 0,
+    "disk_write_bytes": 0,
+    "system_swap_used_bytes": 0,
+    "system_pressure_level": 1,
+    "system_swapins_pages": 0,
+    "system_swapouts_pages": 0,
+    "page_bytes": 16384,
+    "system_wired_pages": 2778577,
+    "system_compressor_pages": 148250
+  },
+  "samples": 92,
+  "max_sample_gap_s": 0.3217100000001665,
+  "sampled_peak_footprint_bytes": 992596000,
+  "lifetime_peak_footprint_bytes": 993415200
+}

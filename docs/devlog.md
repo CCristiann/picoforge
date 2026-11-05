@@ -2,6 +2,26 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R5 "SSD streaming" (from 2026-11-05)
+
+Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
+`bench/qwen38_r5_20261105/README.md`. Newest first.
+
+### R5.0 — measure before building: the SSD is fast and the miss rate low
+
+Concept: a MoE token reads 10 of 512 experts per layer; if only the hot ones sit in a cache and the
+others come from the SSD, the token costs compute + misses x expert size / SSD bandwidth. Two numbers
+decide it, so I measured both without downloading the 165 GiB Q4K file. SSD: random 2.6 MB reads
+(a Q4K expert) reach 13.1 GB/s with two or more threads, 384 us at one (sequential peak 13.1 GB/s).
+Misses: five real 600-token generations of the Q2 model replayed against a cache of Q4K-sized
+experts give 2.7% misses at 36 GiB, 6.5% at 24 GiB, 14% at 16 GiB with a plain global LRU, within 0.007
+of the offline optimum from 32 GiB; a profile built from other texts does badly (27% at 36 GiB).
+Predicted decode with a 36 GiB cache: 19-24 tok/s depending on the unmeasured Q4K compute time
+(a model, labelled as such); 16 GiB still predicts 16-19. The stage gate (under 3 tok/s stops it)
+passes widely. Caveats in the evidence README: short single-topic traces, Q2 routing, prefill streams
+every expert per chunk. Next: R5.1, the cache and the indirection in the MoE kernels, tried on the Q2 file
+with a cache smaller than its experts (bit-identical to resident at every size).
+
 ## Decode II (from 2026-11-05): close the gap to 0.95x DwarfStar
 
 Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6

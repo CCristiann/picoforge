@@ -1,6 +1,6 @@
 # R5 — Flash-Next Q4K con gli esperti in streaming da SSD
 
-Data: 2026-11-05. Stato: **approvata dall'utente il 2026-11-05, esecuzione in corso**.
+Data: 2026-11-05. Stato: **approvata dall'utente il 2026-11-05. R5.0 chiusa (gate superato, vedi devlog); R5.1 è il passo successivo**.
 Contesto: [roadmap](roadmap.md), tappa R5. Si appoggia su Decode II (comandi spezzati in più
 command buffer) e sul registro delle tracce di routing (`Q38_ROUTE_LOG`).
 
@@ -32,7 +32,7 @@ Non-obiettivi: velocità pari al residente Q2; contesti oltre 8K; più sessioni;
 prefill in streaming oltre quello che serve a usare il modello.
 
 Anti-obiettivi: un risultato più veloce ma con deriva numerica non spiegata; kernel copiati da
-DwarfStar; numeri senza protocollo; leggere i pesi con `mmap` del file intero (l'RSS e i pagine
+DwarfStar; numeri senza protocollo; leggere i pesi con `mmap` del file intero (l'RSS e le pagine
 wired devono restare entro il budget).
 
 ## Fasi e gate
@@ -64,7 +64,7 @@ proxy). Direzione originale scelta all'inizio del progetto.
 
 ## Vincoli
 
-Una sola processo col checkpoint alla volta; ogni processo reale passa dal lancio protetto
+Un solo processo col checkpoint alla volta; ogni processo reale passa dal lancio protetto
 (attesa dopo l'uscita, guardiano di memoria, `caffeinate`); lock GPU. `iogpu.wired_limit_mb` lo
 decide e lo lancia l'utente. Niente download senza chiedere. FP32 di default e gate end-to-end non
 allargato. Ogni fase ≤ ~150 righe nuove per passo, test verdi prima di ogni commit.
