@@ -67,6 +67,16 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
   commands, fusion of small ops), i.e. roughly 0.80-0.84x, not the 8.8 ms that 0.95x needs.
   Reaching 0.95x depends on the routed MoE (8.5 ms), which the ablations have not yet
   explained.
+- GPU counter capture, attempted from the command line (Xcode 26.6, `xctrace` 16): the
+  "Metal System Trace" template does record Metal GPU timelines (`metal-gpu-intervals`)
+  and a counter table, but its default counter profile (0) samples only "RT Unit Active",
+  which says nothing about a compute kernel. Editing the template's `counterprofile` /
+  `shaderprofiler` keys (1, 2, 3, 4, 5, and shader timeline) is rejected by the GPU
+  service ("Selected counter profile is not supported on target device"), because the
+  matching `*internal` values are device-specific; `--instrument 'Metal GPU Counters'` on a
+  blank template records nothing. The limiter counters (occupancy, ALU/LSU utilisation,
+  cache hit rates) therefore need the Instruments GUI to build a template for this GPU
+  once, after which `xctrace record --template FILE` can be scripted.
 - Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
   41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
   8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)
