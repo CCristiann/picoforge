@@ -47,7 +47,7 @@ class ProfileTests(unittest.TestCase):
             self.assertNotIn('gdn', ops)   # R1.8: the group is split into gdn.* sub-groups
             self.assertNotIn('moe', ops)   # R1.9a: likewise moe.*
             for op in ('embed', 'gdn.hc_pre', 'gdn.proj', 'gdn.conv', 'gdn.prep', 'gdn.scan', 'gdn.norm', 'gdn.out',
-                       'gdn.add', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.hc_read',
+                       'gdn.add', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.up',
                        'moe.shared_in', 'moe.route', 'moe.gate_up', 'moe.shared', 'moe.down', 'hc_add', 'final.up', 'lm_head'):
                 self.assertIn(op, ops)
             for r in rows:
