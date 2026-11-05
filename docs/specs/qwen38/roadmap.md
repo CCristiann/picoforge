@@ -112,14 +112,15 @@ Tutto ciò che conosciamo per questa macchina, e la tappa in cui entra.
 | **R3** Prefill | GEMM simdgroup poi TensorOps, esperti raggruppati, GDN a chunk, attention a blocchi | Prefill 8K ≥ 0,95 × DwarfStar |
 | **R4** MTP | Profondità adattiva, verifica multi-riga | Confronto con `ds4 --mtp` sugli stessi prompt |
 | **R5** Streaming SSD | Banda SSD misurata, cache esperti, prefetch, overlap; Flash-Next Q4K | Q4K gira su 64 GiB, numeri misurati, nessuno swap |
-| **R6** 27B denso | Grafo 27B (riuso tokenizer, GDN, attention gated, MTP), Q6_K/Q8_0, prefill su NA | 27B dal terminale, gate contro un oracolo Transformers |
-| **R7** Qualità | Concordanza top-1 e KL di Q2 contro Q4K e del 27B quantizzato contro Q8_0, suite di task congelata | Tabella qualità/velocità/memoria |
+| **R4.5** Pulizia | Fatta 2026-11-05: via il motore Qwen3, microbenchmark del matmul in `tools/microbench`, README nuovo, tag `archive/pre-qwen38-focus` | `make test-all` verde, nessun dato cancellato |
+| **R6** Supporto QN4 | In attesa del rilascio (27B denso e fratello di Flash-Next, stessa architettura attesa, da verificare sul config reale). Prima il fratello di Flash-Next, poi il 27B; gate contro un riferimento nuovo | Entrambi dal terminale, con i gate |
+| **R7** Qualità | Concordanza top-1 e KL di Q2 contro Q4K; confronti tra modelli dopo R6; suite di task congelata | Tabella qualità/velocità/memoria |
 | **R8** Chiusura | Benchmark finali con il protocollo, scala delle tecniche, writeup, README | Progetto concluso |
 
 Dipendenze:
 - R2 parte dopo R1 (a 1 tok/s il terminale non è usabile).
 - R5 riusa i kernel Q4_K/MXFP4 di R1 e il prefill di R3.
-- R6 riusa i kernel di R1 e R3.
+- R6 riusa i kernel di R1 e R3, quindi le ottimizzazioni su Flash-Next restano parametriche sulle forme (lette dal GGUF, verificate al caricamento).
 - R7 richiede R5 e R6.
 
 ## Non obiettivi
@@ -135,7 +136,7 @@ in R8 se la memoria lo consente.
 - Kernel copiati da DwarfStar. È il riferimento delle tecniche e l'oracolo di
   velocità; i kernel sono nostri. Un'idea adattata si cita (MIT, commit pinned).
 - Numeri senza protocollo, o un'esecuzione favorevole spacciata per risultato.
-- Regressioni sui percorsi esistenti: Qwen3-0.6B, Qwen3-30B-A3B, test Qwen3.8.
+- Regressioni sui test Qwen3.8 e sul percorso di riferimento (`Q38_REF_KERNELS`). Il vecchio motore Qwen3 non è più nell'albero (tag `archive/pre-qwen38-focus`).
 
 ## Regole comuni a tutte le tappe
 
@@ -177,8 +178,8 @@ opzionale, con un nome esplicito e un gate proprio.
 ## Decisioni dell'utente lungo la strada
 
 - Inizio R5: spazio su disco per il file Q4K da 165 GiB (liberare spazio, ad
-  esempio i 86 GiB di Qwen3-30B-A3B, oppure SSD esterno) ed eventuale limite wired.
-- Inizio R6: quale GGUF del 27B usare. Non c'è un repository ufficiale Qwen in
+  esempio i 86 GiB di Qwen3-30B-A3B ancora in `models/`, oppure SSD esterno) ed eventuale limite wired.
+- Inizio R6 (dopo il rilascio QN4): quale GGUF usare per il 27B. Non c'è un repository ufficiale Qwen in
   GGUF: o un'altra conversione pubblicata, o la conversione nostra dai
   safetensors ufficiali.
 - Ogni modalità a precisione ridotta prima di diventare disponibile.
