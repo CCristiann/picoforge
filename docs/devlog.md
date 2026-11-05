@@ -44,6 +44,15 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
   because each simdgroup serves only two rows. Next step, not yet done: several output
   rows per simdgroup (as R2.7 did for the down), same per-row order so the result stays
   bit-identical; host side `Q38_GATE_UP_SG` / dispatch in `src/qwen38_packed_gpu.m:480`.
+- D3 follow-up, also negative: serving 2 or 4 (gate, up) row pairs per simdgroup with the
+  same per-row order, to amortise the supposed fixed cost, made the kernel slower (40
+  slots: 251 us at 1 row after the rewrite, 265 at 2, 258 at 4, against 238 for the
+  original; `bench/qwen38_d0_20261105/d3-rows-per-simdgroup.txt`). Reverted. So the
+  K-independent ~77 us is not per-simdgroup prologue/epilogue, and none of the single-factor
+  changes tried moves the fused IQ2 gate+up below ~215 us; the streaming floor stays 106 us
+  without an explanation. Stopped here: more guessing needs a GPU counter capture
+  (Xcode / `xctrace` Metal counters) rather than more ablations. The pipelined encode
+  below is the next step, since its cost is measured directly.
 - Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
   41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
   8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)

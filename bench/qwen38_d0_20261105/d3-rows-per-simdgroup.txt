@@ -1,0 +1,6 @@
+gbench fused 16 640 2560 2560 512 {40,10} 10 20, AC, battery 90%, GPU lock, 2-3 runs each (all runs identical to 1 us)
+rewritten kernel, Q38_GATE_UP_ROWS rows per simdgroup (same per-row order; scratch change, reverted)
+rows=1   40 slots 250.8, 251.2 us (131.8 GB/s)   10 slots 62.4, 62.4 us
+rows=2   40 slots 265.3, 265.1, 265.2 us (124.8 GB/s)   10 slots 71.6, 71.4, 71.5 us
+rows=4   40 slots 258.0, 258.3 us (128.2 GB/s)   10 slots 69.8, 70.3 us
+original kernel (earlier session, same bench): 40 slots 237.8 us, 10 slots 61.8 us
