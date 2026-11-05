@@ -1,0 +1,6 @@
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.9, "p10_us": 237.7, "p90_us": 238.0, "gbps": 139.1}}
+{"variant":"a1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.8, "p10_us": 237.6, "p90_us": 237.9, "gbps": 139.2}}
+{"variant":"a2","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.6, "p10_us": 237.5, "p90_us": 237.7, "gbps": 139.3}}
+{"variant":"a2","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.5, "p10_us": 237.4, "p90_us": 237.6, "gbps": 139.3}}
+{"variant":"a1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.7, "p10_us": 237.6, "p90_us": 237.9, "gbps": 139.2}}
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.7, "p10_us": 237.6, "p90_us": 237.9, "gbps": 139.2}}

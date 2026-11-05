@@ -2,6 +2,104 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode II (from 2026-11-05): close the gap to 0.95x DwarfStar
+
+Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6
+ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-up.
+
+### D1.1 — decode token in 4 command buffers: -2.1 ms/token, bit-identical
+
+Concept: one command buffer is committed only after the whole token is encoded, so the
+GPU sat idle for the ~2.3 ms of CPU encoding (wall - GPU = 3.0 ms). `q38g_session_flush`
+ends the current encoder, commits the buffer and continues the same logical command in a
+new one; the GPU runs the first quarter of the layers while the CPU encodes the rest. The
+queue runs buffers in order and the graph buffers are hazard-tracked, so nothing changes
+numerically (K = 1, 3, 4, 8 give identical ids and logits on the synthetic graph; test added).
+Measured on the real model (short frontier, `bench/qwen38_d1_20261105`): 41.0 -> 38.9
+ms/token (24.4 -> 25.7 tok/s), idle time 3.0 -> 0.9 ms, GPU time unchanged. Default K = 4,
+`PICOFORGE_CMD_SPLIT=1` restores the single buffer. Not re-paired with DwarfStar yet.
+
+### D0 — where the milliseconds are (analysis of existing evidence, no new runs)
+
+From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
+1356 dispatches and 1271 barriers per token) and the isolated MoE benchmarks in
+`bench/qwen38_r1_20261028/moe-*`:
+
+- The routed MoE does **not** scale with bytes the way a DRAM-bound kernel would,
+  and it is **not** limited by the decode arithmetic either. Isolated, the fused
+  gate+up runs at 130 GB/s at 10 slots and 132 at 40 (time linear in bytes). My
+  first reading was "about 8 ALU instructions per IQ2_XXS weight; halve them and
+  double the speed". The ablation in `bench/qwen38_d0_20261105` refutes it:
+  removing the sign work, the scale multiply and the grid lookup together gains
+  9% (238 -> 217 us at 40 slots), loading x as float4 or the group as one 8-byte
+  load gains 0, and a streaming-only variant that reads the same rows with the
+  same geometry (uint4 contiguous loads, no decode) runs at 319 GB/s (106 us).
+  The kernel is 2.2x off a floor measured on its own bytes, and the cost is in
+  how loads are issued and overlapped (little work per simdgroup, few loads in
+  flight), not in the math. D3 should restructure the loads, not the decode.
+- The F16 HC matvecs (hc_pre, hc_ffn.up/down, hc_attn.up/down, 7.7 ms at
+  156-190 GB/s) are **not** ALU-bound (2 ops per 2-byte weight). Each call moves
+  ~6.5 MB in ~40 us, so ramp-up and ramp-down around the barrier dominate:
+  fusion or overlap helps more than a faster inner loop.
+- The ~1000 small dispatches with no weights (gdn.scan, moe.route, qsa.core,
+  gdn.conv, rms, hc_add, prep, ...) cost ~6-7.6 ms. Their lever is the number
+  of barriers, not the kernels. DwarfStar fuses the HC mixers the same way.
+- D3 first results (same bench, 40 slots, raw lines `bench/qwen38_d0_20261105/d3-*.jsonl`;
+  prototypes were scratch copies, nothing changed in src/). Refuted as the cause, each
+  within noise of the 238 us baseline: issuing all of a lane's loads before decoding
+  (+1%), staging both rows through threadgroup memory with coalesced loads (+8%, worse),
+  32-bit address arithmetic (0%), dropping the tail shuffles, silu and finite checks (-2%).
+  What explains the gap: scaling K. K 1280 -> 2560 takes the kernel from 157 to 238 us
+  (slope 0.063 us/column, a **fixed ~77 us** independent of K) and the streaming variant
+  from 37 to 104 us (slope 0.052, intercept ~0). The per-weight cost is within 1.2x of
+  streaming; what is lost is a fixed cost per simdgroup (about a third of the kernel),
+  because each simdgroup serves only two rows. Next step, not yet done: several output
+  rows per simdgroup (as R2.7 did for the down), same per-row order so the result stays
+  bit-identical; host side `Q38_GATE_UP_SG` / dispatch in `src/qwen38_packed_gpu.m:480`.
+- D3 follow-up, also negative: serving 2 or 4 (gate, up) row pairs per simdgroup with the
+  same per-row order, to amortise the supposed fixed cost, made the kernel slower (40
+  slots: 251 us at 1 row after the rewrite, 265 at 2, 258 at 4, against 238 for the
+  original; `bench/qwen38_d0_20261105/d3-rows-per-simdgroup.txt`). Reverted. So the
+  K-independent ~77 us is not per-simdgroup prologue/epilogue, and none of the single-factor
+  changes tried moves the fused IQ2 gate+up below ~215 us; the streaming floor stays 106 us
+  without an explanation. Stopped here: more guessing needs a GPU counter capture
+  (Xcode / `xctrace` Metal counters) rather than more ablations. The pipelined encode
+  below is the next step, since its cost is measured directly.
+- HC F16 matvecs, from `bench/qwen38_r1_20261020/matvec-f16-f32` (isolated, m = 1): the
+  "down" 10240 -> 320 runs at 225-269 GB/s (24.5-29 us), but the "up" 320 -> 10240 at
+  156 GB/s (42.2 us) for the same 6.6 MB, and in the graph hc_ffn.up costs 2.0 ms / 48 =
+  41.7 us per call: the slow part is the shape (K = 320, 10 elements per lane, so the
+  per-row simd_sum dominates), not the graph. At ~280 GB/s it would take ~23.5 us, i.e.
+  ~19 us on each of ~60-96 sites per token: 1.1-1.8 ms. It needs a different row mapping
+  and therefore a new tolerance. Splitting each token's command into 2-4 command buffers
+  committed as they are encoded would hide 1.2-1.7 ms of the 2.3 ms encode without
+  touching any number (the n-gram rows need the new token id, which rules out encoding
+  the next token's command ahead of time).
+- Reassessment: the identified, mechanistic wins add up to ~3-5 ms/token (HC up, split
+  commands, fusion of small ops), i.e. roughly 0.80-0.84x, not the 8.8 ms that 0.95x needs.
+  Reaching 0.95x depends on the routed MoE (8.5 ms), which the ablations have not yet
+  explained.
+- GPU counter capture, attempted from the command line (Xcode 26.6, `xctrace` 16): the
+  "Metal System Trace" template does record Metal GPU timelines (`metal-gpu-intervals`)
+  and a counter table, but its default counter profile (0) samples only "RT Unit Active",
+  which says nothing about a compute kernel. Editing the template's `counterprofile` /
+  `shaderprofiler` keys (1, 2, 3, 4, 5, and shader timeline) is rejected by the GPU
+  service ("Selected counter profile is not supported on target device"), because the
+  matching `*internal` values are device-specific; `--instrument 'Metal GPU Counters'` on a
+  blank template records nothing. The limiter counters (occupancy, ALU/LSU utilisation,
+  cache hit rates) therefore need the Instruments GUI to build a template for this GPU
+  once, after which `xctrace record --template FILE` can be scripted.
+- Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
+  41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
+  8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)
+  plus ~0.6 ms of submit/readback: the GPU sits idle while the next token is
+  encoded, because one command buffer is committed only after it is fully
+  encoded. Overlapping the encode of token t+1 with the GPU run of token t
+  (the next input comes from the GPU argmax) is bit-identical and worth up to
+  ~2.3 ms; fewer dispatches shrink the encode too.
+- Still to measure: the same streaming-floor test for the Q2_K down and for the
+  F16 HC matvecs, which decides how much D2 and D3 can really win.
+
 ## 2026-11-05 — R4.5 tidy-up: one model, one engine
 
 Done: the Qwen3 dense/MoE engine, its tests and tools left the tree (tag
