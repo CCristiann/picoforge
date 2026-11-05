@@ -53,6 +53,20 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
   without an explanation. Stopped here: more guessing needs a GPU counter capture
   (Xcode / `xctrace` Metal counters) rather than more ablations. The pipelined encode
   below is the next step, since its cost is measured directly.
+- HC F16 matvecs, from `bench/qwen38_r1_20261020/matvec-f16-f32` (isolated, m = 1): the
+  "down" 10240 -> 320 runs at 225-269 GB/s (24.5-29 us), but the "up" 320 -> 10240 at
+  156 GB/s (42.2 us) for the same 6.6 MB, and in the graph hc_ffn.up costs 2.0 ms / 48 =
+  41.7 us per call: the slow part is the shape (K = 320, 10 elements per lane, so the
+  per-row simd_sum dominates), not the graph. At ~280 GB/s it would take ~23.5 us, i.e.
+  ~19 us on each of ~60-96 sites per token: 1.1-1.8 ms. It needs a different row mapping
+  and therefore a new tolerance. Splitting each token's command into 2-4 command buffers
+  committed as they are encoded would hide 1.2-1.7 ms of the 2.3 ms encode without
+  touching any number (the n-gram rows need the new token id, which rules out encoding
+  the next token's command ahead of time).
+- Reassessment: the identified, mechanistic wins add up to ~3-5 ms/token (HC up, split
+  commands, fusion of small ops), i.e. roughly 0.80-0.84x, not the 8.8 ms that 0.95x needs.
+  Reaching 0.95x depends on the routed MoE (8.5 ms), which the ablations have not yet
+  explained.
 - Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
   41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
   8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)
