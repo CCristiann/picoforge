@@ -27,3 +27,23 @@ first dispatch from ~3.0 to ~0.9 ms; the GPU time of the token (38.0 ms) is unch
 leaves less idle time (0.65 ms) but did not run faster overall in two samples; 4 is kept.
 The s4 K=1 run is slower in GPU time too (41.2 vs 38.0 ms): a thermal/clock drift, so the
 comparison rests on the adjacent pairs s1/s2 and s3/s6.
+
+## Paired with DwarfStar (`paired-short/`)
+
+`tools/eval/qwen38_compare.py run --frontier short --warmup 3 --measure 20 --block 1`, one
+process per sample, engines alternating, suite `bench/qwen38_r0_20261017/suite`, code
+`PICOFORGE_CMD_SPLIT` default (4), AC (battery 87-90%, charging), no swap growth, no thermal
+or performance warning, Chrome open (2.3 GB).
+
+| Engine | tok/s median | p10 | p90 | n |
+|---|---:|---:|---:|---:|
+| picoforge (D1.1) | 25.161 | 20.909 | 25.551 | 20 |
+| DwarfStar fc80bd6 | 31.970 | 28.120 | 33.020 | 20 |
+| **ratio** | **0.787x** | | | |
+
+Against R2 (24.151 vs 32.330 = 0.747x) this is +0.04. The pairwise ratios have median 0.781
+(min 0.640, max 0.893). Both engines slow down over the last third of the run (picoforge
+25.5 -> 20.5, DwarfStar 33.1 -> 23.4 tok/s at the worst sample, then DwarfStar recovers to 32):
+the first 12 pairs give 25.50 vs 32.66 (0.781x), the last 8 give 22.37 vs 29.33 (0.763x). No
+throttling was recorded, so the wide p10 is shared machine noise, not an effect of the change;
+the median ratio is the figure to quote.
