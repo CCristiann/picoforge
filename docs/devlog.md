@@ -7,6 +7,27 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6
 ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-up.
 
+### Decode II closure — 0.782x DwarfStar (R2: 0.747x), target 0.95x not met
+
+Final pairing (`bench/qwen38_d1_20261105/paired-short-final`, 3+20, alternating, AC): picoforge
+25.965 tok/s (p10 25.652, p90 25.992) against DwarfStar 33.220 (32.570, 33.270) = **0.7816x**,
+pairwise 0.780-0.797. Absolute: 24.15 (R2) -> 25.97 tok/s, 41.4 -> 38.5 ms/token. 8K not remeasured.
+Real-model logits, pre-Decode-II binary against the final one: bit-identical over 16 teacher-forced
+steps (`bench/qwen38_d1_20261105/closure`). Gates: CLI (with the two new bit-identity tests),
+REPL, session, speculative, G0, G2, G2-state, MTP, server, compare, contracts, profile.
+
+What worked (both bit-identical): decode token in 4 command buffers (-2.1 ms, the GPU no longer
+idles during encoding) and the shared-expert SILU/MUL/SIGMOID in one dispatch (-0.4 ms, ~3.6 us per
+dispatch removed). What did not: every attempt on the routed MoE kernel (ALU work, address math,
+load order, threadgroup staging, several rows per simdgroup) gained nothing, although a
+streaming-only variant of the same bytes is 2.2x faster; the HC up kernel was left alone.
+Lessons: (1) a mechanistic cost measured directly (wall minus GPU time) beat guessing; (2) ablations
+refuted my first estimate ("8 ALU instructions per weight") and a second one (fixed cost per
+simdgroup) within hours, so predictions about GPU kernels need a counter capture before code;
+(3) `xctrace` cannot produce limiter counters without a template made once in the Instruments GUI.
+Left: ~5.9 ms/token to 0.95x, mostly the routed MoE (8.5 ms) and the HC kernels; micro-fusions
+(gdn.conv check, qsa.core) are worth < 1 ms together.
+
 ### D1.2 — shared-expert SILU, MUL and SIGMOID in one dispatch: -0.4 ms/token, bit-identical
 
 Concept: each tiny dispatch costs ~3.6-5.7 us once its barrier is counted (the profile shows

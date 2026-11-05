@@ -16,11 +16,11 @@ small enough to read end to end.
 
 | Area | State |
 |---|---|
-| Decode on the GPU | 0.73-0.75x of DwarfStar `fc80bd6` on the same file and machine |
+| Decode on the GPU | 0.78x of DwarfStar `fc80bd6` on the same file and machine, 26.0 tok/s at the short frontier |
 | Prefill, 8K prompt | 61.0 s in FP32, 37.6 s with the opt-in `--prefill-precision half` |
 | MTP (multi-token prediction) | Exact greedy verification; 1.09-1.65x over plain decode |
 | Terminal chat | Multi-turn with KV reuse, `/read`, `/ctx`, `/think`, Ctrl+C |
-| Next | Close the decode gap, then SSD expert streaming for the Q4K file |
+| Next | Explain the routed-MoE kernels with GPU counters to close the rest of the decode gap, then SSD expert streaming for the Q4K file |
 
 Support for the next Qwen generation (its 27B dense model and a Flash-Next
 sibling) is planned for after its release. Nothing for it exists yet.
@@ -82,6 +82,7 @@ committed. They are small pilots, not general claims.
 |---|---|---|
 | R1 decode | 0.62x DwarfStar short prompt, 0.37x at 8K | [R1](bench/qwen38_r1_20261028/README.md) |
 | R2 decode | 24.15 vs 32.33 tok/s short (0.75x), 21.73 vs 30.14 at 8K (0.72x) | [R2](bench/qwen38_r2_20261030/README.md) |
+| Decode II | 25.97 vs 33.22 tok/s short (0.78x; R2 was 0.75x); decode token in 4 command buffers, fused shared-expert activation | [D1](bench/qwen38_d1_20261105/README.md) |
 | R3 prefill | 8K prompt 215 s to 61.0 s (FP32) / 37.6 s (half) | [R3](bench/qwen38_r3_20261102/README.md) |
 | R4 MTP | 33.2 / 25.6 / 27.0 / 41.0 tok/s on code / chat / story / counting | [R4](bench/qwen38_r4_20261103/README.md) |
 

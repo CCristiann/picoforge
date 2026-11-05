@@ -47,3 +47,20 @@ Against R2 (24.151 vs 32.330 = 0.747x) this is +0.04. The pairwise ratios have m
 the first 12 pairs give 25.50 vs 32.66 (0.781x), the last 8 give 22.37 vs 29.33 (0.763x). No
 throttling was recorded, so the wide p10 is shared machine noise, not an effect of the change;
 the median ratio is the figure to quote.
+
+## Closure pairing (`paired-short-final/`)
+
+Final code (main with D1.1 and D1.2), same protocol (`run --frontier short --warmup 3 --measure 20
+--block 1`, one process per sample, alternating, AC, battery 89%, no swap, no thermal warning,
+Chrome 1.7 GB):
+
+| Engine | tok/s median | p10 | p90 | n |
+|---|---:|---:|---:|---:|
+| picoforge | 25.965 | 25.652 | 25.992 | 20 |
+| DwarfStar fc80bd6 | 33.220 | 32.570 | 33.270 | 20 |
+| **ratio** | **0.7816x** | | | |
+
+Pairwise ratios: median 0.782, min 0.780, max 0.797, so the number is stable; both engines are
+faster than in the first pairing (DwarfStar 31.97 then, 33.22 now), which is why the ratio, not
+the absolute tok/s, is the figure to compare across sessions. R2 closed at 0.747x (24.151 against
+32.330 tok/s): +0.035 in ratio and +7.5% in absolute tok/s. The 8K frontier was not remeasured.
