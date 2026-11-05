@@ -1,0 +1,10 @@
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.9, "p10_us": 237.7, "p90_us": 238.1, "gbps": 139.1}}
+{"variant":"w1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.7, "p10_us": 232.6, "p90_us": 233.0, "gbps": 142.2}}
+{"variant":"w2","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.0, "p10_us": 231.8, "p90_us": 232.1, "gbps": 142.7}}
+{"variant":"w3","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.8, "p10_us": 232.7, "p90_us": 232.9, "gbps": 142.1}}
+{"variant":"w4","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.7, "p10_us": 232.7, "p90_us": 232.9, "gbps": 142.2}}
+{"variant":"w4","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.8, "p10_us": 232.7, "p90_us": 233.0, "gbps": 142.1}}
+{"variant":"w3","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.8, "p10_us": 232.7, "p90_us": 233.0, "gbps": 142.1}}
+{"variant":"w2","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.0, "p10_us": 231.9, "p90_us": 232.4, "gbps": 142.6}}
+{"variant":"w1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 232.9, "p10_us": 232.8, "p90_us": 233.1, "gbps": 142.1}}
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.7, "p10_us": 237.6, "p90_us": 238.0, "gbps": 139.2}}

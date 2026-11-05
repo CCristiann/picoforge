@@ -32,6 +32,18 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
 - The ~1000 small dispatches with no weights (gdn.scan, moe.route, qsa.core,
   gdn.conv, rms, hc_add, prep, ...) cost ~6-7.6 ms. Their lever is the number
   of barriers, not the kernels. DwarfStar fuses the HC mixers the same way.
+- D3 first results (same bench, 40 slots, raw lines `bench/qwen38_d0_20261105/d3-*.jsonl`;
+  prototypes were scratch copies, nothing changed in src/). Refuted as the cause, each
+  within noise of the 238 us baseline: issuing all of a lane's loads before decoding
+  (+1%), staging both rows through threadgroup memory with coalesced loads (+8%, worse),
+  32-bit address arithmetic (0%), dropping the tail shuffles, silu and finite checks (-2%).
+  What explains the gap: scaling K. K 1280 -> 2560 takes the kernel from 157 to 238 us
+  (slope 0.063 us/column, a **fixed ~77 us** independent of K) and the streaming variant
+  from 37 to 104 us (slope 0.052, intercept ~0). The per-weight cost is within 1.2x of
+  streaming; what is lost is a fixed cost per simdgroup (about a third of the kernel),
+  because each simdgroup serves only two rows. Next step, not yet done: several output
+  rows per simdgroup (as R2.7 did for the down), same per-row order so the result stays
+  bit-identical; host side `Q38_GATE_UP_SG` / dispatch in `src/qwen38_packed_gpu.m:480`.
 - Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
   41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
   8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)

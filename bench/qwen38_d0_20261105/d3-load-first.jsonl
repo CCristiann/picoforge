@@ -1,0 +1,12 @@
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 239.4, "p10_us": 237.6, "p90_us": 241.3, "gbps": 138.2}}
+{"variant":"p1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 240.5, "p10_us": 236.9, "p90_us": 240.9, "gbps": 137.6}}
+{"variant":"p1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 240.9, "p10_us": 237.0, "p90_us": 241.3, "gbps": 137.4}}
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.7, "p10_us": 237.6, "p90_us": 241.1, "gbps": 139.2}}
+{"variant":"v0","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.6, "p10_us": 237.5, "p90_us": 241.1, "gbps": 139.3}}
+{"variant":"p1","rows":40,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 240.9, "p10_us": 237.2, "p90_us": 241.2, "gbps": 137.4}}
+{"variant":"v0","rows":10,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 61.8, "p10_us": 61.7, "p90_us": 66.6, "gbps": 137.3}}
+{"variant":"p1","rows":10,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 61.9, "p10_us": 61.9, "p90_us": 66.5, "gbps": 137.0}}
+{"variant":"p1","rows":10,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 61.9, "p10_us": 61.8, "p90_us": 65.1, "gbps": 137.0}}
+{"variant":"v0","rows":10,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 61.8, "p10_us": 61.7, "p90_us": 62.3, "gbps": 137.4}}
+{"variant":"v0","rows":10,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 61.8, "p10_us": 61.7, "p90_us": 93.4, "gbps": 137.3}}
+{"variant":"p1","rows":10,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 10, "reps": 20, "bytes": 8483840, "median_us": 61.9, "p10_us": 61.9, "p90_us": 62.0, "gbps": 137.0}}

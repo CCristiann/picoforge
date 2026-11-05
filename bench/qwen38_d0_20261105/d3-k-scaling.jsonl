@@ -1,0 +1,12 @@
+{"variant":"v0","k":2560,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.8, "p10_us": 237.7, "p90_us": 238.0, "gbps": 139.1}}
+{"variant":"v11","k":2560,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 103.9, "p10_us": 102.6, "p90_us": 105.4, "gbps": 318.5}}
+{"variant":"v0","k":2560,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 237.7, "p10_us": 237.6, "p90_us": 237.8, "gbps": 139.2}}
+{"variant":"v11","k":2560,"result":{"mode": "fused", "type": 16, "n": 640, "k": 2560, "m": 40, "reps": 20, "bytes": 33090560, "median_us": 105.3, "p10_us": 105.0, "p90_us": 107.6, "gbps": 314.2}}
+{"variant":"v0","k":5120,"result":Assertion failed: (r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts/(1+pair))), function indexed_main, file test_qwen38_fast_kernels.m, line 413.}
+{"variant":"v11","k":5120,"result":Assertion failed: (r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts/(1+pair))), function indexed_main, file test_qwen38_fast_kernels.m, line 413.}
+{"variant":"v0","k":5120,"result":Assertion failed: (r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts/(1+pair))), function indexed_main, file test_qwen38_fast_kernels.m, line 413.}
+{"variant":"v11","k":5120,"result":Assertion failed: (r.physical<=(timing ? limit/r.n/r.experts : limit/4/r.n/r.experts/(1+pair))), function indexed_main, file test_qwen38_fast_kernels.m, line 413.}
+{"variant":"v0","k":1280,"result":{"mode": "fused", "type": 16, "n": 640, "k": 1280, "m": 40, "reps": 20, "bytes": 16596480, "median_us": 157.5, "p10_us": 157.4, "p90_us": 157.7, "gbps": 105.4}}
+{"variant":"v11","k":1280,"result":{"mode": "fused", "type": 16, "n": 640, "k": 1280, "m": 40, "reps": 20, "bytes": 16596480, "median_us": 37.2, "p10_us": 37.2, "p90_us": 116.8, "gbps": 445.9}}
+{"variant":"v0","k":1280,"result":{"mode": "fused", "type": 16, "n": 640, "k": 1280, "m": 40, "reps": 20, "bytes": 16596480, "median_us": 157.3, "p10_us": 157.2, "p90_us": 157.5, "gbps": 105.5}}
+{"variant":"v11","k":1280,"result":{"mode": "fused", "type": 16, "n": 640, "k": 1280, "m": 40, "reps": 20, "bytes": 16596480, "median_us": 37.1, "p10_us": 37.1, "p90_us": 104.1, "gbps": 446.9}}
