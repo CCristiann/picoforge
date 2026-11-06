@@ -194,7 +194,7 @@ Qwen38Status qwen38_weights_attach(Qwen38Weights *w, const Gguf *g,
         g->fd < 0 || !g->header || g->file_size != w->file_size || p->file_size != w->file_size)
         return q38a_error(e, Q38_OWNER, "attach", "same live reader required");
     if (g->tensor_count != w->count || !g->tensors || !p->weights || !p->views ||
-        p->weight_count != w->count-1 || !p->view_count || p->view_count > p->weight_count)
+        p->weight_count+p->streamed_count != w->count-1 || !p->view_count || p->view_count > p->weight_count)
         return q38a_error(e, Q38_SHAPE, "attach", "catalog/plan sizes");
     const Qwen38Tensor *disk;
     Qwen38Status s = qwen38_weights_get(w, QWEN38_GLOBAL_LAYER, Q38_PLE_TABLE, &disk, e);
@@ -218,6 +218,10 @@ Qwen38Status qwen38_weights_attach(Qwen38Weights *w, const Gguf *g,
             s = q38a_error(e, Q38_STALE, "attach", "source catalog mutated"); break;
         }
         if (w->items[i].domain == Q38_DISK_PLE) continue;
+        bool streamed = false;   /* R5.1b: read from the GGUF into the expert pool, never mapped */
+        for (size_t j = 0; j < p->streamed_count && !streamed; ++j)
+            streamed = !strcmp(t->name, p->streamed[j].name) && same_tensor(t, p->streamed+j);
+        if (streamed) continue;
         for (size_t j = 0; j < p->weight_count; ++j) {
             const GgufBinding *b = p->weights+j;
             if (!memchr(b->tensor.name, 0, sizeof b->tensor.name)) {

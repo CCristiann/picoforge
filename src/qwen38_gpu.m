@@ -380,6 +380,30 @@ Qwen38Status q38g_session_flush(Qwen38GpuSession *g, const Qwen38GpuTicket *t, Q
     cmd->compute_encoder = g->encoder = (__bridge_retained void *)enc;
     return report(e, Q38_OK);
 }
+/* R5.1b: commit the encoded part of the token and wait for it (the CPU needs the routed ids before
+ * it can fill the expert pool). The earlier flushed buffers are waited on too, so no command still
+ * in flight reads a slot the CPU is about to overwrite. A completed buffer leaves the session here;
+ * its GPU time is added, its errors reported now. */
+Qwen38Status q38g_session_sync(Qwen38GpuSession *g, const Qwen38GpuTicket *t, Qwen38GpuCommand *cmd,
+    Qwen38Error *e) {
+    if (!g || !cmd || cmd->compute_encoder != g->encoder) return report(e, Q38_INVALID_ARGUMENT);
+    Qwen38Status s = qwen38_gpu_ledger_check(&g->ledger, t, Q38_SESSION_ENCODING, e);
+    if (s) return s;
+    id<MTLCommandBuffer> next = [(__bridge id<MTLCommandQueue>)g->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = next ? [next computeCommandEncoderWithDispatchType:dispatch_type(g)] : nil;
+    if (!enc) return report(e, Q38_GPU_ERROR);
+    [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding]; drop(&g->encoder);
+    id<MTLCommandBuffer> done = (__bridge id<MTLCommandBuffer>)g->command;
+    [done commit];
+    for (size_t i = 0; i < g->early_count; i++) [(__bridge id<MTLCommandBuffer>)g->early[i] waitUntilCompleted];
+    [done waitUntilCompleted];
+    bool ok = done.status == MTLCommandBufferStatusCompleted && !done.error;
+    if (ok && done.GPUStartTime > 0 && done.GPUEndTime >= done.GPUStartTime) g->gpu_seconds += done.GPUEndTime - done.GPUStartTime;
+    drop(&g->command);
+    g->command = (__bridge_retained void *)next;
+    cmd->compute_encoder = g->encoder = (__bridge_retained void *)enc;
+    return report(e, ok ? Q38_OK : Q38_GPU_ERROR);
+}
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
     Qwen38Error *e) {
     if (!g) return report(e, Q38_INVALID_ARGUMENT);
@@ -415,7 +439,7 @@ Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *g, const Qwen38GpuTicke
         [cb waitUntilCompleted];
         ok = cb.status == MTLCommandBufferStatusCompleted && !cb.error;
         if (ok && cb.GPUStartTime>0 && cb.GPUEndTime>=cb.GPUStartTime)
-            g->gpu_seconds=cb.GPUEndTime-cb.GPUStartTime;
+            g->gpu_seconds+=cb.GPUEndTime-cb.GPUStartTime;   /* R5.1b: sync may have added some */
         why = cb.error.localizedDescription;
         for (size_t i = 0; i < g->early_count; i++) {   /* D1: the buffers flushed before the last one */
             id<MTLCommandBuffer> early = (__bridge id<MTLCommandBuffer>)g->early[i];

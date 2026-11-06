@@ -3,6 +3,9 @@
 #include "common.h"
 #include "qwen38_cli.h"
 #include "qwen38_run.h"
+#include "qwen38_expert_pool.h"
+#include <fcntl.h>
+#include <unistd.h>
 #include <errno.h>
 #include <math.h>
 #include <stdlib.h>
@@ -321,6 +324,45 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
     emit(r->decoder,NULL,&o); if (!o.session && !o.print) fputc('\n',stdout);
     t->got=got;
 }
+/* R5.1b: PICOFORGE_STREAM_EXPERTS=N keeps the trunk's routed experts on the SSD and N of them in a
+ * pool (LRU over all layers); the MTP layer's experts stay mapped. The pool reads through its own
+ * descriptor with F_NOCACHE, so a miss is a real SSD read and not a page-cache copy. */
+static uint32_t stream_slots(void) {
+    const char *v=getenv("PICOFORGE_STREAM_EXPERTS"); if (!v || !*v) return 0;
+    char *end; unsigned long n=strtoul(v,&end,10);
+    if (*end || !n || n>UINT32_MAX-1) die("PICOFORGE_STREAM_EXPERTS must be a positive slot count");
+    return (uint32_t)n;
+}
+static void open_stream(Q38Run *r,const char *path,uint32_t slots) {
+    const GgufPlan *plan=gpu_weights_plan(r->store); const uint32_t layers=r->c->trunk_blocks;
+    Q38ExpertLayer *offsets=calloc(layers,sizeof *offsets); size_t bytes[3]={0}; uint32_t experts=0;
+    if (!offsets) die("expert pool layer table");
+    for (uint32_t l=0;l<layers;l++) for (int m=0;m<3;m++) {
+        const GgufTensor *t=gguf_plan_streamed(plan,l,m); if (!t) die("layer %u has no streamed expert tensor %d",l,m);
+        if (!l && !m) experts=(uint32_t)t->shape[2];
+        if (t->shape[2]!=experts) die("expert count differs across layers");
+        if (!l) bytes[m]=t->bytes/experts; else if (bytes[m]!=t->bytes/experts) die("expert size differs across layers");
+        offsets[l].offset[m]=t->file_offset;
+    }
+    /* A prefill chunk may route to every expert of a layer, and all of them stay pinned until its kernels ran. */
+    if (slots<experts) die("PICOFORGE_STREAM_EXPERTS=%u: a prefill chunk can pin all %u experts of a layer; use at least %u slots",slots,experts,experts);
+    if ((r->pool_fd=open(path,O_RDONLY))<0 || fcntl(r->pool_fd,F_NOCACHE,1)) die("cannot open %s for expert streaming",path);
+    if (!(r->pool=q38_pool_create(r->pool_fd,offsets,layers,experts,bytes,slots))) die("expert pool allocation (%u slots)",slots);
+    free(offsets);
+    void *region[3]; size_t region_bytes[3];
+    for (int m=0;m<3;m++) region[m]=q38_pool_region(r->pool,m,&region_bytes[m]);
+    gpu_weights_attach_pool(r->store,region,region_bytes,slots);
+    fprintf(stderr,"expert streaming: %u slots of %u x %u experts, pool %.1f MiB\n",slots,layers,experts,
+        (double)(region_bytes[0]+region_bytes[1]+region_bytes[2])/1048576.0);
+}
+static void close_stream(Q38Run *r) {
+    if (!r->pool) return;
+    Q38PoolStats s=q38_pool_stats(r->pool);
+    fprintf(stderr,"expert streaming: %llu hits, %llu misses (%.2f%%), %llu evictions, %.2f GiB read\n",
+        (unsigned long long)s.hits,(unsigned long long)s.misses,s.hits+s.misses ? 100.0*(double)s.misses/(double)(s.hits+s.misses) : 0.0,
+        (unsigned long long)s.evictions,(double)s.bytes_read/1073741824.0);
+    q38_pool_destroy(r->pool); close(r->pool_fd); r->pool=NULL;
+}
 void q38_run_graph(Q38Run *r,uint32_t capacity) {
     Qwen38Error e; uint32_t chunk=MIN(r->chunk,capacity);
     if (r->graph) qwen38_gpu_forward_destroy(r->graph);
@@ -329,6 +371,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
         r->mtp ? MIN(MAX(chunk,(uint32_t)QWEN38_VERIFY_ROWS),capacity) : chunk,capacity,
         r->mtp ? MIN((uint32_t)QWEN38_VERIFY_ROWS,capacity) : 1,&r->graph,&e),&e);
     r->verify_rows=r->mtp ? MIN((uint32_t)QWEN38_VERIFY_ROWS,capacity) : 1;
+    if (r->pool) qwen38_gpu_forward_set_pool(r->graph,r->pool);
     if (r->mtp) q38_check(qwen38_gpu_mtp_enable(r->graph,&e),&e);
     if (r->profile) q38_check(q38g_forward_set_profile(r->graph,r->profile,&e),&e);
     const uint32_t vocab=r->c->vocab_size; size_t bytes=(size_t)vocab*4*r->verify_rows;
@@ -501,7 +544,9 @@ int qwen38_cli(int argc,char **argv) {
         NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
         if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
         r->device=(__bridge void *)device; r->library=(__bridge void *)lib;
-        r->store=gpu_weights_open(r->device,&r->g,0);
+        const uint32_t slots=stream_slots();
+        r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? c->trunk_blocks : 0);
+        if (slots) open_stream(r,argv[2],slots);
         q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
         if (profile_csv) q38_check(q38_profile_create(r->device,profile_csv,&r->profile,&e),&e);
         q38_run_graph(r,capacity); Qwen38GpuForward *graph=r->graph;
@@ -587,7 +632,7 @@ int qwen38_cli(int argc,char **argv) {
         }
         qwen38_decoder_free(r->decoder); qwen38_gpu_forward_destroy(r->graph); qwen38_tokenizer_free(tok);
         if (!q38_profile_close(r->profile)) die("profile write failed");
-        qwen38_weights_free(r->weights); gpu_weights_close(r->store); qwen38_config_free(r->config); gguf_close(&r->g);
+        qwen38_weights_free(r->weights); gpu_weights_close(r->store); close_stream(r); qwen38_config_free(r->config); gguf_close(&r->g);
         free(tokens); free(generated); free(r->logits);
     }
     free(owned_input); if (runs && runs!=stdout && fclose(runs)) die("runs close failed");

@@ -30,6 +30,10 @@ Qwen38Status qwen38_gpu_forward_argmax(Qwen38GpuForward *,const int32_t *,size_t
 Qwen38StateInfo qwen38_gpu_forward_info(const Qwen38GpuForward *);
 Qwen38Status qwen38_gpu_forward_reset(Qwen38GpuForward *,Qwen38Error *);
 void qwen38_gpu_forward_destroy(Qwen38GpuForward *);
+/* R5.1b: the expert pool whose regions the store attached (gpu_weights_attach_pool); borrowed, it
+ * must outlive the graph. Required before the first append when any expert tensor is streamed. */
+struct Q38ExpertPool;
+void qwen38_gpu_forward_set_pool(Qwen38GpuForward *, struct Q38ExpertPool *);
 /* Allocated Metal workspace/state/constants (excludes borrowed weights and
  * optional transient trace storage). SSD staging is owned separately by E. */
 size_t qwen38_gpu_forward_bytes(const Qwen38GpuForward *);

@@ -18,6 +18,7 @@ Qwen38Status q38g_session_split(Qwen38GpuSession *,const Qwen38GpuTicket *,void 
 /* D1: ENCODING only. Commits the command buffer encoded so far and continues the same command
  * in a new one (updates cmd). The caller aborts the command on failure. */
 Qwen38Status q38g_session_flush(Qwen38GpuSession *,const Qwen38GpuTicket *,Qwen38GpuCommand *,Qwen38Error *);
+Qwen38Status q38g_session_sync(Qwen38GpuSession *,const Qwen38GpuTicket *,Qwen38GpuCommand *,Qwen38Error *);
 /* Attach a borrowed profile (NULL detaches) while idle. */
 Qwen38Status q38g_forward_set_profile(Qwen38GpuForward *,Q38Profile *,Qwen38Error *);
 /* Closes the current group and opens the next. A no-op, with zero extra
