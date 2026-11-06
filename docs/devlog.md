@@ -7,6 +7,13 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.2b0 — the per-layer sync costs more than the reads
+
+Resident against a 50% pool (no eviction), 64 tokens, 2 pairs: 39.2 against ~61.5 ms/token. Total time
+in acquire is 0.8 s with prefill included, so the reads explain less than half of the 22 ms gap. The
+rest is the 48 commit+wait+re-encode steps per token, with the GPU idle. R5.2b must therefore attack
+the sync itself, not only the reads. Evidence: `bench/qwen38_r5_20261106/r52b0`.
+
 ### R5.2a — read a token's misses in parallel: stall 3.1x shorter
 
 Concept: one `pread` at a time leaves the SSD mostly idle (R5.0: 384 us per 2.6 MB with one thread,
