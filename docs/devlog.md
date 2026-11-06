@@ -7,6 +7,18 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.2a — read a token's misses in parallel: stall 3.1x shorter
+
+Concept: one `pread` at a time leaves the SSD mostly idle (R5.0: 384 us per 2.6 MB with one thread,
+13 GB/s with two or more). `q38_pool_acquire` now does the bookkeeping first, in the same order as before,
+so slots, hits and evictions do not change. It then reads the misses as 3 x misses independent jobs with
+`dispatch_apply_f` (`PICOFORGE_STREAM_READERS`, default 8, 1 = serial). A failed read now also forgets the
+call's new slots, so garbage can never turn into a hit (new test). Real Q2 with a 10% pool, 64 tokens,
+3 alternating pairs: the stall goes from 6.18 to 2.01 s (about 470 -> 153 us per 1.49 MB miss) and decode
+from ~138 to ~77 ms/token. Logits are identical across all six runs. Resident decode: ~41.5 ms/token.
+Evidence: `bench/qwen38_r5_20261106/r52a`. Next: R5.2b, overlap the reads with the GPU (shared expert,
+next layer's attention) and prefetch.
+
 ### R5.1c — the real Q2 with 10/50/100% of its experts in the pool: bit-identical
 
 Same prompt, 16 greedy tokens, `Q38_REF_KERNELS=gemm` in every run, guarded launcher on AC. With 2458,

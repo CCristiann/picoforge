@@ -349,6 +349,8 @@ static void open_stream(Q38Run *r,const char *path,uint32_t slots) {
     if ((r->pool_fd=open(path,O_RDONLY))<0 || fcntl(r->pool_fd,F_NOCACHE,1)) die("cannot open %s for expert streaming",path);
     if (!(r->pool=q38_pool_create(r->pool_fd,offsets,layers,experts,bytes,slots))) die("expert pool allocation (%u slots)",slots);
     free(offsets);
+    const char *rv=getenv("PICOFORGE_STREAM_READERS");   /* R5.2a: parallel miss reads, 1 = serial */
+    if (rv && *rv) { char *end; unsigned long n=strtoul(rv,&end,10); if (*end || !n || n>64) die("PICOFORGE_STREAM_READERS must be 1..64"); q38_pool_set_readers(r->pool,(uint32_t)n); }
     void *region[3]; size_t region_bytes[3];
     for (int m=0;m<3;m++) region[m]=q38_pool_region(r->pool,m,&region_bytes[m]);
     gpu_weights_attach_pool(r->store,region,region_bytes,slots);
@@ -358,9 +360,9 @@ static void open_stream(Q38Run *r,const char *path,uint32_t slots) {
 static void close_stream(Q38Run *r) {
     if (!r->pool) return;
     Q38PoolStats s=q38_pool_stats(r->pool);
-    fprintf(stderr,"expert streaming: %llu hits, %llu misses (%.2f%%), %llu evictions, %.2f GiB read\n",
+    fprintf(stderr,"expert streaming: %llu hits, %llu misses (%.2f%%), %llu evictions, %.2f GiB read, %.3f s waiting in acquire\n",
         (unsigned long long)s.hits,(unsigned long long)s.misses,s.hits+s.misses ? 100.0*(double)s.misses/(double)(s.hits+s.misses) : 0.0,
-        (unsigned long long)s.evictions,(double)s.bytes_read/1073741824.0);
+        (unsigned long long)s.evictions,(double)s.bytes_read/1073741824.0,(double)s.acquire_ns*1e-9);
     q38_pool_destroy(r->pool); close(r->pool_fd); r->pool=NULL;
 }
 void q38_run_graph(Q38Run *r,uint32_t capacity) {

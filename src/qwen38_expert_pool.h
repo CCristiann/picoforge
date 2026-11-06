@@ -14,7 +14,8 @@
 
 typedef struct Q38ExpertPool Q38ExpertPool;
 typedef struct { uint64_t offset[3]; } Q38ExpertLayer;   /* file offset of the layer's gate, up, down tensors */
-typedef struct { uint64_t hits, misses, evictions, bytes_read; } Q38PoolStats;
+/* acquire_ns: wall time inside q38_pool_acquire, i.e. the time the token waits for the SSD (R5.2). */
+typedef struct { uint64_t hits, misses, evictions, bytes_read, acquire_ns; } Q38PoolStats;
 
 /* fd: the GGUF, opened for reading (the caller sets F_NOCACHE if wanted). bytes[m]: size of one
  * expert's slice of matrix m (gate, up, down). Expert e of layer l, matrix m, lives at
@@ -26,6 +27,8 @@ void q38_pool_destroy(Q38ExpertPool *);
  * expert listed twice shares its slot and is pinned twice. Returns 0, or -1 when every slot is pinned
  * or a read fails (nothing stays pinned by this call). */
 int q38_pool_acquire(Q38ExpertPool *, uint32_t layer, const uint32_t *experts, size_t n, uint32_t *slots);
+/* R5.2a: how many reads of one acquire run at once (1 = serial, the R5.1 behaviour; default 8). */
+void q38_pool_set_readers(Q38ExpertPool *, uint32_t readers);
 void q38_pool_release(Q38ExpertPool *, const uint32_t *slots, size_t n);
 void *q38_pool_region(const Q38ExpertPool *, int matrix, size_t *bytes);   /* the whole matrix pool */
 Q38PoolStats q38_pool_stats(const Q38ExpertPool *);

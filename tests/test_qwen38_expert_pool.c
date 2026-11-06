@@ -57,12 +57,11 @@ static int ref_acquire(uint32_t l, const uint32_t *ex, size_t n) {
     return 0;
 }
 
-int main(void) {
-    char path[] = "/tmp/q38pool-XXXXXX";
-    int fd = make_file(path);
-    Q38ExpertLayer layers[L];
-    for (uint32_t l = 0; l < L; l++) for (int m = 0; m < 3; m++) layers[l].offset[m] = offset_of(l, m);
+/* R5.2a: the same rounds with one reader and with several; the bookkeeping must not depend on it. */
+static Q38PoolStats rounds(int fd, const Q38ExpertLayer *layers, uint32_t readers, Q38ExpertPool **out) {
+    ref_n = 0; ref_hits = ref_misses = ref_evict = 0;
     Q38ExpertPool *p = q38_pool_create(fd, layers, L, E, B, SLOTS); assert(p);
+    q38_pool_set_readers(p, readers);
 
     uint64_t rng = 88172645463325252ull;
     for (int round = 0; round < 4000; round++) {
@@ -81,6 +80,20 @@ int main(void) {
     Q38PoolStats s = q38_pool_stats(p);
     assert(s.hits == ref_hits && s.misses == ref_misses && s.evictions == ref_evict);
     assert(s.bytes_read == s.misses * (B[0] + B[1] + B[2]) && s.misses > 100 && s.hits > 100);
+    *out = p;
+    return s;
+}
+
+int main(void) {
+    char path[] = "/tmp/q38pool-XXXXXX";
+    int fd = make_file(path);
+    Q38ExpertLayer layers[L];
+    for (uint32_t l = 0; l < L; l++) for (int m = 0; m < 3; m++) layers[l].offset[m] = offset_of(l, m);
+    Q38ExpertPool *p;
+    Q38PoolStats serial = rounds(fd, layers, 1, &p);
+    q38_pool_destroy(p);
+    Q38PoolStats s = rounds(fd, layers, 8, &p);
+    assert(s.hits == serial.hits && s.misses == serial.misses && s.evictions == serial.evictions);
 
     /* A batch bigger than the pool fails and leaves nothing pinned; a duplicate shares its slot. */
     uint32_t big[SLOTS + 1], sl[SLOTS + 1];
@@ -95,8 +108,21 @@ int main(void) {
     assert(q38_pool_acquire(p, 0, &bad, 1, ds) == -1);
     size_t bytes; assert(q38_pool_region(p, 2, &bytes) && bytes % 16384 == 0 && bytes >= SLOTS * B[2]);
     q38_pool_destroy(p);
+
+    /* A failed read (layer 0's down tensor past the end of the file) fails the call, pins nothing and
+     * caches nothing: the same expert fails again instead of turning into a hit on garbage. */
+    Q38ExpertLayer broken[L];
+    for (uint32_t l = 0; l < L; l++) broken[l] = layers[l];
+    broken[0].offset[2] = 1ull << 40;
+    p = q38_pool_create(fd, broken, L, E, B, SLOTS); assert(p);
+    uint32_t mix[2] = {3, 4};
+    assert(q38_pool_acquire(p, 0, mix, 2, ds) == -1);
+    assert(q38_pool_acquire(p, 0, mix, 2, ds) == -1);
+    assert(q38_pool_acquire(p, 1, big, SLOTS, sl) == 0);   /* every slot free again */
+    q38_pool_release(p, sl, SLOTS);
+    q38_pool_destroy(p);
     close(fd); unlink(path);
-    printf("expert pool OK: %llu hits, %llu misses, %llu evictions match the reference\n",
+    printf("expert pool OK (1 and 8 readers): %llu hits, %llu misses, %llu evictions match the reference\n",
            (unsigned long long)s.hits, (unsigned long long)s.misses, (unsigned long long)s.evictions);
     return 0;
 }
