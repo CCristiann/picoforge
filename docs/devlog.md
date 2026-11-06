@@ -7,6 +7,20 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.1b — the pool behind the kernels, bit-identical on the synthetic models
+
+Concept: the MoE kernels index an expert as `id * expert_bytes` from a tensor base. If the base is a
+pool of N slots and the id is the slot, the kernels need no change. `PICOFORGE_STREAM_EXPERTS=N`
+keeps the trunk's routed experts out of every Metal view; the store turns the pool's three regions
+into no-copy buffers with a virtual binding per streamed tensor. After the router the command is
+committed and waited on, the CPU pins the routed experts (reading misses with `pread`, F_NOCACHE),
+and the kernels read the slots. Pins are released at the next streamed layer, whose wait proves the
+GPU is done with them; the MTP layer stays resident; N must cover a layer's experts (a prefill chunk
+can pin all of them). Synthetic: logits and ids bit-identical to resident at 64/12/6 slots, and with
+`--mtp` at 16/6/4, evictions included; G2/MTP/CLI/REPL/speculative/fast-kernel suites unchanged.
+Next: R5.1c, the real Q2 at 10/50/100% of its experts (bit-identity, no swap, memory in budget),
+not run on 2026-11-06 (battery 19%, 3.7 GiB free disk).
+
 ### R5.0 — measure before building: the SSD is fast and the miss rate low
 
 Concept: a MoE token reads 10 of 512 experts per layer; if only the hot ones sit in a cache and the
