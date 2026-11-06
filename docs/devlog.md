@@ -7,6 +7,16 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.1c — the real Q2 with 10/50/100% of its experts in the pool: bit-identical
+
+Same prompt, 16 greedy tokens, `Q38_REF_KERNELS=gemm` in every run, guarded launcher on AC. With 2458,
+12288 and 24576 slots (10/50/100% of the 24576 routed experts) logits and ids match the resident run
+bit for bit; swap stayed 0 and pressure normal. Peak wired memory: 45.9 GiB resident, 15.3 GiB with the
+10% pool (3.4 GiB of slots, 36% misses, 3843 evictions), 28.8 GiB at 50%, 46.1 GiB at 100%. At 50% and
+100% the 30% misses are only cold first reads. The runs were single and cold, so no speed is claimed
+here. Evidence: `bench/qwen38_r5_20261106/r51c`. R5.1 is closed. Next: R5.2, prefetch and I/O
+overlapped with compute.
+
 ### R5.1b — the pool behind the kernels, bit-identical on the synthetic models
 
 Concept: the MoE kernels index an expert as `id * expert_bytes` from a tensor base. If the base is a

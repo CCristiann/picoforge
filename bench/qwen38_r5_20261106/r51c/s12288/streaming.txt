@@ -1,0 +1,2 @@
+expert streaming: 12288 slots of 48 x 512 experts, pool 17460.0 MiB
+expert streaming: 12032 hits, 5248 misses (30.37%), 0 evictions, 7.28 GiB read

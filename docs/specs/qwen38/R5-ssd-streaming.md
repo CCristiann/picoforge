@@ -1,6 +1,6 @@
 # R5 — Flash-Next Q4K con gli esperti in streaming da SSD
 
-Data: 2026-11-05. Stato: **approvata dall'utente il 2026-11-05. R5.0 chiusa (gate superato, vedi devlog); R5.1 è il passo successivo**.
+Data: 2026-11-05. Stato: **approvata dall'utente il 2026-11-05. R5.0 e R5.1 chiuse (gate superati, vedi devlog); R5.2 è il passo successivo**.
 Contesto: [roadmap](roadmap.md), tappa R5. Si appoggia su Decode II (comandi spezzati in più
 command buffer) e sul registro delle tracce di routing (`Q38_ROUTE_LOG`).
 
