@@ -91,9 +91,10 @@ static Qwen38Status catalog(const Gguf *g, const Qwen38Config *c, Qwen38Weights 
         MAT(Q38_SHARED_GATE,"ffn_gate_shexp.weight",8,d,fs);
         MAT(Q38_SHARED_UP,"ffn_up_shexp.weight",8,d,fs);
         MAT(Q38_SHARED_DOWN,"ffn_down_shexp.weight",8,fs,d);
-        ADD(Q38_MOE_GATE,"ffn_gate_exps.weight",mtp?12:16,3,d,f,ne,d,Q38_EXPERTS);
-        ADD(Q38_MOE_UP,"ffn_up_exps.weight",mtp?12:16,3,d,f,ne,d,Q38_EXPERTS);
-        ADD(Q38_MOE_DOWN,"ffn_down_exps.weight",mtp?39:10,3,mtp?f:v->moe.down_physical,d,ne,f,Q38_EXPERTS);
+        /* R5.3: the trunk's expert formats come from the config's profile (Q2 or Q4); the MTP layer is Q4 in both. */
+        ADD(Q38_MOE_GATE,"ffn_gate_exps.weight",mtp?12:v->moe.trunk_type[0],3,d,f,ne,d,Q38_EXPERTS);
+        ADD(Q38_MOE_UP,"ffn_up_exps.weight",mtp?12:v->moe.trunk_type[1],3,d,f,ne,d,Q38_EXPERTS);
+        ADD(Q38_MOE_DOWN,"ffn_down_exps.weight",mtp?39:v->moe.trunk_type[2],3,mtp?f:v->moe.down_physical,d,ne,f,Q38_EXPERTS);
         if (c->layers[layer].kind == Q38_LAYER_GDN) {
             ADD(Q38_GDN_QKV,"attn_qkv.weight",8,2,d,gc,1,d,Q38_GDN_TILED);
             ADD(Q38_GDN_GATE,"attn_gate.weight",8,2,d,c->inner,1,d,Q38_GDN_TILED);

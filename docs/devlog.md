@@ -7,6 +7,21 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.3a — the Q4 runs, streamed, within 2.3e-7 of the FP32 reference
+
+The Q4 file (165 GiB, sha256 verified, in `docs/weights.lock`) differs from the Q2 only in the routed
+experts. Gate and up are Q4_K, down is MXFP4 at the logical K, 2.71 MB per expert. These are the MTP layer's
+formats, so the kernels already existed. The loader no longer imposes the Q2's trunk types: the layer-0
+tensors choose between two profiles, Q2 (IQ2_XXS/Q2_K, down K padded to 256 by the `ds4.qwen4.down.*`
+fields) and Q4 (Q4_K/MXFP4, no padding). Anything else is refused.
+`Qwen38MoeConfig.trunk_type` carries the choice into the weight table.
+
+G3 tokens against `ds4 --cpu --first-token-test` on the same file: scaled error 2.31e-7, 12/12 argmax and
+top-5 order. The pools of 2458 and 14244 slots (36 GiB, 58% of the trunk experts) and the wait path give the
+same logits bit for bit. The Q2 is unchanged (same sha256 as before the loader change). Peak wired memory is
+46.7 GiB with the 36 GiB pool, pressure normal, no swap growth in picoforge.
+Evidence: `bench/qwen38_r5_20261108/r53a`. Next: R5.3b, speed with the protocol.
+
 ### R5.2b — event gates: the streaming overhead halves, bit-identical
 
 Concept: with commit-and-wait, the CPU stops at every streamed layer until the GPU drains, and the

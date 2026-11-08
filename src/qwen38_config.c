@@ -40,8 +40,8 @@ static Qwen38Status validate_fields(Qwen38Config *c, Qwen38Error *e) {
     v->gdn.value_dim = c->inner/v->gdn.value_heads;
     if (v->gdn.value_dim != v->gdn.key_dim)
         return q38a_error(e, Q38_UNSUPPORTED, "GDN", "profile requires equal key/value dimensions");
-    uint64_t padded = ((uint64_t)m->intermediate+255)/256*256;
-    if (padded > UINT32_MAX || padded != m->down_physical)
+    uint64_t padded = m->trunk_type[2] == 10 ? ((uint64_t)m->intermediate+255)/256*256 : m->intermediate;
+    if (padded > UINT32_MAX || padded != m->down_physical)   /* R5.3: only Q2_K pads K (to 256) */
         return q38a_error(e, Q38_SHAPE, "down", "physical K must round logical K to 256");
     uint64_t heads = (uint64_t)(n->order-1)*n->heads_per_order;
     if (heads > 2000000 || heads*n->head_dim != v->hidden_size || n->eos_id >= v->vocab_size)
@@ -91,6 +91,10 @@ Qwen38Status q38a_array(const Gguf *g, const char *name, uint32_t type,
     *count = (size_t)n;
     value->data += 12; value->len -= 12;
     return Q38_OK;
+}
+static const GgufTensor *tensor_named(const Gguf *g, const char *name) {
+    for (size_t i = 0; i < g->tensor_count; ++i) if (!strcmp(g->tensors[i].name, name)) return &g->tensors[i];
+    return NULL;
 }
 static Qwen38Status uint_field(const Gguf *g, const char *key, uint32_t *out, Qwen38Error *e) {
     Qwen38Bytes b;
@@ -161,15 +165,29 @@ static Qwen38Status load_fields(const Gguf *g, Qwen38Config *c, Qwen38Error *e) 
     if (s) return s;
     s = float_field(g, "qwen4exp.rope.freq_base", &a->rope_theta, e);
     if (s) return s;
-    s = uint_field(g, "ds4.qwen4.down.logical_input", &tmp, e);
-    if (s) return s;
-    if (tmp != m->intermediate) return q38a_error(e, Q38_SHAPE, "down", "logical K mismatch");
-    s = uint_field(g, "ds4.qwen4.down.physical_input", &m->down_physical, e);
-    if (s) return s;
+    /* R5.3: two profiles of trunk experts, picked by the file's layer-0 tensors and nothing else.
+     * Q2: IQ2_XXS gate/up, Q2_K down whose K is padded to 256 (the ds4.qwen4.down.* fields say so).
+     * Q4: Q4_K gate/up, MXFP4 down at the logical K: the formats the MTP layer already uses. */
+    const GgufTensor *gate = tensor_named(g, "blk.0.ffn_gate_exps.weight"), *down = tensor_named(g, "blk.0.ffn_down_exps.weight");
+    if (!gate || !down) return q38a_error(e, Q38_FORMAT, "experts", "layer 0 routed expert tensors");
+    if (gate->type == 16 && down->type == 10) {
+        s = uint_field(g, "ds4.qwen4.down.logical_input", &tmp, e);
+        if (s) return s;
+        if (tmp != m->intermediate) return q38a_error(e, Q38_SHAPE, "down", "logical K mismatch");
+        s = uint_field(g, "ds4.qwen4.down.physical_input", &m->down_physical, e);
+        if (s) return s;
+        m->trunk_type[0] = m->trunk_type[1] = 16; m->trunk_type[2] = 10;
+        v->semantic_profile = "qwen38-q2-text-f32-v1";
+    } else if (gate->type == 12 && down->type == 39) {
+        m->down_physical = m->intermediate;
+        m->trunk_type[0] = m->trunk_type[1] = 12; m->trunk_type[2] = 39;
+        v->semantic_profile = "qwen38-q4-text-f32-v1";
+    } else {
+        return q38a_error(e, Q38_UNSUPPORTED, "experts", "routed expert formats are neither the Q2 nor the Q4 profile");
+    }
     /* Fields not exported to GGUF: pinned original HF profile, never Qwen3 defaults.
      * index_kv_heads=1, norm_topk_prob=true, SiLU/sigmoid, no bias, untied head;
      * direct gains, tiled GDN heads, pretransformed A, converted HC weights. */
-    v->semantic_profile = "qwen38-q2-text-f32-v1";
     a->index_kv_heads = 1; m->norm_topk_prob = true; v->gdn.l2_eps = 1e-6f;
     m->hidden_size = n->hidden_size = v->hidden_size;
     v->hc.hidden_size = v->hidden_size; n->vocab_size = v->vocab_size;
