@@ -7,6 +7,27 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### Choosing the model by name, and streaming when it does not fit
+
+Typing the 80-character path of a checkpoint every time was the main friction of the chat. `src/model_select.c`
+finds the `.gguf` files in `models/` beside the binary, or one level below it (`$PICOFORGE_MODELS` overrides
+the directory). `-m` now takes a path or a short name: an exact stem, else a case-insensitive part that matches
+one model ("q4"). Without `-m` the model is `$PICOFORGE_MODEL`, the only model found, or a numbered choice when a
+person is at the terminal. `picoforge models` prints the list with the short names. The long form
+(`--qwen38 FILE`) still takes only a path, since measurement scripts must name their file.
+
+The second half is a safety net. Without `PICOFORGE_STREAM_EXPERTS`, a model whose mapped weights exceed 90% of
+the GPU's recommended working set now streams its trunk experts by itself, with a pool of 85% of that budget
+minus the rest. The sizes come from the same `gguf_plan_ex` the store uses. On this Mac the Q2 (~42 GiB) stays
+resident and the Q4 (69.7 GiB) gets 14421 slots (36.4 GiB, close to the 14244 measured in R5.3). Both runs
+were checked under the guarded launcher: pressure normal, no swap growth. The pool does not count the graph
+buffers, which grow with the context, so very long contexts may still need a smaller explicit pool.
+
+Also fixed: R5.3a had put `trunk_type` in the middle of `Qwen38MoeConfig` and broken the positional
+initializers of `tests/test_qwen38_moe.c` (the GPU suite was not rerun after that change). The field now
+sits at the end, and the tests use designated initializers. The main checkout received the test assets of
+the old worktree, so `make test-qwen38-cpu` and `make test-qwen38-gpu` pass there again.
+
 ### R5.3b — first Q4 speed: ~18-19 tok/s once the pool is warm
 
 Three prompts, 128 and 512 tokens each, Q4 with a 36 GiB pool: the marginal cost after the first 128 tokens

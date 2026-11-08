@@ -4,6 +4,7 @@
 #include "qwen38_cli.h"
 #include "qwen38_run.h"
 #include "qwen38_expert_pool.h"
+#include "model_select.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -37,7 +38,7 @@ static void usage(void) {
     fprintf(stderr,"usage: picoforge --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
         "       (no prompt: interactive chat; /help inside)\n"
         "   or: picoforge [-m FILE] [-p TEXT] [-c CONTEXT] [-n MAX_NEW] [--mtp] [--thinking] ...\n"
-        "       (FILE defaults to $PICOFORGE_MODEL; -p is --chat, no -p is the chat)\n"
+        "       (MODEL: a path or a short name such as q4, see `picoforge models`; -p is --chat, no -p is the chat)\n"
         "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
@@ -327,11 +328,30 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
 /* R5.1b: PICOFORGE_STREAM_EXPERTS=N keeps the trunk's routed experts on the SSD and N of them in a
  * pool (LRU over all layers); the MTP layer's experts stay mapped. The pool reads through its own
  * descriptor with F_NOCACHE, so a miss is a real SSD read and not a page-cache copy. */
-static uint32_t stream_slots(void) {
-    const char *v=getenv("PICOFORGE_STREAM_EXPERTS"); if (!v || !*v) return 0;
-    char *end; unsigned long n=strtoul(v,&end,10);
-    if (*end || !n || n>UINT32_MAX-1) die("PICOFORGE_STREAM_EXPERTS must be a positive slot count");
-    return (uint32_t)n;
+/* R5.3: PICOFORGE_STREAM_EXPERTS wins (0 = resident). Otherwise a model whose mapped weights fit in
+ * 90% of the GPU's recommended working set stays resident (the Q2: ~42 of 52 GiB), and one that does
+ * not (the Q4: ~70 GiB) streams with a pool of 85% of that budget minus everything else. The sizes
+ * come from the same plan the store will use, so what is counted is exactly what gets mapped. */
+static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget) {
+    const char *v=getenv("PICOFORGE_STREAM_EXPERTS");
+    if (v && *v) {
+        char *end; unsigned long n=strtoul(v,&end,10);
+        if (*end || n>UINT32_MAX-1) die("PICOFORGE_STREAM_EXPERTS must be a slot count (0 = resident)");
+        return (uint32_t)n;
+    }
+    GgufPlan plan; gguf_plan_ex(g,16384,(size_t)1<<40,trunk,&plan);
+    uint64_t rest=0,experts=0,first=0,count=0;
+    for (size_t i=0;i<plan.weight_count;i++) rest+=plan.weights[i].tensor.bytes;
+    for (size_t i=0;i<plan.streamed_count;i++) experts+=plan.streamed[i].bytes;
+    for (int m=0;m<3;m++) { const GgufTensor *t=gguf_plan_streamed(&plan,0,m); if (t) { first+=t->bytes; count=t->shape[2]; } }
+    gguf_plan_free(&plan);
+    if (!count || rest+experts<=budget/10*9) return 0;
+    const uint64_t pool=budget/20*17,per=first/count;
+    if (pool<=rest+count*per) die("the model does not fit in GPU memory even with a minimal expert pool");
+    const uint32_t slots=(uint32_t)MIN((pool-rest)/per,(uint64_t)trunk*count);
+    fprintf(stderr,"expert streaming: automatic, %.1f GiB of weights > 90%% of %.1f GiB GPU budget "
+        "(set PICOFORGE_STREAM_EXPERTS to override)\n",(double)(rest+experts)/1073741824.0,(double)budget/1073741824.0);
+    return slots;
 }
 static void open_stream(Q38Run *r,const char *path,uint32_t slots) {
     const GgufPlan *plan=gpu_weights_plan(r->store); const uint32_t layers=r->c->trunk_blocks;
@@ -382,17 +402,18 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
     if (r->decoder) qwen38_decoder_reset(r->decoder);
     else q38_check(qwen38_decoder_create(r->tok,true,&r->decoder,&e),&e);
 }
-/* ds4-style short form (`./ds4 -p ...`): -m FILE, -p TEXT, -c N, -n N, the rest
- * as in the long form. The model defaults to $PICOFORGE_MODEL; a bare
- * ./picoforge without it prints the usage text (see main.c). */
+/* ds4-style short form (`./ds4 -p ...`): -m MODEL, -p TEXT, -c N, -n N, the rest
+ * as in the long form. MODEL is a path or a short name ("q4"); without -m the
+ * model comes from $PICOFORGE_MODEL, the only model in models/, or a prompt
+ * (model_select.c). A bare ./picoforge is the chat. */
 bool qwen38_short_form(int argc,char **argv) {
     static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision",NULL};
-    if (argc==1) return getenv("PICOFORGE_MODEL")!=NULL;
+    if (argc==1) return true;
     for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
     return false;
 }
 int qwen38_short(int argc,char **argv) {
-    const char *model=getenv("PICOFORGE_MODEL"); char **out=calloc((size_t)argc+3,sizeof *out); int n=3;
+    const char *model=NULL; char **out=calloc((size_t)argc+3,sizeof *out); int n=3;
     if (!out) die("argument allocation");
     for (int i=1;i<argc;i++) {
         const char *a=argv[i],*as=!strcmp(a,"-p") ? "--chat" : !strcmp(a,"-c") ? "--context" : !strcmp(a,"-n") ? "--max-new" : NULL;
@@ -401,9 +422,9 @@ int qwen38_short(int argc,char **argv) {
         else if (as) { out[n++]=(char *)as; out[n++]=argv[++i]; }
         else out[n++]=argv[i];
     }
-    if (!model) die("no model: pass -m FILE.gguf or set PICOFORGE_MODEL");
-    out[0]=argv[0]; out[1]="--qwen38"; out[2]=(char *)model;
-    int rc=qwen38_cli(n,out); free(out); return rc;
+    char *path=model_select(model,argv[0]);
+    out[0]=argv[0]; out[1]="--qwen38"; out[2]=path;
+    int rc=qwen38_cli(n,out); free(path); free(out); return rc;
 }
 /* `picoforge bench [short-form options]`: protocol defaults (3 warm-up, 20
  * measured, 128 new tokens), a fixed prompt unless one is given; generated
@@ -546,7 +567,7 @@ int qwen38_cli(int argc,char **argv) {
         NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
         if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
         r->device=(__bridge void *)device; r->library=(__bridge void *)lib;
-        const uint32_t slots=stream_slots();
+        const uint32_t slots=stream_slots(&r->g,c->trunk_blocks,device.recommendedMaxWorkingSetSize);
         r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? c->trunk_blocks : 0);
         if (slots) open_stream(r,argv[2],slots);
         q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
