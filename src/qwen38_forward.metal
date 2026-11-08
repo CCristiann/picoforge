@@ -5,6 +5,14 @@ kernel void q38g_copy(device const float *x [[buffer(0)]],device float *y [[buff
     constant uint4 &a [[buffer(2)]],uint i [[thread_position_in_grid]]) {
     if (i<a.x) y[i]=x[a.w ? (i/(a.y*a.z))*a.y+i%a.y : i];
 }
+/* Perf III warm-up (idea from ds4 ds4_gpu_warm_model_views, MIT): one byte every
+ * `stride` of a weight view, so the first prefill does not pay the one-time
+ * page-table validation of the no-copy mmap storage. Not a prefetch. */
+kernel void q38g_touch(device const uchar *w [[buffer(0)]],device uchar *out [[buffer(1)]],
+    constant ulong4 &a [[buffer(2)]],uint i [[thread_position_in_grid]]) {  /* stride, bytes, base, - */
+    ulong o=(ulong)i*a.x;
+    if (o<a.y) out[a.z+i]=w[o];
+}
 /* R4 diagnostic (Q38_ROUTE_LOG): routed expert ids, copied as integers so
  * small ids (denormal bit patterns as float) cannot be flushed. */
 kernel void q38g_copy_u32(device const uint *x [[buffer(0)]],device uint *y [[buffer(1)]],

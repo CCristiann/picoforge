@@ -294,9 +294,35 @@ Qwen38Status q38g_argmax_probe(void *device,void *library,const float *row,uint3
     *winner=*(int32_t *)out.contents; *error_bits=*(uint32_t *)err.contents; return fail(e,Q38_OK,NULL);
     }
 }
+/* Perf III: touch every weight view once at load, 1 MiB apart, in one command buffer
+ * (every forward already binds all of them, so this adds no memory pressure). Moves
+ * ~0.4 s of first-prefill cost (57 vs 85 t/s on a 66-ID prompt) to the load. Skipped
+ * when experts stream from the SSD (as ds4 does) or with PICOFORGE_NO_WARMUP. */
+static void warm(Qwen38GpuForward *f,void *library,void *const *views,size_t n) {
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)f->device;
+    id<MTLLibrary> lib=(__bridge id<MTLLibrary>)library;
+    id<MTLFunction> fn=[lib newFunctionWithName:@"q38g_touch"];
+    id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
+    if (!p) return;
+    const uint64_t stride=1ull<<20; uint64_t touches=0;
+    for (size_t i=0;i<n;i++) touches+=(((__bridge id<MTLBuffer>)views[i]).length+stride-1)/stride;
+    id<MTLBuffer> out=touches ? [dev newBufferWithLength:touches options:MTLResourceStorageModeShared] : nil;
+    id<MTLCommandQueue> q=[dev newCommandQueue]; id<MTLCommandBuffer> cb=[q commandBuffer];
+    if (!out || !cb) return;
+    id<MTLComputeCommandEncoder> enc=[cb computeCommandEncoder]; [enc setComputePipelineState:p];
+    uint64_t base=0;
+    for (size_t i=0;i<n;i++) {
+        id<MTLBuffer> b=(__bridge id<MTLBuffer>)views[i]; uint64_t bytes=b.length,k=(bytes+stride-1)/stride;
+        uint64_t a[4]={stride,bytes,base,0};
+        [enc setBuffer:b offset:0 atIndex:0]; [enc setBuffer:out offset:0 atIndex:1]; [enc setBytes:a length:sizeof a atIndex:2];
+        [enc dispatchThreads:MTLSizeMake((NSUInteger)k,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)256,(NSUInteger)k),1,1)];
+        base+=k;
+    }
+    [enc endEncoding]; [cb commit]; [cb waitUntilCompleted];
+}
 /* R1.7b: weights stay resident on the session's queue. UNSUPPORTED (old OS, `claim`
  * oracle) is not an error: the engine runs the same without it. */
-static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,Qwen38Error *e) {
+static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,void *library,Qwen38Error *e) {
     void *shared=f->session!=session ? qwen38_gpu_session_residency(f->session) : NULL;
     if (f->session!=session) {                      /* MTP queue: the main set, or none */
         Qwen38Status rc=shared ? qwen38_gpu_session_share_residency(session,shared,e) : Q38_OK;
@@ -310,12 +336,15 @@ static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,Qwen
         for (size_t k=0;k<n&&!seen;k++) seen=views[k]==b;
         if (!seen) views[n++]=b;
     }
-    Qwen38Status rc=n ? qwen38_gpu_session_use_residency(session,views,n,4ull<<30,e) : Q38_OK; free(views);
+    Qwen38Status rc=n ? qwen38_gpu_session_use_residency(session,views,n,4ull<<30,e) : Q38_OK;
+    if ((!rc || rc==Q38_UNSUPPORTED) && !gpu_weights_pool_buffers(f->store,(void *[3]){0}) && !getenv("PICOFORGE_NO_WARMUP"))
+        if (library) warm(f,library,views,n);
+    free(views);
     return rc==Q38_UNSUPPORTED ? Q38_OK : rc;
 }
 static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
     TRY(qwen38_gpu_session_create(f->device,f->config,f->capacity,&f->session,e));
-    TRY(residency(f,f->session,e));
+    TRY(residency(f,f->session,library,e));
     TRY(q38_packed_gpu_create(f->device,library,&f->b,e)); TRY(q38c_gpu_create(f->device,library,&f->ops,e));
     TRY(q38d_gpu_create(f->device,library,&f->d,e)); TRY(q38e_gpu_create(f->device,library,&f->e,e));
     TRY(q38f_routed_create(f->device,library,&f->moe,e));
@@ -882,7 +911,7 @@ static Qwen38Status mtp_create(Qwen38GpuForward *f,Qwen38Error *e) {
     f->layer[i].kind=*kind;
     if (kind->kind!=Q38_LAYER_QSA || kind->has_ple) return fail(e,Q38_UNSUPPORTED,"MTP requires QSA without PLE");
     TRY(qwen38_gpu_session_create(f->device,f->config,f->capacity,&f->mtp_session,e));
-    TRY(residency(f,f->mtp_session,e));
+    TRY(residency(f,f->mtp_session,NULL,e));
     TRY(create_qsa(f,i,e)); TRY(hc_bind(f,i,ffn_roles,&f->layer[i].ffn,e));
     const Qwen38Role roles[]={Q38_MOE_ROUTER,Q38_MOE_GATE,Q38_MOE_UP,Q38_MOE_DOWN,Q38_SHARED_GATE,Q38_SHARED_UP,Q38_SHARED_DOWN,Q38_SHARED_ROUTER};
     for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); f->layer[i].fb[j]=w.binding; f->layer[i].fl[j]=w.layout; }

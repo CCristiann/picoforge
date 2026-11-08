@@ -21,3 +21,11 @@ Logits moved by <= 1.5e-4 at 60 IDs (FP32 reorder GEMM vs matvec); at 417 IDs
 the matvec/GEMM switch on HC flips router near-ties (0.66), as in R3.1.
 Chat check by the user (REPL, thinking, sampled, MTP, ds4's system message):
 prefill ~50 t/s, generation ~30 t/s; three lines of reasoning, then the answer.
+
+## First-turn cost and the load-time warm-up
+
+- `overhead/mtp/`: 66-ID prompt, `--mtp --repeat 4 --warmup 1`: first prefill 1.155 s,
+  then 0.775-0.779 s (85 t/s); the MTP prompt pass is 0.02 s, decode 34 t/s warm.
+- `warmup/`: `--repeat 3`, no warm-up run. Without the touch: load 0.20 s, prefills
+  2.213 / 0.945 / 0.784 s. With `q38g_touch` (1 byte per MiB of every weight view at
+  load, as ds4): load 4.91 s, prefills 0.896 / 0.786 / 0.788 s (first turn 74 t/s).
