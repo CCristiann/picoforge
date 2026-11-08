@@ -7,6 +7,14 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.3b — first Q4 speed: ~18-19 tok/s once the pool is warm
+
+Three prompts, 128 and 512 tokens each, Q4 with a 36 GiB pool: the marginal cost after the first 128 tokens
+is 52.9-56.1 ms/token, and a whole 128-token run costs 64-69 ms/token. The same script on the Q2 with a 50% pool gives
+~48, and the resident Q2 gives 38.7. About 2% of lookups miss once warm (~10 experts, 27 MB per token), costing ~4.6 ms
+in acquire. The gates add ~5.7 ms and the Q4 kernels are heavier. The R5.0 model predicted 19-24 tok/s.
+No swap growth, wired 47-48 GiB. One run per cell, not the protocol. Evidence: `bench/qwen38_r5_20261108/r53b`.
+
 ### R5.3a — the Q4 runs, streamed, within 2.3e-7 of the FP32 reference
 
 The Q4 file (165 GiB, sha256 verified, in `docs/weights.lock`) differs from the Q2 only in the routed
