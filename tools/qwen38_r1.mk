@@ -52,11 +52,12 @@ build/qwen38-r1/test_fast_kernels: tests/test_qwen38_fast_kernels.m src/qwen38_p
 	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
 
 # R1.1 fast kernels vs oracle vs FP64: real row slices (never the checkpoint)
+# Kernel coverage pins the pre-Perf-III admission (any tile count, grouped from 256 pairs).
 # and seeded shapes. One lock for the recipe; the test adds no wrapper.
 Q38_R1_SLICES := $(foreach kind,0 1 8 10 12 16 30 39,--slices build/qwen38-b/slices-$(kind))
 test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels $(METALLIB)
 	@mkdir -p build/qwen38-r1
-	$(Q38_LOCK) env MTL_DEBUG_LAYER=1 Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" $(Q38_TEST) tests/test_qwen38_fast_kernels.py --native $< $(Q38_R1_SLICES) --report "$$(mktemp -d build/qwen38-r1/fast-kernels.XXXXXX)/report.json" -v
+	$(Q38_LOCK) env PICOFORGE_GEMM_MIN_TILES=0 PICOFORGE_GROUPED_MIN_PAIRS=256 MTL_DEBUG_LAYER=1 Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" $(Q38_TEST) tests/test_qwen38_fast_kernels.py --native $< $(Q38_R1_SLICES) --report "$$(mktemp -d build/qwen38-r1/fast-kernels.XXXXXX)/report.json" -v
 
 .PHONY: test-qwen38-fast-kernels
 
