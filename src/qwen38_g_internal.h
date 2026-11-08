@@ -19,6 +19,9 @@ Qwen38Status q38g_session_split(Qwen38GpuSession *,const Qwen38GpuTicket *,void 
  * in a new one (updates cmd). The caller aborts the command on failure. */
 Qwen38Status q38g_session_flush(Qwen38GpuSession *,const Qwen38GpuTicket *,Qwen38GpuCommand *,Qwen38Error *);
 Qwen38Status q38g_session_sync(Qwen38GpuSession *,const Qwen38GpuTicket *,Qwen38GpuCommand *,Qwen38Error *);
+/* R5.2b: ENCODING only. Commits what is encoded; the GPU then waits until fn(ctx) has run on the
+ * listener queue (after all earlier work completed). Updates cmd; the caller aborts on failure. */
+Qwen38Status q38g_session_gate(Qwen38GpuSession *,const Qwen38GpuTicket *,Qwen38GpuCommand *,void (*fn)(void *),void *ctx,Qwen38Error *);
 /* Attach a borrowed profile (NULL detaches) while idle. */
 Qwen38Status q38g_forward_set_profile(Qwen38GpuForward *,Q38Profile *,Qwen38Error *);
 /* Closes the current group and opens the next. A no-op, with zero extra

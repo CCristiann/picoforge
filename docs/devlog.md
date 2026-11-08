@@ -7,6 +7,21 @@ Two lines per session: what was done, what comes next. Newest entry first.
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
 `bench/qwen38_r5_20261105/README.md`. Newest first.
 
+### R5.2b — event gates: the streaming overhead halves, bit-identical
+
+Concept: with commit-and-wait, the CPU stops at every streamed layer until the GPU drains, and the
+GPU then idles until the CPU has read the experts and encoded the rest. Now the whole token is encoded
+at once. After a streamed layer's router, the command buffer ends by signalling a `MTLSharedEvent`, and
+the next one starts by waiting for the next value (`q38g_session_gate`). A serial queue polls the event,
+fills the pool and writes the slots, then opens the gate. A failed fill writes slot 0 (in bounds) and
+fails the append. A gate that never opens is forced open after 60 s in `finish`, so the GPU cannot stay
+blocked. Abort and finish drain the queue before any state is reused.
+`PICOFORGE_STREAM_SYNC=wait` keeps the old path. Steady state on the real Q2 (100% pool, warm, 5
+repetitions): resident 38.7, wait 49.5, event 44.4 ms/token (46.5 with an `MTLSharedEventListener`
+instead of polling). The remaining ~120 us per gate is the command-buffer boundary on the GPU. Logits
+match the resident run in every mode, and the synthetic parity holds at 64/12/6 and --mtp 16/6/4.
+Evidence: `bench/qwen38_r5_20261108/r52b`. Next: R5.3, the Q4 file.
+
 ### R5.2b0 — the per-layer sync costs more than the reads
 
 Resident against a 50% pool (no eviction), 64 tokens, 2 pairs: 39.2 against ~61.5 ms/token. Total time
