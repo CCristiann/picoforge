@@ -1,0 +1,5 @@
+bench: 5 runs (+1 warm-up), prompt 60 tokens, context 8192, chunk 1024, mtp off
+                     median        p10        p90
+prefill tok/s         46.77      46.67      46.81
+decode tok/s          25.87      25.76      25.97
+ttft s               1.2852     1.2842     1.2881

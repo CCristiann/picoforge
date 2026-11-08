@@ -16,7 +16,8 @@ struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f3
                       *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST],
                       *hc_tail, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
-                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half; };
+                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
+                      size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
  * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
@@ -30,6 +31,9 @@ enum { Q38_IDX_SG = 4 };
 enum { Q38_GEMM_M = 32, Q38_GEMM_N = 64, Q38_GEMM_SG = 4, Q38_GEMM_MIN_ROWS = 32 };
 /* R3.5 reduced-precision GEMM on the tensor units: NAX_M x NAX_N tile, 4 simdgroups. */
 enum { Q38_NAX_M = 64, Q38_NAX_N = 64 };
+enum { Q38_GEMM_MIN_TILES = 32, Q38_GROUPED_MIN_PAIRS = 2560 };
+static size_t gemm_min_rows(void);
+static size_t env_size(const char *name, size_t fallback);
 /* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
  * output each) per threadgroup; the kernels read the count from the dispatch. */
 enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4 };
@@ -180,6 +184,13 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->ref_fuse=q38_ref_kernels("fuse");
     ctx->ref_gemm=q38_ref_kernels("gemm");
     ctx->prefill_half=q38_prefill_half();
+    ctx->gemm_min_rows=gemm_min_rows();
+    /* Measured on the real Q2 (bench/qwen38_p3_20261108): a 60-token chat prefill
+     * 1294 -> 671 ms with both, 417 tokens 3601 -> 3563 ms; 1024-row chunks are unchanged
+     * (every shape has >= 160 tiles there). The grouped MoE runs 64-row tiles per expert,
+     * which wastes most of the work below ~2.5 rows per expert: crossover ~250-280 tokens. */
+    ctx->gemm_min_tiles=env_size("PICOFORGE_GEMM_MIN_TILES",Q38_GEMM_MIN_TILES);
+    ctx->grouped_min_pairs=env_size("PICOFORGE_GROUPED_MIN_PAIRS",Q38_GROUPED_MIN_PAIRS);
     *out=ctx;
     return q38_b_result(err,Q38_OK,"");
 }
@@ -294,6 +305,22 @@ static void bind(id<MTLComputeCommandEncoder> encoder, const Admitted *a, Qwen38
     [encoder setBuffer:a->word offset:command->error_word.offset_bytes atIndex:3];
 }
 
+/* Perf III: the GEMM admission threshold, PICOFORGE_GEMM_MIN_ROWS (default
+ * Q38_GEMM_MIN_ROWS). Below it the matvecs reread every matrix once per 4 rows
+ * of x, so a 25-token chat prompt paid ~7 full weight passes per linear. The
+ * floor stays above the MTP verify (1+3 rows) and decode (1 row), whose cost
+ * tables were calibrated on the matvecs. Grouped MoE admission is 8x this. */
+static size_t gemm_min_rows(void) {
+    const char *v=getenv("PICOFORGE_GEMM_MIN_ROWS");
+    long n=v && *v ? strtol(v,NULL,10) : Q38_GEMM_MIN_ROWS;
+    return n<8 ? 8 : n>4096 ? 4096 : (size_t)n;
+}
+
+static size_t env_size(const char *name, size_t fallback) {
+    const char *v=getenv(name);
+    return v && *v ? (size_t)strtoull(v,NULL,10) : fallback;
+}
+
 /* The fast kernel of a format and its rows of x per threadgroup; NULL: none. */
 static void *fast_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t *tile) {
     *tile=type==8 ? Q38_Q8_T : Q38_DENSE_T;
@@ -302,20 +329,25 @@ static void *fast_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t *tile) {
 
 /* R3.1: the GEMM of a fast format for this many rows of x; NULL: the matvec
  * (fewer rows, Q38_REF_KERNELS=gemm, no pipeline, or no fast format). */
-static void *gemm_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows) {
-    if (ctx->ref_gemm || rows<Q38_GEMM_MIN_ROWS) return NULL;
+/* Perf III: shape matters too. A K-large, N-small linear (HC down: 10240 -> 320)
+ * gives the GEMM ceil(N/64)*ceil(rows/32) threadgroups, about ten for a chat
+ * prompt on a 20-core GPU, so the matvec wins until the tiles fill the machine
+ * (PICOFORGE_GEMM_MIN_TILES). n_out SIZE_MAX: callers that only know rows. */
+static void *gemm_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows, size_t n_out) {
+    if (ctx->ref_gemm || rows<ctx->gemm_min_rows) return NULL;
+    if (n_out!=SIZE_MAX && ((n_out+Q38_GEMM_N-1)/Q38_GEMM_N)*((rows+Q38_GEMM_M-1)/Q38_GEMM_M)<ctx->gemm_min_tiles) return NULL;
     return type==8 ? ctx->gemm[0] : type==1 ? ctx->gemm[1] : type==0 ? ctx->gemm[2] : NULL;
 }
 /* R3.5: the tensor-unit GEMM that replaces gemm_kernel's in half mode (NULL:
  * FP32 GEMM). Admission is gemm_kernel's, so the mode only ever touches rows
  * that already run a GEMM: never decode, never the REF oracle. */
-static void *nax_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows) {
-    if (!ctx->prefill_half || !gemm_kernel(ctx,type,rows)) return NULL;
+static void *nax_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows, size_t n_out) {
+    if (!ctx->prefill_half || !gemm_kernel(ctx,type,rows,n_out)) return NULL;
     return type==8 ? ctx->gemm_nax[0] : type==1 ? ctx->gemm_nax[1] : type==0 ? ctx->gemm_nax[2] : NULL;
 }
 
 bool q38_packed_gemm_rows(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows) {
-    return ctx && gemm_kernel(ctx,gguf_type,rows)!=NULL;
+    return ctx && gemm_kernel(ctx,gguf_type,rows,SIZE_MAX)!=NULL;
 }
 
 /* One linear encode, shared by both entry points so validation is identical:
@@ -342,8 +374,8 @@ static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *com
     size_t offset=binding->offset+expert*layout->expert_bytes;
     Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    void *gemm=fast ? gemm_kernel(ctx,layout->gguf_type,x.dim[0]) : NULL;
-    void *nax=fast ? nax_kernel(ctx,layout->gguf_type,x.dim[0]) : NULL;
+    void *gemm=fast ? gemm_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
+    void *nax=fast ? nax_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
     if (nax) { gemm=nax; args.reserved=x.span.offset_bytes%16==0; } /* NAX: float4 x loads allowed */
     id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(gemm ? gemm : fast ? kernel : ctx->linear);
     [encoder setComputePipelineState:pipeline];
@@ -487,7 +519,7 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
 typedef struct { uint32_t pairs, experts, tile, reserved; } Q38GroupArgs;
 enum { Q38_GG_M = 64, Q38_GG_N = 32, Q38_GN_N = 64 }; /* GN_N: the R3.5 tensor-unit tile (rows: GG_M) */
 bool q38_packed_grouped_rows(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t pairs) {
-    return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=Q38_GEMM_MIN_ROWS*8 &&
+    return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=ctx->grouped_min_pairs &&
         indexed_kernel(ctx->grouped_gate_up,gguf_type) && indexed_kernel(ctx->grouped_down,gguf_type);
 }
 size_t q38_packed_group_bytes(size_t experts, size_t pairs) { return (4*experts+2+pairs)*4; }
@@ -707,7 +739,7 @@ Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *
         uint32_t type=layouts[i].gguf_type;
         size_t f=type==8 ? 0 : type==1 ? 1 : type==0 ? 2 : 3;
         /* R3.1: with a GEMM for these rows, one GEMM per projection (x reads are cheap there). */
-        if (f<3 && ctx->multi[f] && !ctx->ref_linear && !gemm_kernel(ctx,type,x.dim[0])) group[f][size[f]++]=i;
+        if (f<3 && ctx->multi[f] && !ctx->ref_linear && !gemm_kernel(ctx,type,x.dim[0],layouts[i].n_out)) group[f][size[f]++]=i;
         else {
             Qwen38Status status=encode_linear(ctx,command,store,bindings[i],&layouts[i],0,x,y[i],false,err);
             if (status) return status;
@@ -756,7 +788,7 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *ctx, const Qwen38GpuCommand
     if (status) return status;
     size_t t=gate.dim[0], k=layout->k_logical, h=streams;
     /* R3.1: many rows (prefill) take the sequence, whose up projection is a GEMM. */
-    if (!ctx->hc_tail || ctx->ref_linear || ctx->ref_fuse || gemm_kernel(ctx,1,t) || layout->gguf_type!=1 || layout->n_experts!=1 ||
+    if (!ctx->hc_tail || ctx->ref_linear || ctx->ref_fuse || gemm_kernel(ctx,1,t,SIZE_MAX) || layout->gguf_type!=1 || layout->n_experts!=1 ||
         dense_split(k)!=1 || k>Q38_HC_TAIL_MAX_K || !h || h>Q38_HC_TAIL_MAX_H || layout->n_out%h)
         return q38_b_result(err,Q38_UNSUPPORTED,"no fused HC tail for this shape or selection");
     size_t width=layout->n_out/h;

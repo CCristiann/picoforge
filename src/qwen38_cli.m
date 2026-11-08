@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <math.h>
+#include <time.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <time.h>
@@ -51,7 +52,10 @@ static void usage(void) {
         "       [--teacher-forced N] (--tokens only: prefill all but the last N IDs, append those one by one)\n"
         "       [--prefill-precision fp32|half] (or $PICOFORGE_PREFILL_PRECISION; half: prefill GEMMs on the\n"
         "        Neural Accelerators, half operands, FP32 accumulation; decode stays FP32)\n"
-        "Greedy FP32 generation; defaults: context 8192, chunk 1024, max-new 32.\n");
+        "       [--temp T] [--top-k K] [--top-p P] [--min-p P] [--seed N] [--no-mtp]\n"
+        "Chat (REPL, --chat): sampled (T 0.6, top-k 20, top-p 0.95) with MTP; --temp 0 is greedy.\n"
+        "Measurements (bench, --tokens, --logits): greedy, no MTP unless asked.\n"
+        "Defaults: context 8192, chunk 1024, max-new 32.\n");
 }
 /* Greedy choice shared by ordinary and teacher-forced decode: first maximum wins. */
 static int32_t greedy(const float *logits,uint32_t n) {
@@ -62,13 +66,28 @@ static int32_t greedy(const float *logits,uint32_t n) {
     }
     return id;
 }
+/* The decode choice: greedy() bit for bit when the sampler is greedy. */
+static int32_t pick(Q38Run *r,const float *logits,uint32_t n) {
+    if (q38_sampler_greedy(&r->sampler)) return greedy(logits,n);
+    for (uint32_t j=0;j<n;j++) if (!isfinite(logits[j])) die("nonfinite logit after successful append");
+    return q38_sample(&r->sampler,logits,n);
+}
+static float fnumber(const char *s,float low,float high,const char *what) {
+    char *end; errno=0; double v=strtod(s,&end);
+    if (errno || s==end || *end || !(v>=low && v<=high)) die("%s must be in [%g,%g]",what,(double)low,(double)high);
+    return (float)v;
+}
 static Qwen38Bytes bytes(const char *s) { return (Qwen38Bytes){(const uint8_t *)s,strlen(s)}; }
 static uint8_t *chat(Qwen38Tokenizer *tok,const char *text,bool thinking,size_t *n) {
     Qwen38Json role={.kind=Q38_JSON_STRING,.as.string=bytes("user")};
     Qwen38Json content={.kind=Q38_JSON_STRING,.as.string=bytes(text)};
     Qwen38JsonMember fields[]={{bytes("role"),&role},{bytes("content"),&content}};
-    Qwen38Json message={.kind=Q38_JSON_OBJECT,.as.object={fields,2}};
-    Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={&message,1}};
+    const char *sys=q38_system_prompt();
+    Qwen38Json srole={.kind=Q38_JSON_STRING,.as.string=bytes("system")};
+    Qwen38Json scontent={.kind=Q38_JSON_STRING,.as.string=bytes(sys)};
+    Qwen38JsonMember sfields[]={{bytes("role"),&srole},{bytes("content"),&scontent}};
+    Qwen38Json list[2]={{.kind=Q38_JSON_OBJECT,.as.object={sfields,2}},{.kind=Q38_JSON_OBJECT,.as.object={fields,2}}};
+    Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={*sys ? list : list+1,*sys ? 2 : 1}};
     Qwen38ChatOptions options={.enable_thinking=thinking ? Q38_TRUE : Q38_FALSE,.add_generation_prompt=true};
     Qwen38Error e; q38_check(qwen38_chat_render(tok,&messages,NULL,options,NULL,0,n,&e),&e);
     uint8_t *out=malloc(*n ? *n : 1); if (!out) die("chat allocation");
@@ -197,7 +216,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
     size_t residual_offset=0,got=0;
     /* T15c: plain greedy reads back only the id (GPU argmax). Logits rows stay for --logits
      * and MTP, which verify against them. */
-    const bool use_id=!o.logfile; int32_t next_id=0;
+    const bool use_id=!o.logfile && q38_sampler_greedy(&r->sampler); int32_t next_id=0;
     t->prefill_start=q38_now();
     for (size_t start=0;start<count && !q38_stopped;start+=o.chunk) {
         size_t n=MIN((size_t)o.chunk,count-start); y->dim[0]=start+n==count ? 1 : 0;
@@ -245,7 +264,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
         if (got==o.stop_after) { t->reason="cancelled"; break; }
         if (o.logfile && fwrite(logits,4,vocab,o.logfile)!=vocab) die("logits write failed");
         if (!o.max_new) break;
-        int32_t id=have_id ? next_id : greedy(logits,vocab);
+        int32_t id=have_id ? next_id : pick(r,logits,vocab);
         if (probe>=0) { pol->alpha[0]+=((probe==id)-pol->alpha[0])/8; probe=-1; }
         generated[got++]=id;
         if (qwen38_token_is_stop(r->tok,id)) t->reason="stop";
@@ -295,8 +314,9 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
             q38_check(qwen38_gpu_forward_verify(graph,rows_ids,rows,*y,&e),&e); accumulate(&t->decode,graph);
         } else append(r,rows_ids,1,"decode",NULL,&t->decode);
         y->dim[0]=1; t->verify_s+=q38_now()-part; t->verified_tokens+=rows; t->target_appends++;
-        size_t m=0; int32_t target=greedy(logits,vocab);
-        while (m<live && target==d[m]) { m++; target=greedy(logits+m*vocab,vocab); }
+        /* Exact for sampling too (qwen38_sample.h): draw from each row, keep while it equals the draft. */
+        size_t m=0; int32_t target=pick(r,logits,vocab);
+        while (m<live && target==d[m]) { m++; target=pick(r,logits+m*vocab,vocab); }
         bool stop_ok=stop_draft && m==live && target==d[live];
         for (size_t j=0;j<nd && j<=m;j++) {   /* each draft whose predecessors were all accepted */
             bool ok=j<m || (j==live && stop_ok);
@@ -305,7 +325,9 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
         t->proposed+=nd; t->accepted+=m+stop_ok; if (m<live) t->rollback_count++;
         size_t keep=q38_stopped ? 1 : m+1;
         if (rows>1) { part=q38_now(); q38_check(qwen38_gpu_forward_keep(graph,keep,&e),&e); t->replay_s+=q38_now()-part; }
-        r->last_count=keep; pend_off=0; have_id=false;
+        /* Row m's draw is the next id: after a rejection it must be the draw that
+         * differed from d[m] (a fresh draw could return d[m]); greedy: the same id. */
+        r->last_count=keep; pend_off=0; have_id=true; next_id=target;
         if (q38_stopped) break;
         pend_n=m; memcpy(pend,d,m*sizeof *d);
         bool done=false;
@@ -450,7 +472,8 @@ int qwen38_cli(int argc,char **argv) {
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
     const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
-    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false;
+    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false,no_mtp=false;
+    float temp=-1,top_p=0.95f,min_p=0; uint32_t top_k=20; uint64_t seed=(uint64_t)time(NULL);
     const char *mtp_draft=getenv("PICOFORGE_MTP_DRAFT");
     { const char *p=getenv("PICOFORGE_PREFILL_PRECISION");
       if (p && *p && strcmp(p,"fp32") && strcmp(p,"half")) die("PICOFORGE_PREFILL_PRECISION must be fp32 or half"); }
@@ -458,6 +481,7 @@ int qwen38_cli(int argc,char **argv) {
         const char *opt=argv[i];
         if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
         if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
+        if (!strcmp(opt,"--no-mtp")) { no_mtp=true; continue; }
         if (!strcmp(opt,"--mtp-draft")) { if (i+1==argc) die("missing value for %s",opt); mtp=true; mtp_draft=argv[++i]; continue; }
         if (!strcmp(opt,"--thinking")) { thinking=true; continue; }
         if (!strcmp(opt,"--encode-only")) { encode_only=true; continue; }
@@ -476,6 +500,11 @@ int qwen38_cli(int argc,char **argv) {
             setenv("PICOFORGE_PREFILL_PRECISION",value,1);
         }
         else if (!strcmp(opt,"--chunk")) chunk=number(value,1,1024,opt);
+        else if (!strcmp(opt,"--temp")) temp=fnumber(value,0,10,opt);
+        else if (!strcmp(opt,"--top-k")) top_k=number(value,1,Q38_SAMPLE_MAX_K,opt);
+        else if (!strcmp(opt,"--top-p")) top_p=fnumber(value,0.01f,1,opt);
+        else if (!strcmp(opt,"--min-p")) min_p=fnumber(value,0,0.99f,opt);
+        else if (!strcmp(opt,"--seed")) seed=strtoull(value,NULL,10);
         else if (!strcmp(opt,"--logits")) logits_path=value;
         else if (!strcmp(opt,"--token-ids")) ids_path=value;
         else if (!strcmp(opt,"--metallib")) metallib=value;
@@ -496,8 +525,14 @@ int qwen38_cli(int argc,char **argv) {
     /* No prompt: the interactive chat. It owns its turns, so the measurement
      * and replay options of a one-shot run do not apply. */
     const bool repl=!mode; if (repl) mode="repl";
+    /* Perf III: the chat (REPL or one --chat answer) samples and drafts with MTP by
+     * default; measurements and oracles (bench, --logits, --tokens, session) stay
+     * greedy and plain unless asked. --temp 0 / --no-mtp restore the old chat. */
+    const bool chat_use=(repl || !strcmp(mode,"--chat")) && !bench && !logits_path && !forced;
+    if (temp<0) temp=chat_use ? 0.6f : 0.0f;
+    if (no_mtp) mtp=false; else if (chat_use && !getenv("PICOFORGE_NO_MTP")) mtp=true;
     if (repl && (runs_path || profile_path || logits_path || encode_only || repeat!=1 || warmup || replay_chunk ||
-                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --thinking, --token-ids");
+                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --no-mtp, --thinking, --token-ids and the sampling options");
     if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
     if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
@@ -525,6 +560,7 @@ int qwen38_cli(int argc,char **argv) {
     @autoreleasepool {
         Q38Run run={.chunk=chunk_request,.mtp=mtp}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
         q38_policy_init(&r->policy,mtp_draft,getenv("PICOFORGE_MTP_COST"));
+        q38_sampler_init(&r->sampler,temp,top_k,top_p,min_p,seed);
         gguf_open(argv[2],&r->g);
         q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
         q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);

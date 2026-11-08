@@ -1,0 +1,10 @@
+#!/bin/zsh
+cd /Users/cristiancirje/Desktop/Dev/picoforge
+S=/private/tmp/claude-501/-Users-cristiancirje-Desktop-Dev-picoforge/060dd1c8-1a33-428e-b40f-fe333108e36c/scratchpad
+OUT=bench/qwen38_p3_20261108/cross
+run() { name=$1; shift
+  ./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 600 -- ./tools/venv/bin/python -B build/r5-checks/launch-any.py $OUT/$name . PICOFORGE_GROUPED_MIN_PAIRS=2560 "$@" -- \
+    ./picoforge -m q2 -n 2 --temp 0 --no-mtp --profile {d}/profile.csv --logits {d}/logits.f32 $ARGS
+}
+ARGS=(--chat-file $S/p300.txt); run p300-t32 PICOFORGE_GEMM_MIN_TILES=32; run p300-t0 PICOFORGE_GEMM_MIN_TILES=0
+ARGS=(-p "list all the activation functions in machine learning" --thinking); run p60-t32 PICOFORGE_GEMM_MIN_TILES=32

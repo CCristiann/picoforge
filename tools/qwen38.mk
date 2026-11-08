@@ -5,7 +5,8 @@ Q38_DWARFSTAR ?= $(abspath ../ds4-qwen38-baseline)
 Q38_SOURCE_DIR ?=
 Q38_FLAGS := $(CFLAGS) -Werror -ffp-contract=off -fno-fast-math -Isrc
 Q38_SAN := -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
-Q38_ENV := env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+# Synthetic oracles: no system message, and the pre-Perf-III GEMM admission (tiny shapes).
+Q38_ENV := env PICOFORGE_SYSTEM= PICOFORGE_GEMM_MIN_TILES=0 PICOFORGE_GROUPED_MIN_PAIRS=256 HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 Q38_TEST := $(Q38_ENV) $(PYTHON) -B tools/qwen38_test.py
 Q38_LOCK := $(PYTHON) -B tools/qwen38_gpu_lock.py --timeout 60 --
 Q38_SOURCE := build/qwen38-f/upstream/modeling_qwen4_exp.py
