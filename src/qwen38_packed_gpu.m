@@ -16,7 +16,8 @@ struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f3
                       *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST],
                       *hc_tail, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
-                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half; };
+                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
+                      size_t gemm_min_rows; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
  * or dense_split(K) of them (F16, F32; at most Q38_DENSE_S). */
@@ -30,6 +31,7 @@ enum { Q38_IDX_SG = 4 };
 enum { Q38_GEMM_M = 32, Q38_GEMM_N = 64, Q38_GEMM_SG = 4, Q38_GEMM_MIN_ROWS = 32 };
 /* R3.5 reduced-precision GEMM on the tensor units: NAX_M x NAX_N tile, 4 simdgroups. */
 enum { Q38_NAX_M = 64, Q38_NAX_N = 64 };
+static size_t gemm_min_rows(void);
 /* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
  * output each) per threadgroup; the kernels read the count from the dispatch. */
 enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4 };
@@ -180,6 +182,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->ref_fuse=q38_ref_kernels("fuse");
     ctx->ref_gemm=q38_ref_kernels("gemm");
     ctx->prefill_half=q38_prefill_half();
+    ctx->gemm_min_rows=gemm_min_rows();
     *out=ctx;
     return q38_b_result(err,Q38_OK,"");
 }
@@ -294,6 +297,17 @@ static void bind(id<MTLComputeCommandEncoder> encoder, const Admitted *a, Qwen38
     [encoder setBuffer:a->word offset:command->error_word.offset_bytes atIndex:3];
 }
 
+/* Perf III: the GEMM admission threshold, PICOFORGE_GEMM_MIN_ROWS (default
+ * Q38_GEMM_MIN_ROWS). Below it the matvecs reread every matrix once per 4 rows
+ * of x, so a 25-token chat prompt paid ~7 full weight passes per linear. The
+ * floor stays above the MTP verify (1+3 rows) and decode (1 row), whose cost
+ * tables were calibrated on the matvecs. Grouped MoE admission is 8x this. */
+static size_t gemm_min_rows(void) {
+    const char *v=getenv("PICOFORGE_GEMM_MIN_ROWS");
+    long n=v && *v ? strtol(v,NULL,10) : Q38_GEMM_MIN_ROWS;
+    return n<8 ? 8 : n>4096 ? 4096 : (size_t)n;
+}
+
 /* The fast kernel of a format and its rows of x per threadgroup; NULL: none. */
 static void *fast_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t *tile) {
     *tile=type==8 ? Q38_Q8_T : Q38_DENSE_T;
@@ -303,7 +317,7 @@ static void *fast_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t *tile) {
 /* R3.1: the GEMM of a fast format for this many rows of x; NULL: the matvec
  * (fewer rows, Q38_REF_KERNELS=gemm, no pipeline, or no fast format). */
 static void *gemm_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows) {
-    if (ctx->ref_gemm || rows<Q38_GEMM_MIN_ROWS) return NULL;
+    if (ctx->ref_gemm || rows<ctx->gemm_min_rows) return NULL;
     return type==8 ? ctx->gemm[0] : type==1 ? ctx->gemm[1] : type==0 ? ctx->gemm[2] : NULL;
 }
 /* R3.5: the tensor-unit GEMM that replaces gemm_kernel's in half mode (NULL:
@@ -487,7 +501,7 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
 typedef struct { uint32_t pairs, experts, tile, reserved; } Q38GroupArgs;
 enum { Q38_GG_M = 64, Q38_GG_N = 32, Q38_GN_N = 64 }; /* GN_N: the R3.5 tensor-unit tile (rows: GG_M) */
 bool q38_packed_grouped_rows(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t pairs) {
-    return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=Q38_GEMM_MIN_ROWS*8 &&
+    return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=ctx->gemm_min_rows*8 &&
         indexed_kernel(ctx->grouped_gate_up,gguf_type) && indexed_kernel(ctx->grouped_down,gguf_type);
 }
 size_t q38_packed_group_bytes(size_t experts, size_t pairs) { return (4*experts+2+pairs)*4; }
