@@ -6,6 +6,21 @@ Two lines per session: what was done, what comes next. Newest entry first.
 
 Branch `perf/qwen38-gdn-chunk`. Evidence: `bench/qwen38_p4_20261108/README.md`.
 
+### P4.2-P4.3 — grouped MoE in 32-row tiles: 8K FP32 54.5 -> 49.4 s, half 30.3 -> 28.9 s
+
+A 1024-token chunk routes ~20 rows to each of the 512 experts, so the 64-row tiles
+multiplied ~70% padding. Ablations of the FP32 kernel (10240 pairs): addresses and decode
+are not it (-1 / -2 ms of 39.5), removing the MMA saves 15 ms. Tiles are now 32 rows x 64
+outputs (FP32, simdgroups in a 2x2 grid, same work each) and 32x64 in the TensorOps half
+kernel; the host cuts the groups at the tile of the mode. A row's bits do not depend on
+the tile: outputs byte-equal to main in both modes, real logits bit-identical (6 pairs).
+Isolated: FP32 gate+up 39.5 -> 22.9 ms, down 25.7 -> 16.0; half 16.8 -> 11.5, 11.1 -> 7.1.
+Model, profile N 1000: FP32 moe.gate_up 1.47 -> 1.07 s, moe.down 1.02 -> 0.74; half 0.65
+-> 0.51, 0.44 -> 0.33. 8K prefill: FP32 163 t/s (0.45x ds4), half 279 t/s (0.76x). In FP32
+the GEMMs are now near the 4.23 TFLOPS simdgroup peak of Phase 2 (gdn.proj ~3.4 useful).
+Lesson: `make` compares mtimes at 1 s, so a checkout + build in the same second kept a stale
+`picoforge`; before/after binaries are built after deleting the objects.
+
 ### P4.1 — the scan was slow in its addresses, not in its recurrence: 0.89 -> 0.13 s
 
 Plan was a chunked (WY/UT) delta rule. Measured first: ds4 has no chunked scan either
