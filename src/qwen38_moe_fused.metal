@@ -322,13 +322,16 @@ kernel void q38_moe_group_scatter(device const uint *ids [[buffer(0)]], device a
 }
 
 /* Grouped GEMM tile: GG_M rows of one expert x GG_N outputs, K in GG_K steps,
- * 4 simdgroups of 16 rows x 32 outputs (64 rows: a decoded weight serves twice
- * the rows of a 32-row tile; measured below in the devlog, R3.3). PAIR: gate and up together, act = silu(g) * u as
+ * 4 simdgroups in a 2 x 2 grid, each 16 rows x 32 outputs. P4.2: 32 x 64 instead
+ * of R3.3's 64 x 32, same work per simdgroup: a chunk routes ~20 rows to each of
+ * the 512 experts, so a 64-row tile multiplied ~70% padding rows (isolated
+ * kernel, 10240 pairs: gate+up 39.5 -> 22.9 ms, down 25.7 -> 16.0 ms). A row's
+ * bits do not depend on the tile shape (byte-equal outputs). PAIR: gate and up together, act = silu(g) * u as
  * the fused kernel (same q38_silu, same checks); else one matrix (down).
  * x row of pair q: q / x_divisor; y row: q. Weights decode exactly (F), so
  * only the order of the sums differs from the indexed kernels. */
-#define GG_M 64
-#define GG_N 32
+#define GG_M 32
+#define GG_N 64
 #define GG_K 32
 #define GG_THREADS 128
 template <typename F, bool PAIR>
@@ -355,7 +358,7 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
         if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
-    const uint sr = sg * 16, M = PAIR ? 2 : 1;
+    const uint sr = (sg & 1) * 16, sc = (sg >> 1) * 32, M = PAIR ? 2 : 1;
     simdgroup_float8x8 acc[2][2][4];
     for (uint m = 0; m < 2; m++)
         for (uint i = 0; i < 2; i++)
@@ -387,7 +390,7 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
             for (uint i = 0; i < 2; i++) simdgroup_load(a[i], xs + (sr + i * 8) * GG_K + kk, GG_K);
             for (uint m = 0; m < M; m++) {
                 for (uint j = 0; j < 4; j++)
-                    simdgroup_load(b[j], ws + (m * GG_N + j * 8) * GG_K + kk, GG_K, ulong2(0, 0), true);
+                    simdgroup_load(b[j], ws + (m * GG_N + sc + j * 8) * GG_K + kk, GG_K, ulong2(0, 0), true);
                 for (uint i = 0; i < 2; i++)
                     for (uint j = 0; j < 4; j++) simdgroup_multiply_accumulate(acc[m][i][j], a[i], b[j], acc[m][i][j]);
             }
@@ -397,7 +400,7 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
     for (uint m = 0; m < M; m++)
         for (uint i = 0; i < 2; i++)
             for (uint j = 0; j < 4; j++)
-                simdgroup_store(acc[m][i][j], cs + m * GG_M * GG_N + (sr + i * 8) * GG_N + j * 8, GG_N);
+                simdgroup_store(acc[m][i][j], cs + m * GG_M * GG_N + (sr + i * 8) * GG_N + sc + j * 8, GG_N);
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint i = tid; i < GG_M * GG_N; i += GG_THREADS) {
         const uint r = i / GG_N, c = i % GG_N;
@@ -422,7 +425,7 @@ kernel void name(device const uchar *gw [[buffer(0)]], device const uchar *uw [[
         constant IndexedArgs &ga [[buffer(5)]], constant IndexedArgs &ua [[buffer(6)]], device const uint *g [[buffer(7)]], \
         uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
         uint sg [[simdgroup_index_in_threadgroup]]) { \
-    threadgroup float buf[2 * GG_M * GG_N]; /* >= xs + ws: GG_M*GG_K + 2*GG_N*GG_K */ \
+    threadgroup float buf[GG_M * GG_K + 2 * GG_N * GG_K]; /* >= cs: 2*GG_M*GG_N */ \
     grouped<F, PAIR>(gw, uw, x, y, error, ga, ua, g, group, tid, sg, buf); \
 }
 GROUPED_KERNEL(q38_moe_grouped_gate_up_iq2_xxs, Q38Iq2Xxs, true)
@@ -439,8 +442,8 @@ GROUPED_KERNEL(q38_moe_grouped_down_mxfp4, Q38Mxfp4, false)
  * rounded to half) and matmul2d with FP32 accumulation. Reduced precision:
  * its own gate ("nax_half" in tests/qwen38_kernel_tolerances.json), the FP32
  * grouped GEMM is its oracle, prefill only (PICOFORGE_PREFILL_PRECISION).
- * Tile: GN_M rows of one expert (= GG_M: the group scan cuts row tiles of that
- * size) x GN_N outputs, K in 32-wide steps (the matmul2d k; the K tail is
+ * Tile: GN_M rows of one expert (the host cuts the groups' row tiles at GN_M
+ * in this mode, at GG_M otherwise) x GN_N outputs, K in 32-wide steps (the matmul2d k; the K tail is
  * zero-padded here, the op would truncate it). Gate and up accumulate in two
  * cooperative tensors with one element layout, so act = silu(g) * u is formed
  * in registers and one FP32 tile goes through threadgroup memory, which
@@ -448,7 +451,7 @@ GROUPED_KERNEL(q38_moe_grouped_down_mxfp4, Q38Mxfp4, false)
  * metal/qwen4.metal kernel_qwen4_moe_mm_mid_nax_t. */
 #include <metal_tensor>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-#define GN_M GG_M
+#define GN_M 64
 #define GN_N 64
 #define GN_K 32
 using GroupedNax = mpp::tensor_ops::matmul2d<

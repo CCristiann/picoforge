@@ -187,8 +187,9 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->gemm_min_rows=gemm_min_rows();
     /* Measured on the real Q2 (bench/qwen38_p3_20261108): a 60-token chat prefill
      * 1294 -> 671 ms with both, 417 tokens 3601 -> 3563 ms; 1024-row chunks are unchanged
-     * (every shape has >= 160 tiles there). The grouped MoE runs 64-row tiles per expert,
-     * which wastes most of the work below ~2.5 rows per expert: crossover ~250-280 tokens. */
+     * (every shape has >= 160 tiles there). The grouped MoE ran 64-row tiles per expert then
+     * (32 rows since P4.2), wasting most of the work below ~2.5 rows per expert: crossover
+     * ~250-280 tokens. */
     ctx->gemm_min_tiles=env_size("PICOFORGE_GEMM_MIN_TILES",Q38_GEMM_MIN_TILES);
     ctx->grouped_min_pairs=env_size("PICOFORGE_GROUPED_MIN_PAIRS",Q38_GROUPED_MIN_PAIRS);
     *out=ctx;
@@ -517,7 +518,7 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
 /* ---- R3.2 grouped MoE (qwen38_moe_fused.metal): pairs grouped by expert,
  * one GEMM per expert. Mirror of GroupArgs; GG_M rows per tile, GG_N outputs. */
 typedef struct { uint32_t pairs, experts, tile, reserved; } Q38GroupArgs;
-enum { Q38_GG_M = 64, Q38_GG_N = 32, Q38_GN_N = 64 }; /* GN_N: the R3.5 tensor-unit tile (rows: GG_M) */
+enum { Q38_GG_M = 32, Q38_GG_N = 64, Q38_GN_M = 64, Q38_GN_N = 64 }; /* GN_*: the R3.5 tensor-unit tile */
 bool q38_packed_grouped_rows(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t pairs) {
     return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=ctx->grouped_min_pairs &&
         indexed_kernel(ctx->grouped_gate_up,gguf_type) && indexed_kernel(ctx->grouped_down,gguf_type);
@@ -555,8 +556,9 @@ static Qwen38Status encode_grouped(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
         gpu_alias(gbuf,go,gn,route,ids.offset_bytes,pairs*4) || gpu_alias(gbuf,go,gn,a.word,command->error_word.offset_bytes,4))
         return q38_b_result(err,Q38_INVALID_ARGUMENT,"group buffer aliases an operand");
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    const size_t tm=nax ? Q38_GN_M : Q38_GG_M, tn=nax ? Q38_GN_N : Q38_GG_N; /* rows, outputs per tile */
     { /* clear, count, scan, scatter: order[] grouped by expert */
-        Q38GroupArgs ga={(uint32_t)pairs,(uint32_t)experts,Q38_GG_M,0};
+        Q38GroupArgs ga={(uint32_t)pairs,(uint32_t)experts,(uint32_t)tm,0};
         [encoder setBuffer:gbuf offset:go atIndex:0]; [encoder setBytes:&ga length:sizeof ga atIndex:1];
         dispatch_1d(encoder,ctx->group[0],experts);
         [encoder setBuffer:route offset:ids.offset_bytes atIndex:0]; [encoder setBuffer:gbuf offset:go atIndex:1];
@@ -584,8 +586,7 @@ static Qwen38Status encode_grouped(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
     [encoder setBytes:&args[1] length:sizeof args[1] atIndex:6];
     [encoder setBuffer:gbuf offset:go atIndex:7];
     /* Row tiles: at most ceil(pairs / GG_M) plus one partial tile per expert; the rest exit. */
-    const size_t tn=nax ? Q38_GN_N : Q38_GG_N; /* R3.5: GN_N outputs per tensor-unit tile */
-    MTLSize groups=MTLSizeMake((gl->n_out+tn-1)/tn,(pairs+Q38_GG_M-1)/Q38_GG_M+MIN(experts,pairs),1);
+    MTLSize groups=MTLSizeMake((gl->n_out+tn-1)/tn,(pairs+tm-1)/tm+MIN(experts,pairs),1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_GEMM_SG,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
