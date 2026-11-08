@@ -1,0 +1,18 @@
+8k-1-fp32-after        prefill  55.10s (146 t/s)
+8k-1-fp32-before       prefill  69.09s (117 t/s)
+8k-1-half-after        prefill  31.59s (255 t/s)
+8k-1-half-before       prefill  36.67s (220 t/s)
+8k-2-fp32-after        prefill  54.44s (148 t/s)
+8k-2-fp32-before       prefill  60.55s (133 t/s)
+8k-2-half-after        prefill  30.30s (266 t/s)
+8k-2-half-before       prefill  36.14s (223 t/s)
+profile-fp32-after     prefill   5.96s (168 t/s) | sum 5.92s moe.gate_up 1.46 moe.down 1.01 gdn.proj 0.90 gdn.out 0.37 gdn.hc_pre 0.33 qsa.core 0.29
+profile-fp32-before    prefill   8.24s (121 t/s) | sum 6.71s moe.gate_up 1.47 moe.down 1.02 gdn.proj 0.91 gdn.scan 0.89 gdn.out 0.37 gdn.hc_pre 0.33
+profile-half-after     prefill   3.02s (331 t/s) | sum 2.98s moe.gate_up 0.63 moe.down 0.44 gdn.proj 0.36 qsa.core 0.30 gdn.hc_pre 0.18 gdn.out 0.14
+profile-half-before    prefill   3.77s (265 t/s) | sum 3.73s gdn.scan 0.89 moe.gate_up 0.62 moe.down 0.43 gdn.proj 0.36 qsa.core 0.30 gdn.hc_pre 0.18
+8k-1-fp32 logits bit-identical 4221440
+8k-1-half logits bit-identical 4221440
+8k-2-fp32 logits bit-identical 4221440
+8k-2-half logits bit-identical 4221440
+profile-fp32 logits bit-identical 4221440
+profile-half logits bit-identical 4221440

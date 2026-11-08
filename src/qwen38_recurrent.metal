@@ -284,51 +284,79 @@ kernel void q38c_gdn_prepare_fast(device float *v0 [[buffer(0)]], device float *
  * Outputs are unspecified when the word ends nonzero. Rows of state, q, k need a
  * unit last stride (host). Idea: ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_scan. */
 #define Q38C_SCAN_ROWS 4
-kernel void q38c_gdn_scan_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
-    device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],
-    constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
-    uint tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
-    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
-    const uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3], r0=(tg*sn+sg)*Q38C_SCAN_ROWS, P=dk/32;
-    if (r0>=hv*dv) return;                       /* dv % Q38C_SCAN_ROWS == 0 (host): one head */
-    const bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
-    const uint h=r0/dv, v0i=r0%dv, width=2*hk*dk+hv*dv;
+/* P4.1: the token loop above, with two changes that leave every FP32 operation
+ * and its order as they were (bit-identical outputs, state and error word):
+ * - addresses are formed outside the loop. stage() admits rank 2 for qkv, g and
+ *   beta and rank 3 for out, so at(view, index) is exactly t*stride[0] + ...;
+ *   at() divided and took remainders per view per token (2.5x of the time at the
+ *   real dims, scanbench 1024 tokens 24.7 -> 9.9 ms);
+ * - P = dk/32 is a template parameter, so the per-lane loops unroll without the
+ *   i < P guards (9.9 -> 4.9 ms). The kernel picks the instance with a switch on
+ *   a uniform value. */
+template <uint P>
+static void gdn_scan_rows(device const float *v0, device const float *v1, device const float *v2,
+        device float *v3, device float *v4, constant Q38CGpuArgs &a, uint r0, ushort lane,
+        bool skip, thread bool &bad, thread bool &fault, thread bool &range) {
+    const uint hk=a.p[0], dk=a.p[2], dv=a.p[3], h=r0/dv, v0i=r0%dv;
+    const uint xs=a.v[0].stride[0], gs0=a.v[1].stride[0], gs1=a.v[1].stride[1];
+    const uint bs0=a.v[2].stride[0], bs1=a.v[2].stride[1];
+    const uint os0=a.v[4].stride[0], oh=h*a.v[4].stride[1]+v0i*a.v[4].stride[2], os2=a.v[4].stride[2];
+    const uint qo=(h%hk)*dk+lane*P, ko=qo+hk*dk, vo=(2*hk*dk+h*dv+v0i)*a.v[0].stride[1];
     uint row[Q38C_SCAN_ROWS];
-    bool bad=false, fault=false, range=false;
-    float S[Q38C_SCAN_ROWS][8];
+    float S[Q38C_SCAN_ROWS][P];
     for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
         row[j]=at(a.v[3],(r0+j)*dk)+lane*P;
-        for (uint i=0;i<8;i++) { S[j][i]=i<P ? v3[row[j]+i] : 0; bad|=!isfinite(S[j][i]); }
+        for (uint i=0;i<P;i++) { S[j][i]=v3[row[j]+i]; bad|=!isfinite(S[j][i]); }
     }
     for (uint t=0;t<a.v[0].dim[0];t++) {
-        uint q=at(a.v[0],t*width+(h%hk)*dk)+lane*P, k=at(a.v[0],t*width+hk*dk+(h%hk)*dk)+lane*P;
-        float g=v1[at(a.v[1],t*hv+h)], beta=v2[at(a.v[2],t*hv+h)], qx[8], kx[8];
-        for (uint i=0;i<8;i++) {
-            qx[i]=i<P ? v0[q+i] : 0; kx[i]=i<P ? v0[k+i] : 0;
+        const uint x=t*xs;
+        float g=v1[t*gs0+h*gs1], beta=v2[t*bs0+h*bs1], qx[P], kx[P];
+        for (uint i=0;i<P;i++) {
+            qx[i]=v0[x+qo+i]; kx[i]=v0[x+ko+i];
             bad|=!isfinite(qx[i]) || !isfinite(kx[i]);
         }
         bad|=!isfinite(g) || !isfinite(beta); range|=g>0 || beta<0 || beta>1;
         float decay=exp(g), prediction[Q38C_SCAN_ROWS], result[Q38C_SCAN_ROWS];
         for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
             prediction[j]=0;
-            for (uint i=0;i<8;i++) if (i<P) { S[j][i]*=decay; prediction[j]+=S[j][i]*kx[i]; }
+            for (uint i=0;i<P;i++) { S[j][i]*=decay; prediction[j]+=S[j][i]*kx[i]; }
             prediction[j]=simd_sum(prediction[j]);
         }
         for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
-            float value=v0[at(a.v[0],t*width+2*hk*dk+h*dv+v0i+j)];
+            float value=v0[x+vo+j*a.v[0].stride[1]];
             bad|=!isfinite(value);
             float delta=(value-prediction[j])*beta;
             result[j]=0;
-            for (uint i=0;i<8;i++) if (i<P) {
+            for (uint i=0;i<P;i++) {
                 S[j][i]+=delta*kx[i]; fault|=!isfinite(S[j][i]);
                 result[j]+=S[j][i]*qx[i];
             }
             result[j]=simd_sum(result[j]);
             fault|=!isfinite(prediction[j]) || !isfinite(delta) || !isfinite(result[j]);
-            if (!skip && !lane) v4[at(a.v[4],(t*hv+h)*dv+v0i+j)]=result[j];
+            if (!skip && !lane) v4[t*os0+oh+j*os2]=result[j];
         }
     }
-    if (!skip) for (uint j=0;j<Q38C_SCAN_ROWS;j++) for (uint i=0;i<8;i++) if (i<P) v3[row[j]+i]=S[j][i];
+    if (!skip) for (uint j=0;j<Q38C_SCAN_ROWS;j++) for (uint i=0;i<P;i++) v3[row[j]+i]=S[j][i];
+}
+kernel void q38c_gdn_scan_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+    device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],
+    constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+    uint tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint r0=(tg*sn+sg)*Q38C_SCAN_ROWS;
+    if (r0>=a.p[1]*a.p[3]) return;               /* dv % Q38C_SCAN_ROWS == 0 (host): one head */
+    const bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    bool bad=false, fault=false, range=false;
+    switch (a.p[2]/32) {                         /* host: dk % 32 == 0, dk <= 256 */
+    case 1: gdn_scan_rows<1>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    case 2: gdn_scan_rows<2>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    case 3: gdn_scan_rows<3>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    case 4: gdn_scan_rows<4>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    case 5: gdn_scan_rows<5>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    case 6: gdn_scan_rows<6>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    case 7: gdn_scan_rows<7>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    default: gdn_scan_rows<8>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    }
     if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
     if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
 }
