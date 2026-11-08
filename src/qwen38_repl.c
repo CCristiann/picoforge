@@ -59,8 +59,14 @@ static size_t user_turn(Chat *ch, const char *text) {
     Qwen38Json role={.kind=Q38_JSON_STRING,.as.string={(const uint8_t *)"user",4}};
     Qwen38Json content={.kind=Q38_JSON_STRING,.as.string={(const uint8_t *)text,strlen(text)}};
     Qwen38JsonMember fields[]={{{(const uint8_t *)"role",4},&role},{{(const uint8_t *)"content",7},&content}};
-    Qwen38Json message={.kind=Q38_JSON_OBJECT,.as.object={fields,2}};
-    Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={&message,1}};
+    /* The system message goes with the first turn only (later turns render no system block). */
+    const char *sys=q38_system_prompt();
+    Qwen38Json srole={.kind=Q38_JSON_STRING,.as.string={(const uint8_t *)"system",6}};
+    Qwen38Json scontent={.kind=Q38_JSON_STRING,.as.string={(const uint8_t *)sys,strlen(sys)}};
+    Qwen38JsonMember sfields[]={{{(const uint8_t *)"role",4},&srole},{{(const uint8_t *)"content",7},&scontent}};
+    Qwen38Json list[2]={{.kind=Q38_JSON_OBJECT,.as.object={sfields,2}},{.kind=Q38_JSON_OBJECT,.as.object={fields,2}}};
+    const bool with_sys=!ch->n && *sys;
+    Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={with_sys ? list : list+1,with_sys ? 2 : 1}};
     Qwen38ChatOptions o={.enable_thinking=ch->thinking ? Q38_TRUE : Q38_FALSE,.add_generation_prompt=true,
         .reasoning_effort=ch->n && ch->thinking ? Q38_EFFORT_MEDIUM : Q38_EFFORT_OMITTED};
     const char *close=!ch->n ? "" : ch->ids[ch->n-1]==ch->im_end ? "\n" : "<|im_end|>\n";

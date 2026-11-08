@@ -82,8 +82,12 @@ static uint8_t *chat(Qwen38Tokenizer *tok,const char *text,bool thinking,size_t 
     Qwen38Json role={.kind=Q38_JSON_STRING,.as.string=bytes("user")};
     Qwen38Json content={.kind=Q38_JSON_STRING,.as.string=bytes(text)};
     Qwen38JsonMember fields[]={{bytes("role"),&role},{bytes("content"),&content}};
-    Qwen38Json message={.kind=Q38_JSON_OBJECT,.as.object={fields,2}};
-    Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={&message,1}};
+    const char *sys=q38_system_prompt();
+    Qwen38Json srole={.kind=Q38_JSON_STRING,.as.string=bytes("system")};
+    Qwen38Json scontent={.kind=Q38_JSON_STRING,.as.string=bytes(sys)};
+    Qwen38JsonMember sfields[]={{bytes("role"),&srole},{bytes("content"),&scontent}};
+    Qwen38Json list[2]={{.kind=Q38_JSON_OBJECT,.as.object={sfields,2}},{.kind=Q38_JSON_OBJECT,.as.object={fields,2}}};
+    Qwen38Json messages={.kind=Q38_JSON_ARRAY,.as.array={*sys ? list : list+1,*sys ? 2 : 1}};
     Qwen38ChatOptions options={.enable_thinking=thinking ? Q38_TRUE : Q38_FALSE,.add_generation_prompt=true};
     Qwen38Error e; q38_check(qwen38_chat_render(tok,&messages,NULL,options,NULL,0,n,&e),&e);
     uint8_t *out=malloc(*n ? *n : 1); if (!out) die("chat allocation");
