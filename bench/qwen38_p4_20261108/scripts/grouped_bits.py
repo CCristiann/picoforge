@@ -3,7 +3,7 @@ usage: grouped_bits.py OLD_NATIVE OLD_LIB NEW_NATIVE NEW_LIB   (under the GPU lo
 import sys
 from pathlib import Path
 import numpy as np
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tests"))
 import test_qwen38_fast_kernels as t
 old_native, old_lib, new_native, new_lib = sys.argv[1:5]
 import os
