@@ -11,12 +11,14 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 GGUF = ROOT / 'build/qwen38-g2/cli.gguf'
 ENGINE = str(ROOT / 'picoforge')
+# The chat now samples and drafts by default; these tests pin the greedy, plain chat.
+os.environ['PICOFORGE_NO_MTP'] = '1'
 
 class ReplTests(unittest.TestCase):
     def repl(self, lines, *flags):
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             ids = Path(directory) / 'ids.json'
-            done = subprocess.run([ENGINE, '--qwen38', str(GGUF), '--context', '160', '--chunk', '7',
+            done = subprocess.run([ENGINE, '--qwen38', str(GGUF), '--temp', '0', '--context', '160', '--chunk', '7',
                                    '--max-new', '6', '--token-ids', str(ids), *flags],
                                   cwd=ROOT, input=''.join(l + '\n' for l in lines).encode(), capture_output=True)
             self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
@@ -25,7 +27,7 @@ class ReplTests(unittest.TestCase):
     def one_shot(self, prompt, max_new, context=160):
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             ids = Path(directory) / 'ids.json'
-            subprocess.run([ENGINE, '--qwen38', str(GGUF), '--tokens', ','.join(map(str, prompt)),
+            subprocess.run([ENGINE, '--qwen38', str(GGUF), '--temp', '0', '--tokens', ','.join(map(str, prompt)),
                             '--context', str(context), '--chunk', '7', '--max-new', str(max_new), '--token-ids', str(ids)],
                            cwd=ROOT, check=True, capture_output=True)
             return json.loads(ids.read_text())['generated_ids']
@@ -66,7 +68,7 @@ class ReplTests(unittest.TestCase):
         """Ctrl+C mid-turn, then one more turn: the process survives, the transcript stays coherent."""
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             ids = Path(directory) / 'ids.json'
-            p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--context', '2048', '--chunk', '1',
+            p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--temp', '0', '--context', '2048', '--chunk', '1',
                                   '--token-ids', str(ids), *flags], cwd=ROOT, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             while b'layers' not in p.stderr.readline(): pass   # loaded; the handler follows at once
@@ -130,13 +132,13 @@ class ReplTests(unittest.TestCase):
         self.assertEqual(ids[:4], [257, 117, 115, 101])
 
     def test_short_form(self):
-        long = subprocess.run([ENGINE, '--qwen38', str(GGUF), '--chat', 'hi', '--context', '64', '--max-new', '4'],
+        long = subprocess.run([ENGINE, '--qwen38', str(GGUF), '--temp', '0', '--chat', 'hi', '--context', '64', '--max-new', '4'],
                               cwd=ROOT, capture_output=True, check=True)
-        short = subprocess.run([ENGINE, '-m', str(GGUF), '-p', 'hi', '-c', '64', '-n', '4'],
+        short = subprocess.run([ENGINE, '-m', str(GGUF), '-p', 'hi', '-c', '64', '-n', '4', '--temp', '0'],
                                cwd=ROOT, capture_output=True, check=True)
         self.assertEqual(short.stdout, long.stdout)
         env = dict(os.environ, PICOFORGE_MODEL=str(GGUF))
-        chat = subprocess.run([ENGINE, '-c', '64', '-n', '4'], cwd=ROOT, input=b'hi\n', env=env,
+        chat = subprocess.run([ENGINE, '-c', '64', '-n', '4', '--temp', '0'], cwd=ROOT, input=b'hi\n', env=env,
                               capture_output=True, check=True)
         self.assertEqual(chat.stdout, long.stdout)
         env.pop('PICOFORGE_MODEL')
@@ -146,7 +148,7 @@ class ReplTests(unittest.TestCase):
 
     def test_command_output_is_flushed(self):
         """A piped stdout is fully buffered: /help must appear before the next reply's text."""
-        p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--context', '64'], cwd=ROOT,
+        p = subprocess.Popen([ENGINE, '--qwen38', str(GGUF), '--temp', '0', '--context', '64'], cwd=ROOT,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         p.stdin.write(b'/help\n'); p.stdin.flush()
         self.assertEqual(p.stdout.readline(), b'Commands:\n')   # blocks forever without the flush

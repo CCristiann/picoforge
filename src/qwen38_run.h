@@ -3,6 +3,7 @@
  * optional MTP. Only orchestration lives here; the graph calls are the same. */
 #ifndef PICOFORGE_QWEN38_RUN_H
 #define PICOFORGE_QWEN38_RUN_H
+#include "qwen38_sample.h"
 #include "common.h"
 #include "qwen38_forward_gpu.h"
 #include "qwen38_g_internal.h"
@@ -36,6 +37,7 @@ typedef struct {
     uint32_t capacity, chunk; bool mtp;
     uint32_t verify_rows;                   /* rows a verify append may take (<= QWEN38_VERIFY_ROWS) */
     Q38Policy policy;
+    Q38Sampler sampler;                     /* temperature <= 0: greedy (bench, oracles) */
     size_t last_count;                      /* tokens in the last trunk append */
     struct Q38ExpertPool *pool; int pool_fd; /* R5.1b: PICOFORGE_STREAM_EXPERTS, else NULL */
 } Q38Run;
