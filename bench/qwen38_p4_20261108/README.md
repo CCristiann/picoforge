@@ -55,3 +55,49 @@ outlier against R3's 61.0 s and pair 2. Pair 2: −6.1 s FP32 (148 t/s) and −5
 Against ds4's 365.9 t/s of the R3 session (not re-paired today): 0.40x FP32, 0.73x half
 (R3: 0.36x / 0.59x). Protocol deviation: 2 alternating pairs per mode instead of ≥ 20
 repetitions (an 8K prefill takes a minute); powermetrics needs sudo, `pmset` instead.
+
+# P4.2-P4.3 — grouped MoE in 32-row tiles (same day, later)
+
+Commits db2b0b3 (FP32) and 99a6187 (half). A 1024-token chunk routes ~20 rows to each of
+the 512 experts; the 64-row tiles multiplied ~70% padding rows.
+
+## Isolated kernel
+
+`scripts/gb.sh LIB gbench grouped 16 640 2560 2560 512 10240 10 1` (IQ2_XXS gate+up) and
+`ibench grouped 10 2560 768 640 512 10240 1 1` (Q2_K down), 3 + 20, median ms:
+
+| Variant | gate+up | down |
+|---|---|---|
+| FP32 64x32 (main) | 39.5 | 25.7 |
+| ablation A: x row addresses once per tile (`scripts/moe-ablations/A_xrow.metal.txt`) | 38.6 | 26.7 |
+| ablation B: no weight decode (wrong, cost only) | 37.8 | 26.2 |
+| ablation C: no MMA (wrong, cost only) | 24.2 | 27.4 |
+| FP32 32x64 (db2b0b3) | 22.9 | 16.0 |
+| half 64x64 (main) | 16.8 | 11.1 |
+| half 32x64 (99a6187) | 11.5 | 7.1 |
+
+Old vs new outputs byte-equal in FP32 and half: `scripts/grouped_bits.py` (4 routed
+formats x 3 shapes x gate+up/down, partial and multiple tiles).
+
+## Model (Q2, real)
+
+Before = binary + metallib built at main 3039ce4, after = 99a6187 (`scripts/p5run.sh`,
+`moe-tiles/summary.txt`). Battery 75% -> 73% "charging", awake.
+
+| Run | before | after |
+|---|---|---|
+| profile N 1000 FP32: moe.gate_up / moe.down | 1.47 / 1.02 s | 1.07 / 0.74 s |
+| profile N 1000 FP32: sum of groups | 5.94 s | 5.27 s |
+| profile N 1000 half: moe.gate_up / moe.down | 0.65 / 0.44 s | 0.51 / 0.33 s |
+| profile N 1000 half: sum of groups | 3.00 s | 2.74 s |
+| 8K prefill FP32, pair 1 / 2 | 63.67 / 54.51 s | 50.24 / 49.36 s |
+| 8K prefill half, pair 1 / 2 | 30.76 / 30.33 s | 28.64 / 28.86 s |
+
+Logits before vs after bit-identical in all 6 pairs. The real gain (gate+up -27%) is
+below the isolated one (-42%): the real routing is skewed, so fewer tiles were mostly
+padding. Pair 1 "before" FP32 is again the session's first 8K run (slow). Against ds4's
+365.9 t/s (R3 session): 8K FP32 163 t/s = 0.45x, half 279 t/s = 0.76x.
+
+FP32 ceiling note: gdn.proj runs at ~3.4 TFLOPS useful, the 32x64 MoE near 4 TFLOPS
+executed, against the 4.23 TFLOPS simdgroup peak of Phase 2: in FP32 the GEMMs are
+close to this machine's limit; the large remaining factor is half/TensorOps.
