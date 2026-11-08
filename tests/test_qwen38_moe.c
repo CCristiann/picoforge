@@ -30,7 +30,7 @@ typedef struct {
 } Test;
 static void init(Test *t) {
     memset(t,0,sizeof *t);
-    t->c=(Qwen38MoeConfig){8,4,2,5,3,5,true};
+    t->c=(Qwen38MoeConfig){.hidden_size=8,.experts=4,.top_k=2,.intermediate=5,.shared_intermediate=3,.down_physical=5,.norm_topk_prob=true};
     for (size_t i=0;i<64;i++) { t->p[i]=t->w[i]=-99.0f; t->ids[i]=UINT32_MAX; }
     t->z[0]=0.0f; t->z[1]=1e-9f; t->z[2]=0.0f; t->z[3]=-1e-9f;
     t->z[7]=0.0f; t->z[8]=2.0f; t->z[9]=2.0f; t->z[10]=-1000.0f;
@@ -113,7 +113,7 @@ static void stream_route(void) {
     for (size_t j=0;j<t*wp+1;j++) w[j]=-99.0f;
     for (size_t j=0;j<t*ip+1;j++) ids[j]=UINT32_MAX;
     for (size_t j=0;j<t;j++) assert(fread(z+j*zp,4,e,stdin)==e);
-    Qwen38MoeConfig c={8,h[1],h[2],5,3,5,h[3]!=0};
+    Qwen38MoeConfig c={.hidden_size=8,.experts=h[1],.top_k=h[2],.intermediate=5,.shared_intermediate=3,.down_physical=5,.norm_topk_prob=h[3]!=0};
     Qwen38MoeRoutes routes={.ids={ids,t*ip*4,t,k,ip*4},
                             .weights=view(w,t*wp*4,t,k,wp*4)};
     Qwen38Error error;
@@ -139,7 +139,7 @@ static void stream_route(void) {
 static void group_tests(void) {
     _Alignas(size_t) uint32_t ids[]={2,0,99,1,2,99,2,0,99};
     size_t offsets[6], cursors[5], p2r[7], r2p[7];
-    Qwen38MoeConfig c={8,4,2,5,3,5,true};
+    Qwen38MoeConfig c={.hidden_size=8,.experts=4,.top_k=2,.intermediate=5,.shared_intermediate=3,.down_physical=5,.norm_topk_prob=true};
     Qwen38U32Mut v={ids,sizeof ids,3,2,12};
     Q38MoeGrouping original={offsets,sizeof offsets,cursors,sizeof cursors,
                             p2r,r2p,sizeof p2r,sizeof r2p};
@@ -202,7 +202,7 @@ static void stream_group(void) {
     for (size_t j=0;j<e+1;j++) cur[j]=SIZE_MAX;
     for (size_t j=0;j<n+1;j++) p2r[j]=r2p[j]=SIZE_MAX;
     for (size_t j=0;j<t;j++) assert(fread(ids+j*pitch,4,k,stdin)==k);
-    Qwen38MoeConfig c={8,h[1],h[2],5,3,5,true};
+    Qwen38MoeConfig c={.hidden_size=8,.experts=h[1],.top_k=h[2],.intermediate=5,.shared_intermediate=3,.down_physical=5,.norm_topk_prob=true};
     Q38MoeGrouping g={off,(e+1)*sizeof *off,cur,e*sizeof *cur,
                      p2r,r2p,n*sizeof *p2r,n*sizeof *r2p};
     Qwen38Error err;
@@ -233,7 +233,7 @@ static Q38PackedCpuView float_weight(float *p,size_t in,size_t out,size_t expert
 }
 static void lifecycle_tests(void) {
     float data[512]={0};
-    Qwen38MoeConfig c={8,4,2,5,3,5,true};
+    Qwen38MoeConfig c={.hidden_size=8,.experts=4,.top_k=2,.intermediate=5,.shared_intermediate=3,.down_physical=5,.norm_topk_prob=true};
     Qwen38MoeWeights v={float_weight(data,8,4,1),float_weight(data,8,5,4),
         float_weight(data,8,5,4),float_weight(data,5,8,4),float_weight(data,8,3,1),
         float_weight(data,8,3,1),float_weight(data,3,8,1),float_weight(data,8,1,1)};
@@ -299,7 +299,7 @@ static void emit_trace(void *ctx,size_t stage,size_t expert,size_t token,Qwen38F
  * (type,Kphysical,N,E) + packed bytes, then X. Pitches exercise real strides. */
 static void stream_forward(void) {
     uint32_t h[9]; assert(fread(h,4,9,stdin)==9);
-    Qwen38MoeConfig c={h[0],h[1],h[2],h[3],h[4],h[5],h[6]!=0};
+    Qwen38MoeConfig c={.hidden_size=h[0],.experts=h[1],.top_k=h[2],.intermediate=h[3],.shared_intermediate=h[4],.down_physical=h[5],.norm_topk_prob=h[6]!=0};
     size_t t=h[7], width=h[0],k=h[2];
     assert(t<=1024 && width>0 && width<=2560 && h[1]<=512 && k>0 && k<=h[1]);
     assert(h[3]<=640 && h[4]<=640 && h[5]<=768 && h[6]<=1 && h[8]<=3);
