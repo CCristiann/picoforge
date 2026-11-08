@@ -38,13 +38,21 @@ and `tools/eval/download_qwen38_q2.py` fetches and verifies it against
 
 ```sh
 make
-export PICOFORGE_MODEL=models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
+./picoforge models                           # the models in models/ and their short names
 
-./picoforge                            # interactive chat: /help /read FILE /ctx N /think /quit
-./picoforge -p "What is 2 + 2?" -n 32  # one answer, then exit
-./picoforge -p "..." --mtp             # with multi-token prediction
-./picoforge bench                      # 3 warm-up + 20 runs: median and p10/p90 tok/s
+./picoforge                                  # interactive chat (asks which model if there are several)
+./picoforge -m q4                            # chat with the Q4 (-m: short name, unique part of the name, or path)
+./picoforge -m q2 -p "What is 2 + 2?" -n 32  # one answer, then exit
+./picoforge -m q2 -p "..." --mtp             # with multi-token prediction
+./picoforge bench -m q2                      # 3 warm-up + 20 runs: median and p10/p90 tok/s
 ```
+
+Models are the `.gguf` files in `models/` beside the binary, or one level below it
+(`$PICOFORGE_MODELS` points elsewhere); `$PICOFORGE_MODEL` sets a default. A model whose
+weights do not fit the GPU budget (the Q4: ~70 GiB) streams its routed experts from the
+SSD by itself, with a pool of about 36 GiB; `PICOFORGE_STREAM_EXPERTS=N` sets the pool in
+experts (0 = resident). In the chat, `/help` lists the commands (`/read FILE`, `/ctx N`,
+`/think`, `/quit`).
 
 Context is 8K by default, decoding is greedy and thinking is off unless `--thinking`
 or `/think` is used. `--mtp` drafts up to three tokens per cycle, chosen by a cost

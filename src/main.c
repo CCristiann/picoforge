@@ -1,7 +1,8 @@
 /* main.c — picoforge entry point.
  *
- *   picoforge [-m FILE.gguf] [-p TEXT] [-n N] [--mtp] ...   chat or one answer
+ *   picoforge [-m MODEL] [-p TEXT] [-n N] [--mtp] ...      chat or one answer
  *   picoforge bench [same options]                           repeated decode timing
+ *   picoforge models                                         the models -m can name
  *   picoforge --qwen38 FILE.gguf [flags]                     long form, every measurement flag
  *   picoforge --inspect-gguf FILE.gguf                       tensor inventory
  *
@@ -11,19 +12,24 @@
 #include "common.h"
 #include "gguf.h"
 #include "qwen38_cli.h"
+#include "model_select.h"
 
 #include <stdio.h>
 
 static int usage(void) {
-    fputs("usage: picoforge [-m FILE.gguf] [-p TEXT] [-n N] [-c CTX] [--mtp] [--thinking]\n"
+    fputs("usage: picoforge [-m MODEL] [-p TEXT] [-n N] [-c CTX] [--mtp] [--thinking]\n"
           "       picoforge bench [options]\n"
+          "       picoforge models\n"
           "       picoforge --qwen38 FILE.gguf [flags]\n"
           "       picoforge --inspect-gguf FILE.gguf\n"
-          "The model path may also come from $PICOFORGE_MODEL.\n", stderr);
+          "MODEL is a .gguf path or a short name from `picoforge models` (e.g. q4); without -m,\n"
+          "$PICOFORGE_MODEL, the only model found, or a choice on the terminal.\n", stderr);
     return 2;
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))) return usage();
+    if (argc == 2 && !strcmp(argv[1], "models")) return model_list(argv[0]);
     if (argc > 1 && !strcmp(argv[1], "--qwen38")) return qwen38_cli(argc, argv);
     if (qwen38_short_form(argc, argv)) return qwen38_short(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "bench")) return qwen38_bench(argc, argv);
