@@ -518,7 +518,7 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
 /* ---- R3.2 grouped MoE (qwen38_moe_fused.metal): pairs grouped by expert,
  * one GEMM per expert. Mirror of GroupArgs; GG_M rows per tile, GG_N outputs. */
 typedef struct { uint32_t pairs, experts, tile, reserved; } Q38GroupArgs;
-enum { Q38_GG_M = 32, Q38_GG_N = 64, Q38_GN_M = 64, Q38_GN_N = 64 }; /* GN_*: the R3.5 tensor-unit tile */
+enum { Q38_GG_M = 32, Q38_GG_N = 64, Q38_GN_M = 32, Q38_GN_N = 64 }; /* GN_*: the R3.5 tensor-unit tile */
 bool q38_packed_grouped_rows(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t pairs) {
     return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=ctx->grouped_min_pairs &&
         indexed_kernel(ctx->grouped_gate_up,gguf_type) && indexed_kernel(ctx->grouped_down,gguf_type);

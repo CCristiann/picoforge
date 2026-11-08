@@ -338,7 +338,7 @@ template <typename F, bool PAIR>
 static inline void grouped(device const uchar *gw, device const uchar *uw, device const float *x, device float *y,
         device atomic_uint *error, constant IndexedArgs &ga, constant IndexedArgs &ua, device const uint *g,
         uint2 group, uint tid, uint sg, threadgroup float *buf) {
-    /* x and weight tiles during the K loop, then the same 16 KB stage the results. */
+    /* x and weight tiles during the K loop (20 KB), then the same stage holds the results (16 KB). */
     threadgroup float *xs = buf, *ws = buf + GG_M * GG_K, *cs = buf;
     constant PackedArgs &p = ga.base, &q = ua.base;
     const uint E = ga.experts;
@@ -443,7 +443,8 @@ GROUPED_KERNEL(q38_moe_grouped_down_mxfp4, Q38Mxfp4, false)
  * its own gate ("nax_half" in tests/qwen38_kernel_tolerances.json), the FP32
  * grouped GEMM is its oracle, prefill only (PICOFORGE_PREFILL_PRECISION).
  * Tile: GN_M rows of one expert (the host cuts the groups' row tiles at GN_M
- * in this mode, at GG_M otherwise) x GN_N outputs, K in 32-wide steps (the matmul2d k; the K tail is
+ * in this mode, at GG_M otherwise; both 32 since P4.2, 64 before: same bits,
+ * gate+up 16.8 -> 11.5 ms, down 11.1 -> 7.1 at 10240 pairs) x GN_N outputs, K in 32-wide steps (the matmul2d k; the K tail is
  * zero-padded here, the op would truncate it). Gate and up accumulate in two
  * cooperative tensors with one element layout, so act = silu(g) * u is formed
  * in registers and one FP32 tile goes through threadgroup memory, which
@@ -451,7 +452,7 @@ GROUPED_KERNEL(q38_moe_grouped_down_mxfp4, Q38Mxfp4, false)
  * metal/qwen4.metal kernel_qwen4_moe_mm_mid_nax_t. */
 #include <metal_tensor>
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
-#define GN_M 64
+#define GN_M 32
 #define GN_N 64
 #define GN_K 32
 using GroupedNax = mpp::tensor_ops::matmul2d<
@@ -554,7 +555,7 @@ kernel void name(device const uchar *gw [[buffer(0)]], device const uchar *uw [[
         device const float *x [[buffer(2)]], device float *y [[buffer(3)]], device atomic_uint *error [[buffer(4)]], \
         constant IndexedArgs &ga [[buffer(5)]], constant IndexedArgs &ua [[buffer(6)]], device const uint *g [[buffer(7)]], \
         uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) { \
-    threadgroup float smem[GN_M * GN_N]; /* 16 KB: staging (x 4 KB + 2 x W 8 KB), then the FP32 tile */ \
+    threadgroup float smem[(GN_M * GN_K + 2 * GN_N * GN_K) / 2]; /* staging (x 2 KB + 2 x W 8 KB) >= FP32 tile 8 KB */ \
     grouped_nax<F, PAIR>(gw, uw, x, y, error, ga, ua, g, group, tid, smem); \
 }
 GROUPED_NAX_KERNEL(q38_moe_grouped_nax_gate_up_iq2_xxs, Q38Iq2Xxs, true)
