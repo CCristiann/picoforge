@@ -2,6 +2,29 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## P4 (from 2026-11-08): the GDN scan in the long prefill
+
+Branch `perf/qwen38-gdn-chunk`. Evidence: `bench/qwen38_p4_20261108/README.md`.
+
+### P4.1 — the scan was slow in its addresses, not in its recurrence: 0.89 -> 0.13 s
+
+Plan was a chunked (WY/UT) delta rule. Measured first: ds4 has no chunked scan either
+(`metal/qwen4.metal:kernel_qwen4_gdn_scan_r4`, serial, one simdgroup per group on M5),
+and `scanbench` at the real dims (1024 tokens) put ours at 24.7 ms per layer, ~3% of
+the ALUs. Ablations: hoisting the addresses 9.9 ms (`at()` divided per view per
+token), plus P = dk/32 at compile time 4.9 ms, plus no `simd_sum` (wrong, floor) 4.4
+ms. So the reduction latency the chunked form removes is ~10%; the rest is
+per-element work that a chunked FP32 scan would do 1.5-2x of. The fix keeps every
+FP32 operation in its order: addresses out of the loop (exact, `stage()` fixes the
+ranks), P a template parameter. 3.68 ms per layer, old vs new byte-equal on 20 seeded
+cases; real Q2 logits bit-identical before/after in 6 pairs (FP32 and half).
+Profile N 1000: gdn.scan 0.89 -> 0.13 s (both modes). 8K prefill (pair 2): FP32 60.6
+-> 54.4 s (148 t/s), half 36.1 -> 30.3 s (266 t/s); vs ds4 365.9 t/s 0.40x / 0.73x.
+Tolerances, G3 and `Q38_REF_KERNELS` untouched. Gates: fast kernels 93/93, gpu, cli,
+speculative, session. Open: the chunked scan's ceiling here is ~1-2 ms per layer per
+1024 tokens (~0.5 s at 8K) for a new tolerance; the 8K prefill is now moe.gate_up,
+moe.down and gdn.proj.
+
 ## Perf III (from 2026-11-08): the chat as ds4 runs it
 
 Branch `perf/qwen38-perf3`. Evidence: `bench/qwen38_p3_20261108/README.md`.

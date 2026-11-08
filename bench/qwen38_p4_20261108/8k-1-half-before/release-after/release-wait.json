@@ -1,0 +1,72 @@
+{
+  "complete": true,
+  "max_wired_bytes": 17179869184,
+  "elapsed_s": 1.5409026249999442,
+  "samples": [
+    {
+      "pid": 72821,
+      "monotonic_s": 6313.769359,
+      "resident_bytes": 1867776,
+      "phys_footprint_bytes": 1327512,
+      "lifetime_peak_phys_footprint_bytes": 1360280,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 13303808,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 104,
+      "system_swapouts_pages": 812,
+      "page_bytes": 16384,
+      "system_wired_pages": 2852957,
+      "system_compressor_pages": 171228
+    },
+    {
+      "pid": 72822,
+      "monotonic_s": 6314.279705,
+      "resident_bytes": 1867776,
+      "phys_footprint_bytes": 1327512,
+      "lifetime_peak_phys_footprint_bytes": 1360280,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 13303808,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 104,
+      "system_swapouts_pages": 812,
+      "page_bytes": 16384,
+      "system_wired_pages": 240896,
+      "system_compressor_pages": 171228
+    },
+    {
+      "pid": 72842,
+      "monotonic_s": 6314.793714,
+      "resident_bytes": 1867776,
+      "phys_footprint_bytes": 1327512,
+      "lifetime_peak_phys_footprint_bytes": 1360280,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 13303808,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 104,
+      "system_swapouts_pages": 812,
+      "page_bytes": 16384,
+      "system_wired_pages": 245204,
+      "system_compressor_pages": 171228
+    },
+    {
+      "pid": 72843,
+      "monotonic_s": 6315.307296,
+      "resident_bytes": 1867776,
+      "phys_footprint_bytes": 1327512,
+      "lifetime_peak_phys_footprint_bytes": 1360280,
+      "disk_read_bytes": 0,
+      "disk_write_bytes": 0,
+      "system_swap_used_bytes": 13303808,
+      "system_pressure_level": 1,
+      "system_swapins_pages": 104,
+      "system_swapouts_pages": 812,
+      "page_bytes": 16384,
+      "system_wired_pages": 251739,
+      "system_compressor_pages": 171228
+    }
+  ],
+  "cache_state": "Not purged or controlled"
+}
