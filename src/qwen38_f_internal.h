@@ -46,6 +46,12 @@ typedef struct {
     void (*mark)(void *ctx, Qwen38GpuCommand *cmd, const char *op, uint32_t type, uint64_t bytes);
     void *mark_ctx;
     Qwen38GpuSpan group;                          /* R3.2: q38_packed_group_bytes(E, P); empty: never grouped */
+    /* R5.1b streaming (NULL otherwise): called right after the router with the command it must
+     * continue on; it makes the routed experts resident and writes their pool slots to `slots`
+     * (uint32 [P]), which the expert kernels then read instead of `ids`. */
+    Qwen38Status (*remap)(void *ctx, Qwen38GpuCommand *cmd, Qwen38GpuSpan ids, Qwen38GpuSpan slots, size_t pairs, Qwen38Error *);
+    void *remap_ctx;
+    Qwen38GpuSpan slots;
 } Q38FRoutedWork;
 typedef struct Q38FRouted Q38FRouted;
 /* R1.5d parallel router (q38_moe_route_fast): one threadgroup of this many

@@ -37,6 +37,7 @@ typedef struct {
     uint32_t verify_rows;                   /* rows a verify append may take (<= QWEN38_VERIFY_ROWS) */
     Q38Policy policy;
     size_t last_count;                      /* tokens in the last trunk append */
+    struct Q38ExpertPool *pool; int pool_fd; /* R5.1b: PICOFORGE_STREAM_EXPERTS, else NULL */
 } Q38Run;
 
 typedef struct {

@@ -68,6 +68,7 @@ typedef struct {
 typedef struct {
     uint32_t hidden_size, experts, top_k, intermediate, shared_intermediate;
     uint32_t down_physical;
+    uint32_t trunk_type[3];   /* R5.3: GGUF types of the trunk's routed gate, up, down (Q2 or Q4 profile) */
     bool norm_topk_prob;
 } Qwen38MoeConfig;
 typedef struct {

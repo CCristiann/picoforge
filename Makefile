@@ -58,7 +58,7 @@ microbench: build/microbench
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
 # is `make test-qwen38` (tools/qwen38.mk).
-test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts
+test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts test-qwen38-expert-pool
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -102,10 +102,17 @@ test-gpu-weights: build/test_gpu_weights
 	@MTL_DEBUG_LAYER=1 ./build/test_gpu_weights
 	@$(PYTHON) tests/test_gpu_weights.py
 
+build/test_expert_pool: tests/test_qwen38_expert_pool.c src/qwen38_expert_pool.c src/qwen38_expert_pool.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_qwen38_expert_pool.c src/qwen38_expert_pool.c
+
+test-qwen38-expert-pool: build/test_expert_pool
+	@./build/test_expert_pool
+
 clean:
 	rm -f src/*.o picoforge $(METALLIB) build/*.air
 
-.PHONY: clean microbench test-all test-qwen38-tools test-gguf test-gpu-weights
+.PHONY: clean microbench test-qwen38-expert-pool test-all test-qwen38-tools test-gguf test-gpu-weights
 
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
 # Metal-only headers (ruling R3: decode helpers of the fast kernels) are not C

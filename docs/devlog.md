@@ -2,6 +2,107 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R5 "SSD streaming" (from 2026-11-05)
+
+Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
+`bench/qwen38_r5_20261105/README.md`. Newest first.
+
+### R5.3b — first Q4 speed: ~18-19 tok/s once the pool is warm
+
+Three prompts, 128 and 512 tokens each, Q4 with a 36 GiB pool: the marginal cost after the first 128 tokens
+is 52.9-56.1 ms/token, and a whole 128-token run costs 64-69 ms/token. The same script on the Q2 with a 50% pool gives
+~48, and the resident Q2 gives 38.7. About 2% of lookups miss once warm (~10 experts, 27 MB per token), costing ~4.6 ms
+in acquire. The gates add ~5.7 ms and the Q4 kernels are heavier. The R5.0 model predicted 19-24 tok/s.
+No swap growth, wired 47-48 GiB. One run per cell, not the protocol. Evidence: `bench/qwen38_r5_20261108/r53b`.
+
+### R5.3a — the Q4 runs, streamed, within 2.3e-7 of the FP32 reference
+
+The Q4 file (165 GiB, sha256 verified, in `docs/weights.lock`) differs from the Q2 only in the routed
+experts. Gate and up are Q4_K, down is MXFP4 at the logical K, 2.71 MB per expert. These are the MTP layer's
+formats, so the kernels already existed. The loader no longer imposes the Q2's trunk types: the layer-0
+tensors choose between two profiles, Q2 (IQ2_XXS/Q2_K, down K padded to 256 by the `ds4.qwen4.down.*`
+fields) and Q4 (Q4_K/MXFP4, no padding). Anything else is refused.
+`Qwen38MoeConfig.trunk_type` carries the choice into the weight table.
+
+G3 tokens against `ds4 --cpu --first-token-test` on the same file: scaled error 2.31e-7, 12/12 argmax and
+top-5 order. The pools of 2458 and 14244 slots (36 GiB, 58% of the trunk experts) and the wait path give the
+same logits bit for bit. The Q2 is unchanged (same sha256 as before the loader change). Peak wired memory is
+46.7 GiB with the 36 GiB pool, pressure normal, no swap growth in picoforge.
+Evidence: `bench/qwen38_r5_20261108/r53a`. Next: R5.3b, speed with the protocol.
+
+### R5.2b — event gates: the streaming overhead halves, bit-identical
+
+Concept: with commit-and-wait, the CPU stops at every streamed layer until the GPU drains, and the
+GPU then idles until the CPU has read the experts and encoded the rest. Now the whole token is encoded
+at once. After a streamed layer's router, the command buffer ends by signalling a `MTLSharedEvent`, and
+the next one starts by waiting for the next value (`q38g_session_gate`). A serial queue polls the event,
+fills the pool and writes the slots, then opens the gate. A failed fill writes slot 0 (in bounds) and
+fails the append. A gate that never opens is forced open after 60 s in `finish`, so the GPU cannot stay
+blocked. Abort and finish drain the queue before any state is reused.
+`PICOFORGE_STREAM_SYNC=wait` keeps the old path. Steady state on the real Q2 (100% pool, warm, 5
+repetitions): resident 38.7, wait 49.5, event 44.4 ms/token (46.5 with an `MTLSharedEventListener`
+instead of polling). The remaining ~120 us per gate is the command-buffer boundary on the GPU. Logits
+match the resident run in every mode, and the synthetic parity holds at 64/12/6 and --mtp 16/6/4.
+Evidence: `bench/qwen38_r5_20261108/r52b`. Next: R5.3, the Q4 file.
+
+### R5.2b0 — the per-layer sync costs more than the reads
+
+Resident against a 50% pool (no eviction), 64 tokens, 2 pairs: 39.2 against ~61.5 ms/token. Total time
+in acquire is 0.8 s with prefill included, so the reads explain less than half of the 22 ms gap. The
+rest is the 48 commit+wait+re-encode steps per token, with the GPU idle. R5.2b must therefore attack
+the sync itself, not only the reads. Evidence: `bench/qwen38_r5_20261106/r52b0`.
+
+### R5.2a — read a token's misses in parallel: stall 3.1x shorter
+
+Concept: one `pread` at a time leaves the SSD mostly idle (R5.0: 384 us per 2.6 MB with one thread,
+13 GB/s with two or more). `q38_pool_acquire` now does the bookkeeping first, in the same order as before,
+so slots, hits and evictions do not change. It then reads the misses as 3 x misses independent jobs with
+`dispatch_apply_f` (`PICOFORGE_STREAM_READERS`, default 8, 1 = serial). A failed read now also forgets the
+call's new slots, so garbage can never turn into a hit (new test). Real Q2 with a 10% pool, 64 tokens,
+3 alternating pairs: the stall goes from 6.18 to 2.01 s (about 470 -> 153 us per 1.49 MB miss) and decode
+from ~138 to ~77 ms/token. Logits are identical across all six runs. Resident decode: ~41.5 ms/token.
+Evidence: `bench/qwen38_r5_20261106/r52a`. Next: R5.2b, overlap the reads with the GPU (shared expert,
+next layer's attention) and prefetch.
+
+### R5.1c — the real Q2 with 10/50/100% of its experts in the pool: bit-identical
+
+Same prompt, 16 greedy tokens, `Q38_REF_KERNELS=gemm` in every run, guarded launcher on AC. With 2458,
+12288 and 24576 slots (10/50/100% of the 24576 routed experts) logits and ids match the resident run
+bit for bit; swap stayed 0 and pressure normal. Peak wired memory: 45.9 GiB resident, 15.3 GiB with the
+10% pool (3.4 GiB of slots, 36% misses, 3843 evictions), 28.8 GiB at 50%, 46.1 GiB at 100%. At 50% and
+100% the 30% misses are only cold first reads. The runs were single and cold, so no speed is claimed
+here. Evidence: `bench/qwen38_r5_20261106/r51c`. R5.1 is closed. Next: R5.2, prefetch and I/O
+overlapped with compute.
+
+### R5.1b — the pool behind the kernels, bit-identical on the synthetic models
+
+Concept: the MoE kernels index an expert as `id * expert_bytes` from a tensor base. If the base is a
+pool of N slots and the id is the slot, the kernels need no change. `PICOFORGE_STREAM_EXPERTS=N`
+keeps the trunk's routed experts out of every Metal view; the store turns the pool's three regions
+into no-copy buffers with a virtual binding per streamed tensor. After the router the command is
+committed and waited on, the CPU pins the routed experts (reading misses with `pread`, F_NOCACHE),
+and the kernels read the slots. Pins are released at the next streamed layer, whose wait proves the
+GPU is done with them; the MTP layer stays resident; N must cover a layer's experts (a prefill chunk
+can pin all of them). Synthetic: logits and ids bit-identical to resident at 64/12/6 slots, and with
+`--mtp` at 16/6/4, evictions included; G2/MTP/CLI/REPL/speculative/fast-kernel suites unchanged.
+Next: R5.1c, the real Q2 at 10/50/100% of its experts (bit-identity, no swap, memory in budget),
+not run on 2026-11-06 (battery 19%, 3.7 GiB free disk).
+
+### R5.0 — measure before building: the SSD is fast and the miss rate low
+
+Concept: a MoE token reads 10 of 512 experts per layer; if only the hot ones sit in a cache and the
+others come from the SSD, the token costs compute + misses x expert size / SSD bandwidth. Two numbers
+decide it, so I measured both without downloading the 165 GiB Q4K file. SSD: random 2.6 MB reads
+(a Q4K expert) reach 13.1 GB/s with two or more threads, 384 us at one (sequential peak 13.1 GB/s).
+Misses: five real 600-token generations of the Q2 model replayed against a cache of Q4K-sized
+experts give 2.7% misses at 36 GiB, 6.5% at 24 GiB, 14% at 16 GiB with a plain global LRU, within 0.007
+of the offline optimum from 32 GiB; a profile built from other texts does badly (27% at 36 GiB).
+Predicted decode with a 36 GiB cache: 19-24 tok/s depending on the unmeasured Q4K compute time
+(a model, labelled as such); 16 GiB still predicts 16-19. The stage gate (under 3 tok/s stops it)
+passes widely. Caveats in the evidence README: short single-topic traces, Q2 routing, prefill streams
+every expert per chunk. Next: R5.1, the cache and the indirection in the MoE kernels, tried on the Q2 file
+with a cache smaller than its experts (bit-identical to resident at every size).
+
 ## Decode II (from 2026-11-05): close the gap to 0.95x DwarfStar
 
 Start: R2 (24.15 vs 32.33 tok/s, 41.4 vs 30.9 ms/token). 0.95x means 32.6

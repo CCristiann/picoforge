@@ -1,0 +1,18 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+random     size  262144 B  threads  1  GB/s median   1.93  p10   1.86  p90   1.96  latency us p50      134 p99      182
+random     size  262144 B  threads  2  GB/s median   3.37  p10   3.33  p90   3.42  latency us p50      151 p99      213
+random     size  262144 B  threads  4  GB/s median   5.47  p10   5.39  p90   5.53  latency us p50      187 p99      275
+random     size  262144 B  threads  8  GB/s median   8.53  p10   8.31  p90   8.59  latency us p50      240 p99      363
+random     size  262144 B  threads 16  GB/s median  10.73  p10  10.58  p90  10.81  latency us p50      386 p99      574
+random     size 1486848 B  threads  1  GB/s median   5.32  p10   5.27  p90   5.35  latency us p50      279 p99      321
+random     size 1486848 B  threads  2  GB/s median   9.77  p10   9.26  p90   9.82  latency us p50      298 p99      416
+random     size 1486848 B  threads  4  GB/s median  12.01  p10  11.69  p90  12.09  latency us p50      488 p99      677
+random     size 1486848 B  threads  8  GB/s median  12.79  p10  12.65  p90  12.92  latency us p50      918 p99     1077
+random     size 1486848 B  threads 16  GB/s median  12.77  p10  12.58  p90  12.91  latency us p50     1843 p99     2060
+random     size 2711552 B  threads  1  GB/s median   7.03  p10   6.95  p90   7.06  latency us p50      384 p99      450
+random     size 2711552 B  threads  2  GB/s median  12.32  p10  12.21  p90  12.38  latency us p50      433 p99      588
+random     size 2711552 B  threads  4  GB/s median  13.12  p10  12.98  p90  13.18  latency us p50      820 p99     1018
+random     size 2711552 B  threads  8  GB/s median  13.10  p10  13.04  p90  13.18  latency us p50     1632 p99     1856
+random     size 2711552 B  threads 16  GB/s median  13.12  p10  12.97  p90  13.17  latency us p50     3259 p99     3540
+sequential size 8388608 B  threads  1  GB/s median  10.25  p10  10.22  p90  10.26  latency us p50      814 p99      903
+sequential size 8388608 B  threads  4  GB/s median  13.10  p10  13.07  p90  13.13  latency us p50     2524 p99     3012

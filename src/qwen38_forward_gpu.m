@@ -9,6 +9,8 @@
 #include "qwen38_b_internal.h"
 #include "qwen38_ngram_internal.h"
 #include "qwen38_ref.h"
+#include "qwen38_expert_pool.h"
+#define STREAM_JOBS 300   /* R5.2b: gates per append (the session keeps 320 buffers); beyond, wait mode */
 #include <stdlib.h>
 #include <time.h>
 static double clock_s(void) {
@@ -31,6 +33,7 @@ typedef struct {
      * convolution's old history followed by the verify's input rows, from
      * which the history after any kept row is a contiguous window. */
     Qwen38GpuF32 snap[QWEN38_VERIFY_ROWS-1],conv_ext,ple_ext; int32_t *ple_prev;
+    bool streamed;   /* R5.1b: fb[1..3] are pool bindings, fl[1..3] count pool slots as experts */
 } G2Layer;
 typedef struct { uint32_t layer; Qwen38GraphStage stage; Qwen38GpuF32 view; } G2Trace;
 struct Qwen38GpuForward {
@@ -64,6 +67,13 @@ struct Qwen38GpuForward {
      * valid until keep or any other append/reset. */
     uint32_t verify_rows; uint64_t verify_start,verify_epoch; int32_t verify_tokens[QWEN38_VERIFY_ROWS];
     size_t mtp_last_rows;   /* rows of the last predictor append (its mtp_r rows), 0 after rewind */
+    /* R5.1b expert streaming: the borrowed pool, the slots pinned by the last streamed layer (released
+     * at the next one, whose sync proves the GPU is done with them) and the ticket a sync continues. */
+    Q38ExpertPool *pool; uint32_t *pinned,*pin_ids; size_t pinned_count; const Qwen38GpuTicket *sync_ticket;
+    Qwen38GpuF32 slots;
+    /* R5.2b: PICOFORGE_STREAM_SYNC=event (default) fills the pool from a listener while the CPU keeps
+     * encoding; =wait is the R5.1b commit-and-wait. One job per gate of the current append. */
+    bool stream_event; struct StreamJob { struct Qwen38GpuForward *f; uint32_t layer; size_t pairs; const uint32_t *routed; uint32_t *slots; } *jobs; size_t job_count; int stream_failed;
 };
 static Qwen38Status fail(Qwen38Error *e,Qwen38Status code,const char *detail) {
     if (e) { memset(e,0,sizeof *e); e->code=code;
@@ -101,6 +111,19 @@ static Qwen38Status bind_weight(Qwen38GpuForward *f,uint32_t layer,Qwen38Role ro
     if (!t->gpu) return fail(e,Q38_MISSING,"nonresident graph weight");
     TRY(qwen38_weights_cpu_span(f->store,t->gpu,&span,e));
     out->binding=t->gpu; return q38_packed_layout_init(&t->storage,(size_t)t->logical_shape[0],&out->layout,e);
+}
+/* R5.1b: a routed-expert tensor is resident (bind_weight) or streamed: then its binding points into
+ * the expert pool and the layout's expert count is the pool's slot count, so the indexed kernels
+ * bound-check slots, the ids they are given. */
+static Qwen38Status bind_expert(Qwen38GpuForward *f,uint32_t layer,Qwen38Role role,G2Weight *out,bool *streamed,Qwen38Error *e) {
+    const Qwen38Tensor *t; TRY(qwen38_weights_get(f->weights,layer,role,&t,e));
+    if (t->gpu) return bind_weight(f,layer,role,out,e);
+    const GgufBinding *b=gpu_weights_streamed(f->store,t->storage.name);
+    if (!b) return fail(e,Q38_MISSING,"nonresident graph weight");
+    TRY(q38_packed_layout_init(&t->storage,(size_t)t->logical_shape[0],&out->layout,e));
+    out->layout.n_experts=b->tensor.shape[2]; out->layout.tensor_bytes=b->tensor.bytes;
+    if (out->layout.expert_bytes*out->layout.n_experts!=b->tensor.bytes) return fail(e,Q38_SHAPE,"streamed expert layout");
+    out->binding=b; *streamed=true; return Q38_OK;
 }
 static Qwen38Status constant(Qwen38GpuForward *f,uint32_t layer,Qwen38Role role,Qwen38GpuF32 *out,
                             size_t rank,const size_t *dims,Qwen38Error *e) {
@@ -224,7 +247,16 @@ static Qwen38Status scratch(Qwen38GpuForward *f,Qwen38Error *e) {
     ALLOC(f->fw.sup,false,mt,m->shared_intermediate); ALLOC(f->fw.sact,false,mt,m->shared_intermediate);
     ALLOC(f->fw.shared,false,mt,d); ALLOC(f->fw.slogit,false,mt,1); ALLOC(f->fw.ssig,false,mt,1); ALLOC(f->fw.routed,false,mt,d);
     ALLOC(ids,false,p); ALLOC(keep,false,p); f->fw.ids=ids.span; f->fw.identity=keep.span;
-    Qwen38GpuF32 group; ALLOC(group,false,q38_packed_group_bytes(m->experts,p)/4); f->fw.group=group.span;
+    const size_t groups=MAX((size_t)m->experts,(size_t)gpu_weights_stream_slots(f->store));   /* R5.1b: slots group like experts */
+    Qwen38GpuF32 group; ALLOC(group,false,q38_packed_group_bytes(groups,p)/4); f->fw.group=group.span;
+    if (gpu_weights_stream_slots(f->store)) {
+        ALLOC(f->slots,false,p);
+        { const char *mode=getenv("PICOFORGE_STREAM_SYNC"); f->stream_event=!mode || !*mode || !strcmp(mode,"event");
+          if (mode && *mode && strcmp(mode,"event") && strcmp(mode,"wait")) return fail(e,Q38_INVALID_ARGUMENT,"PICOFORGE_STREAM_SYNC must be event or wait"); }
+        f->jobs=calloc(STREAM_JOBS,sizeof *f->jobs); if (!f->jobs) return fail(e,Q38_OOM,"stream jobs");
+        f->pinned=malloc(p*sizeof *f->pinned); f->pin_ids=malloc(p*sizeof *f->pin_ids);
+        if (!f->pinned || !f->pin_ids) return fail(e,Q38_OOM,"stream pins");
+    }
     return Q38_OK;
 }
 /* T15c: greedy id on the GPU, one threadgroup over the logits row. The idea, not the
@@ -271,8 +303,8 @@ static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,Qwen
         return rc==Q38_UNSUPPORTED ? Q38_OK : rc;
     }
     const GgufPlan *plan=gpu_weights_plan(f->store);
-    void **views=calloc(plan->view_count,sizeof *views); if (!views) return fail(e,Q38_OOM,"residency list");
-    size_t n=0;
+    void **views=calloc(plan->view_count+3,sizeof *views); if (!views) return fail(e,Q38_OOM,"residency list");
+    size_t n=gpu_weights_pool_buffers(f->store,views);   /* R5.1b: the expert pool stays resident too */
     for (size_t i=0;i<plan->weight_count;i++) {     /* one buffer per view, however many tensors */
         void *b=gpu_weights_buffer(f->store,&plan->weights[i]); bool seen=false;
         for (size_t k=0;k<n&&!seen;k++) seen=views[k]==b;
@@ -321,7 +353,10 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
         if (kind->kind==Q38_LAYER_GDN) TRY(create_gdn(f,i,e)); else TRY(create_qsa(f,i,e));
         TRY(hc_bind(f,i,ffn_roles,&l->ffn,e));
         const Qwen38Role roles[]={Q38_MOE_ROUTER,Q38_MOE_GATE,Q38_MOE_UP,Q38_MOE_DOWN,Q38_SHARED_GATE,Q38_SHARED_UP,Q38_SHARED_DOWN,Q38_SHARED_ROUTER};
-        for (size_t j=0;j<8;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); l->fb[j]=w.binding; l->fl[j]=w.layout; }
+        for (size_t j=0;j<8;j++) {
+            G2Weight w; TRY(j>=1 && j<=3 ? bind_expert(f,i,roles[j],&w,&l->streamed,e) : bind_weight(f,i,roles[j],&w,e));
+            l->fb[j]=w.binding; l->fl[j]=w.layout;
+        }
         if (kind->has_ple) TRY(create_ple(f,i,e));
     }
     f->main_histories=[(__bridge NSArray *)f->histories count];
@@ -388,6 +423,7 @@ void qwen38_gpu_forward_destroy(Qwen38GpuForward *f) {
     if (f->histories) CFRelease(f->histories);
     if (f->device) CFRelease(f->device);
     if (f->layer) for (uint32_t i=0;i<f->c.trunk_blocks;i++) free(f->layer[i].ple_prev);
+    free(f->pinned); free(f->pin_ids); free(f->jobs);
     free(f->snapshot); free(f->layer); free(f->traces); free(f);
 }
 
@@ -564,7 +600,46 @@ typedef struct { Qwen38GpuForward *f; uint32_t layer; } MoeMark;
 static void moe_mark(void *ctx,Qwen38GpuCommand *cmd,const char *op,uint32_t type,uint64_t bytes) {
     MoeMark *m=ctx; q38g_profile_mark(m->f,cmd,m->layer,op,type,bytes);
 }
-static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size_t t,Qwen38Error *e) {
+/* R5.1b: the GPU has written the routed ids; commit and wait, release the previous streamed layer's
+ * pins (its kernels are done: the sync waited on every earlier buffer), read this layer's routed
+ * experts into the pool and give the kernels their slots. Same weights bit for bit, other addresses. */
+typedef struct { Qwen38GpuForward *f; uint32_t layer; Qwen38GpuCommand *outer; } StreamCtx;
+/* Release the previous streamed layer's pins, pin this layer's routed experts, write their slots. On a
+ * failure the slots become 0 (a valid slot: the kernels stay in bounds) and the caller reports it. */
+static int fill_slots(Qwen38GpuForward *f,uint32_t layer,const uint32_t *routed,uint32_t *slots,size_t pairs) {
+    q38_pool_release(f->pool,f->pinned,f->pinned_count); f->pinned_count=0;
+    memcpy(f->pin_ids,routed,pairs*4);
+    if (q38_pool_acquire(f->pool,layer,f->pin_ids,pairs,f->pinned)) { memset(slots,0,pairs*4); return -1; }
+    f->pinned_count=pairs; memcpy(slots,f->pinned,pairs*4);
+    return 0;
+}
+/* R5.2b: runs on the session's listener queue while the GPU waits at the gate. */
+static void stream_job(void *ctx) {
+    struct StreamJob *j=ctx;
+    if (fill_slots(j->f,j->layer,j->routed,j->slots,j->pairs)) __atomic_store_n(&j->f->stream_failed,1,__ATOMIC_RELAXED);
+}
+/* R5.1b: the GPU has written the routed ids. wait: commit and wait, then fill the pool here. event
+ * (R5.2b): commit up to here behind a gate and keep encoding; the listener fills the pool when the GPU
+ * gets there, and the GPU resumes after it. The previous layer's pins are released in both cases only
+ * once every earlier buffer completed. Same weights bit for bit, other addresses. */
+static Qwen38Status stream_remap(void *ctx,Qwen38GpuCommand *cmd,Qwen38GpuSpan ids,Qwen38GpuSpan slots,size_t pairs,Qwen38Error *e) {
+    StreamCtx *s=ctx; Qwen38GpuForward *f=s->f;
+    if (!f->sync_ticket) return fail(e,Q38_UNSUPPORTED,"expert streaming outside an append");
+    const uint32_t *routed=(const uint32_t *)((const char *)[(__bridge id<MTLBuffer>)ids.buffer contents]+ids.offset_bytes);
+    uint32_t *out=(uint32_t *)((char *)[(__bridge id<MTLBuffer>)slots.buffer contents]+slots.offset_bytes);
+    if (f->stream_event && f->job_count<STREAM_JOBS) {
+        struct StreamJob *j=&f->jobs[f->job_count++];
+        *j=(struct StreamJob){f,s->layer,pairs,routed,out};
+        TRY(q38g_session_gate(f->session,f->sync_ticket,cmd,stream_job,j,e));
+        s->outer->compute_encoder=cmd->compute_encoder;
+        return Q38_OK;
+    }
+    TRY(q38g_session_sync(f->session,f->sync_ticket,cmd,e));
+    s->outer->compute_encoder=cmd->compute_encoder;
+    if (fill_slots(f,s->layer,routed,out,pairs)) return fail(e,Q38_CAPACITY,"expert pool: every slot pinned or a read failed");
+    return Q38_OK;
+}
+static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand *cmdp,uint32_t i,size_t t,Qwen38Error *e) {
     G2Layer *l=&f->layer[i];
     Qwen38MoeConfig mc=f->c.moe;
     if (i>=f->c.trunk_blocks) mc.down_physical=mc.intermediate;
@@ -578,8 +653,14 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand cmd,uint32_t i,size
         W(sgate,n); W(sup,n); W(sact,n); W(shared,n); W(slogit,n); W(ssig,n); W(routed,n);
 #undef W
         if (f->prof_ticket) { w.mark=moe_mark; w.mark_ctx=&mark; }   /* R1.9a: sub-groups, profile only */
-        TRY(q38f_routed_encode(f->moe,f->b,f->ops,cmd,&mc,f->store,l->fb,l->fl,
+        StreamCtx sc={f,i,cmdp};
+        if (l->streamed) {
+            if (!f->pool) return fail(e,Q38_BAD_STATE,"streamed experts without a pool");
+            w.remap=stream_remap; w.remap_ctx=&sc; w.slots=f->slots.span;
+        }
+        TRY(q38f_routed_encode(f->moe,f->b,f->ops,*cmdp,&mc,f->store,l->fb,l->fl,
             slice(f->mixed,start,n),slice(f->block,start,n),&w,e));
+        Qwen38GpuCommand cmd=*cmdp;
         if (!cmd.concurrent) barrier(cmd);   /* R1.6b: routed_encode already ends with one */
         if (f->route_buf && i<f->c.trunk_blocks) {   /* R4 diagnostic: ids are final after the barrier */
             id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
@@ -616,7 +697,7 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
         emit(f,*cmd,i,Q38G_ATTN_RESIDUAL,time_view(f->r,t));
         TRY(hc_read(f,cmd,i,&l->ffn,HC_FFN,t,e));
         emit(f,*cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
-        TRY(moe(f,*cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
+        TRY(moe(f,cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
         MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
         /* D1: a decode token (or a few verify rows) is split into cmd_split command buffers so the GPU starts early. */
         if (f->flush_ticket && t<=4 && f->cmd_split>1 && i+1<layers && (i+1)*f->cmd_split%layers<f->cmd_split)
@@ -665,6 +746,12 @@ static Qwen38Status claim(Qwen38GpuForward *f,Qwen38GpuSession *session,const Qw
     for (size_t i=0;i<plan->weight_count;i++) {
         const GgufBinding *w=&plan->weights[i];
         Qwen38GpuSpan span={gpu_weights_buffer(f->store,w),w->offset,w->tensor.bytes};
+        Qwen38Status rc=pin ? qwen38_gpu_session_pin_read(session,ticket,span,e) : qwen38_gpu_session_claim(session,ticket,span,Q38_GPU_USE_READ,e);
+        if (rc) { if (pin) qwen38_gpu_session_pins_clear(session); return rc; }
+    }
+    void *pool[3]; size_t pools=gpu_weights_pool_buffers(f->store,pool);
+    for (size_t i=0;i<pools;i++) {   /* R5.1b: the CPU writes slots only between syncs, never under a kernel */
+        Qwen38GpuSpan span={pool[i],0,[(__bridge id<MTLBuffer>)pool[i] length]};
         Qwen38Status rc=pin ? qwen38_gpu_session_pin_read(session,ticket,span,e) : qwen38_gpu_session_claim(session,ticket,span,Q38_GPU_USE_READ,e);
         if (rc) { if (pin) qwen38_gpu_session_pins_clear(session); return rc; }
     }
@@ -717,14 +804,16 @@ static Qwen38Status forward(Qwen38GpuForward *f,const int32_t *tokens,size_t cou
     if (!rc) { rc=qwen38_gpu_session_begin(f->session,f->config,before.next_pos,count,&ticket,&cmd,e); begun=!rc; }
     if (!rc) rc=claim(f,f->session,&ticket,e);
     if (!rc) { f->prof_ticket=f->prof ? &ticket : NULL; f->prof_failed=false; }
-    f->flush_ticket=(!f->prof && !trace && layers==f->c.trunk_blocks) ? &ticket : NULL;
+    f->flush_ticket=(!f->prof && !trace && layers==f->c.trunk_blocks) ? &ticket : NULL; f->sync_ticket=&ticket;
+    f->job_count=0; f->stream_failed=0;
     if (!rc) rc=run(f,&cmd,count,layers,logits.dim[0],(uint32_t)before.next_pos,e);
     if (!rc && f->prof_failed) rc=fail(e,Q38_GPU_ERROR,"profile encoder split");
-    f->prof_ticket=NULL; f->flush_ticket=NULL; f->want_id=false;
+    f->prof_ticket=NULL; f->flush_ticket=NULL; f->sync_ticket=NULL; f->want_id=false;
     if (!rc) { rc=qwen38_gpu_session_submit(f->session,&ticket,e); submitted=!rc; }
     double wait_start=clock_s(); f->stats.encode_s=wait_start-encode_start;
     if (submitted) rc=qwen38_gpu_session_finish(f->session,&ticket,e);
     else if (begun) qwen38_gpu_session_abort(f->session,&ticket,false,NULL);
+    if (!rc && f->stream_failed) rc=fail(e,Q38_CAPACITY,"expert pool: every slot pinned or a read failed");
     f->stats.wait_s=clock_s()-wait_start;
     if (f->prof && !q38_profile_end_append(f->prof,!rc && submitted) && !rc) rc=fail(e,Q38_GPU_ERROR,"profile samples");
     if (submitted) f->stats.gpu_s=qwen38_gpu_session_seconds(f->session);
@@ -784,6 +873,8 @@ Qwen38Status qwen38_gpu_forward_reset(Qwen38GpuForward *f,Qwen38Error *e) {
     for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) memset(b.contents,0,b.length);
     f->next_pos=0; f->last_count=0; f->snapshot_serial++; f->verify_rows=0; f->mtp_last_rows=0; f->valid=true; return fail(e,Q38_OK,NULL);
 }
+
+void qwen38_gpu_forward_set_pool(Qwen38GpuForward *f,struct Q38ExpertPool *pool) { if (f) { f->pool=pool; f->pinned_count=0; } }
 
 static Qwen38Status mtp_create(Qwen38GpuForward *f,Qwen38Error *e) {
     uint32_t i=f->c.trunk_blocks; size_t t=f->max_tokens,h=f->c.hc.streams,d=f->c.hidden_size;
@@ -920,7 +1011,7 @@ static Qwen38Status mtp_run(Qwen38GpuForward *f,Qwen38GpuCommand cmd,Qwen38GpuF3
     Qwen38GpuF32 trunk=f->r; f->r=f->mtp_r; uint32_t i=f->c.trunk_blocks;
     Qwen38Status rc=qsa(f,&cmd,i,t,pos,e);
     if (!rc) rc=hc_read(f,&cmd,i,&f->layer[i].ffn,HC_FFN,t,e);
-    if (!rc) rc=moe(f,cmd,i,t,e);
+    if (!rc) rc=moe(f,&cmd,i,t,e);
     if (!rc) rc=hc_add(f,cmd,t,e);
     if (!rc && rows) rc=hc_read(f,&cmd,QWEN38_GLOBAL_LAYER,&f->mtp_head,HC_FINAL,t,e);
     if (!rc && rows) rc=linear(f,&cmd,QWEN38_GLOBAL_LAYER,"lm_head",f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e);

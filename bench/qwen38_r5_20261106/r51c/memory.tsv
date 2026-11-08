@@ -1,0 +1,5 @@
+run	swap_max_B	pressure_max	peak_footprint_GiB	wired_max_GiB	disk_read_GiB
+res	0	1	0.48	45.94	41.74
+s2458	0	1	3.86	15.29	0.37
+s12288	0	1	7.73	28.84	2.51
+s24576	0	1	7.73	46.05	5.99

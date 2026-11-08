@@ -109,7 +109,11 @@ struct Qwen38GpuSession {
     Qwen38GpuLedger ledger;
     void *device, *queue, *error_word;
     void *command, *encoder;           /* alive only from begin to finish/abort */
-    void *early[8]; size_t early_count; /* D1: command buffers committed before the last one (q38g_session_flush) */
+    void *early[320]; size_t early_count; /* D1: command buffers committed before the last one (flush, R5.2b gates) */
+    /* R5.2b: a shared event the GPU signals after a streamed layer's router and waits on before its
+     * expert kernels; a listener on a serial queue fills the pool in between. Created on first use. */
+    void *event, *listener, *listen_queue, *done_sem;
+    uint64_t gate_value; bool gated;
     Claim *claims;
     size_t claim_count, claim_capacity;
     /* R1.7a: READ spans registered once per session (weights). Sorted lazily by
@@ -380,6 +384,82 @@ Qwen38Status q38g_session_flush(Qwen38GpuSession *g, const Qwen38GpuTicket *t, Q
     cmd->compute_encoder = g->encoder = (__bridge_retained void *)enc;
     return report(e, Q38_OK);
 }
+/* R5.1b: commit the encoded part of the token and wait for it (the CPU needs the routed ids before
+ * it can fill the expert pool). The earlier flushed buffers are waited on too, so no command still
+ * in flight reads a slot the CPU is about to overwrite. A completed buffer leaves the session here;
+ * its GPU time is added, its errors reported now. */
+Qwen38Status q38g_session_sync(Qwen38GpuSession *g, const Qwen38GpuTicket *t, Qwen38GpuCommand *cmd,
+    Qwen38Error *e) {
+    if (!g || !cmd || cmd->compute_encoder != g->encoder) return report(e, Q38_INVALID_ARGUMENT);
+    Qwen38Status s = qwen38_gpu_ledger_check(&g->ledger, t, Q38_SESSION_ENCODING, e);
+    if (s) return s;
+    id<MTLCommandBuffer> next = [(__bridge id<MTLCommandQueue>)g->queue commandBuffer];
+    id<MTLComputeCommandEncoder> enc = next ? [next computeCommandEncoderWithDispatchType:dispatch_type(g)] : nil;
+    if (!enc) return report(e, Q38_GPU_ERROR);
+    [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding]; drop(&g->encoder);
+    id<MTLCommandBuffer> done = (__bridge id<MTLCommandBuffer>)g->command;
+    [done commit];
+    for (size_t i = 0; i < g->early_count; i++) [(__bridge id<MTLCommandBuffer>)g->early[i] waitUntilCompleted];
+    [done waitUntilCompleted];
+    bool ok = done.status == MTLCommandBufferStatusCompleted && !done.error;
+    if (ok && done.GPUStartTime > 0 && done.GPUEndTime >= done.GPUStartTime) g->gpu_seconds += done.GPUEndTime - done.GPUStartTime;
+    drop(&g->command);
+    g->command = (__bridge_retained void *)next;
+    cmd->compute_encoder = g->encoder = (__bridge_retained void *)enc;
+    return report(e, ok ? Q38_OK : Q38_GPU_ERROR);
+}
+/* R5.2b: like flush, but the committed buffer ends by signalling value v+1 and the next one starts by
+ * waiting for v+2. `fn(ctx)` runs on the listener's serial queue once the GPU reached v+1 (everything
+ * encoded before is complete), then the listener signals v+2. So the CPU encodes on while the GPU runs,
+ * and the GPU stalls only for fn. fn must always return (it signals failure through its ctx). */
+Qwen38Status q38g_session_gate(Qwen38GpuSession *g, const Qwen38GpuTicket *t, Qwen38GpuCommand *cmd,
+    void (*fn)(void *), void *ctx, Qwen38Error *e) {
+    if (!g || !cmd || !fn || cmd->compute_encoder != g->encoder) return report(e, Q38_INVALID_ARGUMENT);
+    if (g->early_count >= sizeof g->early / sizeof g->early[0]) return report(e, Q38_CAPACITY);
+    Qwen38Status s = qwen38_gpu_ledger_check(&g->ledger, t, Q38_SESSION_ENCODING, e);
+    if (s) return s;
+    if (!g->event) {
+        id<MTLDevice> dev = (__bridge id<MTLDevice>)g->device;
+        id<MTLSharedEvent> ev = [dev newSharedEvent];
+        dispatch_queue_t q = dispatch_queue_create("picoforge.stream", DISPATCH_QUEUE_SERIAL);
+        MTLSharedEventListener *l = ev ? [[MTLSharedEventListener alloc] initWithDispatchQueue:q] : nil;
+        if (!l) return report(e, Q38_GPU_ERROR);
+        g->event = (__bridge_retained void *)ev; g->listener = (__bridge_retained void *)l;
+        g->listen_queue = (__bridge_retained void *)q;
+        g->done_sem = (__bridge_retained void *)dispatch_semaphore_create(0);
+    }
+    id<MTLSharedEvent> ev = (__bridge id<MTLSharedEvent>)g->event;
+    id<MTLCommandBuffer> next = [(__bridge id<MTLCommandQueue>)g->queue commandBuffer];
+    const uint64_t v = g->gate_value;
+    [next encodeWaitForEvent:ev value:v + 2];
+    id<MTLComputeCommandEncoder> enc = next ? [next computeCommandEncoderWithDispatchType:dispatch_type(g)] : nil;
+    if (!enc) return report(e, Q38_GPU_ERROR);
+    [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding]; drop(&g->encoder);
+    id<MTLCommandBuffer> cur = (__bridge id<MTLCommandBuffer>)g->command;
+    [cur encodeSignalEvent:ev value:v + 1];
+    if (getenv("PICOFORGE_STREAM_NOTIFY")) {   /* the listener path: the dispatch wake-up costs ~100 us */
+        [ev notifyListener:(__bridge MTLSharedEventListener *)g->listener atValue:v + 1 block:^(id<MTLSharedEvent> event, uint64_t value) {
+            (void)value; fn(ctx); event.signaledValue = v + 2;
+        }];
+    } else {   /* default: the serial queue polls the event, so the gate opens a few us after the GPU arrives */
+        dispatch_async((__bridge dispatch_queue_t)g->listen_queue, ^{
+            const uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+            while (ev.signaledValue < v + 1)   /* a failed GPU command never signals: give up after 60 s */
+                if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0 > 60ull * NSEC_PER_SEC) break;
+            fn(ctx); ev.signaledValue = v + 2;
+        });
+    }
+    [cur commit];
+    g->early[g->early_count++] = g->command;
+    g->command = (__bridge_retained void *)next;
+    cmd->compute_encoder = g->encoder = (__bridge_retained void *)enc;
+    g->gate_value = v + 2; g->gated = true;
+    return report(e, Q38_OK);
+}
+/* R5.2b: no listener block is still running or queued for this command once this returns. */
+static void drain_listener(Qwen38GpuSession *g) {
+    if (g->listen_queue) dispatch_sync((__bridge dispatch_queue_t)g->listen_queue, ^{});
+}
 Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *g, const Qwen38GpuTicket *t,
     Qwen38Error *e) {
     if (!g) return report(e, Q38_INVALID_ARGUMENT);
@@ -387,6 +467,10 @@ Qwen38Status qwen38_gpu_session_submit(Qwen38GpuSession *g, const Qwen38GpuTicke
     if (s) return s;                    /* a double submit never reaches commit */
     [(__bridge id<MTLComputeCommandEncoder>)g->encoder endEncoding];
     drop(&g->encoder);
+    if (g->gated) {   /* R5.2b: finish waits with a timeout, in case a gate never opens */
+        dispatch_semaphore_t sem = (__bridge dispatch_semaphore_t)g->done_sem;
+        [(__bridge id<MTLCommandBuffer>)g->command addCompletedHandler:^(id<MTLCommandBuffer> b) { (void)b; dispatch_semaphore_signal(sem); }];
+    }
     [(__bridge id<MTLCommandBuffer>)g->command commit];
     return s;
 }
@@ -400,6 +484,7 @@ Qwen38Status qwen38_gpu_session_abort(Qwen38GpuSession *g, const Qwen38GpuTicket
         [(__bridge id<MTLCommandBuffer>)g->early[i] waitUntilCompleted]; drop(&g->early[i]);
     }
     g->early_count = 0;
+    if (g->gated) { drain_listener(g); g->gated = false; }
     drop(&g->encoder); drop(&g->command);   /* the last buffer was never committed */
     release_claims(g);
     return s;
@@ -412,11 +497,20 @@ Qwen38Status qwen38_gpu_session_finish(Qwen38GpuSession *g, const Qwen38GpuTicke
      * BAD_STATE to report (finish before submit, double finish). */
     if (g->ledger.state == Q38_SESSION_IN_FLIGHT) {
         id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)g->command;
+        bool timed_out = false;
+        if (g->gated) {   /* R5.2b: a gate that never opens must not hang the GPU: open them all */
+            if (dispatch_semaphore_wait((__bridge dispatch_semaphore_t)g->done_sem, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC))) {
+                timed_out = true;
+                ((__bridge id<MTLSharedEvent>)g->event).signaledValue = g->gate_value + 2;
+                g->gate_value += 2;
+            }
+        }
         [cb waitUntilCompleted];
-        ok = cb.status == MTLCommandBufferStatusCompleted && !cb.error;
+        if (g->gated) { drain_listener(g); g->gated = false; }
+        ok = cb.status == MTLCommandBufferStatusCompleted && !cb.error && !timed_out;
         if (ok && cb.GPUStartTime>0 && cb.GPUEndTime>=cb.GPUStartTime)
-            g->gpu_seconds=cb.GPUEndTime-cb.GPUStartTime;
-        why = cb.error.localizedDescription;
+            g->gpu_seconds+=cb.GPUEndTime-cb.GPUStartTime;   /* R5.1b: sync may have added some */
+        why = timed_out ? @"expert-stream gate timed out" : cb.error.localizedDescription;
         for (size_t i = 0; i < g->early_count; i++) {   /* D1: the buffers flushed before the last one */
             id<MTLCommandBuffer> early = (__bridge id<MTLCommandBuffer>)g->early[i];
             [early waitUntilCompleted];
@@ -484,6 +578,8 @@ Qwen38Status qwen38_gpu_session_destroy(Qwen38GpuSession *g, Qwen38Error *e) {
             [(__bridge id<MTLCommandQueue>)g->queue removeResidencySet:(__bridge id<MTLResidencySet>)g->residency];
         drop(&g->residency);
     }
+    drain_listener(g);
+    drop(&g->listener); drop(&g->event); drop(&g->listen_queue); drop(&g->done_sem);
     drop(&g->queue); drop(&g->device);
     release_claims(g); free(g->claims);
     qwen38_gpu_session_pins_clear(g);
