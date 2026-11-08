@@ -2,6 +2,27 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Perf III (from 2026-11-08): the chat as ds4 runs it
+
+Branch `perf/qwen38-perf3`. Evidence: `bench/qwen38_p3_20261108/README.md`.
+
+### Why the thinking never ended, and short prompts twice as fast
+
+The user's chat thought until the context was full (ds4: three lines). Cause: no system
+message. ds4 sends "You are a helpful assistant"; without it the model wrote "Desired
+oververbosity 9" and kept going. The prompt now matches ds4's token for token
+(`PICOFORGE_SYSTEM` overrides it). Greedy decoding also looped, so the chat now samples
+(T 0.6, top-k 20, top-p 0.95, `src/qwen38_sample.c`) and drafts with MTP by default; the
+verify stays exact, because with greedy drafts speculative sampling is "draw from the
+target row, keep the draft while the draw matches". Measurements and oracles stay greedy
+and plain. Prefill of a 60-ID chat prompt: 1294 -> 671 ms GPU, by admitting the GEMM by
+tile count (>= 32) and the grouped MoE from 2560 pairs (it ran 64-row tiles holding 1-2
+rows per expert). User's chat: prefill ~50 t/s (was 35.7), generation ~30 t/s, answer
+after three lines. Wall prefill is ~1.2 s against 0.67 s of GPU: ~0.5 s outside the GPU
+is the next thing to measure. Gates: sampler, CLI, REPL (except the pre-existing
+"no model" case, two models present), session, speculative, server, GPU suite, 93 fast
+kernels (pinned to the old admission so the kernels keep their coverage).
+
 ## R5 "SSD streaming" (from 2026-11-05)
 
 Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
