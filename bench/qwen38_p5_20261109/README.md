@@ -35,3 +35,22 @@ G3 (`g3.log`): pass_fp32, scaled 2.17e-7, argmax 12/12.
 | half | 26.61 s | 29.76 s |
 
 Single runs, not the 3+20 protocol: the closure bench of P5 will pair them.
+
+# P5.2 — four splits per MMA threadgroup, 128 tokens per dispatch
+
+Ablations on the P5.1 binary (`p52/profile/abl-*`, 8K half, qsa.core 5.46 s): indexer
+scores ~0.63 s, merge ~0.84 s, keys past the first per split ~2.23 s, the rest ~1.8 s.
+
+| run | total | qsa.core |
+|---|---|---|
+| P5.1 (`profile/after-half`) | 25.84 | 5.458 |
+| 4 splits per threadgroup, online softmax (`p52/profile/grouped`) | 24.46 | 4.826 |
+| + 128 tokens per split/merge dispatch (`p52/profile/grouped-128tok`) | 24.24 | 4.595 |
+
+Kernel against the oracle (`scripts/msweep.py`): every m in 900..1100 plus a sweep to 2051,
+232 cases, worst 2.3e-6, no error bit. Logits FP32 vs the R2.1 kernel (`p52/compare.jsonl`):
+N 16..950 within 3.1e-6; N 1000 0.074 and 4000 0.043, argmax 17/17. The route logs at N 1000
+(`p52/route/*.u32`, `Q38_ROUTE_LOG`: [pos, rows, layers, top_k] then [layer][row][top_k])
+agree on every layer of tokens 0..219; the first different expert set is token 220, layer 19
+(231 vs 366), the near-tie R3.1 found there (relative gap 4e-8); everything after follows.
+G3 (`p52/g3.log`): pass_fp32, 2.17e-7, 12/12.

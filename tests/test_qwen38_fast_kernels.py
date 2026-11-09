@@ -726,6 +726,18 @@ def run_index(mode, iq, blocks, visible, ratio, budget):
     return int(np.frombuffer(result.stdout[:4], "<u4")[0]), result.stdout[4:4 + 4 * n], result.stdout[4 + 4 * n:]
 
 
+def attend_parts(inputs):
+    """Partials of q38d_attend_encode: the R2.1 splits (>= 32 keys each, at most 64), grouped 4 per
+    threadgroup by the P5.2 MMA kernel (d 256, 8..16 heads per KV head, <= 40 keys per split)."""
+    q, m = inputs[0], len(inputs[4])
+    h, d = q.shape[-2], q.shape[-1]
+    j = inputs[2].shape[1]
+    splits = min(64, max(1, -(-m // 32)))
+    keys = -(-m // splits)
+    mma = d == 256 and 8 <= h // j <= 16 and keys <= 40 and not os.environ.get("Q38_QSA_SPLIT")  # run_attend drops REF
+    return -(-splits // 4) if mma else splits
+
+
 def attend_inputs(rng, dims, n, m, sharp=4.0):
     """q, k ~ N(0, sharp^2/sqrt(d)) so the scaled logits have std sharp^2/sqrt(d); v ~ N(0, 1) with one x100
     outlier row; gate = sigmoid outputs in (0, 1) with exact 0 and 1 present; ids a sorted random m-subset."""
@@ -2191,8 +2203,7 @@ class FastKernelTests(unittest.TestCase):
         """Fast and oracle on one case: clean words, 1 dispatch for the oracle and for one split, 2 with the merge;
         both within (a); fast within (b) of the oracle."""
         fast, oracle = (run_attend(mode, *inputs) for mode in ("fast", "oracle"))
-        splits = min(64, max(1, -(-len(inputs[4]) // 32)))
-        self.assertEqual((fast[:2], oracle[:2]), ((0, 1 if splits == 1 else 2), (0, 1)), label)
+        self.assertEqual((fast[:2], oracle[:2]), ((0, 1 if attend_parts(inputs) == 1 else 2), (0, 1)), label)
         ref, magnitude, factor = attend_fp64(*inputs)
         stats, oracle_stats = (attend_against_fp64(out[2], ref, magnitude, factor) for out in (fast, oracle))
         stats["vs_oracle"] = against_oracle(fast[2], oracle[2], magnitude)

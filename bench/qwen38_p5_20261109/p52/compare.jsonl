@@ -1,0 +1,11 @@
+{"n":16,"pair":"p52 mma-vs-split","scaled": 7.798227709931444e-07, "absolute": 2.1219253540039062e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":100,"pair":"p52 mma-vs-split","scaled": 1.2904010222270142e-06, "absolute": 3.218650817871094e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":200,"pair":"p52 mma-vs-split","scaled": 2.359482990087212e-06, "absolute": 5.626678466796875e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":400,"pair":"p52 mma-vs-split","scaled": 2.8405903314826886e-06, "absolute": 6.103515625e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":500,"pair":"p52 mma-vs-split","scaled": 2.991039560466379e-06, "absolute": 5.984306335449219e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":600,"pair":"p52 mma-vs-split","scaled": 3.0724777006396215e-06, "absolute": 6.866455078125e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":800,"pair":"p52 mma-vs-split","scaled": 2.5226388543229596e-06, "absolute": 6.246566772460938e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":900,"pair":"p52 mma-vs-split","scaled": 2.851998159510521e-06, "absolute": 6.580352783203125e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":950,"pair":"p52 mma-vs-split","scaled": 1.9315065590520458e-06, "absolute": 4.8160552978515625e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":1000,"pair":"p52 mma-vs-split","scaled": 0.07364026935469552, "absolute": 1.9650485515594482, "argmax_matches": 17, "margin_decided": 11, "top5_order_matches": 11, "rows": 17, "gate": 0.001, "pass": false}
+{"n":4000,"pair":"p52 mma-vs-split","scaled": 0.04333394351747459, "absolute": 1.3288207054138184, "argmax_matches": 17, "margin_decided": 16, "top5_order_matches": 10, "rows": 17, "gate": 0.001, "pass": false}

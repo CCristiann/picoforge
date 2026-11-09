@@ -59,10 +59,11 @@ enum { Q38D_ROPE, Q38D_POOL, Q38D_SCORES, Q38D_ATTEND, Q38D_GPU_OPS };
 enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT, Q38D_MERGE,
        Q38D_SCORES_FAST, Q38D_RANK_FAST, Q38D_COMPACT_FAST, Q38D_ROPE_FAST,
        Q38D_ROPE_BATCH, Q38D_POOL_BATCH, Q38D_SCORES_BATCH, Q38D_RANK_BATCH, Q38D_COMPACT_BATCH,
-       Q38D_TAIL_BATCH, Q38D_SPLIT_BATCH, Q38D_MERGE_BATCH, Q38D_SPLIT_MMA, Q38D_SPLIT_MMA_BATCH, Q38D_ALL_OPS };
+       Q38D_TAIL_BATCH, Q38D_SPLIT_BATCH, Q38D_MERGE_BATCH, Q38D_SPLIT_MMA, Q38D_SPLIT_MMA_BATCH, Q38D_MERGE_MMA_BATCH, Q38D_ALL_OPS };
 /* P5.1 MMA split attention: head dim it is written for, most keys per split. */
 #define Q38D_MMA_D 256u
 #define Q38D_MMA_KEYS 40u
+#define Q38D_MMA_GROUP 4u /* P5.2: R2.1 splits per MMA threadgroup */
 /* R3.3 batched prefill: the wire record of the batch kernels (Q38DBatch in the
  * kernel), tokens per split-attention dispatch, and the append size from which
  * q38d_layer_encode batches. */

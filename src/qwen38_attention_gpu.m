@@ -36,7 +36,7 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
         @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu",@"q38d_rope_fast_gpu",
         @"q38d_rope_batch_gpu",@"q38d_pool_batch_gpu",@"q38d_scores_batch_gpu",@"q38d_rank_batch_gpu",
         @"q38d_compact_batch_gpu",@"q38d_tail_batch_gpu",@"q38d_split_batch_gpu",@"q38d_merge_batch_gpu",
-        @"q38d_attend_split_mma_gpu",@"q38d_split_mma_batch_gpu"};
+        @"q38d_attend_split_mma_gpu",@"q38d_split_mma_batch_gpu",@"q38d_merge_mma_batch_gpu"};
     g->scalar_attention=getenv("Q38_QSA_SCALAR")!=NULL;
     g->reference=q38_ref_kernels("attention");
     g->mma=getenv("Q38_QSA_SPLIT")==NULL;
@@ -49,8 +49,8 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
             (p.maxTotalThreadsPerThreadgroup<256 || p.staticThreadgroupMemoryLength>dev.maxThreadgroupMemoryLength)) {
             q38d_gpu_destroy(g); return result(e,Q38_UNSUPPORTED);
         }
-        if (i>=Q38D_SPLIT_MMA) {   /* 4 simdgroups and 29 KB of threadgroup memory, or the R2.1 kernel */
-            if (p.maxTotalThreadsPerThreadgroup<128 || p.threadExecutionWidth!=32 ||
+        if (i>=Q38D_SPLIT_MMA) {   /* 4 simdgroups and 13 KB of threadgroup memory (merge: d threads), or the R2.1 kernels */
+            if (p.maxTotalThreadsPerThreadgroup<(i==Q38D_MERGE_MMA_BATCH ? 256u : 128u) || p.threadExecutionWidth!=32 ||
                 p.staticThreadgroupMemoryLength>dev.maxThreadgroupMemoryLength) g->mma=false;
             g->pipeline[i]=(__bridge_retained void *)p;
             continue;
@@ -170,11 +170,15 @@ Qwen38Status q38d_attend_encode(Q38DGpu *g,Qwen38GpuCommand cmd,const Q38DGpuArg
         if (overlaps(part,need,v[i],v[i].bytes)) return result(e,Q38_INVALID_ARGUMENT);
     Q38DGpuArgs s=*a; s.r=keys; s.pos=splits;  /* split kernels: r = keys per split, pos = splits */
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
-    bind(g,cmd,use_mma(g,a->h,a->j,a->d,keys) ? Q38D_SPLIT_MMA : Q38D_SPLIT,&s,v,6);
+    const bool mma=use_mma(g,a->h,a->j,a->d,keys);
+    /* P5.2: an MMA threadgroup covers Q38D_MMA_GROUP splits; the merge sees its partials. */
+    const uint32_t parts=mma ? (splits+Q38D_MMA_GROUP-1)/Q38D_MMA_GROUP : splits;
+    bind(g,cmd,mma ? Q38D_SPLIT_MMA : Q38D_SPLIT,&s,v,6);
     [enc setBuffer:(__bridge id<MTLBuffer>)part.buffer offset:part.offset_bytes atIndex:8];
-    [enc dispatchThreadgroups:MTLSizeMake(splits,a->j,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
-    if (splits==1) return result(e,Q38_OK);
+    [enc dispatchThreadgroups:MTLSizeMake(parts,a->j,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+    if (parts==1) return result(e,Q38_OK);
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    s.pos=parts;
     bind(g,cmd,Q38D_MERGE,&s,v,6);
     [enc setBuffer:(__bridge id<MTLBuffer>)part.buffer offset:part.offset_bytes atIndex:8];
     [enc dispatchThreadgroups:MTLSizeMake(a->h,1,1) threadsPerThreadgroup:MTLSizeMake(a->d,1,1)];
@@ -375,13 +379,16 @@ static Qwen38Status layer_batch(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
     Q38DGpuArgs at={.h=h,.j=j,.d=d};
     uint32_t most_keys; { uint32_t splits; q38d_attend_splits(ids_stride,&splits,&most_keys); } /* m <= budget+r-1 */
     const uint32_t split_op=use_mma(g,h,j,d,most_keys) ? Q38D_SPLIT_MMA_BATCH : Q38D_SPLIT_BATCH;
-    for (uint32_t first=0;first<t;first+=Q38D_BATCH_SPLIT_TOKENS) {
-        b.first=first; b.count=MIN(Q38D_BATCH_SPLIT_TOKENS,t-first);
+    /* P5.2: the MMA path writes MAX_SPLITS/GROUP partials per token, so the same buffer holds GROUP x the tokens. */
+    const uint32_t step=split_op==Q38D_SPLIT_MMA_BATCH ? Q38D_BATCH_SPLIT_TOKENS*Q38D_MMA_GROUP : Q38D_BATCH_SPLIT_TOKENS;
+    for (uint32_t first=0;first<t;first+=step) {
+        b.first=first; b.count=MIN(step,t-first);
         Qwen38GpuSpan v[]={row(l->qr,0,t),row(l->gate,0,t),row(l->key_cache,0,pos0+t),row(l->value_cache,0,pos0+t),
             l->bids,row(l->out,0,t),l->bpart};
-        batch(g,cmd,split_op,&at,&b,v,7,MTLSizeMake(Q38D_MAX_SPLITS,j,b.count),MTLSizeMake(128,1,1),true);
+        batch(g,cmd,split_op,&at,&b,v,7,MTLSizeMake(split_op==Q38D_SPLIT_MMA_BATCH ? Q38D_MAX_SPLITS/Q38D_MMA_GROUP : Q38D_MAX_SPLITS,
+              j,b.count),MTLSizeMake(128,1,1),true);
         wait_all(cmd);
-        batch(g,cmd,Q38D_MERGE_BATCH,&at,&b,v,7,MTLSizeMake(h,b.count,1),MTLSizeMake(d,1,1),true);
+        batch(g,cmd,split_op==Q38D_SPLIT_MMA_BATCH ? Q38D_MERGE_MMA_BATCH : Q38D_MERGE_BATCH,&at,&b,v,7,MTLSizeMake(h,b.count,1),MTLSizeMake(d,1,1),true);
         wait_all(cmd);
     }
     return result(e,Q38_OK);

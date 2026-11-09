@@ -6,6 +6,23 @@ Two lines per session: what was done, what comes next. Newest entry first.
 
 Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
 
+### P5.2 — four splits per MMA threadgroup: qsa.core 5.46 -> 4.60 s at 8K
+
+Ablations on P5.1: indexer scores ~0.63 s, merge ~0.84 s, the MMA body past one key per
+split ~2.23 s (near 60% of the FP32 MMA peak already), ~1.8 s fixed per-split cost and small
+stages. One MMA threadgroup now covers 4 consecutive R2.1 splits with an online softmax (O
+rescaled by an MMA against a diagonal tile when the row max grows), so the merge reads 4x
+fewer partials and the id scan, Q tiles and barriers are paid once per 4 splits: 4.83 s. The
+partial buffer then holds 128 tokens instead of 32, so the batch issues 4x fewer split/merge
+pairs: 4.60 s. Still a function of m only; batch and replay stay bitwise equal (g2-parts).
+
+Correctness: attend_fast unchanged (max 2.23e-4); the kernel against the oracle at every m
+900..1100 and a sweep to 2051 (232 cases) within 2.3e-6. Real FP32 logits vs the R2.1 kernel
+within 3.1e-6 up to N 950, then 0.074 at N 1000: the route log shows identical expert sets on
+every layer of tokens 0..219 and the first difference at token 220, layer 19 — the R3.1
+near-tie (gap 4e-8), flipped by this rounding and not by P5.1's. G3 PASS 2.17e-7.
+Lesson: `Q38_ROUTE_LOG` turns "probably a near-tie" into the exact (token, layer) in two runs.
+
 ### P5.1 — split attention on simdgroup matrices: qsa.core 8.65 -> 5.46 s at 8K
 
 A fresh 8K profile (main 78ea2a8) put qsa.core first in half mode: 8.65 of 28.3 s GPU,
