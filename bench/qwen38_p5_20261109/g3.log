@@ -1,0 +1,218 @@
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -fobjc-arc tests/test_qwen38_forward_gpu.m src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/qwen38_profile.m src/gpu_weights.m src/qwen38_expert_pool.c -framework Metal -framework Foundation -lm -o build/qwen38-g2/forward_real
+clang -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror -ffp-contract=off -fno-fast-math -Isrc -g -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -fobjc-arc tests/test_qwen38_g2_parts.m src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c src/qwen38_moe.c src/qwen38_base.c src/qwen38_conv.c src/qwen38_gdn.c src/qwen38_config.c src/qwen38_weights.c src/qwen38_packed.c src/gguf_plan.c src/gguf.c src/gguf_reader.c src/util.c src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/qwen38_profile.m src/gpu_weights.m src/qwen38_expert_pool.c -framework Metal -framework Foundation -lm -o build/qwen38-g2/test_parts
+env PICOFORGE_SYSTEM= PICOFORGE_GEMM_MIN_TILES=0 PICOFORGE_GROUPED_MIN_PAIRS=256 HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/synth/make_qwen38_graph.py
+/Users/cristiancirje/Desktop/Dev/picoforge/build/qwen38-g1/graph.gguf: 145 tensors, 4720640 bytes
+./tools/venv/bin/python -B tools/qwen38_gpu_lock.py --timeout 60 -- env PICOFORGE_SYSTEM= PICOFORGE_GEMM_MIN_TILES=0 PICOFORGE_GROUPED_MIN_PAIRS=256 HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 ./tools/venv/bin/python -B tools/qwen38_g3.py --checkpoint "/Users/cristiancirje/Desktop/Dev/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --dwarfstar "/Users/cristiancirje/Desktop/Dev/ds4-qwen38-baseline" --output "build/qwen38-g3-p5-mma"
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+{
+  "hidden_max": 3.6189653337768167e-07,
+  "fp32_reference": {
+    "scaled": 2.1684093690897293e-07,
+    "absolute": 5.7220458984375e-06,
+    "argmax_matches": 12,
+    "margin_decided": 12,
+    "per_token_scaled": [
+      8.953438003798764e-08,
+      1.4456062460598193e-07,
+      3.4837252895881483e-07,
+      2.8716900182926656e-07,
+      2.1361204293431174e-07,
+      1.9434782957958418e-07,
+      2.749630330134485e-07,
+      2.1775455998009433e-07,
+      2.4964016450621136e-07,
+      2.9914455535153294e-07,
+      2.552864042630254e-07,
+      2.5349579925197536e-07
+    ],
+    "per_token_margin": [
+      0.28656578063964844,
+      12.296346664428711,
+      0.0073604583740234375,
+      0.9246845245361328,
+      3.666790008544922,
+      4.601741790771484,
+      1.3789196014404297,
+      8.349420547485352,
+      3.6648025512695312,
+      3.5181493759155273,
+      6.9058380126953125,
+      5.868039131164551
+    ],
+    "native_top5": [
+      [
+        846,
+        8678,
+        1785,
+        2244,
+        1156
+      ],
+      [
+        198,
+        248046,
+        271,
+        248044,
+        220
+      ],
+      [
+        2523,
+        3710,
+        1,
+        32,
+        96220
+      ],
+      [
+        248046,
+        264,
+        449,
+        728,
+        279
+      ],
+      [
+        248046,
+        1970,
+        220,
+        1957,
+        5148
+      ],
+      [
+        248046,
+        18,
+        17,
+        1970,
+        98874
+      ],
+      [
+        248046,
+        1970,
+        13,
+        5148,
+        18910
+      ],
+      [
+        248046,
+        310,
+        364,
+        421,
+        303
+      ],
+      [
+        248046,
+        264,
+        1510,
+        279,
+        1330
+      ],
+      [
+        248046,
+        17885,
+        3269,
+        87682,
+        9927
+      ],
+      [
+        248046,
+        421,
+        709,
+        2515,
+        1494
+      ],
+      [
+        5347,
+        8,
+        16,
+        11,
+        248046
+      ]
+    ],
+    "reference_top5": [
+      [
+        846,
+        8678,
+        1785,
+        2244,
+        1156
+      ],
+      [
+        198,
+        248046,
+        271,
+        248044,
+        220
+      ],
+      [
+        2523,
+        3710,
+        1,
+        32,
+        96220
+      ],
+      [
+        248046,
+        264,
+        449,
+        728,
+        279
+      ],
+      [
+        248046,
+        1970,
+        220,
+        1957,
+        5148
+      ],
+      [
+        248046,
+        18,
+        17,
+        1970,
+        98874
+      ],
+      [
+        248046,
+        1970,
+        13,
+        5148,
+        18910
+      ],
+      [
+        248046,
+        310,
+        364,
+        421,
+        303
+      ],
+      [
+        248046,
+        264,
+        1510,
+        279,
+        1330
+      ],
+      [
+        248046,
+        17885,
+        3269,
+        87682,
+        9927
+      ],
+      [
+        248046,
+        421,
+        709,
+        2515,
+        1494
+      ],
+      [
+        5347,
+        8,
+        16,
+        11,
+        248046
+      ]
+    ],
+    "top5_order_matches": 12
+  },
+  "stock_metal_pass": false,
+  "pass_fp32": true
+}

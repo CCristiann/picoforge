@@ -100,11 +100,11 @@
     },
     "attend_fast": {
       "tol": 0.000244140625,
-      "max": 0.00014589086709707223,
-      "p99": 7.3051355012039915e-06,
-      "samples": 103552,
-      "commit": "c50cf10 + the R2.1 working tree, measured with the harness of 'Add split-K decode attention'",
-      "note": "S = gate * sum_i p_i |v_i| (exact softmax weights). The split kernel sums each logit as 8 per-lane products then simd_sum (the oracle: 256 serial products) and rescales per key (the oracle: per tile of 16); the merge rescales once per split. A logit error is relative to |logit|, and exp turns it into a relative weight error, so (b) grows with logit size: up to 1.24e-6 (< 2^-19) for logits of std <= 1 (every real-dims and off-tile case), 2.0e-5 at std 16 and 1.46e-4 at std 256 (attend:sharp64, logits ~ +-1000, ulp 6e-5), which sets tol. On every case the fast kernel is closer to FP64 than the oracle (condition (a) fraction 4.6e-5..4.7e-3 against 2.2e-4..8.8e-3)."
+      "max": 0.00022326186982121317,
+      "p99": 3.045989490731424e-06,
+      "samples": 111744,
+      "commit": "78ea2a8 + the P5.1 working tree (MMA split kernel for d 256, 8..16 heads per KV head, <= 40 keys per split; the R2.1 split kernel elsewhere)",
+      "note": "S = gate * sum_i p_i |v_i| (exact softmax weights). The split kernel sums each logit as 8 per-lane products then simd_sum (the oracle: 256 serial products) and rescales per key (the oracle: per tile of 16); the merge rescales once per split. A logit error is relative to |logit|, and exp turns it into a relative weight error, so (b) grows with logit size: up to 1.24e-6 (< 2^-19) for logits of std <= 1 (every real-dims and off-tile case), 2.0e-5 at std 16 and 1.46e-4 at std 256 (attend:sharp64, logits ~ +-1000, ulp 6e-5), which sets tol. On every case the fast kernel is closer to FP64 than the oracle (condition (a) fraction 4.6e-5..4.7e-3 against 2.2e-4..8.8e-3). P5.1: the MMA split kernel sums each logit as 8-term MMA steps per feature quarter, the quarters in order, and weights the whole split at once (no per-key rescale); its max is 2.23e-4 at attend:sharp64 (R2.1 kernel 1.46e-4), still under 2^-12, and 0.4-2.4e-6 at std <= 1."
     },
     "gdn_scan_fast": {
       "tol": 4.76837158203125e-07,

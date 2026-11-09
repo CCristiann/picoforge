@@ -1,0 +1,13 @@
+{"n":16,"pair":"mma-vs-split","scaled": 7.798227709931444e-07, "absolute": 2.1219253540039062e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":64,"pair":"mma-vs-split","scaled": 9.226544183267462e-07, "absolute": 2.288818359375e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":256,"pair":"mma-vs-split","scaled": 3.1015738346688158e-06, "absolute": 6.771087646484375e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":1000,"pair":"mma-vs-split","scaled": 2.269425315750326e-06, "absolute": 6.0558319091796875e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":2100,"pair":"mma-vs-split","scaled": 1.3651717386047166e-06, "absolute": 3.337860107421875e-05, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":4000,"pair":"mma-vs-split","scaled": 5.038217680113483e-06, "absolute": 0.0001544952392578125, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":5000,"pair":"mma-vs-split","scaled": 2.0788148532445375e-05, "absolute": 0.0006260871887207031, "argmax_matches": 17, "margin_decided": 17, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": true}
+{"n":6000,"pair":"mma-vs-split","scaled": 0.06674891275437697, "absolute": 1.7854399681091309, "argmax_matches": 17, "margin_decided": 15, "top5_order_matches": 11, "rows": 17, "gate": 0.001, "pass": false}
+{"n":7000,"pair":"mma-vs-split","scaled": 0.02592576424313262, "absolute": 0.728358268737793, "argmax_matches": 17, "margin_decided": 16, "top5_order_matches": 15, "rows": 17, "gate": 0.001, "pass": false}
+{"n":5000,"pair":"split+refgemm-vs-split","scaled": 0.0688175428794749, "absolute": 2.072612762451172, "argmax_matches": 16, "margin_decided": 6, "top5_order_matches": 10, "rows": 17, "gate": 0.001, "pass": false}
+{"n":6000,"pair":"split+refgemm-vs-split","scaled": 0.07725068222479084, "absolute": 2.066347599029541, "argmax_matches": 17, "margin_decided": 12, "top5_order_matches": 8, "rows": 17, "gate": 0.001, "pass": false}
+{"n":8063,"pair":"fp32 mma-vs-split","scaled": 0.03793897991755655, "absolute": 1.0484275817871094, "argmax_matches": 17, "margin_decided": 16, "top5_order_matches": 17, "rows": 17, "gate": 0.001, "pass": false}
+{"n":8063,"pair":"half mma-vs-split","scaled": 0.05564933695496302, "absolute": 1.563249111175537, "argmax_matches": 17, "margin_decided": 11, "top5_order_matches": 9, "rows": 17, "gate": 0.001, "pass": false}

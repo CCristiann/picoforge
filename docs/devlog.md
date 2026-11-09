@@ -2,6 +2,35 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## P5 (from 2026-11-09): attention in the long prefill
+
+Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
+
+### P5.1 — split attention on simdgroup matrices: qsa.core 8.65 -> 5.46 s at 8K
+
+A fresh 8K profile (main 78ea2a8) put qsa.core first in half mode: 8.65 of 28.3 s GPU,
+the same in FP32 (no GEMM in it, so half mode never touched it). Ablations on the real
+prompt: the split attention body is 5.7 s of it (one key per split: 8.65 -> 2.98 s), the
+O(n^2) block rank only ~0.3 s. attend_split ran one key at a time, a simd_sum per key and
+head and a rescale per key: ~0.75 TFLOPS. The new kernel (FP32 MMA, `attend_split_mma`)
+keeps the split layout and the partial format, so the merge is unchanged: the 8..16 heads
+of a KV group are two 8x8 row tiles (overlapping for 12), each simdgroup owns 64 of the 256
+features, S = Q K^T per chunk of 8 keys, weights for the whole split at once, O = P V
+stored straight to the partials. First version staged Q and O in 29 KB of threadgroup
+memory and was *slower* (10.99 s): one threadgroup per core. 13 KB and the id scan shared
+by the 128 threads instead of repeated by every simdgroup: 5.46 s. Used for d 256, 8..16
+heads per KV head, <= 40 keys per split (prefill and decode); the R2.1 kernel elsewhere and
+under `Q38_QSA_SPLIT=1`.
+
+Correctness: attend_fast cases within tol 2^-12 (max 2.23e-4 at attend:sharp64, R2.1
+1.46e-4; tolerance entry re-measured, tol unchanged), two new cases at the tiles' edges (8
+and 16 heads). G3 PASS scaled 2.17e-7, 12/12. Real Q2 FP32 logits, MMA vs R2.1 split: N 16
+.. 5000 within 2.1e-5 scaled, argmax 17/17; from N 6000 a jump to 0.026-0.067 (8K 0.038,
+argmax still 17/17). Not a drift: it is a step between 5000 and 6000, and the known R3.1
+regime (router top-10 near-ties): the already accepted GEMM reorder (`Q38_REF_KERNELS=gemm`)
+moves the same logits by 0.069 at N 5000 and 0.077 at 6000. 8K prefill (one run each, AC):
+FP32 50.7 -> 47.1 s, half 29.8 -> 26.6 s.
+
 ## P4 (from 2026-11-08): the GDN scan in the long prefill
 
 Branch `perf/qwen38-gdn-chunk`. Evidence: `bench/qwen38_p4_20261108/README.md`.

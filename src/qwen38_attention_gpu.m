@@ -6,7 +6,12 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-struct Q38DGpu { void *device, *pipeline[Q38D_ALL_OPS]; bool scalar_attention, reference; };
+struct Q38DGpu { void *device, *pipeline[Q38D_ALL_OPS]; bool scalar_attention, reference, mma; };
+/* P5.1: the MMA split kernel for this layout and this many keys per split (else the
+ * R2.1 split kernel; Q38_QSA_SPLIT set at creation keeps the R2.1 kernel always). */
+static bool use_mma(const Q38DGpu *g, uint32_t h, uint32_t j, uint32_t d, uint32_t keys) {
+    return g->mma && d==Q38D_MMA_D && j && h%j==0 && h/j>=8 && h/j<=16 && keys<=Q38D_MMA_KEYS;
+}
 static Qwen38Status result(Qwen38Error *e,Qwen38Status code) {
     if (e) { memset(e,0,sizeof(*e)); e->code=code; } return code;
 }
@@ -30,9 +35,11 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
         @"q38d_attend_split_gpu",@"q38d_attend_merge_gpu",
         @"q38d_scores_fast_gpu",@"q38d_rank_fast_gpu",@"q38d_compact_fast_gpu",@"q38d_rope_fast_gpu",
         @"q38d_rope_batch_gpu",@"q38d_pool_batch_gpu",@"q38d_scores_batch_gpu",@"q38d_rank_batch_gpu",
-        @"q38d_compact_batch_gpu",@"q38d_tail_batch_gpu",@"q38d_split_batch_gpu",@"q38d_merge_batch_gpu"};
+        @"q38d_compact_batch_gpu",@"q38d_tail_batch_gpu",@"q38d_split_batch_gpu",@"q38d_merge_batch_gpu",
+        @"q38d_attend_split_mma_gpu",@"q38d_split_mma_batch_gpu"};
     g->scalar_attention=getenv("Q38_QSA_SCALAR")!=NULL;
     g->reference=q38_ref_kernels("attention");
+    g->mma=getenv("Q38_QSA_SPLIT")==NULL;
     if (g->scalar_attention) names[Q38D_ATTEND]=@"q38d_attend_scalar_gpu";
     for (size_t i=0;i<Q38D_ALL_OPS;++i) {
         id<MTLFunction> f=[lib newFunctionWithName:names[i]];
@@ -41,6 +48,12 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
         if (i==Q38D_ATTEND && !g->scalar_attention &&
             (p.maxTotalThreadsPerThreadgroup<256 || p.staticThreadgroupMemoryLength>dev.maxThreadgroupMemoryLength)) {
             q38d_gpu_destroy(g); return result(e,Q38_UNSUPPORTED);
+        }
+        if (i>=Q38D_SPLIT_MMA) {   /* 4 simdgroups and 29 KB of threadgroup memory, or the R2.1 kernel */
+            if (p.maxTotalThreadsPerThreadgroup<128 || p.threadExecutionWidth!=32 ||
+                p.staticThreadgroupMemoryLength>dev.maxThreadgroupMemoryLength) g->mma=false;
+            g->pipeline[i]=(__bridge_retained void *)p;
+            continue;
         }
         if ((i==Q38D_SPLIT && p.maxTotalThreadsPerThreadgroup<128) || (i>=Q38D_MERGE && p.maxTotalThreadsPerThreadgroup<256))
             g->reference=true;  /* the fast path needs 4 simdgroups and one thread per feature */
@@ -157,7 +170,7 @@ Qwen38Status q38d_attend_encode(Q38DGpu *g,Qwen38GpuCommand cmd,const Q38DGpuArg
         if (overlaps(part,need,v[i],v[i].bytes)) return result(e,Q38_INVALID_ARGUMENT);
     Q38DGpuArgs s=*a; s.r=keys; s.pos=splits;  /* split kernels: r = keys per split, pos = splits */
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
-    bind(g,cmd,Q38D_SPLIT,&s,v,6);
+    bind(g,cmd,use_mma(g,a->h,a->j,a->d,keys) ? Q38D_SPLIT_MMA : Q38D_SPLIT,&s,v,6);
     [enc setBuffer:(__bridge id<MTLBuffer>)part.buffer offset:part.offset_bytes atIndex:8];
     [enc dispatchThreadgroups:MTLSizeMake(splits,a->j,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
     if (splits==1) return result(e,Q38_OK);
@@ -360,11 +373,13 @@ static Qwen38Status layer_batch(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
     batch(g,cmd,Q38D_TAIL_BATCH,&a,&b,&l->bids,1,MTLSizeMake(r,t,1),MTLSizeMake(MIN(r,256u),1,1),false);
     wait_all(cmd);
     Q38DGpuArgs at={.h=h,.j=j,.d=d};
+    uint32_t most_keys; { uint32_t splits; q38d_attend_splits(ids_stride,&splits,&most_keys); } /* m <= budget+r-1 */
+    const uint32_t split_op=use_mma(g,h,j,d,most_keys) ? Q38D_SPLIT_MMA_BATCH : Q38D_SPLIT_BATCH;
     for (uint32_t first=0;first<t;first+=Q38D_BATCH_SPLIT_TOKENS) {
         b.first=first; b.count=MIN(Q38D_BATCH_SPLIT_TOKENS,t-first);
         Qwen38GpuSpan v[]={row(l->qr,0,t),row(l->gate,0,t),row(l->key_cache,0,pos0+t),row(l->value_cache,0,pos0+t),
             l->bids,row(l->out,0,t),l->bpart};
-        batch(g,cmd,Q38D_SPLIT_BATCH,&at,&b,v,7,MTLSizeMake(Q38D_MAX_SPLITS,j,b.count),MTLSizeMake(128,1,1),true);
+        batch(g,cmd,split_op,&at,&b,v,7,MTLSizeMake(Q38D_MAX_SPLITS,j,b.count),MTLSizeMake(128,1,1),true);
         wait_all(cmd);
         batch(g,cmd,Q38D_MERGE_BATCH,&at,&b,v,7,MTLSizeMake(h,b.count,1),MTLSizeMake(d,1,1),true);
         wait_all(cmd);

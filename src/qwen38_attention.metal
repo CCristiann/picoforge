@@ -499,3 +499,144 @@ kernel void q38d_merge_batch_gpu(device const float *gate [[buffer(1)]], device 
     attend_merge(gate+row,ids+(ulong)z*b.ids_stride,out+row,s,error,part+(ulong)h.y*Q38D_MAX_SPLITS*a.h*(a.d+2),
                  h.x,f,tn.x,invalid);
 }
+
+/* ---- P5.1 split attention on simdgroup matrices (FP32 MMA, no reduced precision).
+ * attend_split runs one key at a time: per key and head a 256-term dot as 8 products
+ * per lane plus a simd_sum, then a rescale of the accumulator: ~0.75 TFLOPS, 5.7 s of
+ * the 8K prefill. Here one threadgroup (4 simdgroups) is still one split of one KV
+ * head, but its G query heads (8 <= G <= 16) are the rows of two 8x8 tiles, A = rows
+ * 0..7 and B = rows G-8..G-1 (they overlap when G < 16, never past the group), loaded
+ * straight from q; each simdgroup owns one quarter (64) of the d = 256 features:
+ *   1. per chunk of 8 keys: S = Q K^T over the quarter (K staged by the simdgroup),
+ *      the four partial tiles added by one thread per element into the logits;
+ *   2. one thread per (row, 8 columns): scale, row max over the whole split, exp
+ *      weights and their sum: no per-key rescale;
+ *   3. O = P V, each simdgroup its 64 columns (V staged like K), stored straight to
+ *      the partials (or to out, then scaled in place by 1/l and the gate).
+ * 13 KB of threadgroup memory (a first version staged Q and O there, 29 KB, and was
+ * slower than attend_split: one threadgroup per core). Same partials (max, sum, acc),
+ * split layout and error bits as attend_split; the sums run in another order (8-term
+ * MMA steps, four quarters), so the gate is the attend_fast tolerance, not its bits.
+ * Q38D_MMA_D (256) and Q38D_MMA_KEYS (40 = 5 chunks of 8) come from qwen38_d_internal.h. */
+#define Q38D_MMA_FLOATS (4u*512u + 512u + 16u*Q38D_MMA_KEYS + 36u)
+static inline void attend_split_mma(device const float *q, device const float *gate, device const float *k,
+    device const float *v, device const uint *ids, device float *out, Q38DSplit a, device atomic_uint *error,
+    device float *part, uint2 tg, ushort sg, ushort lane, threadgroup float *mem) {
+    const uint group=a.h/a.j, kv=tg.y, t=sg*32u+lane, c0=sg*64u, rb=group-8u;
+    threadgroup float *own=mem+sg*512u;             /* 8 keys x 64 features of K, then of V */
+    threadgroup float *sp=mem+2048u;                /* [4 quarters][16 rows][8] partial S of a chunk */
+    threadgroup float *pw=sp+512u;                  /* [16][KEYS] logits, then weights */
+    threadgroup float *st=pw+16u*Q38D_MMA_KEYS;     /* [16] row max, [16] row sum, [4] invalid flags */
+    bool invalid=false;   /* the 128 threads share the id scan; the flags make the return uniform */
+    for (uint i=t;i<a.m;i+=128u) invalid|=ids[i]>=a.n || (i && ids[i]<=ids[i-1]);
+    invalid=simd_any(invalid);
+    if (!lane) st[32u+sg]=invalid ? 1.0f : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (st[32u]+st[33u]+st[34u]+st[35u]!=0.0f) { if (!tg.x && !tg.y && !t) fail(error,2); return; }
+    const uint k0=tg.x*a.r, nk=min(a.m,k0+a.r)-k0, chunks=(nk+7)/8;
+    bool bad=false, range=false;
+    device const float *qg=q+(ulong)kv*group*a.d+c0;
+    for (uint i=lane;i<group*64u;i+=32) bad|=!isfinite(qg[(i/64u)*a.d+i%64u]);
+    simdgroup_float8x8 qa[8], qb[8];
+    for (uint ks=0;ks<8;ks++) { simdgroup_load(qa[ks],qg+ks*8u,a.d); simdgroup_load(qb[ks],qg+(ulong)rb*a.d+ks*8u,a.d); }
+    for (uint c=0;c<chunks;c++) {                   /* 1. logits, chunk of 8 keys */
+        for (uint i=lane;i<512u;i+=32) {            /* 8 keys x 64 features, missing keys zero */
+            const uint r=c*8u+i/64u; float x=0.0f;
+            if (r<nk) { x=k[((ulong)ids[k0+r]*a.j+kv)*a.d+c0+i%64u]; bad|=!isfinite(x); }
+            own[i]=x;
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_float8x8 s0=make_filled_simdgroup_matrix<float,8,8>(0.0f), s1=s0;
+        for (uint ks=0;ks<8;ks++) {
+            simdgroup_float8x8 kt; simdgroup_load(kt,own+ks*8u,64,ulong2(0,0),true);
+            simdgroup_multiply_accumulate(s0,qa[ks],kt,s0);
+            simdgroup_multiply_accumulate(s1,qb[ks],kt,s1);
+        }
+        simdgroup_store(s0,sp+sg*128u,8); simdgroup_store(s1,sp+sg*128u+rb*8u,8);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (t/8u<group) {                           /* row t/8, key t%8: quarters in order */
+            const uint r=t/8u, col=t%8u;
+            pw[r*Q38D_MMA_KEYS+c*8u+col]=((sp[r*8u+col]+sp[128u+r*8u+col])+sp[256u+r*8u+col])+sp[384u+r*8u+col];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    {                                               /* 2. thread t: row t/8, columns t%8 + 8i */
+        const uint r=t/8u, c=t%8u; const float scale=1.0f/sqrt(float(a.d));
+        float x[Q38D_MMA_KEYS/8u], mx=-INFINITY, l=0.0f;
+        for (uint i=0;i<Q38D_MMA_KEYS/8u;i++) {
+            const uint col=c+8u*i; x[i]=-INFINITY;
+            if (col<nk && r<group) { const float s=pw[r*Q38D_MMA_KEYS+col]*scale; bad|=!isfinite(s); x[i]=s; mx=max(mx,s); }
+        }
+        for (ushort o=1;o<8;o<<=1) mx=max(mx,simd_shuffle_xor(mx,o));
+        for (uint i=0;i<Q38D_MMA_KEYS/8u;i++) {
+            const uint col=c+8u*i; const float w=col<nk && r<group ? exp(x[i]-mx) : 0.0f;
+            pw[r*Q38D_MMA_KEYS+col]=w; l+=w;
+        }
+        for (ushort o=1;o<8;o<<=1) l+=simd_shuffle_xor(l,o);
+        if (!c) { st[r]=mx; st[16u+r]=l; }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_float8x8 oa[8], ob[8];
+    for (uint ct=0;ct<8;ct++) { oa[ct]=make_filled_simdgroup_matrix<float,8,8>(0.0f); ob[ct]=oa[ct]; }
+    for (uint c=0;c<chunks;c++) {                   /* 3. O += P V, chunk of 8 keys */
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i=lane;i<512u;i+=32) {
+            const uint r=c*8u+i/64u; float x=0.0f;
+            if (r<nk) { x=v[((ulong)ids[k0+r]*a.j+kv)*a.d+c0+i%64u]; bad|=!isfinite(x); }
+            own[i]=x;
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_float8x8 pa, pb;
+        simdgroup_load(pa,pw+c*8u,Q38D_MMA_KEYS); simdgroup_load(pb,pw+rb*Q38D_MMA_KEYS+c*8u,Q38D_MMA_KEYS);
+        for (uint ct=0;ct<8;ct++) {
+            simdgroup_float8x8 vt; simdgroup_load(vt,own+ct*8u,64);
+            simdgroup_multiply_accumulate(oa[ct],pa,vt,oa[ct]);
+            simdgroup_multiply_accumulate(ob[ct],pb,vt,ob[ct]);
+        }
+    }
+    const uint pitch=a.pos==1 ? a.d : a.d+2;        /* acc rows of the group: out, or the partials */
+    device float *dst=a.pos==1 ? out+(ulong)kv*group*a.d : part+((ulong)tg.x*a.h+kv*group)*(a.d+2)+2;
+    for (uint ct=0;ct<8;ct++) {                     /* B after A: shared rows get the same values */
+        simdgroup_store(oa[ct],dst+c0+ct*8u,pitch); simdgroup_store(ob[ct],dst+(ulong)rb*pitch+c0+ct*8u,pitch);
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+    for (uint i=t;i<group*a.d;i+=128u) {
+        const uint r=i/a.d, f=i%a.d, h=kv*group+r;
+        const float gt=gate[h*a.d+f], l=st[16u+r];
+        bad|=!isfinite(gt); range|=gt<0 || gt>1;
+        if (a.pos==1) {
+            bad|=!isfinite(l) || l<=0;
+            const float y=out[h*a.d+f]/l*gt; bad|=!isfinite(y);
+            out[h*a.d+f]=y;
+        } else if (!f) {
+            device float *p=part+((ulong)tg.x*a.h+h)*(a.d+2);
+            p[0]=st[r]; p[1]=l;
+        }
+    }
+    if (bad) fail(error,1);
+    if (range) fail(error,2);
+}
+kernel void q38d_attend_split_mma_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device float *part [[buffer(8)]], uint2 tg [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float mem[Q38D_MMA_FLOATS];
+    attend_split_mma(q,gate,k,v,ids,out,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,part,tg,sg,lane,mem);
+}
+kernel void q38d_split_mma_batch_gpu(device const float *q [[buffer(0)]], device const float *gate [[buffer(1)]],
+    device const float *k [[buffer(2)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]],
+    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device float *part [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]], uint3 tg [[threadgroup_position_in_grid]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float mem[Q38D_MMA_FLOATS];
+    const uint z=b.first+tg.z;
+    if (tg.z>=b.count) return;
+    const Q38DSplit s=q38d_token_split(a,b,z);
+    if (tg.x>=s.pos) return;
+    const ulong row=(ulong)z*a.h*a.d;
+    attend_split_mma(q+row,gate+row,k,v,ids+(ulong)z*b.ids_stride,out+row,s,error,
+                     part+(ulong)tg.z*Q38D_MAX_SPLITS*a.h*(a.d+2),tg.xy,sg,lane,mem);
+}

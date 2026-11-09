@@ -2208,13 +2208,14 @@ class FastKernelTests(unittest.TestCase):
     def test_attend_fast_against_oracle_and_fp64(self):
         """The real dims (24 heads over 2 KV heads, d 256) from 1 key to the 2048-key budget and past the 64-split
         cap (keys per split grow), then groups off the 4x4 simdgroup slices (1, 3, 5, 12, 16 heads per KV
-        head), d = 32 (one feature per lane) and 128, and sharp logits (one key dominates)."""
+        head), d = 32 (one feature per lane) and 128, the P5.1 MMA tiles' edges (8 and 16 heads at d 256: A and B
+        disjoint, and B equal to rows 0..7), and sharp logits (one key dominates)."""
         rng = np.random.default_rng(4099)
         for m in (1, 2, 31, 32, 33, 64, 65, 100, 1000, 2047, 2048, 2049, 4100):
             with self.subTest(m=m):
                 self.attend_case(f"attend:{ATTEND_REAL}m{m}", attend_inputs(rng, ATTEND_REAL, max(m, 4 * m // 3), m))
         for dims, m in (((4, 4, 32), 70), ((3, 1, 128), 33), ((10, 2, 64), 200), ((12, 1, 256), 129),
-                        ((32, 2, 96), 500), ((16, 16, 256), 1)):
+                        ((32, 2, 96), 500), ((16, 16, 256), 1), ((16, 2, 256), 300), ((16, 1, 256), 77)):
             with self.subTest(dims=dims, m=m):
                 self.attend_case(f"attend:{dims}m{m}", attend_inputs(rng, dims, m + 7, m))
         for sharp in (16.0, 64.0):
