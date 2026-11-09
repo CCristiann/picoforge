@@ -6,7 +6,7 @@ Two lines per session: what was done, what comes next. Newest entry first.
 
 Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
 
-### P5.2 — four splits per MMA threadgroup: qsa.core 5.46 -> 4.60 s at 8K
+### P5.2 — two splits per MMA threadgroup: qsa.core 5.46 -> 5.01 s at 8K
 
 Ablations on P5.1: indexer scores ~0.63 s, merge ~0.84 s, the MMA body past one key per
 split ~2.23 s (near 60% of the FP32 MMA peak already), ~1.8 s fixed per-split cost and small
@@ -22,6 +22,14 @@ within 3.1e-6 up to N 950, then 0.074 at N 1000: the route log shows identical e
 every layer of tokens 0..219 and the first difference at token 220, layer 19 — the R3.1
 near-tie (gap 4e-8), flipped by this rounding and not by P5.1's. G3 PASS 2.17e-7.
 Lesson: `Q38_ROUTE_LOG` turns "probably a near-tie" into the exact (token, layer) in two runs.
+
+Then the decode: at 8K context G=4 took qsa.core from 2.18 to 3.52 ms/token (the decode is
+latency bound and a threadgroup's sub-blocks run in series; splitting O by feature quarter
+over 4 threadgroups changed nothing, S is the serial part). Clean rebuilds per group size:
+G=1 5.90 s / 2.18 ms, G=2 5.01 s / 2.51 ms, G=4 4.59 s / 3.52 ms. Chosen G=2: -0.9 s per 8K
+prefill for +0.33 ms per token. Second lesson: the Makefile rebuilt the metallib on a header
+change but not the host objects (only common.h was listed), so a G=2 metallib ran with a G=4
+host and stopped on error bit 1; every object now depends on every src header (163887f).
 
 ### P5.1 — split attention on simdgroup matrices: qsa.core 8.65 -> 5.46 s at 8K
 

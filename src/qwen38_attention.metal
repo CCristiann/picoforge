@@ -518,12 +518,14 @@ kernel void q38d_merge_batch_gpu(device const float *gate [[buffer(1)]], device 
  * split layout and error bits as attend_split; the sums run in another order (8-term
  * MMA steps, four quarters), so the gate is the attend_fast tolerance, not its bits.
  * Q38D_MMA_D (256) and Q38D_MMA_KEYS (40 = 5 chunks of 8) come from qwen38_d_internal.h. */
-/* P5.2: one threadgroup now covers Q38D_MMA_GROUP consecutive R2.1 splits (at most
- * 4 x 40 keys), one sub-block of r keys at a time with an online softmax: per sub-block
- * the row max M grows, O is rescaled by exp(M_old - M) with an MMA against a diagonal
- * tile, then O += P V. The merge reads 4x fewer partials (it was ~0.84 s at 8K) and the
- * fixed cost of a threadgroup (id scan, Q tiles, barriers) is paid once per 4 splits.
- * Still a function of m only. */
+/* P5.2: one threadgroup now covers Q38D_MMA_GROUP (2) consecutive R2.1 splits, one
+ * sub-block of r keys at a time with an online softmax: per sub-block the row max M
+ * grows, O is rescaled by exp(M_old - M) with an MMA against a diagonal tile, then
+ * O += P V. The merge reads 2x fewer partials (it was ~0.84 s at 8K) and the fixed cost
+ * of a threadgroup (id scan, Q tiles, barriers) is paid once per 2 splits. 4 splits saved
+ * 0.4 s more of the 8K prefill but cost 1 ms per decoded token at 8K: the decode is
+ * latency bound and the sub-blocks of a threadgroup run in series. Still a function of
+ * m only, so prefill, replay and decode share the bits. */
 #define Q38D_MMA_FLOATS (4u*512u + 512u + 16u*Q38D_MMA_KEYS + 36u + 128u)
 static inline void attend_split_mma(device const float *q, device const float *gate, device const float *k,
     device const float *v, device const uint *ids, device float *out, Q38DSplit a, device atomic_uint *error,

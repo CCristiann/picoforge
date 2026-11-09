@@ -728,14 +728,15 @@ def run_index(mode, iq, blocks, visible, ratio, budget):
 
 def attend_parts(inputs):
     """Partials of q38d_attend_encode: the R2.1 splits (>= 32 keys each, at most 64), grouped 4 per
-    threadgroup by the P5.2 MMA kernel (d 256, 8..16 heads per KV head, <= 40 keys per split)."""
+    threadgroup by the P5.2 MMA kernel (d 256, 8..16 heads per KV head, <= 40 keys per split); 2 is
+    Q38D_MMA_GROUP in src/qwen38_d_internal.h."""
     q, m = inputs[0], len(inputs[4])
     h, d = q.shape[-2], q.shape[-1]
     j = inputs[2].shape[1]
     splits = min(64, max(1, -(-m // 32)))
     keys = -(-m // splits)
     mma = d == 256 and 8 <= h // j <= 16 and keys <= 40 and not os.environ.get("Q38_QSA_SPLIT")  # run_attend drops REF
-    return -(-splits // 4) if mma else splits
+    return -(-splits // 2) if mma else splits
 
 
 def attend_inputs(rng, dims, n, m, sharp=4.0):

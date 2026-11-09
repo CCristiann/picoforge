@@ -54,3 +54,19 @@ N 16..950 within 3.1e-6; N 1000 0.074 and 4000 0.043, argmax 17/17. The route lo
 agree on every layer of tokens 0..219; the first different expert set is token 220, layer 19
 (231 vs 366), the near-tie R3.1 found there (relative gap 4e-8); everything after follows.
 G3 (`p52/g3.log`): pass_fp32, 2.17e-7, 12/12.
+
+## P5.2 group size (consistent rebuilds; profile 8K half, prefill qsa.core / decode qsa.core)
+
+The first G=1/G=2 attempt was invalid: the Makefile did not rebuild host objects on a
+header change, so the host kept G=4 against a G=2/G=1 metallib (G=2 stopped on error bit 1).
+Fixed in 163887f; `p52/group-*` are clean rebuilds.
+
+| splits per threadgroup | prefill qsa.core | decode qsa.core (8K context) |
+|---|---|---|
+| 1 (`p52/group-1`) | 5.90 s | 2.18 ms/token |
+| 2 (`p52/group-2`, chosen) | 5.01 s | 2.51 ms/token |
+| 4 (`p52/group-4`) | 4.59 s | 3.52 ms/token |
+
+G=2: -0.9 s per 8K prefill for +0.33 ms per token at 8K (break-even after ~2700 generated
+tokens); G=4 breaks even after ~1000. Gates at G=2: attend_fast (max 2.23e-4), g2-parts, g2,
+g2-state, MTP, speculative, d-gpu green; G3 2.17e-7, 12/12.

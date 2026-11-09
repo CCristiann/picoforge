@@ -63,7 +63,7 @@ enum { Q38D_RANK = Q38D_GPU_OPS, Q38D_COMPACT, Q38D_TAIL, Q38D_COPY, Q38D_SPLIT,
 /* P5.1 MMA split attention: head dim it is written for, most keys per split. */
 #define Q38D_MMA_D 256u
 #define Q38D_MMA_KEYS 40u
-#define Q38D_MMA_GROUP 4u /* P5.2: R2.1 splits per MMA threadgroup */
+#define Q38D_MMA_GROUP 2u /* P5.2: R2.1 splits per MMA threadgroup (4: 8K prefill -0.4 s but decode +1 ms/token) */
 /* R3.3 batched prefill: the wire record of the batch kernels (Q38DBatch in the
  * kernel), tokens per split-attention dispatch, and the append size from which
  * q38d_layer_encode batches. */
