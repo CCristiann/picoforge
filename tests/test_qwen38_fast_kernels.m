@@ -1234,7 +1234,9 @@ static int rope_main(int argc,char **argv,const char *library) {
 /* R2.6 fused HC read tail against the fast sequence (HC_LOW, F16 up, HC_READ, HC_INJECT):
  *   hctail t K h E inject poison: seeded F16 up [h*E, K], low [t,K], normed [t,h*E], il [t,h];
  *     poison 1 puts a NaN in low[t-1, K-1]. Runs both on the same inputs, prints one line:
- *     "status S equal B words W1 W2 dispatches D1 D2" (B: act, gate, mixed, inject byte-equal).
+ *     "status S equal B words W1 W2 dispatches D1 D2 act A scaled X" (B: act, gate, mixed, inject
+ *     byte-equal; A: act and inject byte-equal; X: max |fused - sequence| / max(1, max |sequence|)
+ *     over gate and mixed).
  *   hcbench <fused|sequence> t K h E reps: 3 + 20 command buffers, reps encodes each. */
 static int hctail_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"hcbench");
@@ -1314,9 +1316,16 @@ static int hctail_main(int argc,char **argv,const char *library) {
             }
         }
         if (!timing) {
-            bool equal=true;
+            bool equal=true, same_act=true; double worst=0.0; /* Decode III: scaled error of gate and mixed */
             for (size_t b=3;b<7;b++) if (inj || b<6) equal=equal && !memcmp(buf[0][b].contents,buf[1][b].contents,buf[0][b].length);
-            printf("status %d equal %d words %u %u dispatches %u %u\n",status,equal,words[0],words[1],dispatches[0],dispatches[1]);
+            for (size_t b=3;b<7;b+=3) if (inj || b<6) same_act=same_act && !memcmp(buf[0][b].contents,buf[1][b].contents,buf[0][b].length);
+            for (size_t b=4;b<6;b++) {
+                const float *f=buf[0][b].contents, *q=buf[1][b].contents; double peak=1.0, diff=0.0;
+                for (size_t i=0;i<t*cols[b];i++) { peak=fmax(peak,fabs((double)q[i])); diff=fmax(diff,fabs((double)f[i]-(double)q[i])); }
+                worst=fmax(worst,diff/peak);
+            }
+            printf("status %d equal %d words %u %u dispatches %u %u act %d scaled %.3e\n",status,equal,words[0],words[1],
+                   dispatches[0],dispatches[1],same_act,worst);
         }
         q38c_gpu_destroy(ops);
         q38_packed_gpu_free(ctx);

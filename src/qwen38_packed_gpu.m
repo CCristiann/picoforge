@@ -14,7 +14,7 @@
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
                       *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST],
-                      *hc_tail, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
+                      *hc_tail, *hc_tail8, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
                       size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
@@ -162,6 +162,11 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
     ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
     ctx->hc_tail=fast_pipeline(hc_tail,Q38_HC_TAIL_SG);
+    if (!q38_ref_kernels("exact")) { /* Decode III: optional; absent -> the R2.6 kernel */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_tail8_f16"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->hc_tail8=p ? fast_pipeline(p,Q38_HC_TAIL_SG) : NULL;
+    }
     for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? Q38_DENSE_S : 1);
     for (size_t i=0;i<3;i++) ctx->gemm[i]=fast_pipeline(gemm[i],Q38_GEMM_SG);
     for (size_t i=0;i<3;i++) ctx->gemm_nax[i]=nax[i] ? fast_pipeline(nax[i],Q38_GEMM_SG) : NULL;
@@ -211,6 +216,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->f16) CFRelease(ctx->f16);
     if (ctx->f32) CFRelease(ctx->f32);
     if (ctx->hc_tail) CFRelease(ctx->hc_tail);
+    if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
@@ -841,7 +847,8 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *ctx, const Qwen38GpuCommand
         .width=(uint32_t)width,.inject=inj,.low=low.stride_bytes[0]/4,.normed=normed.stride_bytes[0]/4,
         .mixed=mixed.stride_bytes[0]/4,.il=inj ? il.stride_bytes[0]/4 : 0,.out=inj ? inject.stride_bytes[0]/4 : 0};
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->hc_tail];
+    const bool tail8=ctx->hc_tail8 && !(layout->k_logical%8) && !(wo%16) && !(layout->row_bytes%16);
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)(tail8 ? ctx->hc_tail8 : ctx->hc_tail)];
     [encoder setBuffer:a.weights offset:0 atIndex:0];
     for (size_t i=0;i<7;i++) { /* the absent il and inject bind low, never read or written */
         size_t j=buffer[i] ? i : 0;
