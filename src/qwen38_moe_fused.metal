@@ -285,6 +285,37 @@ DOWN_REDUCE_KERNEL(q38_moe_down_reduce_mxfp4, Q38Mxfp4)
  * other from 640 simdgroups: 91 GB/s at 10 slots in dbench). Same guards:
  * a bad slot sets bit 2 and (t, n..) is not written. */
 #define DOWN_SP_MAX_SLOTS 32
+/* Decode III: Q2_K chunk dot for the parallel-slot down, factored as
+ * dl * sum(q x) - ml * sum(x) with FMAs (~4 operations per weight instead of
+ * the decode-then-multiply 7): the same chunks and lane order as Q38Q2K, only
+ * each chunk's rounding differs (held to the moe_down tolerance). */
+struct Q38Q2KDot { static constant constexpr uint CHUNK = 16; };
+template <>
+inline float q38_quant_chunk<Q38Q2KDot>(device const uchar *row, device const float *x, uint k, uint c) {
+    const uint cols = min(16u, k - c * 16);
+    device const uchar *b = row + ulong(c / 16) * 84;
+    const uint j = c % 16, scale = b[j], shift = 2 * ((j % 8) / 2);
+    const half2 dm = *(device const half2 *)(b + 80);
+    const float dl = float(dm.x) * float(scale & 15u), ml = float(dm.y) * float(scale >> 4);
+    device const uint *q = (device const uint *)(b + 16 + (j / 8) * 32 + (j % 2) * 16);
+    device const float *xb = x + c * 16;
+    float sq = 0.0f, sx = 0.0f;
+    if (cols == 16) {
+        for (uint w = 0; w < 4; w++) {
+            const uint v = q[w] >> shift;
+            const float4 xv = ((device const float4 *)xb)[w];
+            sq = fma(float(v & 3u), xv.x, sq); sq = fma(float((v >> 8) & 3u), xv.y, sq);
+            sq = fma(float((v >> 16) & 3u), xv.z, sq); sq = fma(float((v >> 24) & 3u), xv.w, sq);
+            sx += (xv.x + xv.y) + (xv.z + xv.w);
+        }
+    } else {
+        for (uint i = 0; i < cols; i++) {
+            sq = fma(float(((q[i / 4] >> (8 * (i % 4) + shift))) & 3u), xb[i], sq);
+            sx += xb[i];
+        }
+    }
+    return fma(dl, sq, -(ml * sx));
+}
 template <typename F>
 static inline void down_reduce_sp(device const uchar *w, device const float *act, device const float *shared,
         device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
@@ -346,7 +377,7 @@ kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[
     down_reduce_sp<F>(w, act, shared, sigmoid, scores, ids, routed, y, error, a, group, sg, sgs, lane, part, bad); \
 }
 DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_iq2_xxs, Q38Iq2Xxs)
-DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q2_k, Q38Q2K)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q2_k, Q38Q2KDot)
 DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q4_k, Q38Q4K)
 DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_mxfp4, Q38Mxfp4)
 

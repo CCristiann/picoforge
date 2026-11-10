@@ -189,10 +189,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
         ctx->gate_up8=p ? fast_pipeline(p,Q38_GATE_UP8_SG) : NULL;
     }
-    { /* Decode III: slots in parallel, bit-identical to down_reduce; optional (absent -> down_reduce) */
+    { /* Decode III: slots in parallel (bit-identical to down_reduce except the Q2_K chunk dot); optional */
         static NSString *const sp_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_sp_iq2_xxs",
             @"q38_moe_down_reduce_sp_q2_k",@"q38_moe_down_reduce_sp_q4_k",@"q38_moe_down_reduce_sp_mxfp4"};
-        for (size_t i=0;i<Q38_INDEXED_FAST && !getenv("PICOFORGE_DOWN_SERIAL");i++) {
+        for (size_t i=0;i<Q38_INDEXED_FAST && !getenv("PICOFORGE_DOWN_SERIAL") && !q38_ref_kernels("exact");i++) {
             id<MTLFunction> fn=[lib newFunctionWithName:sp_names[i]];
             id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
             ctx->down_sp[i]=p ? (__bridge_retained void *)p : NULL;

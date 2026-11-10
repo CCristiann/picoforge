@@ -1838,8 +1838,17 @@ class FastKernelTests(unittest.TestCase):
         self.assertEqual((code, stderr), (0, b""), label)
         code, y_seq, routed_seq, _, stderr = run("sequence")
         self.assertEqual((code, stderr), (0, b""), label)
-        np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
-        np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
+        if kind == 10 and inputs[1].shape[1] <= 32:
+            # Decode III Q2_K chunk dot in the parallel-slot kernel: held to the moe_down_reduce
+            # tolerance against the oracle below; Q38_REF_KERNELS=exact restores the bit identity.
+            _, y, routed, _, _ = run_down_reduce("fused", kind, physical, logical, n, experts, data, ids, *inputs,
+                                                 view=view, env={"Q38_REF_KERNELS": "exact"})
+            np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
+            np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
+            code, y, routed, cpu, stderr = run("fused")
+        else:
+            np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
+            np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
         code, y_oracle, routed_oracle, _, stderr = run("oracle")
         self.assertEqual((code, stderr), (0, b""), label)
         refs = down_reduce_fp64(cpu if decoded is None else decoded, ids, *inputs, logical, n)
