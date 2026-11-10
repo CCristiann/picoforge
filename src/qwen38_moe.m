@@ -311,7 +311,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     /* Decode III: the shared expert's activation runs beside the router and its down matvec beside
      * gate+up, without the two barriers of their own (same kernels, same bits); `barrier` keeps the
      * old order. */
-    bool early_shared=r->shared_act && !q38_ref_kernels("barrier") && !q38_ref_kernels("exact");
+    bool early_shared=r->shared_act && !w->mark && !q38_ref_kernels("barrier") && !q38_ref_kernels("exact"); /* profile: own group */
     if (q38f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
         const bool simd=r->route_simd!=NULL; /* Decode III: one simdgroup per token */
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)(simd ? r->route_simd : r->route_fast)];
