@@ -6,6 +6,15 @@ Two lines per session: what was done, what comes next. Newest entry first.
 
 Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
 
+### P5.3 — batch indexer scores in tiles: bit-identical, -0.14 s
+
+scores_fast ran 8 lanes per block for 4 heads (half idle), each lane a 128-step chain with
+k read from device memory at a 512-byte stride across lanes. The batch kernel now takes
+tiles of 32 blocks x 8 tokens with q and k staged in threadgroup memory 32 features at a
+time; each thread keeps the dot's increasing-feature order and the head order of the clamped
+sum. Real FP32 logits at N 1000 and 8K equal byte for byte to the P5.2 binary; g2-parts green.
+Gain small: qsa.core 5.01 -> 4.88 s (the ablation's ~0.63 s was mostly not the loads).
+
 ### P5.2 — two splits per MMA threadgroup: qsa.core 5.46 -> 5.01 s at 8K
 
 Ablations on P5.1: indexer scores ~0.63 s, merge ~0.84 s, the MMA body past one key per

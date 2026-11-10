@@ -70,3 +70,11 @@ Fixed in 163887f; `p52/group-*` are clean rebuilds.
 G=2: -0.9 s per 8K prefill for +0.33 ms per token at 8K (break-even after ~2700 generated
 tokens); G=4 breaks even after ~1000. Gates at G=2: attend_fast (max 2.23e-4), g2-parts, g2,
 g2-state, MTP, speculative, d-gpu green; G3 2.17e-7, 12/12.
+
+# P5.3 — batch indexer scores in tiles (bit-identical)
+
+Tiles of 32 blocks x 8 tokens, q and k staged 32 features at a time; every dot keeps its
+increasing-feature order and the head order of the clamped sum. Real Q2 FP32 logits at N 1000
+and 8K equal byte for byte to the P5.2 binary (`p53/bits/logits.sha256`); g2-parts green.
+Profile 8K half (`p53/profile-half`): qsa.core 5.014 -> 4.877 s (total 24.63 -> 24.64, noise).
+8K FP32 prefill wall 46.01 / 46.12 s (one run each): no measurable end-to-end change.

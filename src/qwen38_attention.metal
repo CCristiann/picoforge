@@ -430,13 +430,47 @@ kernel void q38d_pool_batch_gpu(device const float *x [[buffer(0)]], device floa
     if (i.x>=a.d || i.y>=b.count) return;
     pool(x+(ulong)i.y*b.x_stride,y+(ulong)i.y*b.y_stride,a,error,i.x);
 }
+/* P5.3: the batch scores as tiles of 32 blocks x 8 tokens (one simdgroup per token, one lane per
+ * block), q and k staged in threadgroup memory 32 features at a time. scores_fast ran 8 lanes per
+ * block for 4 heads (half idle), each a 128-step chain reading k from device memory at a 512-byte
+ * stride across lanes. Every dot still adds its products in increasing feature order and the
+ * clamped head dots in head order from 0, as scores_fast and the oracle: the same bits, the same
+ * error bit (1 for a nonfinite q, k, dot or score of a visible block). */
 kernel void q38d_scores_batch_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(1)]],
     device float *out [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]],
     device atomic_uint *error [[buffer(7)]], constant Q38DBatch &b [[buffer(9)]],
-    uint2 i [[thread_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    if (i.y>=b.count) return; /* uniform over the simdgroup: the grid's x is a multiple of 32 */
-    const uint n=q38d_visible_blocks(b,i.y);
-    scores_fast(q+(ulong)i.y*b.x_stride,k,out+(ulong)i.y*b.scores_stride,Q38DSplit{a.h,a.j,a.d,n,0,0,0},error,i.x,lane);
+    uint2 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup float kt[32u*33u], qt[8u*Q38D_SCORE_LANES*32u];   /* k rows padded: no bank conflicts */
+    const uint t=sg*32u+lane, blk=tg.x*32u+lane, z=tg.y*8u+sg, z1=min(tg.y*8u+7u,b.count-1u);
+    const uint nt=q38d_visible_blocks(b,z1);          /* blocks the tile's last token sees: the most */
+    const bool live=z<b.count && blk<q38d_visible_blocks(b,z);
+    float dot[Q38D_SCORE_LANES]; bool bad=false;
+    for (uint h=0;h<Q38D_SCORE_LANES;h++) dot[h]=0.0f;
+    for (uint d0=0;d0<a.d;d0+=32u) {
+        const uint w=min(32u,a.d-d0);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i=t;i<32u*32u;i+=256u) {
+            const uint r=i/32u, c=i%32u, bb=tg.x*32u+r;
+            kt[r*33u+c]=bb<nt && c<w ? k[(ulong)bb*a.d+d0+c] : 0.0f;
+        }
+        for (uint i=t;i<8u*Q38D_SCORE_LANES*32u;i+=256u) {
+            const uint zz=i/(Q38D_SCORE_LANES*32u), h=(i/32u)%Q38D_SCORE_LANES, c=i%32u, tz=tg.y*8u+zz;
+            qt[i]=tz<b.count && h<a.h && c<w ? q[(ulong)tz*b.x_stride+h*a.d+d0+c] : 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (live) for (uint c=0;c<w;c++) {
+            const float y=kt[lane*33u+c]; bad|=!isfinite(y);
+            for (uint h=0;h<Q38D_SCORE_LANES;h++) if (h<a.h) {
+                const float x=qt[(sg*Q38D_SCORE_LANES+h)*32u+c]; bad|=!isfinite(x); dot[h]+=x*y;
+            }
+        }
+    }
+    if (!live) return;
+    float score=0.0f;
+    for (uint h=0;h<Q38D_SCORE_LANES;h++) if (h<a.h) { bad|=!isfinite(dot[h]); score+=max(0.0f,dot[h]); }
+    if (bad || !isfinite(score)) { fail(error,1); return; }
+    out[(ulong)z*b.scores_stride+blk]=score;
 }
 kernel void q38d_rank_batch_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
     constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],

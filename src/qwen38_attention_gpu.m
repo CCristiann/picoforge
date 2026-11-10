@@ -366,7 +366,7 @@ static Qwen38Status layer_batch(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
     if (n1) { /* token z sees blocks 0 .. (pos0+z+1)/r - 1 */
         Q38DGpuArgs sa={.h=hi,.d=di}; b.x_stride=hi*di;
         batch(g,cmd,Q38D_SCORES_BATCH,&sa,&b,(Qwen38GpuSpan[]){row(l->iqr,0,t),row(l->block_cache,0,n1),l->bscores},3,
-              MTLSizeMake((n1*Q38D_SCORE_LANES+31)/32*32,t,1),MTLSizeMake(256,1,1),false);
+              MTLSizeMake((n1+31)/32,(t+7)/8,1),MTLSizeMake(256,1,1),true); /* P5.3: 32 blocks x 8 tokens */
         wait_all(cmd);
         batch(g,cmd,Q38D_RANK_BATCH,&sa,&b,(Qwen38GpuSpan[]){l->bscores,l->bkeep},2,
               MTLSizeMake((n1+7)/8,t,1),MTLSizeMake(256,1,1),true);
