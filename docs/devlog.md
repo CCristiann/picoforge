@@ -2,6 +2,24 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R7a (2026-11-10): Q2 against Q4 — KL 0.40, top-1 77%, PPL +8%
+
+Evidence: `bench/qwen38_r7_20261110/README.md`. Teacher-forced FP32 logits of both files on a
+frozen corpus nobody trained on (picoforge files added after 2026-10-12, 4 prose + 4 code windows
+of 2048 tokens, `tools/eval/qwen38_r7_corpus.py`), reduced in FP64 by
+`tools/eval/qwen38_r7_quality.py`, with Q4 as the reference (a proxy: BF16 does not fit).
+Overall KL 0.401 [0.367, 0.441], top-1 77.0%, PPL 6.50 -> 7.04 (ΔNLL 0.079 nats, CI excludes 0).
+Code holds up better (KL 0.29, top-1 84%, median KL 0.03) than prose (KL 0.51, top-1 70%).
+46% of the top-1 flips sit on a Q4 margin below 0.5 nats, so the flips cost little NLL.
+No engine code changed. Two Q4 starts were stopped by the memory guard while the 37 GiB pool was
+being wired with the desktop open, so the guard was kept and the pool shrunk to 10000 slots.
+Q4 logits are byte-identical at both sizes (re-checked on code-0), but decode became 4.6x
+slower with only 36 s spent in acquire: an open anomaly (the residency set is attached at 10000
+slots and skipped at 14421).
+
+**Next:** the slow 10000-slot pool anomaly, then the Q4 protocol bench; the R7 task suite
+(qwen38_cases.json, Q2 vs Q4 greedy) and the model comparisons after R6.
+
 ## P5 (from 2026-11-09): attention in the long prefill
 
 Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
