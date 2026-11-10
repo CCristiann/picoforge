@@ -52,6 +52,7 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | R3 Prefill | GEMM on simdgroup matrices and TensorOps, grouped experts, batched QSA | Done: 8K prompt 215 s -> 61.0 s (FP32), 37.6 s (half) |
 | R4 MTP | Adaptive, cost-aware draft depth; multi-row verify | Done: 1.09-1.65x over plain decode, exact greedy |
 | Decode II | Token split over 4 command buffers, fused shared-expert activation | Done: 0.78x (target 0.95x not met) |
+| Decode III | Reordered-sum kernels under measured tolerances (router, HC tail, IQ2 gate+up, Q2_K down), shared expert overlapped | Done: 0.86x short, 0.86x at 8K |
 | R5 SSD streaming | Expert pool with parallel reads and event gates; the Q4 file on 64 GiB | Done: Q4 at ~18-19 tok/s with a warm pool |
 | P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done: 8K prompt 46.2 s (FP32), 24.9 s (half) |
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
