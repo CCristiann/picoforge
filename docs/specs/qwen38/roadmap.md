@@ -115,7 +115,7 @@ Tutto ciò che conosciamo per questa macchina, e la tappa in cui entra.
 | **R4.5** Pulizia | Fatta 2026-11-05: via il motore Qwen3, microbenchmark del matmul in `tools/microbench`, README nuovo, tag `archive/pre-qwen38-focus` | `make test-all` verde, nessun dato cancellato |
 | **Decode II** | Chiusa 2026-11-05: comando del token in 4 command buffer, attivazione dell'esperto condiviso fusa; MoE e kernel HC non spiegati (servono contatori GPU) | 0.782× DwarfStar, bit-identico; l'obiettivo 0.95× non raggiunto, vedi devlog |
 | **R6** Supporto QN4 | In attesa del rilascio (27B denso e fratello di Flash-Next, stessa architettura attesa, da verificare sul config reale). Prima il fratello di Flash-Next, poi il 27B; gate contro un riferimento nuovo | Entrambi dal terminale, con i gate |
-| **R7** Qualità | Concordanza top-1 e KL di Q2 contro Q4K; confronti tra modelli dopo R6; suite di task congelata. **R7a fatta 2026-11-10** (`bench/qwen38_r7_20261110`): Q2 contro Q4 su 16 376 posizioni, KL 0,40, top-1 77%, PPL +8%; restano la suite di task e i confronti dopo R6 | Tabella qualità/velocità/memoria |
+| **R7** Qualità | Concordanza top-1 e KL di Q2 contro Q4K; confronti tra modelli dopo R6; suite di task congelata. **Chiusa 2026-11-10** (`bench/qwen38_r7_20261110`): Q2 contro Q4 su 16 376 posizioni, KL 0,40, top-1 77%, PPL +8%; spiegato e corretto il rallentamento del residency set in streaming. Rinviati: la suite di task (backlog) e i confronti tra modelli (con R6) | Tabella qualità/velocità/memoria |
 | **R8** Chiusura | Benchmark finali con il protocollo, scala delle tecniche, writeup, README | Progetto concluso |
 
 Dipendenze:

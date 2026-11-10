@@ -14,11 +14,18 @@ Code holds up better (KL 0.29, top-1 84%, median KL 0.03) than prose (KL 0.51, t
 No engine code changed. Two Q4 starts were stopped by the memory guard while the 37 GiB pool was
 being wired with the desktop open, so the guard was kept and the pool shrunk to 10000 slots.
 Q4 logits are byte-identical at both sizes (re-checked on code-0), but decode became 4.6x
-slower with only 36 s spent in acquire: an open anomaly (the residency set is attached at 10000
-slots and skipped at 14421).
+slower with only 36 s spent in acquire.
 
-**Next:** the slow 10000-slot pool anomaly, then the Q4 protocol bench; the R7 task suite
-(qwen38_cases.json, Q2 vs Q4 greedy) and the model comparisons after R6.
+**The slowdown was the residency set.** An interleaved A/B on 512 tokens, with the same misses
+and the same logits in every row: no set gives ~29 s at both pool sizes; a set attached while the
+GPU allocation is near its budget gives 78–87 s (pool in the set) or 346–464 s (14421 slots,
+weights-only set). Desktop activity was ruled out because the effect reproduces with the Mac idle.
+The set never helps a streamed run, so the engine attaches none while experts stream: 29.2 s at
+both pool sizes, logits unchanged, tests green. The mechanism (driver re-mapping per command
+buffer?) needs Instruments GPU counters. **R7 closed**: the task suite goes to the backlog and the
+model comparisons wait for R6.
+
+**Next:** the Q4 protocol bench.
 
 ## P5 (from 2026-11-09): attention in the long prefill
 

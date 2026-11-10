@@ -70,9 +70,41 @@ The speed rows are not protocol benches: the Q4 protocol bench is the next roadm
   `PICOFORGE_STREAM_EXPERTS=10000`).
 - **The pool size does not change the numbers.** code-0 re-run at 10000 slots gives Q4 logits
   byte-identical to the 14421-slot run (sha256 `c4243bfe…`, as in R5.3a).
-- **Open anomaly:** at 10000 slots Q4 decoded 4.6x slower (550 s against 121 s for a window).
-  Misses rose from about 2.4% to 8.1% (202 GiB read), but only 36 s were spent waiting in
-  acquire. One visible difference: at 10000 slots the residency set is attached (33.7 GiB),
-  while at 14421 it is skipped. To investigate before the Q4 protocol bench.
-- Not done: the frozen task suite (`tools/eval/qwen38_cases.json`) graded on Q2 and Q4 greedy,
+- **Anomaly, explained and fixed:** at 10000 slots Q4 decoded 4.6x slower (550 s against 121 s
+  for a window), with only 36 s waiting in acquire. The cause is the residency set, not the pool
+  size. See the section below.
+- Deferred when R7 closed: the frozen task suite (`tools/eval/qwen38_cases.json`) graded on Q2 and Q4 greedy,
   and the comparisons between models, which wait for R6 (QN4).
+
+## The slow pool: the residency set (A/B, `residency/`)
+
+Each run is 512 teacher-forced tokens of code-1 on Q4, in interleaved order (`ab.sh`, `ab2.sh`,
+`ab3.sh`; results in `ab*-results.txt`). Every row has the same misses (4.33–4.34%), the same
+26.9 GiB read, ~4.3 s waiting in acquire and the same logits (sha256 `d36b680b8b65…`). Only the
+time changes:
+
+| config | residency set | decode (s) |
+|---|---|---|
+| A: 14421 slots, old binary | skipped (above 85% of the working set) | 30.1, 29.1 |
+| B: 10000 slots, old binary | weights + pool, 33.7 GiB | 77.6, 79.2, 84.8, 87.1 |
+| C: 10000 slots, set disabled | none | 29.2, 29.2 |
+| D: 10000 slots, weights-only set | 7.8 GiB | 29.1, 29.1, 30.0 |
+| E: 14421 slots, weights-only set | 7.8 GiB | 346.7*, 354.3, 464.3 |
+| F: 14421 slots (automatic), fixed binary | off while streaming | 29.2, 29.2 |
+| G: 10000 slots, fixed binary | off while streaming | 29.4, 29.2 |
+
+\* In that run the display went to sleep afterwards (`ab2-invalid-results.txt`). The other two E
+runs had the display awake and are just as slow.
+
+Reading: the user's idea that their desktop activity caused it was tested and rejected. The
+effect reproduces in interleaved order with the Mac idle, and C/D are fast within the same
+minutes. It is not "the pool inside the set" either, because E keeps the pool out and is the
+worst case. The pattern is a residency set attached while the total GPU allocation is near the
+recommended working set (51.8 GiB). The mechanism is a hypothesis we have not measured, since it
+needs Instruments GPU counters: the driver re-validates or re-maps the allocations outside the set
+on every command buffer. The set never helps a streamed run (C = D), so **while experts stream,
+the engine now attaches no set** (`src/qwen38_forward_gpu.m`, `residency`). Resident models are
+unchanged. The Q2 run (`ab3` row 5) shows that its set is skipped anyway by the existing 85% rule.
+The C and E rows used two diagnostic switches (`PICOFORGE_NO_RESIDENCY`, `PICOFORGE_POOL_IN_SET`)
+that existed only in the A/B binary and were removed with the fix. Tests green: `make test-all`,
+`test-qwen38-gpu`, `test-qwen38-cli`.
