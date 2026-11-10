@@ -229,7 +229,7 @@ kernel void matmul_tensorops(device float        *C [[buffer(0)]],
  *   - execution_thread: M may be 1, 2, 4 or a multiple of 8. A 1-row tile is
  *     legal only when each GPU thread runs its own op on its own tile.
  *
- * Measured (bench/dispatch_m5pro.csv): single-thread scope is 3.5x slower
+ * Measured (bench/microbench/dispatch_m5pro.csv): single-thread scope is 3.5x slower
  * than the 32x32 kernel at a 1x32 tile and 20-160x slower with wider tiles,
  * and a 1x1024 thread-scope tile over an 8x768 product left rows of C
  * unwritten (NaN poison survived) while 1x768 was correct. Unexplained; the

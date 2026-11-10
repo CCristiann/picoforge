@@ -247,7 +247,7 @@
     "total_decoded_values": 158976,
     "payload_files_committed": false,
     "full_checkpoint_hash_recomputed": false,
-    "prior_full_hash_record": "bench/qwen38_q2_20261011_phase0/checkpoint.verification.json",
+    "prior_full_hash_record": "bench/qwen38/q2_20261011_phase0/checkpoint.verification.json",
     "row_index": {
       "file": "slices.jsonl",
       "rows": 81,

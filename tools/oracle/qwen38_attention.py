@@ -486,7 +486,7 @@ def verify_real_slice(hf, native, reference, checkpoint, output):
     """
     import qwen38_packed as packed
     root=Path(__file__).resolve().parents[2]
-    proof=json.loads((root/"bench/qwen38_q2_20261011_phase0/checkpoint.verification.json").read_text())
+    proof=json.loads((root/"bench/qwen38/q2_20261011_phase0/checkpoint.verification.json").read_text())
     before=checkpoint.stat()
     if not proof["matched"] or (before.st_size,before.st_ino,before.st_mtime_ns)!=(
             proof["size_bytes"],proof["file_inode"],proof["file_mtime_ns"]):

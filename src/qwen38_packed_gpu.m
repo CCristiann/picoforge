@@ -185,7 +185,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->ref_gemm=q38_ref_kernels("gemm");
     ctx->prefill_half=q38_prefill_half();
     ctx->gemm_min_rows=gemm_min_rows();
-    /* Measured on the real Q2 (bench/qwen38_p3_20261108): a 60-token chat prefill
+    /* Measured on the real Q2 (bench/qwen38/p3_20261108): a 60-token chat prefill
      * 1294 -> 671 ms with both, 417 tokens 3601 -> 3563 ms; 1024-row chunks are unchanged
      * (every shape has >= 160 tiles there). The grouped MoE ran 64-row tiles per expert then
      * (32 rows since P4.2), wasting most of the work below ~2.5 rows per expert: crossover

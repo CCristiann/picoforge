@@ -25,7 +25,7 @@ class ConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.hf = json.loads((FIXTURES / "config.json").read_text())
-        cls.inventory = json.loads((ROOT / "bench/qwen38_q2_20261011_phase0/inventory.json").read_text())
+        cls.inventory = json.loads((ROOT / "bench/qwen38/q2_20261011_phase0/inventory.json").read_text())
         cls.metadata = cls.inventory["metadata"]
 
     def test_pinned_config(self):

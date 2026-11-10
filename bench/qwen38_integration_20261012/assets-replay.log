@@ -1,7 +1,0 @@
-env HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 UBSAN_OPTIONS=halt_on_error=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 /path/to/picoforge/tools/venv/bin/python -B tools/qwen38_prepare_tests.py --dwarfstar "/path/to/ds4-qwen38-baseline" --checkpoint "/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf" --source-dir "/path/to/picoforge-f-v1/build/qwen38-f/upstream"
-Verified packed format 0: 8 real tensor slices
-Verified packed format 1: 9 real tensor slices
-Verified packed format 8: 36 real tensor slices
-Verified packed format 10: 27 real tensor slices
-Verified packed format 16: 54 real tensor slices
-Verified packed format 30: 3 real tensor slices

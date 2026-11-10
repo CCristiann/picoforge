@@ -23,7 +23,7 @@ from summarize_qwen38_native import distribution
 
 DWARFSTAR = ROOT.parent/'ds4-qwen38-baseline'
 CORPUS = DWARFSTAR/'speed-bench/promessi_sposi.txt'
-FROZEN = ROOT/'bench/qwen38_mtp_20261013/paired/coding'
+FROZEN = ROOT/'bench/qwen38/mtp_20261013/paired/coding'
 # The frozen coding case ran --complete on this text (its runner-source.py);
 # the short frontier must tokenize back to the recorded prompt IDs.
 FROZEN_TEXT = 'def add(a, b):\n    return'

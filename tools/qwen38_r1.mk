@@ -68,7 +68,7 @@ test-qwen38-fast-kernels: build/qwen38-r1/test_fast_kernels $(METALLIB)
 # back to back per command buffer, as in the decode graph (a lone short
 # dispatch runs at an idle GPU clock).
 # Ruling R23: the raw evidence goes to a NEW directory, never overwritten:
-# BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0 (Q38_R1_BENCH) or
+# BENCH_OUT=bench/qwen38/r1_<AAAAMMGG>/matvec-q8_0 (Q38_R1_BENCH) or
 # .../matvec-f16-f32 (Q38_R1_BENCH_DENSE). It holds runs.jsonl, the conditions
 # before and after (therm, batt, swap, NSProcessInfo.thermalState from the
 # capabilities probe) and a manifest.
@@ -167,16 +167,16 @@ Q38_R1_BENCH_PREP := $(call q38_prep,oracle,fast,1) $(call q38_prep,fast,oracle,
 	$(call q38_prep,oracle,fast,32) $(call q38_prep,fast,oracle,128)
 Q38_R1_CONDITIONS := date -u +%Y-%m-%dT%H:%M:%SZ; pmset -g therm; pmset -g batt; sysctl vm.swapusage; ./build/qwen38-capabilities
 bench-qwen38-matvec: build/qwen38-r1/test_fast_kernels build/qwen38-capabilities $(METALLIB)
-	@case "$(BENCH_OUT)" in bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-f16-f32) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-multi) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-indexed) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-gate-up) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-down) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route|bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route-*) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/rms|bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/rms-*) ;; \
-	  bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/gdn-prep|bench/qwen38_r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/gdn-prep-*) ;; \
-	  *) echo "set BENCH_OUT=bench/qwen38_r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32, .../matvec-multi, .../matvec-indexed, .../moe-gate-up, .../moe-down, .../moe-route, .../rms, .../gdn-prep or .../moe-route-<suffix>, .../rms-<suffix>, .../gdn-prep-<suffix> (a new directory)" >&2; exit 2;; esac
+	@case "$(BENCH_OUT)" in bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-q8_0) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-f16-f32) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-multi) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/matvec-indexed) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-gate-up) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-down) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route|bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/moe-route-*) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/rms|bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/rms-*) ;; \
+	  bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/gdn-prep|bench/qwen38/r1_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/gdn-prep-*) ;; \
+	  *) echo "set BENCH_OUT=bench/qwen38/r1_<AAAAMMGG>/matvec-q8_0, .../matvec-f16-f32, .../matvec-multi, .../matvec-indexed, .../moe-gate-up, .../moe-down, .../moe-route, .../rms, .../gdn-prep or .../moe-route-<suffix>, .../rms-<suffix>, .../gdn-prep-<suffix> (a new directory)" >&2; exit 2;; esac
 	@mkdir -p "$(dir $(BENCH_OUT))" && mkdir "$(BENCH_OUT)" # an existing directory fails here: never overwritten
 	@{ git rev-parse HEAD; git status --porcelain; shasum -a 256 $< $(METALLIB); } > "$(BENCH_OUT)/manifest.txt"
 	$(Q38_LOCK) env Q38_PACKED_LIBRARY="$(abspath $(METALLIB))" sh -c '{ $(Q38_R1_CONDITIONS); } > "$(BENCH_OUT)/before.txt" && \

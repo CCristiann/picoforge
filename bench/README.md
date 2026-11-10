@@ -1,45 +1,57 @@
-# Measurement files
+# Measurements
 
-See [the protocol](../docs/BENCHMARKS.md) for timing boundaries and commands.
-The reference machine is an M5 Pro with 64 GB memory. These are local results;
-no external runtime or independent machine has been measured with this protocol.
+Every file here was measured on the reference machine (MacBook Pro, M5 Pro,
+64 GB) under the protocol in [`docs/BENCHMARKS.md`](../docs/BENCHMARKS.md).
+These are local results. No other machine or independent reproduction has
+been run.
 
-## October 11, 2026
+| Folder | Contents |
+|---|---|
+| [`qwen38/`](qwen38/) | Qwen3.8-Flash-Next: one folder per run, named `<stage>_<YYYYMMDD>` |
+| [`microbench/`](microbench/) | Model-agnostic matmul, quantised-matmul and dispatch-cost sweeps (`tools/microbench`) |
+| [`archive-qwen3/`](archive-qwen3/) | Results of the removed Qwen3-0.6B / 30B-A3B engine, described in [`docs/history.md`](../docs/history.md) |
 
-- `spec_experts_qwen3_30b_20261011_pilot.*`: six separate evaluation prompts,
-  five selected measurements per configuration, up to 96 tokens. The opt-in
-  expert-cost scheduler reaches 1.009x decode and 0.988x process speed versus
-  the unchanged `auto`; it does not meet the 10% adoption threshold. All
-  selected outputs match ordinary greedy. Raw data preserves an interrupted
-  run and an entire repeated prompt after timer disagreement; metadata records
-  the exact selection. See the [experiment report](../docs/phase4-expert-experiment.md)
-  for all regressions, prediction error and limitations. The PNG is generated
-  by `tools/plot_experts.py`.
-- `spec_qwen3_30b_20261011_pilot.csv`: ten prompts, five measured requests per
-  configuration, up to 128 tokens. `.runs.jsonl` includes 150 measurements and
-  30 warmups; `.meta.json` records the exact runner and inputs. Adaptive decode
-  reaches 1.427x versus no draft, fixed `k=2` 1.412x. Full-process ratios are
-  1.131x and 1.099x. See the protocol for definitions and memory-accounting limits.
-- `routing_overlap_qwen3_30b_20261011.csv`: corrected 4,096-token trace, q8_row,
-  48 MoE layers. The `est_*` columns apply the existing synthetic cost surface;
-  they are estimates, not measured complete verification latency.
-- `profile_qwen3_30b_20261011.csv`: per-operation GPU timings for the 30B.
-  Profiling splits the command buffer into encoders and changes its cost.
-  Use `TOTAL, uncut` for the baseline; use the other rows to locate bottlenecks.
-- `corrected-routing-20261011.meta.json`: checkpoint, corpus, source and output
-  hashes, plus commands for both measurements above. The corpus is pinned to
-  commit `8697213`, not the current working tree.
+## Qwen3.8 runs by stage
 
-## Historical results
+The folder that closes a stage holds its summary README. The other dates hold
+that stage's intermediate steps, described in [`docs/devlog.md`](../docs/devlog.md).
 
-`routing_overlap_qwen3_30b_corpus.csv` is **invalid beyond the old 2,048-position
-attention bound**. Do not use it to support routing-locality claims. It is
-retained to make the correction auditable.
+| Stage | Closing evidence | Intermediate runs |
+|---|---|---|
+| Phase 0: DwarfStar baseline, checkpoint verification | [`q2_20261011_phase0`](qwen38/q2_20261011_phase0/) | — |
+| Native GGUF storage | [`q2_20261012_storage`](qwen38/q2_20261012_storage/) | `gpu_lifecycle_20261012` |
+| Native components and integration (A–F) | [`integration_v2_20261012`](qwen38/integration_v2_20261012/README.md) | `integration_20261012` |
+| G1 CPU graph, G2/G3 GPU graph | [`g2_g3_20261013`](qwen38/g2_g3_20261013/README.md) | `g1_20261013`, `g2_d_20261013` |
+| Extended native suite, first MTP | [`native_20261013`](qwen38/native_20261013/README.md), [`mtp_20261013`](qwen38/mtp_20261013/README.md) | — |
+| R0 Measure | [`r0_20261017`](qwen38/r0_20261017/README.md) | — |
+| R1 Decode | [`r1_20261028`](qwen38/r1_20261028/README.md) | `r1_20261019` … `r1_20261027` |
+| R2 Decode gap | [`r2_20261030`](qwen38/r2_20261030/README.md) | `r2_20261028`, `r2_20261029` |
+| R2 Terminal | [`terminal_20261101`](qwen38/terminal_20261101/README.md) | — |
+| R3 Prefill | [`r3_20261102`](qwen38/r3_20261102/README.md) | — |
+| R4 MTP | [`r4_20261103`](qwen38/r4_20261103/README.md) | — |
+| Decode II | [`d1_20261105`](qwen38/d1_20261105/README.md) | `d0_20261105` |
+| R5 SSD streaming | [`r5_20261105`](qwen38/r5_20261105/README.md) | `r5_20261106`, `r5_20261108` |
+| P3 Chat path | [`p3_20261108`](qwen38/p3_20261108/README.md) | — |
+| P4 GDN scan, MoE tiles | [`p4_20261108`](qwen38/p4_20261108/README.md) | — |
+| P5 Long-prefill attention | [`p5_20261109`](qwen38/p5_20261109/README.md) | — |
+| R7 Quality | [`r7_20261110`](qwen38/r7_20261110/README.md) | — |
 
-`spec_qwen3_30b_m5pro.csv` is the original five-prompt, three-repetition pilot.
-It contains medians but no raw per-request timings or percentiles. It should
-not be presented as if it used the current request protocol.
+## What is kept, and what is in the archive tag
 
-Other historical kernel and quality files retain the conditions documented
-in the devlog and benchmark protocol. In particular, 0.6B perplexity results
-cannot establish quality for the 30B checkpoint.
+Each run keeps what is needed to check its claim: CSVs, `runs.jsonl`, summary
+and report JSON, token IDs, conditions, scripts and READMEs. The routing traces
+in `r5_20261105/route-*` stay too, because `tools/eval/qwen38_expert_cache_sim.py`
+reads them.
+
+On 2026-11-10 the per-process raw evidence was removed from the tree: stdout and
+stderr logs, memory and event samples, release-wait records, logit dumps
+(`*.f32`) and route dumps (`*.u32`), about 95 MB. All of it is still in git at
+the tag **`archive/bench-raw-20261110`**, under the old flat paths
+(`bench/qwen38_<stage>_<date>/`):
+
+```sh
+git checkout archive/bench-raw-20261110 -- bench/qwen38_d1_20261105   # restore one run
+```
+
+Some older READMEs link files that are now only in that tag, or the
+development specs, which are not published.

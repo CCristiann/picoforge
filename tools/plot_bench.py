@@ -3,7 +3,7 @@
 Committed alongside the raw numbers so the plots can be redrawn, and the
 claims rechecked, by someone who was not in the room.
 
-    ./tools/venv/bin/python tools/plot_bench.py bench/matmul_m5pro.csv
+    ./tools/venv/bin/python tools/plot_bench.py bench/microbench/matmul_m5pro.csv
 """
 
 import csv
@@ -31,7 +31,7 @@ def load(path):
 
 
 def main():
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("bench/matmul_m5pro.csv")
+    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("bench/microbench/matmul_m5pro.csv")
     rows = load(path)
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 

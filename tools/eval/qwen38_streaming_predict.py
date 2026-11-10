@@ -8,7 +8,7 @@ bandwidth. `serial` adds them (no overlap, the pessimistic bound), `overlap` tak
 graph after Decode II; the Q4K graph reads ~7.7 GB per token instead of ~6.1 GB, so 43 ms (the extra
 0.65 GB at ~150 GB/s) is the central guess and 49 ms (7.7 GB at the 158 GB/s the Q2 graph reached
 before Decode II) the conservative one. The SSD figure is the measured ~13 GB/s for 2.6 MB random
-reads with 2+ threads (bench/qwen38_r5_20261105/ssd_bench.txt).
+reads with 2+ threads (bench/qwen38/r5_20261105/ssd_bench.txt).
 """
 import csv
 import sys

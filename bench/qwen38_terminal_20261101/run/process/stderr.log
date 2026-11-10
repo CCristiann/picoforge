@@ -1,9 +1,0 @@
-picoforge: residency set skipped: 42720.4 MiB + 4096.0 MiB headroom > 85% of 53084.2 MiB recommended working set
-Qwen3.8: 48 layers, 0 prompt tokens, context 4096, chunk 1024; graph buffers 1207.6 MiB
-picoforge: prefill 32.03 t/s, generation 24.28 t/s, context 94/4096
-picoforge: prefill 52.31 t/s, generation 24.17 t/s, context 198/4096
-picoforge: prefill 52.77 t/s, generation 23.90 t/s, context 321/4096 [interrupted]
-picoforge: prefill 52.78 t/s, generation 23.40 t/s, context 359/4096
-picoforge: prefill 34.45 t/s, generation 24.09 t/s, context 449/4096
-picoforge: residency set skipped: 42720.4 MiB + 4096.0 MiB headroom > 85% of 53084.2 MiB recommended working set
-picoforge: prefill 28.59 t/s, generation 24.35 t/s, context 90/2048

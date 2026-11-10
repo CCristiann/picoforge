@@ -1,4 +1,0 @@
-picoforge: residency set skipped: 42720.4 MiB + 4096.0 MiB headroom > 85% of 53084.2 MiB recommended working set
-Qwen3.8: 48 layers, 34 prompt tokens, context 8192, chunk 128; graph buffers 752.9 MiB
-Qwen3.8: generated 600 tokens
-Qwen3.8 memory: {"metal_allocated_bytes":45588365312,"metal_recommended_bytes":55662788608,"graph_buffer_bytes":789500428}

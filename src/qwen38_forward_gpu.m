@@ -328,7 +328,7 @@ static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,void
         Qwen38Status rc=shared ? qwen38_gpu_session_share_residency(session,shared,e) : Q38_OK;
         return rc==Q38_UNSUPPORTED ? Q38_OK : rc;
     }
-    /* R7: no set while experts stream. Measured on Q4, 512 teacher-forced tokens (bench/qwen38_r7_20261110):
+    /* R7: no set while experts stream. Measured on Q4, 512 teacher-forced tokens (bench/qwen38/r7_20261110):
      * with no set the decode takes ~29 s at both 10000 and 14421 slots, and a weights-only set changes
      * nothing at 10000 slots. With a set attached while the GPU memory is near its budget, the logits
      * stay identical but the decode slows 2.7x (10000 slots, pool in the set) or 12x (14421 slots,

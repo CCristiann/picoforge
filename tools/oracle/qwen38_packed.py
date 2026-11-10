@@ -256,7 +256,7 @@ def extract_slices(reference, checkpoint, output, kind):
     checkpoint, output = Path(checkpoint).resolve(), Path(output).resolve()
     if kind not in FORMATS or not output.is_relative_to(ROOT / "build"):
         raise ValueError("choose an executable format and an isolated build output directory")
-    verification = json.loads((ROOT / "bench/qwen38_q2_20261011_phase0/checkpoint.verification.json").read_text())
+    verification = json.loads((ROOT / "bench/qwen38/q2_20261011_phase0/checkpoint.verification.json").read_text())
     if (verification["matched"] is not True or verification["sha256"] !=
             "b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9"):
         raise ValueError("missing authenticated checkpoint provenance")

@@ -6,7 +6,7 @@
  *   microbench --dispatch OUT.csv  cost per dispatch inside one command buffer
  *
  * Model-agnostic on purpose: it measures the machine, not an LLM. The CSVs
- * from it (bench/matmul_*.csv, bench/dispatch_m5pro.csv) are the numbers the
+ * from it (bench/microbench/matmul_*.csv, bench/microbench/dispatch_m5pro.csv) are the numbers the
  * roadmap's performance reasoning starts from.
  */
 #include "microbench.h"
