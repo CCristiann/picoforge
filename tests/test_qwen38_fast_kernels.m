@@ -728,13 +728,14 @@ static int down_main(int argc,char **argv,const char *library) {
  * q38f_routed_encode, which also falls back above 1024 experts: here the
  * kernel runs regardless, to check its own guard); oracle = q38f_route, 64-thread
  * groups. Always exit 0 (the word says what happened).
- *   rtbench <fast|oracle> experts slots tokens reps
+ * simd = q38_moe_route_simd (Decode III), one 32-thread simdgroup per token.
+ *   rtbench <fast|oracle|simd> experts slots tokens reps
  * the same dispatch on synthetic logits, 20 timed per command buffer (rbench's). */
 #define ROUTE_THREADS 256 /* Q38F_ROUTE_THREADS of qwen38_f_internal.h */
 static int route_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"rtbench");
-    assert(argc==(timing ? 7 : 8) &&(!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle")));
-    bool fast=!strcmp(argv[2],"fast");
+    assert(argc==(timing ? 7 : 8) &&(!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle") || !strcmp(argv[2],"simd")));
+    bool simd=!strcmp(argv[2],"simd"), fast=simd || !strcmp(argv[2],"fast");
     size_t experts=number(argv[3]), slots=number(argv[4]), tokens=number(argv[5]);
     size_t reps=timing ? number(argv[6]) : 1, norm=timing ? 1 : number(argv[6]), pitch=timing ? experts : number(argv[7]);
     assert(experts && experts<=65536 && slots && slots<=64 && tokens && tokens<=4096 && reps && reps<=1000);
@@ -750,7 +751,7 @@ static int route_main(int argc,char **argv,const char *library) {
         NSError *error=nil;
         id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
         id<MTLComputePipelineState> p=[dev newComputePipelineStateWithFunction:
-            [lib newFunctionWithName:fast ? @"q38_moe_route_fast" : @"q38f_route"] error:&error];
+            [lib newFunctionWithName:simd ? @"q38_moe_route_simd" : fast ? @"q38_moe_route_fast" : @"q38f_route"] error:&error];
         assert(p && (!fast || (p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=ROUTE_THREADS)));
         id<MTLBuffer> logits=shared(dev,4*tokens*pitch),probs=shared(dev,4*tokens*experts),ids=shared(dev,4*pairs),
             weights=shared(dev,4*pairs),word=shared(dev,4);
@@ -767,7 +768,7 @@ static int route_main(int argc,char **argv,const char *library) {
                 [encoder setBuffer:logits offset:0 atIndex:0]; [encoder setBuffer:probs offset:0 atIndex:1];
                 [encoder setBuffer:ids offset:0 atIndex:2]; [encoder setBuffer:weights offset:0 atIndex:3];
                 [encoder setBytes:&ra length:sizeof ra atIndex:4]; [encoder setBuffer:word offset:0 atIndex:5];
-                if (fast) [encoder dispatchThreadgroups:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(ROUTE_THREADS,1,1)];
+                if (fast) [encoder dispatchThreadgroups:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(simd ? 32 : ROUTE_THREADS,1,1)];
                 else [encoder dispatchThreads:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,p.maxTotalThreadsPerThreadgroup),1,1)];
                 [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
             }

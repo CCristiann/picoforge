@@ -425,6 +425,7 @@ def run_route(mode, logits, slots, norm, experts=None, env=None):
 
 ROUTE_PAD = 5  # columns of NaN past the experts in a padded router row (pitch = experts + ROUTE_PAD)
 ROUTE_KINDS = 11  # row shapes of route_logits
+ROUTE_SUM_RTOL = 2.0 ** -24 * 1024  # Decode III simd router vs q38f_route: the serial exp sum's error bound at 1024 experts
 
 
 def route_logits(rng, tokens, experts, offset=0):
@@ -2072,6 +2073,51 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual(word, 2)
                 for part in (ids, weights, probs):
                     self.assertEqual(part.tobytes(), b"\xa5" * part.nbytes)
+
+    # ---- Decode III router in one simdgroup (q38_moe_route_simd) ----
+    def test_route_simd_against_oracle(self):
+        """q38_moe_route_simd against q38f_route: the same error word; probs within ROUTE_SUM_RTOL (only the
+        exp sum is reordered, and the oracle's serial sum of E terms is itself off by up to ~E/2 ULP:
+        2^-24 * 512 = 3.05e-5); ids follow the (larger p, smaller id) rule on its OWN probs and equal the
+        oracle's on every row whose k-th and (k+1)-th oracle p are farther apart than twice that error;
+        weights within ROUTE_SUM_RTOL where the ids agree. Rows of every shape, tokens 1..128, 33..1024 experts."""
+        rng = np.random.default_rng(3929)
+        for tokens in (1, 3, 128):
+            for experts, slots in ((512, 10), (512, 1), (33, 10), (1024, 10), (1, 1)):
+                for norm in (0, 1):
+                    with self.subTest(tokens=tokens, experts=experts, slots=slots, norm=norm):
+                        logits = route_logits(rng, tokens, experts, offset=tokens + experts + slots)
+                        sw, sids, swt, sp = run_route("simd", logits, slots, norm)
+                        ow, oids, owt, op = run_route("oracle", logits, slots, norm)
+                        self.assertEqual((sw, ow), (0, 0))
+                        np.testing.assert_allclose(sp, op, rtol=ROUTE_SUM_RTOL, atol=1e-30)
+                        np.testing.assert_array_equal(sids, route_reference_ids(sp, slots))
+                        for row in range(tokens):
+                            ranked = np.sort(op[row])[::-1]
+                            gap = ranked[slots - 1] - ranked[slots] if slots < experts else np.inf
+                            if gap > 2 * ROUTE_SUM_RTOL * ranked[slots - 1]:
+                                np.testing.assert_array_equal(sids[row], oids[row], f"row {row}")
+                            if (sids[row] == oids[row]).all():
+                                np.testing.assert_allclose(swt[row], owt[row], rtol=ROUTE_SUM_RTOL, atol=1e-30)
+
+    def test_route_simd_guards(self):
+        """Nonfinite rows (bit 1, ids 0..k-1, zero weights, untouched probs) and the capacity guard (bit 2,
+        nothing written), as q38_moe_route_fast."""
+        rng = np.random.default_rng(3931)
+        logits = route_logits(rng, 7, 512, 1)
+        for row, value in ((1, np.nan), (3, np.inf), (4, -np.inf)):
+            logits[row, int(rng.integers(512))] = value
+        word, ids, weights, probs = run_route("simd", logits, 10, 1)
+        self.assertEqual(word, 1)
+        for row in (1, 3, 4):
+            np.testing.assert_array_equal(ids[row], np.arange(10))
+            self.assertEqual(weights[row].tobytes(), bytes(40))
+            self.assertEqual(probs[row].tobytes(), b"\xa5" * (4 * 512))
+        for experts, slots in ((2048, 10), (4, 6)):
+            word, ids, weights, probs = run_route("simd", route_logits(rng, 2, experts), slots, 1)
+            self.assertEqual(word, 2)
+            for part in (ids, weights, probs):
+                self.assertEqual(part.tobytes(), b"\xa5" * part.nbytes)
 
     # ---- R1.6a parallel RMSNorm (q38c_rms_fast, family fuse) ----
     def rms_case(self, label, x, gain, z=None, **view):

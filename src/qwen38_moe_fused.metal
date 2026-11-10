@@ -279,6 +279,66 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
     if (a.norm && !tid) for (uint s = 0; s < a.k; s++) w[s] /= selected;
 }
 
+/* Decode III: the router in ONE simdgroup per token, values in registers (lane l
+ * owns experts l, l+32, ...): no threadgroup memory and no barrier, where
+ * q38_moe_route_fast pays a barrier per selection round and a serial exp sum
+ * on one thread. Same max, same exp per element, same selection rule (larger p,
+ * then smaller id) and the same serial running sum of the chosen weights; only
+ * the exp sum is a per-lane then simd tree sum, so probs and weights move by
+ * ULPs from q38f_route and a p tie made or broken by that rounding can swap two
+ * ids (test_route_simd_against_oracle). Same guards and fallback as
+ * q38_moe_route_fast; the host dispatches 32 threads per token.
+ * Q38_REF_KERNELS=exact keeps q38_moe_route_fast. */
+#define ROUTE_SIMD_PER_LANE (Q38F_ROUTE_MAX_EXPERTS / 32)
+kernel void q38_moe_route_simd(device const float *logits [[buffer(0)]], device float *probs [[buffer(1)]],
+        device uint *ids [[buffer(2)]], device float *weights [[buffer(3)]], constant RouteArgs &a [[buffer(4)]],
+        device atomic_uint *error [[buffer(5)]], uint token [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    if (sg || token >= a.t) return;
+    if (a.e == 0 || a.e > Q38F_ROUTE_MAX_EXPERTS || a.k == 0 || a.k > a.e) {
+        if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    device const float *z = logits + ulong(token) * a.pitch;
+    device float *p = probs + ulong(token) * a.e;
+    device uint *id = ids + ulong(token) * a.k;
+    device float *w = weights + ulong(token) * a.k;
+    float v[ROUTE_SIMD_PER_LANE];
+    float local = -INFINITY; bool bad = false;
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        const uint e = 32 * j + lane;
+        v[j] = e < a.e ? z[e] : -INFINITY;
+        if (e < a.e) { bad = bad || !isfinite(v[j]); local = max(local, v[j]); }
+    }
+    const float maximum = simd_max(local);
+    if (simd_any(bad)) { /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
+        if (!lane) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        for (uint s = lane; s < a.k; s += 32) { id[s] = s; w[s] = 0.0f; }
+        return;
+    }
+    float part = 0.0f;
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        v[j] = 32 * j + lane < a.e ? exp(v[j] - maximum) : 0.0f;
+        part += v[j];
+    }
+    const float sum = simd_sum(part);
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        const uint e = 32 * j + lane;
+        if (e < a.e) { v[j] = v[j] / sum; p[e] = v[j]; } else v[j] = -2.0f; /* below every p and the -1 mask */
+    }
+    float selected = 0.0f;
+    for (uint s = 0; s < a.k; s++) {
+        float best = -2.0f; uint at = 0xffffffffu; /* this lane's experts ascend: first strict > = smallest id */
+        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (v[j] > best) { best = v[j]; at = 32 * j + lane; }
+        const float top = simd_max(best);
+        const uint chosen = simd_min(best == top ? at : 0xffffffffu);
+        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (32 * j + lane == chosen) v[j] = -1.0f;
+        if (!lane) { id[s] = chosen; w[s] = top; }
+        selected += top; /* serial in s, as the oracle */
+    }
+    if (a.norm && !lane) for (uint s = 0; s < a.k; s++) w[s] /= selected;
+}
+
 /* ---- R3.2 grouped MoE for prefill. The kernels above read an expert's rows
  * once per (token, slot) pair, so a 1024-token chunk read each active expert
  * ~20 times. Here the pairs are grouped by expert (counting sort) and each
