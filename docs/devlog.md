@@ -24,8 +24,20 @@ argmax 33/33.
 order: logits sha-identical, moe.down 3166 -> 2927 us/token.
 
 Decode profile (41-ID prompt, 32 forced): 37.73 -> 36.90 ms/token of GPU groups.
-**Next:** fewer barriers (fusion of the small ops), the shared expert inside the routed
-dispatch, then the closure pairing with DwarfStar.
+
+**Then (2026-11-11):** the shared expert now runs beside the router and gate+up (its two
+barriers removed, bit-identical, -0.6 ms/token); the HC tail gives 8 lanes to each stream with
+16-byte loads and a 3-step xor tree (-1.4 ms); the IQ2_XXS gate+up table decode ships (-0.7 ms);
+the shared decoders read with 2- and 4-byte loads (byte loads cost ~12% in the IQ2 decode) and
+the parallel-slot Q2_K down uses dl*sum(qx) - ml*sum(x) (-0.2 ms). Tried and dropped: an F16
+multi-GEMV with 4 rows per threadgroup (bit-identical, -0.1 ms, noise). Every reordered kernel
+stays within the existing measured tolerances; G3 2.53e-7, 12/12.
+
+**Paired 3+20 with DwarfStar: 28.33 against 32.90 tok/s = 0.861x** (Decode II 0.782x).
+Evidence: `bench/qwen38/d3_20261111/README.md`.
+**Next:** ~4.9 ms/token remain. The dense Q8_0 matvecs (gdn.proj, gdn.out, lm_head, qsa.proj:
+~13.6 ms at ~250 GB/s) and the HC down (182 GB/s) are the largest block; then the small GDN ops
+(prep, scan, norm, conv: ~2.2 ms in 6 dispatches per layer).
 
 ## R7a (2026-11-10): Q2 against Q4 — KL 0.40, top-1 77%, PPL +8%
 
