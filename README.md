@@ -49,9 +49,12 @@ Measured on the Q2 file. DwarfStar `fc80bd6` ran on the same file and machine.
 | | picoforge | DwarfStar |
 |---|---:|---:|
 | Decode, short prompt | 26.0 tok/s | 33.2 tok/s |
-| Prefill, 8K prompt | 61.0 s FP32, 37.6 s half | ~14 s |
+| Prefill, 8K prompt | 46.2 s FP32, 24.9 s half | ~14 s |
 | MTP over plain decode | 1.09–1.65x | — |
 | Q4 file, experts streamed from SSD | ~18–19 tok/s | doesn't fit on 64 GB |
+
+The prefill figures are single runs after the P5 attention work (they were
+61.0 s and 37.6 s at the end of R3); the 3+20 protocol pass comes with R8.
 
 Q2 against Q4 on a corpus neither model was trained on: KL 0.40, 77% top-1
 agreement, perplexity +8%. The protocol is in

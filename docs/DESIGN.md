@@ -53,7 +53,7 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | R4 MTP | Adaptive, cost-aware draft depth; multi-row verify | Done: 1.09-1.65x over plain decode, exact greedy |
 | Decode II | Token split over 4 command buffers, fused shared-expert activation | Done: 0.78x (target 0.95x not met) |
 | R5 SSD streaming | Expert pool with parallel reads and event gates; the Q4 file on 64 GiB | Done: Q4 at ~18-19 tok/s with a warm pool |
-| P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done |
+| P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done: 8K prompt 46.2 s (FP32), 24.9 s (half) |
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
 | R6 Next generation | Support for the next Qwen release (a 27B dense and a Flash-Next sibling) | Waiting for the release |
 | R8 Closure | Final protocol benchmarks, the per-technique ladder, writeup | Next |
