@@ -5,3 +5,9 @@
 #   picoforge's own sources and docs at that commit, written in 2026 (after
 #   Qwen3's release): uncontaminated, 77679 Qwen3 tokens, 75 windows of 1024.
 ffde2116596be2bc1224e95deec3ee6e2e5bbb68096942b3805b5761dcaf64c6  corpus_local.txt
+
+# r7 windows: tools/eval/qwen38_r7_corpus.py 33f6d86   (Qwen3.8 tokenizer)
+#   picoforge files added after 2026-10-12 (after Qwen3.8-Flash-Next shipped); prose and code
+#   streams, 4 windows of 2048 tokens each. Hash = sha256 of the JSON list of window IDs, printed
+#   by the script (not a file hash): rebuild and compare the last line it prints.
+c2c474683e10112c5082740eeab6234e337c842ec147a3fedeaf889184c0faf7  r7 windows

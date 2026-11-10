@@ -328,17 +328,26 @@ static Qwen38Status residency(Qwen38GpuForward *f,Qwen38GpuSession *session,void
         Qwen38Status rc=shared ? qwen38_gpu_session_share_residency(session,shared,e) : Q38_OK;
         return rc==Q38_UNSUPPORTED ? Q38_OK : rc;
     }
+    /* R7: no set while experts stream. Measured on Q4, 512 teacher-forced tokens (bench/qwen38_r7_20261110):
+     * with no set the decode takes ~29 s at both 10000 and 14421 slots, and a weights-only set changes
+     * nothing at 10000 slots. With a set attached while the GPU memory is near its budget, the logits
+     * stay identical but the decode slows 2.7x (10000 slots, pool in the set) or 12x (14421 slots,
+     * weights-only set). The set never helps here, so it stays off; resident models keep it (R1.7b).
+     * The pool's warm-up is skipped too: a pool slot is filled by its first read. */
+    if (gpu_weights_pool_buffers(f->store,(void *[3]){0})) {
+        fprintf(stderr,"picoforge: residency set off while experts stream\n");
+        return Q38_OK;
+    }
     const GgufPlan *plan=gpu_weights_plan(f->store);
     void **views=calloc(plan->view_count+3,sizeof *views); if (!views) return fail(e,Q38_OOM,"residency list");
-    size_t n=gpu_weights_pool_buffers(f->store,views);   /* R5.1b: the expert pool stays resident too */
+    size_t n=0;
     for (size_t i=0;i<plan->weight_count;i++) {     /* one buffer per view, however many tensors */
         void *b=gpu_weights_buffer(f->store,&plan->weights[i]); bool seen=false;
         for (size_t k=0;k<n&&!seen;k++) seen=views[k]==b;
         if (!seen) views[n++]=b;
     }
     Qwen38Status rc=n ? qwen38_gpu_session_use_residency(session,views,n,4ull<<30,e) : Q38_OK;
-    if ((!rc || rc==Q38_UNSUPPORTED) && !gpu_weights_pool_buffers(f->store,(void *[3]){0}) && !getenv("PICOFORGE_NO_WARMUP"))
-        if (library) warm(f,library,views,n);
+    if ((!rc || rc==Q38_UNSUPPORTED) && library && !getenv("PICOFORGE_NO_WARMUP")) warm(f,library,views,n);
     free(views);
     return rc==Q38_UNSUPPORTED ? Q38_OK : rc;
 }

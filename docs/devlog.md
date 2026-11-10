@@ -2,6 +2,31 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## R7a (2026-11-10): Q2 against Q4 — KL 0.40, top-1 77%, PPL +8%
+
+Evidence: `bench/qwen38_r7_20261110/README.md`. Teacher-forced FP32 logits of both files on a
+frozen corpus nobody trained on (picoforge files added after 2026-10-12, 4 prose + 4 code windows
+of 2048 tokens, `tools/eval/qwen38_r7_corpus.py`), reduced in FP64 by
+`tools/eval/qwen38_r7_quality.py`, with Q4 as the reference (a proxy: BF16 does not fit).
+Overall KL 0.401 [0.367, 0.441], top-1 77.0%, PPL 6.50 -> 7.04 (ΔNLL 0.079 nats, CI excludes 0).
+Code holds up better (KL 0.29, top-1 84%, median KL 0.03) than prose (KL 0.51, top-1 70%).
+46% of the top-1 flips sit on a Q4 margin below 0.5 nats, so the flips cost little NLL.
+No engine code changed. Two Q4 starts were stopped by the memory guard while the 37 GiB pool was
+being wired with the desktop open, so the guard was kept and the pool shrunk to 10000 slots.
+Q4 logits are byte-identical at both sizes (re-checked on code-0), but decode became 4.6x
+slower with only 36 s spent in acquire.
+
+**The slowdown was the residency set.** An interleaved A/B on 512 tokens, with the same misses
+and the same logits in every row: no set gives ~29 s at both pool sizes; a set attached while the
+GPU allocation is near its budget gives 78–87 s (pool in the set) or 346–464 s (14421 slots,
+weights-only set). Desktop activity was ruled out because the effect reproduces with the Mac idle.
+The set never helps a streamed run, so the engine attaches none while experts stream: 29.2 s at
+both pool sizes, logits unchanged, tests green. The mechanism (driver re-mapping per command
+buffer?) needs Instruments GPU counters. **R7 closed**: the task suite goes to the backlog and the
+model comparisons wait for R6.
+
+**Next:** the Q4 protocol bench.
+
 ## P5 (from 2026-11-09): attention in the long prefill
 
 Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
