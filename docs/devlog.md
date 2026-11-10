@@ -4,7 +4,7 @@ Two lines per session: what was done, what comes next. Newest entry first.
 
 ## R7a (2026-11-10): Q2 against Q4 — KL 0.40, top-1 77%, PPL +8%
 
-Evidence: `bench/qwen38_r7_20261110/README.md`. Teacher-forced FP32 logits of both files on a
+Evidence: `bench/qwen38/r7_20261110/README.md`. Teacher-forced FP32 logits of both files on a
 frozen corpus nobody trained on (picoforge files added after 2026-10-12, 4 prose + 4 code windows
 of 2048 tokens, `tools/eval/qwen38_r7_corpus.py`), reduced in FP64 by
 `tools/eval/qwen38_r7_quality.py`, with Q4 as the reference (a proxy: BF16 does not fit).
@@ -29,7 +29,7 @@ model comparisons wait for R6.
 
 ## P5 (from 2026-11-09): attention in the long prefill
 
-Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
+Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38/p5_20261109/README.md`.
 
 ### P5.3 — batch indexer scores in tiles: bit-identical, -0.14 s
 
@@ -92,7 +92,7 @@ FP32 50.7 -> 47.1 s, half 29.8 -> 26.6 s.
 
 ## P4 (from 2026-11-08): the GDN scan in the long prefill
 
-Branch `perf/qwen38-gdn-chunk`. Evidence: `bench/qwen38_p4_20261108/README.md`.
+Branch `perf/qwen38-gdn-chunk`. Evidence: `bench/qwen38/p4_20261108/README.md`.
 
 ### P4.2-P4.3 — grouped MoE in 32-row tiles: 8K FP32 54.5 -> 49.4 s, half 30.3 -> 28.9 s
 
@@ -130,7 +130,7 @@ moe.down and gdn.proj.
 
 ## Perf III (from 2026-11-08): the chat as ds4 runs it
 
-Branch `perf/qwen38-perf3`. Evidence: `bench/qwen38_p3_20261108/README.md`.
+Branch `perf/qwen38-perf3`. Evidence: `bench/qwen38/p3_20261108/README.md`.
 
 ### Why the thinking never ended, and short prompts twice as fast
 
@@ -151,8 +151,8 @@ kernels (pinned to the old admission so the kernels keep their coverage).
 
 ## R5 "SSD streaming" (from 2026-11-05)
 
-Spec: `docs/specs/qwen38/R5-ssd-streaming.md`. Branch `perf/qwen38-r5-streaming`. Evidence:
-`bench/qwen38_r5_20261105/README.md`. Newest first.
+Spec (private notes). Branch `perf/qwen38-r5-streaming`. Evidence:
+`bench/qwen38/r5_20261105/README.md`. Newest first.
 
 ### Choosing the model by name, and streaming when it does not fit
 
@@ -181,7 +181,7 @@ Three prompts, 128 and 512 tokens each, Q4 with a 36 GiB pool: the marginal cost
 is 52.9-56.1 ms/token, and a whole 128-token run costs 64-69 ms/token. The same script on the Q2 with a 50% pool gives
 ~48, and the resident Q2 gives 38.7. About 2% of lookups miss once warm (~10 experts, 27 MB per token), costing ~4.6 ms
 in acquire. The gates add ~5.7 ms and the Q4 kernels are heavier. The R5.0 model predicted 19-24 tok/s.
-No swap growth, wired 47-48 GiB. One run per cell, not the protocol. Evidence: `bench/qwen38_r5_20261108/r53b`.
+No swap growth, wired 47-48 GiB. One run per cell, not the protocol. Evidence: `bench/qwen38/r5_20261108/r53b`.
 
 ### R5.3a — the Q4 runs, streamed, within 2.3e-7 of the FP32 reference
 
@@ -196,7 +196,7 @@ G3 tokens against `ds4 --cpu --first-token-test` on the same file: scaled error 
 top-5 order. The pools of 2458 and 14244 slots (36 GiB, 58% of the trunk experts) and the wait path give the
 same logits bit for bit. The Q2 is unchanged (same sha256 as before the loader change). Peak wired memory is
 46.7 GiB with the 36 GiB pool, pressure normal, no swap growth in picoforge.
-Evidence: `bench/qwen38_r5_20261108/r53a`. Next: R5.3b, speed with the protocol.
+Evidence: `bench/qwen38/r5_20261108/r53a`. Next: R5.3b, speed with the protocol.
 
 ### R5.2b — event gates: the streaming overhead halves, bit-identical
 
@@ -211,14 +211,14 @@ blocked. Abort and finish drain the queue before any state is reused.
 repetitions): resident 38.7, wait 49.5, event 44.4 ms/token (46.5 with an `MTLSharedEventListener`
 instead of polling). The remaining ~120 us per gate is the command-buffer boundary on the GPU. Logits
 match the resident run in every mode, and the synthetic parity holds at 64/12/6 and --mtp 16/6/4.
-Evidence: `bench/qwen38_r5_20261108/r52b`. Next: R5.3, the Q4 file.
+Evidence: `bench/qwen38/r5_20261108/r52b`. Next: R5.3, the Q4 file.
 
 ### R5.2b0 — the per-layer sync costs more than the reads
 
 Resident against a 50% pool (no eviction), 64 tokens, 2 pairs: 39.2 against ~61.5 ms/token. Total time
 in acquire is 0.8 s with prefill included, so the reads explain less than half of the 22 ms gap. The
 rest is the 48 commit+wait+re-encode steps per token, with the GPU idle. R5.2b must therefore attack
-the sync itself, not only the reads. Evidence: `bench/qwen38_r5_20261106/r52b0`.
+the sync itself, not only the reads. Evidence: `bench/qwen38/r5_20261106/r52b0`.
 
 ### R5.2a — read a token's misses in parallel: stall 3.1x shorter
 
@@ -229,7 +229,7 @@ so slots, hits and evictions do not change. It then reads the misses as 3 x miss
 call's new slots, so garbage can never turn into a hit (new test). Real Q2 with a 10% pool, 64 tokens,
 3 alternating pairs: the stall goes from 6.18 to 2.01 s (about 470 -> 153 us per 1.49 MB miss) and decode
 from ~138 to ~77 ms/token. Logits are identical across all six runs. Resident decode: ~41.5 ms/token.
-Evidence: `bench/qwen38_r5_20261106/r52a`. Next: R5.2b, overlap the reads with the GPU (shared expert,
+Evidence: `bench/qwen38/r5_20261106/r52a`. Next: R5.2b, overlap the reads with the GPU (shared expert,
 next layer's attention) and prefetch.
 
 ### R5.1c — the real Q2 with 10/50/100% of its experts in the pool: bit-identical
@@ -239,7 +239,7 @@ Same prompt, 16 greedy tokens, `Q38_REF_KERNELS=gemm` in every run, guarded laun
 bit for bit; swap stayed 0 and pressure normal. Peak wired memory: 45.9 GiB resident, 15.3 GiB with the
 10% pool (3.4 GiB of slots, 36% misses, 3843 evictions), 28.8 GiB at 50%, 46.1 GiB at 100%. At 50% and
 100% the 30% misses are only cold first reads. The runs were single and cold, so no speed is claimed
-here. Evidence: `bench/qwen38_r5_20261106/r51c`. R5.1 is closed. Next: R5.2, prefetch and I/O
+here. Evidence: `bench/qwen38/r5_20261106/r51c`. R5.1 is closed. Next: R5.2, prefetch and I/O
 overlapped with compute.
 
 ### R5.1b — the pool behind the kernels, bit-identical on the synthetic models
@@ -278,11 +278,11 @@ ms/token, so 8.8 ms to remove. Branch `perf/qwen38-decode2` from the R4.5 tidy-u
 
 ### Decode II closure — 0.782x DwarfStar (R2: 0.747x), target 0.95x not met
 
-Final pairing (`bench/qwen38_d1_20261105/paired-short-final`, 3+20, alternating, AC): picoforge
+Final pairing (`bench/qwen38/d1_20261105/paired-short-final`, 3+20, alternating, AC): picoforge
 25.965 tok/s (p10 25.652, p90 25.992) against DwarfStar 33.220 (32.570, 33.270) = **0.7816x**,
 pairwise 0.780-0.797. Absolute: 24.15 (R2) -> 25.97 tok/s, 41.4 -> 38.5 ms/token. 8K not remeasured.
 Real-model logits, pre-Decode-II binary against the final one: bit-identical over 16 teacher-forced
-steps (`bench/qwen38_d1_20261105/closure`). Gates: CLI (with the two new bit-identity tests),
+steps (`bench/qwen38/d1_20261105/closure`). Gates: CLI (with the two new bit-identity tests),
 REPL, session, speculative, G0, G2, G2-state, MTP, server, compare, contracts, profile.
 
 What worked (both bit-identical): decode token in 4 command buffers (-2.1 ms, the GPU no longer
@@ -307,12 +307,12 @@ the three with `q38_silu`/`q38_sigmoid`, which are `q38c_activate`'s expressions
 `q38f_product`'s multiply, so every value has the same bits; the finiteness checks cover the
 same quantities. `Q38_REF_KERNELS=moe` or `fuse` keeps the three ops. Profile: the moe.shared
 group goes from 4 to 2 dispatches per layer (192 -> 96 per token). Measured (real model,
-short frontier, `bench/qwen38_d1_20261105/t*-sharedact`): 38.9 -> 38.5 ms/token (GPU 38.0 ->
+short frontier, `bench/qwen38/d1_20261105/t*-sharedact`): 38.9 -> 38.5 ms/token (GPU 38.0 ->
 37.7), 0.4 ms for 96 dispatches. Test: `test_fused_shared_expert_matches_moe_oracle`.
 
 ### D1.1 paired with DwarfStar — 0.787x (R2: 0.747x)
 
-`bench/qwen38_d1_20261105/paired-short`, 3+20 per engine, alternating, AC: picoforge 25.161
+`bench/qwen38/d1_20261105/paired-short`, 3+20 per engine, alternating, AC: picoforge 25.161
 tok/s (p10 20.909, p90 25.551) against DwarfStar 31.970 (28.120, 33.020) = **0.787x**
 (pairwise median 0.781). Both engines drifted down over the last third of the run, so the
 spread is shared; the 0.95x target needs ~6 ms/token more. 8K was not re-measured.
@@ -325,21 +325,21 @@ ends the current encoder, commits the buffer and continues the same logical comm
 new one; the GPU runs the first quarter of the layers while the CPU encodes the rest. The
 queue runs buffers in order and the graph buffers are hazard-tracked, so nothing changes
 numerically (K = 1, 3, 4, 8 give identical ids and logits on the synthetic graph; test added).
-Measured on the real model (short frontier, `bench/qwen38_d1_20261105`): 41.0 -> 38.9
+Measured on the real model (short frontier, `bench/qwen38/d1_20261105`): 41.0 -> 38.9
 ms/token (24.4 -> 25.7 tok/s), idle time 3.0 -> 0.9 ms, GPU time unchanged. Default K = 4,
 `PICOFORGE_CMD_SPLIT=1` restores the single buffer. Not re-paired with DwarfStar yet.
 
 ### D0 — where the milliseconds are (analysis of existing evidence, no new runs)
 
-From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
+From `bench/qwen38/r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
 1356 dispatches and 1271 barriers per token) and the isolated MoE benchmarks in
-`bench/qwen38_r1_20261028/moe-*`:
+`bench/qwen38/r1_20261028/moe-*`:
 
 - The routed MoE does **not** scale with bytes the way a DRAM-bound kernel would,
   and it is **not** limited by the decode arithmetic either. Isolated, the fused
   gate+up runs at 130 GB/s at 10 slots and 132 at 40 (time linear in bytes). My
   first reading was "about 8 ALU instructions per IQ2_XXS weight; halve them and
-  double the speed". The ablation in `bench/qwen38_d0_20261105` refutes it:
+  double the speed". The ablation in `bench/qwen38/d0_20261105` refutes it:
   removing the sign work, the scale multiply and the grid lookup together gains
   9% (238 -> 217 us at 40 slots), loading x as float4 or the group as one 8-byte
   load gains 0, and a streaming-only variant that reads the same rows with the
@@ -354,7 +354,7 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
 - The ~1000 small dispatches with no weights (gdn.scan, moe.route, qsa.core,
   gdn.conv, rms, hc_add, prep, ...) cost ~6-7.6 ms. Their lever is the number
   of barriers, not the kernels. DwarfStar fuses the HC mixers the same way.
-- D3 first results (same bench, 40 slots, raw lines `bench/qwen38_d0_20261105/d3-*.jsonl`;
+- D3 first results (same bench, 40 slots, raw lines `bench/qwen38/d0_20261105/d3-*.jsonl`;
   prototypes were scratch copies, nothing changed in src/). Refuted as the cause, each
   within noise of the 238 us baseline: issuing all of a lane's loads before decoding
   (+1%), staging both rows through threadgroup memory with coalesced loads (+8%, worse),
@@ -369,13 +369,13 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
 - D3 follow-up, also negative: serving 2 or 4 (gate, up) row pairs per simdgroup with the
   same per-row order, to amortise the supposed fixed cost, made the kernel slower (40
   slots: 251 us at 1 row after the rewrite, 265 at 2, 258 at 4, against 238 for the
-  original; `bench/qwen38_d0_20261105/d3-rows-per-simdgroup.txt`). Reverted. So the
+  original; `bench/qwen38/d0_20261105/d3-rows-per-simdgroup.txt`). Reverted. So the
   K-independent ~77 us is not per-simdgroup prologue/epilogue, and none of the single-factor
   changes tried moves the fused IQ2 gate+up below ~215 us; the streaming floor stays 106 us
   without an explanation. Stopped here: more guessing needs a GPU counter capture
   (Xcode / `xctrace` Metal counters) rather than more ablations. The pipelined encode
   below is the next step, since its cost is measured directly.
-- HC F16 matvecs, from `bench/qwen38_r1_20261020/matvec-f16-f32` (isolated, m = 1): the
+- HC F16 matvecs, from `bench/qwen38/r1_20261020/matvec-f16-f32` (isolated, m = 1): the
   "down" 10240 -> 320 runs at 225-269 GB/s (24.5-29 us), but the "up" 320 -> 10240 at
   156 GB/s (42.2 us) for the same 6.6 MB, and in the graph hc_ffn.up costs 2.0 ms / 48 =
   41.7 us per call: the slow part is the shape (K = 320, 10 elements per lane, so the
@@ -399,7 +399,7 @@ From `bench/qwen38_r2_20261030/profile-folded` (decode, 38.63 ms of GPU groups,
   blank template records nothing. The limiter counters (occupancy, ALU/LSU utilisation,
   cache hit rates) therefore need the Instruments GUI to build a template for this GPU
   once, after which `xctrace record --template FILE` can be scripted.
-- Host side, from the runs already in `bench/qwen38_r2_20261030` (14 runs): wall
+- Host side, from the runs already in `bench/qwen38/r2_20261030` (14 runs): wall
   41.4 ms/token against 38.4 ms of GPU on the short prompt (45.2 against 42.5 at
   8K). The 2.9-3.0 ms difference is the CPU encode (2.3 ms, ~1.7 us per dispatch)
   plus ~0.6 ms of submit/readback: the GPU sits idle while the next token is
@@ -423,13 +423,13 @@ pass; the stage-B reference assets are not in this checkout, so
 
 ## Roadmap stage R4 "MTP" (from 2026-11-03)
 
-Spec: `docs/specs/qwen38/R4-mtp.md`. Branch `perf/qwen38-mtp-adaptive` from
+Spec (private notes). Branch `perf/qwen38-mtp-adaptive` from
 main 66a6c2d. Starting point: `--mtp` with one draft was *slower* than plain
 decode on free text (18.3 vs 24.4 tok/s in R3's informal check). Newest first.
 
 ### R4 closure — MTP now pays everywhere; DwarfStar gap unchanged
 
-Evidence: `bench/qwen38_r4_20261103/README.md`. Paired with `ds4 --mtp`
+Evidence: `bench/qwen38/r4_20261103/README.md`. Paired with `ds4 --mtp`
 fc80bd6 on the same four chat prompts, AC throughout, **1+8 (reduced,
 declared)**: picoforge `--mtp` 33.20 / 25.64 / 27.03 / 40.99 tok/s (code,
 chat, story, count) against 45.80 / 39.48 / 35.67 / 53.08, i.e. 0.65-0.77x.
@@ -560,13 +560,13 @@ Qwen3-30B-A3B-shaped MoE paths) green, 5 min 20 s.
 
 ## Roadmap stage R3 "Prefill" (from 2026-11-02)
 
-Spec: `docs/specs/qwen38/R3-prefill.md`. Starting point (R2 8K profile): prefill
+Spec in the private notes. Starting point (R2 8K profile): prefill
 ~40 tok/s against DwarfStar ~580; 55% of it in dense linears that are matvecs
 rereading every matrix every 4 rows of x. Newest first.
 
 ### R3 closure — prefill 3.5x faster, 0.95x DwarfStar not reached
 
-Evidence: `bench/qwen38_r3_20261102/README.md`. 8K prefill (8063 IDs, chunk
+Evidence: `bench/qwen38/r3_20261102/README.md`. 8K prefill (8063 IDs, chunk
 1024): R2 ~215 s -> **61.0 s FP32** (132 tok/s, paired 1+5) and **37.6 s
 with `--prefill-precision half`** (214 tok/s, a healthy alternating pair;
 three single runs 37.6-41.3 s). Against the same session's DwarfStar
@@ -627,7 +627,7 @@ product of the two dot errors (negligible in FP32, ~1e-6 S_g S_u here) dominates
 Measured max (b) 4.1e-4 over 603,659 outputs, tol 2^-11. The FP32 tolerances,
 G3 and the REF bit-identity are untouched.
 
-End to end (real Q2 checkpoint, AC; `bench/qwen38_r3_20261102/half-gate/`): half
+End to end (real Q2 checkpoint, AC; `bench/qwen38/r3_20261102/half-gate/`): half
 against FP32 on the first N IDs of the 8K prompt + 16 forced, N 64..4000, and the
 8K frontier + 128 forced: logits scaled 0.06-0.16, KL(fp32||half) max 0.04-0.37,
 mean 0.008-0.035, argmax 14-17/17 and 122/129; every changed argmax has an FP32
@@ -784,7 +784,7 @@ Gates at 05d88fd (battery): test-qwen38 (with the new test-qwen38-repl),
 MTP, speculative, fast-kernels and compare in both modes, G3 scaled 2.08e-7,
 `Q38_REF_KERNELS=1` logits bit-identical to the R0 oracle (360acf0),
 default 4.95e-5 argmax 9/9 — all as at the R2 close. A recorded real
-session (`bench/qwen38_terminal_20261101/transcript.md`) covers every
+session (`bench/qwen38/terminal_20261101/transcript.md`) covers every
 command, Ctrl+C mid-reply and `/think`; it exposed one bug, fixed in
 3fa96fb: on a piped stdout, command output (fully buffered) appeared one
 turn late; the chat now flushes after each command (new test). README
@@ -799,7 +799,7 @@ p10/p90 of prefill tok/s, decode tok/s and TTFT (`src/qwen38_bench.c`,
 linear-interpolation quantiles as numpy). `--bench-csv F` keeps the raw
 rows. GB/s against 307 only with `--weight-mb MB`, the weight bytes per
 token measured by a profile summary (6104.78 MB for Flash-Next Q2 in
-`bench/qwen38_r2_20261030/*/summary`); the engine never guesses it, and it
+`bench/qwen38/r2_20261030/*/summary`); the engine never guesses it, and it
 is refused with `--mtp` (two rows per weight read). Test: the printed
 quantiles equal numpy's on the CSV rows. Real, battery, 1+3 runs (NOT the
 protocol): decode 24.37 tok/s median (R2 close: 24.15), 148.8 GB/s = 48.5%
@@ -900,7 +900,7 @@ alias tests, strided HC tail views).
 
 ### R2 close — 0.75x short, 0.72x at 8K
 
-Paired on AC at `9ae6e02` (`bench/qwen38_r2_20261030`, README): short
+Paired on AC at `9ae6e02` (`bench/qwen38/r2_20261030`, README): short
 24.15 tok/s vs DwarfStar 32.33 = 0.747x (R1 0.623x), 8K 21.73 vs 30.14 =
 0.721x (R1 0.372x). The 8K target (0.60x) is met; the short one (0.80x) is
 not. All gates green: test-qwen38, MTP, speculative, fast-kernels (80) in
@@ -997,7 +997,7 @@ One row per simdgroup was slower than the oracle; four were needed. The
 input check of `q38c_check` (bits 1 and 4) is folded in. Tolerance
 `gdn_scan_fast` = 2^-21 (max 4.3 u; the state's S is the running sum of the
 magnitudes its roundings scale with). Chunked tokens stay bit-identical to
-one-token steps. Profile short (`bench/qwen38_r2_20261029/profile-short-scan`,
+one-token steps. Profile short (`bench/qwen38/r2_20261029/profile-short-scan`,
 battery): gdn.scan 3.70 -> 1.83 ms, GPU groups 43.6 -> 41.7 ms/token.
 
 ### R2.3 — F16 matvecs: hardware half -> float on every chunk
@@ -1032,7 +1032,7 @@ scores, IDs and error word byte for byte with the oracles.
 
 ### R2.1 — split-K decode attention ("flash decoding")
 
-The first 8K profile (`bench/qwen38_r2_20261028/profile-8k-r1`) put 39.6 of
+The first 8K profile (`bench/qwen38/r2_20261028/profile-8k-r1`) put 39.6 of
 82.7 ms/token in `qsa.core`, against 2.2 ms on the short prompt: per layer
 2.44 ms attention over the 2048 selected keys, 0.39 ms index scores, 0.43 ms
 block selection. The oracle attention runs one threadgroup per head (24 on a
@@ -1053,8 +1053,7 @@ and the fast kernel is closer to FP64 than the oracle in every case.
 
 ## R0/R1 — measure, then make Qwen3.8 Q2 decode fast (from 2026-10-17)
 
-Plan: [R0-R1-plan.md](specs/qwen38/R0-R1-plan.md), spec:
-[R0-R1-decode.md](specs/qwen38/R0-R1-decode.md). For this stage the human
+Plan and spec in the private notes. For this stage the human
 chose to **build first and study afterwards**: agents implement each step
 under the usual gates, and every step leaves a note here (concept, what
 changed, the measured number) to be studied line by line later. Notes below
@@ -1123,11 +1122,11 @@ head a simdgroup (lane-strided squares, then simd_sum: the order depends only on
 strides the copy and gates over 1024 threads, with the input check folded in. Copy and gates
 are bit-identical to the oracle; the norms differ only by summation order (tolerance 2^-20,
 measured max 5.7e-7). Bench at the real dims, t = 1: 666.8 -> 19.4 µs, about 24.0 -> 0.7 ms
-per token by estimate (`bench/qwen38_r1_20261026/gdn-prep`). The scan was not touched.
+per token by estimate (`bench/qwen38/r1_20261026/gdn-prep`). The scan was not touched.
 Idea from ds4 fc80bd6, MIT, metal/qwen4.metal:kernel_qwen4_gdn_front/gdn_prep; no code copied.
 Measured (controller, quick closure t16, 8-token profile, AC): GPU 46.9 ms/token (Task 15
 69.2, -32%; normal-mode 50.2 ms); gdn 42.2 → 18.8 ms, gdn.prep 23.2 → 0.33 ms; G3 scaled 5.4e-7;
-`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261026/profile-t16`).
+`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38/r1_20261026/profile-t16`).
 
 ### R1.7b — GPU argmax
 
@@ -1164,7 +1163,7 @@ residency set. Claim cost per token with 1500 weights + 60 scratch (g0 micro-ben
 Measured (controller, quick closure t15, 8-token teacher-forced profile, AC): host encode
 5.2 → 4.7 ms/token, wall decode 77.8 → 77.1 ms/token. On the real store the residency set is
 skipped by its gate (42720 MiB + 4096 MiB > 85% of 53084 MiB). `Q38_REF_KERNELS=1` bit-identical;
-G3 scaled 4.2e-7 (`bench/qwen38_r1_20261026/profile-t15`).
+G3 scaled 4.2e-7 (`bench/qwen38/r1_20261026/profile-t15`).
 
 ### R1.6b — Concurrent encoder
 
@@ -1183,7 +1182,7 @@ Logits and traces bit-identical over 3 runs per mode.
 Measured (controller, quick closure, 8-token profile, AC): GPU 68.8 ms/token (Task 14b
 75.6, -9%; normal-mode decode 62.3 ms); barriers 2270 → 1788, dispatches 2307. Default logits
 bit-identical over 3 runs and to the serial Task 14b run; `Q38_REF_KERNELS=1` bit-identical;
-G3 scaled 4.2e-7 (`bench/qwen38_r1_20261026/profile-t14a`).
+G3 scaled 4.2e-7 (`bench/qwen38/r1_20261026/profile-t14a`).
 
 ### R1.6a — Parallel RMSNorm
 
@@ -1197,13 +1196,13 @@ the width), the oracle's expressions. At [t, 4, 2560] it is within 2.6e-7 of FP6
 (1 dispatch + 1 barrier instead of 2 + 2, same error word). All RMS and GDN norms use it;
 `Q38_REF_KERNELS=fuse` (or 1) keeps check + `q38c_rms`. Idea: ds4 fc80bd6 (MIT)
 `kernel_qwen4_hc_norm`, nothing copied. AC protocol bench
-(`bench/qwen38_r1_20261026/rms`): HC norm at t = 1 286.6 → 25.9 µs (11.1x), t = 32 378.3 →
+(`bench/qwen38/r1_20261026/rms`): HC norm at t = 1 286.6 → 25.9 µs (11.1x), t = 32 378.3 →
 12.8 µs; small widths at t = 1 are faster too (GDN gated 61.5 → 4.5 µs). Per token, counting
 100 HC-shaped norms (61 in the profile's rms groups + 36 GDN block + 3 PLE) and the small
 widths: 32.0 → 3.3 ms (estimate from per-dispatch time, not end-to-end).
 Measured (controller, quick closure, 8-token profile, AC): GPU 75.6 ms/token (Task 13b
 105.7, -28%); rms groups 17.9 → 0.63 ms, gdn 56.3 → 44.4 ms (its 36 norms); dispatches 2307.
-G3 scaled 4.2e-7; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261026/profile-t14b`).
+G3 scaled 4.2e-7; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38/r1_20261026/profile-t14b`).
 
 ### R1.5d — Parallel router top-k
 
@@ -1219,7 +1218,7 @@ and the sum of the 10 weights keep the oracle's order. Ids, weights and probs ar
 bit-identical to `q38f_route` (5 kernel tests; graph layers 0–3);
 `Q38_REF_KERNELS=moe` (or 1), E > 1024 or k > E dispatch the oracle. Idea: ds4
 fc80bd6 (MIT) `kernel_qwen4_router_topk`, nothing copied. Protocol bench on AC
-(`bench/qwen38_r1_20261023/moe-route`, ee67690, synthetic logits, µs median):
+(`bench/qwen38/r1_20261023/moe-route`, ee67690, synthetic logits, µs median):
 
 | tokens | q38f_route (p10/p90) | q38_moe_route_fast (p10/p90) |
 |---|---|---|
@@ -1234,7 +1233,7 @@ Measured (controller, full closure for Tasks 13+13b at 0f04548, AC): ladder
 9.371 tok/s (p10 9.247, p90 9.470, n 20; Task 9 3.956, x2.37; 0.28x DwarfStar
 R0). 8-token profile: GPU 105.7 ms/token (Task 12 160.6, -34%); the MoE group
 70.7 → 12.9 ms (94.6 GB/s); dispatches 2578 → 2482. `make test-qwen38`, G3 and
-`Q38_REF_KERNELS=1` bit-identical all pass (`bench/qwen38_r1_20261026/ladder-t13`,
+`Q38_REF_KERNELS=1` bit-identical all pass (`bench/qwen38/r1_20261026/ladder-t13`,
 `profile-t13`).
 
 ### R1.5c — Fused down + reduce
@@ -1251,7 +1250,7 @@ both files), so y and routed are bit-identical to the unfused sequence
 (kernel level, all four formats; graph, layers 0–3). Per MoE layer call, the
 identity map (`q38f_iota`), the indexed down and `q38f_reduce` (3 dispatches,
 3 barriers) become 1 dispatch and 1 barrier. `Q38_REF_KERNELS=moe` or `indexed`
-restores the sequence. Bench `bench/qwen38_r1_20261021/moe-down/`
+restores the sequence. Bench `bench/qwen38/r1_20261021/moe-down/`
 (512 experts, 10 slots):
 
 | µs, fused / sequence | 1 token | 4 | 32 | 128 |
@@ -1274,7 +1273,7 @@ so act is bit-identical to the five-dispatch sequence: at kernel level for
 all four formats, and in the graph, where y is bit-identical too. gate/up are
 no longer written. `Q38_REF_KERNELS=moe` (or `indexed`, whose oracle sequence
 the fused kernel does not match) restores the five dispatches. Protocol bench
-`bench/qwen38_r1_20261021/moe-gate-up/` (512 experts, 10 slots per token):
+`bench/qwen38/r1_20261021/moe-gate-up/` (512 experts, 10 slots per token):
 
 | µs, fused / 4 dispatches | 1 token | 4 | 32 | 128 |
 |---|---|---|---|---|
@@ -1284,7 +1283,7 @@ the fused kernel does not match) restores the five dispatches. Protocol bench
 Measured (controller, quick closure for Tasks 11+12, 8-token profile, AC): GPU
 160.6 ms/token (Task 10 248.6, -35%); the MoE group 159.4 → 70.7 ms (17.2 GB/s,
 now 44% of the token); dispatches 2770 → 2578. G3 scaled 9.1e-7;
-`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261021/profile-t12`).
+`Q38_REF_KERNELS=1` bit-identical (`bench/qwen38/r1_20261021/profile-t12`).
 
 ### R1.5a — Indexed experts
 
@@ -1300,7 +1299,7 @@ kernels. Weights decode to the oracle's FP32 values, so only the order differs:
 `tol = 2^-21` for all four formats (the GPU flushes the 16 subnormal MXFP4
 weights, oracle and fast alike). `Q38_REF_KERNELS=indexed` restores the oracle.
 Fast is faster at every row count, so there is no threshold. Protocol bench
-`bench/qwen38_r1_20261021/matvec-indexed/` (512 experts, 10 slots per token):
+`bench/qwen38/r1_20261021/matvec-indexed/` (512 experts, 10 slots per token):
 
 | µs, fast / oracle | 1 token | 4 | 32 | 128 |
 |---|---|---|---|---|
@@ -1310,7 +1309,7 @@ Fast is faster at every row count, so there is no threshold. Protocol bench
 | down MXFP4 (layer 48) | 95.4 / 372.5 | | 3008 / 10545 | |
 
 Measured (controller): with Task 12, in one quick closure — see R1.5b
-(`bench/qwen38_r1_20261021/profile-t12`).
+(`bench/qwen38/r1_20261021/profile-t12`).
 
 ### R1.4 — Multi-GEMV
 
@@ -1325,7 +1324,7 @@ x-side fields come from `p[0]`, only the tensor side from `p[j]`: indexing
 every field dynamically made each short threadgroup ~5% slower. Graph: one
 call and one barrier per site; profile group `qsa.proj` replaces the five
 `qsa.*` projection groups. Synthetic, 20 per buffer, K 2560
-([bench/qwen38_r1_20261020/matvec-multi](../bench/qwen38_r1_20261020/matvec-multi/README.md)):
+([bench/qwen38/r1_20261020/matvec-multi](../bench/qwen38/r1_20261020/matvec-multi/README.md)):
 
 | group, rows 1 / 4 (µs) | multi | single calls |
 |---|---|---|
@@ -1336,7 +1335,7 @@ call and one barrier per site; profile group `qsa.proj` replaces the five
 Measured (controller, quick closure, 8-token profile, AC): GPU 248.6 ms/token
 (Task 9 248.4: no measurable gain), dispatches 2986 → 2770, barriers 3033 →
 2733; the MoE (64%) hides it. G3 scaled 8.0e-7; `Q38_REF_KERNELS=1`
-bit-identical; default logits equal to Task 9's (`bench/qwen38_r1_20261020`).
+bit-identical; default logits equal to Task 9's (`bench/qwen38/r1_20261020`).
 
 ### R1.3 — F16 and F32 matvecs
 
@@ -1352,7 +1351,7 @@ tiling. Every weight decodes exactly (F16 by hand, like the oracle; the
 65,536 patterns are tested), so the products equal the oracle's.
 `tol["f16"] = 2^-21` (max 4.2e-7, p99 1.7e-7, 255,206 outputs),
 `tol["f32"] = 2^-20` (max 4.9e-7, p99 1.8e-7, 255,182). Evidence:
-[bench/qwen38_r1_20261020/matvec-f16-f32](../bench/qwen38_r1_20261020/matvec-f16-f32/README.md).
+[bench/qwen38/r1_20261020/matvec-f16-f32](../bench/qwen38/r1_20261020/matvec-f16-f32/README.md).
 
 | shape, 1 row (µs) | fast | oracle | speedup |
 |---|---|---|---|
@@ -1386,7 +1385,7 @@ two F32 runs (original vs poisoned padding), same intent.
 Measured (controller, ladder, short, 3+20, AC): 3.956 tok/s (p10 3.952, p90
 3.962; Task 8 1.377, x2.87), GPU 248 ms/token (Task 8 722); HC F16 now ~2.4%,
 MoE 64%, GDN 22%. G3 scaled 8.0e-7; `Q38_REF_KERNELS=1` bit-identical
-(`bench/qwen38_r1_20261020`).
+(`bench/qwen38/r1_20261020`).
 
 ### R1.2b — Q8_0 matvec by default in the graph
 
@@ -1404,7 +1403,7 @@ exact checks are GPU against GPU (chunk, replay, MTP) or exact IDs, and they
 pass on the fast path.
 Measured (controller, ladder, short, 3+20, AC): 1.377 tok/s (p10 1.376, p90
 1.377; R0 1.064, +29%), GPU 722 ms/token (R0 936); LM head 2.44 ms at 277 GB/s.
-G3 scaled 1.7e-6; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38_r1_20261019`).
+G3 scaled 1.7e-6; `Q38_REF_KERNELS=1` bit-identical (`bench/qwen38/r1_20261019`).
 
 ### R1.2a — Cooperative Q8_0 matvec kernel
 
@@ -1423,7 +1422,7 @@ than the oracle (real tensors: 1.6e-8 vs 1.5e-7 of S = Σ|w·x|).
 fp16 scale decodes exactly on the 63,488 finite patterns; the 2,048 non-finite
 ones set bit 1. Measured on synthetic data, median of 20 after 3 warm-ups, AC
 power, thermal state nominal before and after. Raw evidence and conditions are
-in [bench/qwen38_r1_20261019/matvec-q8_0](../bench/qwen38_r1_20261019/matvec-q8_0/README.md):
+in [bench/qwen38/r1_20261019/matvec-q8_0](../bench/qwen38/r1_20261019/matvec-q8_0/README.md):
 
 | tensor (K 2560) | fast, 1 encode per command buffer | fast, 20 per buffer | oracle |
 |---|---|---|---|
@@ -1513,7 +1512,7 @@ per token (ceiling ~50 tok/s), 6.5 GB/s = 2.1% of 307; DwarfStar ≈ 202 GB/s
 8K only a profile (974.0 ms/token, prefill 1406 s, `qsa.core` 3.1 → 40.5 ms):
 the paired 8K run is deferred (ruling R22) after three invalid attempts, all
 kept. `oracle/oracle-logits.f32` is the reference for `Q38_REF_KERNELS=1`.
-Evidence and limits: `bench/qwen38_r0_20261017/README.md`.
+Evidence and limits: `bench/qwen38/r0_20261017/README.md`.
 
 ### R0.5a — Sleep-gap abort and full-wake precheck
 
@@ -1617,7 +1616,7 @@ whole encoder pass, *dispatch* sampling around every dispatch inside one
 encoder (what per-op timing in a fused graph would need). New:
 `tools/probe/qwen38_capabilities.m` and `make test-qwen38-r0-tools` (one lock
 in the recipe, none in the test). Measured on this M5 Pro (macOS 27.0.1, AC,
-thermal `nominal`; `bench/qwen38_r0_20261017/capabilities.json`): the only
+thermal `nominal`; `bench/qwen38/r0_20261017/capabilities.json`): the only
 counter set is `timestamp`, sampling works at the **stage** boundary only
 (dispatch, draw, blit, tile false), so per-op times need separate encoders or
 command buffers. `GPUStartTime/EndTime` are valid; Metal 4 family,
@@ -1635,7 +1634,7 @@ The six-prompt pilot gives 1.009x decode speed and 0.988x process speed versus
 `auto`, with all selected outputs identical to greedy. The cost forecast is
 less accurate than the existing estimate (2.459 vs 1.909 ms mean absolute
 error). The 10% adoption threshold is not met; the default stays unchanged.
-The [report](phase4-expert-experiment.md) retains every prompt, graph and the
+The summary is in [history.md](history.md); the raw files keep every prompt and the
 audit trail for an interrupted run and a repeated prompt with invalid timers.
 The benchmark runner now matches the engine's clock and rejects inconsistent
 timing boundaries. `make test-all`, final targeted integration tests, timer
@@ -1675,11 +1674,11 @@ Phase 4 is aimed at something that has not been built before. A literature
 search found the pieces apart -- BaseRT runs Qwen3-30B-A3B on an M5 Pro but
 leaves speculative decoding as future work; EcoSpec and EVICT make speculation
 expert-cost-aware, but on H200/A100 servers -- and nothing putting them
-together on unified memory. Plan and sources in `docs/phase4-plan.md`.
+together on unified memory. Plan and sources summarised in `docs/history.md`.
 
 ### Step 4.1 — what a matmul costs inside a command buffer
 
-`--bench-dispatch`, raw CSV in `bench/dispatch_m5pro.csv`. One matmul
+`--bench-dispatch`, raw CSV in `bench/microbench/dispatch_m5pro.csv`. One matmul
 repeated 1..1024 times in ONE buffer, then three sweeps to find the axis.
 
 - **The floor holds inside a buffer**, so Phase 3's hypothesis was right in
@@ -1708,7 +1707,7 @@ grouped MoE matmul at the 30B's shapes, which is bandwidth-bound.)*
 One unexplained failure, logged and not chased: a single-thread-scope 1x1024
 tile over 8x768 left rows of C unwritten; the check caught it before timing.
 
-In the forward pass (`bench/e2e_tile_m5pro.csv`, both tiles in one run):
+In the forward pass (`bench/archive-qwen3/e2e_tile_m5pro.csv`, both tiles in one run):
 
                       32x32 tile      8x32 for M <= 8
   prefill 512          4489 tok/s      4490
@@ -1722,7 +1721,7 @@ arrived; the rest of decode's 13.2 ms is still unaccounted for.
 
 ### Step 4.1c — where a decode step's 13 ms actually go
 
-`--profile`, raw CSV in `bench/profile_m5pro.csv`: GPU timestamps at the
+`--profile`, raw CSV in `bench/archive-qwen3/profile_m5pro.csv`: GPU timestamps at the
 boundaries of one encoder per op group. Cutting the pass into ~300 encoders
 costs 1.2 ms, and both totals are recorded.
 
@@ -1841,7 +1840,7 @@ published shapes (128 experts of 2048x768, real attention), random bf16
 weights, vocabulary cut to 1024: 1.25 GB instead of 61. `--bench-moe` times the
 GPU MoE block with routing forced -- n tokens touching exactly D distinct
 experts -- and dies unless the GPU formed exactly D expert groups. Raw CSV
-`bench/moe_verify_cost_m5pro.csv`, plot `bench/moe_verify_cost.png`.
+`bench/archive-qwen3/moe_verify_cost_m5pro.csv`, plot `bench/archive-qwen3/moe_verify_cost.png`.
 
   per layer, 8 tokens:   t = 0.35 ms + 43 us x D     (6 points, max residual 18 us)
             32 tokens:   t = 0.48 ms + 45 us x D     (8 points, max residual 57 us)
@@ -1878,7 +1877,7 @@ weights, strict budgets, GPU batch and incremental: worst relative 1.7e-6,
 KL 9e-12. A kernel with the scales removed fails all six GPU cases.
 
 The verify-cost surface, both formats measured in one session
-(`bench/moe_verify_cost_m5pro.csv` now carries a format column):
+(`bench/archive-qwen3/moe_verify_cost_m5pro.csv` now carries a format column):
 
                  <= 8 tokens (8-row tile)          32 tokens (32-row tile)
   bf16           0.36 ms + 44 us/expert  216 GB/s   0.49 ms + 47 us/expert  202 GB/s
@@ -1935,7 +1934,7 @@ every thread owns its work (scores per position, softmax per head, one value
 sum per output dimension) should be faster. It was built, verified against the
 oracle on every model (82 checks green), and measured.
 
-`bench/attention_ab_m5pro.csv`, both kernels interleaved rep by rep in one
+`bench/archive-qwen3/attention_ab_m5pro.csv`, both kernels interleaved rep by rep in one
 process -- the first attempt at a baseline read decode 30% slower than the
 morning's while another session loaded the machine (load average 6.2), and
 alternating is what makes a comparison survive that:
@@ -2005,7 +2004,7 @@ same argmax) -- the first integration check at the real shapes and depth.
 *(Corrected: the first run of this check passed its token ids as one unsplit
 zsh word, so the engine saw one token; 4.7e-6 was that 1-token figure. Rerun
 with two tokens: 4.4e-6.)*
-`--bench-moe-e2e`, `bench/moe_e2e_synth30b_m5pro.csv`, cache depth 512:
+`--bench-moe-e2e`, `bench/archive-qwen3/moe_e2e_synth30b_m5pro.csv`, cache depth 512:
 
   decode       48.5 ms   20.6 tok/s   72 GB/s (23% of 307)   8.0 experts/layer
   verify 8     53.3 ms   1.10 x decode                        9.9 experts/layer
@@ -2057,7 +2056,7 @@ held to the CPU pass on the same file (`tests/test_gpu_vs_cpu.py`): 1, 5, 9
 and 40 tokens, batch and incremental, worst relative error 1.7e-5, KL 1.9e-9,
 argmax 40/40. "The capital of France is" -> " Paris" at 74.7%.
 
-`--bench-moe-e2e`, `bench/moe_e2e_qwen3_30b_q8_m5pro.csv`, cache depth 512:
+`--bench-moe-e2e`, `bench/archive-qwen3/moe_e2e_qwen3_30b_q8_m5pro.csv`, cache depth 512:
 
   decode       47.7 ms   21.0 tok/s   73 GB/s (24% of 307)    8.0 experts/layer
   verify 4     58.6 ms   1.23 x decode                        17.7
@@ -2065,7 +2064,7 @@ argmax 40/40. "The capital of France is" -> " Paris" at 74.7%.
   verify 32   116.4 ms   2.44 x decode                        43.8
 
 `--routing-trace` over the first 4096 tokens of `build/corpus_local.txt`, then
-`tools/eval/routing_overlap.py`, `bench/routing_overlap_qwen3_30b_corpus.csv`:
+`tools/eval/routing_overlap.py`, `bench/archive-qwen3/routing_overlap_qwen3_30b_corpus.csv`:
 **Superseded: see the October 11 correction above.**
 distinct experts per MoE layer touched by w consecutive tokens, against
 w independent uniformly routed tokens.
@@ -2085,7 +2084,7 @@ longer than its buffer, so the whole corpus is now encoded and cut after.)
 
 ### Step 4.8c — speculative decoding on the real 30B
 
-`tools/eval/bench_speculate.py`, `bench/spec_qwen3_30b_m5pro.csv`: Qwen3-30B-A3B
+`tools/eval/bench_speculate.py`, `bench/archive-qwen3/spec_qwen3_30b_m5pro.csv`: Qwen3-30B-A3B
 q8_row on the GPU, drafted by Qwen3-0.6B bf16, five chat prompts, 128 tokens,
 median of 3 runs per configuration. All 105 runs emit exactly plain greedy's
 tokens.
@@ -2130,7 +2129,7 @@ the drafter's logits over the target's and changed the first token -- 61
 tokens where greedy emits 47 -- caught by comparing against greedy before any
 number was taken, and fixed.
 
-Same benchmark as 4.8c, re-run in full, `bench/spec_qwen3_30b_m5pro.csv`,
+Same benchmark as 4.8c, re-run in full, `bench/archive-qwen3/spec_qwen3_30b_m5pro.csv`,
 speedup over plain decoding, all 135 runs identical to greedy:
 
                  explain  code  list  rewrite  story   geomean  worst

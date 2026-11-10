@@ -185,7 +185,7 @@ static void append(Q38Run *r,const int32_t *ids,size_t n,const char *phase,int32
     else q38_check(qwen38_gpu_forward(r->graph,ids,n,r->c->trunk_blocks,r->y,NULL,NULL,&e),&e);
     r->last_count=n; accumulate(stats,r->graph);
 }
-/* Defaults measured in R4 (M3, docs/specs/qwen38/R4-mtp.md): a verify of n rows
+/* Defaults measured in R4 (devlog, R4.3): a verify of n rows
  * against one decode append (1.27/1.56/1.91 for 2/3/4 rows), one draft (0.095)
  * and the per-token predictor catch-up (0.03), all in decode appends. Priors
  * start optimistic so drafting is tried. */

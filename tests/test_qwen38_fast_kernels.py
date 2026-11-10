@@ -538,7 +538,7 @@ def real_gain(name):
 
 # ---- R1.8 parallel GDN prepare: q38c_gdn_prepare_fast against check + q38c_gdn_prepare ----
 L2_EPS = float(np.float32(1e-6))  # the harness's gdn.l2_eps
-GDN_REAL = (16, 48, 128, 128)  # (hk, hv, dk, dv): ssm.group_count, ssm.time_step_rank, ssm.state_size (docs/specs/qwen38/C.md)
+GDN_REAL = (16, 48, 128, 128)  # (hk, hv, dk, dv): ssm.group_count, ssm.time_step_rank, ssm.state_size
 
 
 def run_prep(mode, inputs, dims, gap=0, offset=0, inplace=False, initial=0, env=None):

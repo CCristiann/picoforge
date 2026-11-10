@@ -2,7 +2,7 @@
  * MODEL PROMPT_FILE OUTPUT_STEM MAX_NEW MODE REPEATS
  * MODE: nothink, think, or raw:N (first N tokens, throughput only).
  * Each repetition creates fresh state; only the model and GPU caches persist.
- * Build recipe and upstream provenance: docs/qwen38-q2-baseline.md.
+ * Upstream provenance: docs/history.md (section 3); build: tools/eval/build_dwarfstar_probe.py.
  */
 #include "ds4.h"
 #include "ds4_gpu.h"

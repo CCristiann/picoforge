@@ -30,7 +30,7 @@ sibling) is planned for after its release. Nothing for it exists yet.
 An M5-family Mac, macOS 26.2 or later (the Neural Accelerators are reached through
 Metal 4 TensorOps), Xcode with the Metal 4 toolchain, and Python 3.12+ for the
 tooling. The Q2 checkpoint is 137 GiB and is never committed:
-[`docs/qwen38-q2-baseline.md`](docs/qwen38-q2-baseline.md) records its provenance,
+[`docs/history.md`](docs/history.md) records its provenance,
 and `tools/eval/download_qwen38_q2.py` fetches and verifies it against
 [`docs/weights.lock`](docs/weights.lock). The weights use the Qwen Community License.
 
@@ -71,7 +71,7 @@ then the C CPU path, then the Metal kernels. A faster kernel changes the order o
 floating-point sums, so bit-identity is not expected; instead each kernel gets a
 tolerance fixed from the measured error distribution. The end-to-end gate does not
 move: logits within 1e-3 of the FP32 reference and identical greedy output on a
-frozen suite ([G2 spec](docs/specs/qwen38/G2.md)). Speculative paths must emit
+frozen suite (`tools/qwen38_g3.py`). Speculative paths must emit
 exactly the tokens plain greedy decoding emits.
 
 ```sh
@@ -88,11 +88,11 @@ committed. They are small pilots, not general claims.
 
 | Stage | Result | Evidence |
 |---|---|---|
-| R1 decode | 0.62x DwarfStar short prompt, 0.37x at 8K | [R1](bench/qwen38_r1_20261028/README.md) |
-| R2 decode | 24.15 vs 32.33 tok/s short (0.75x), 21.73 vs 30.14 at 8K (0.72x) | [R2](bench/qwen38_r2_20261030/README.md) |
-| Decode II | 25.97 vs 33.22 tok/s short (0.78x; R2 was 0.75x); decode token in 4 command buffers, fused shared-expert activation | [D1](bench/qwen38_d1_20261105/README.md) |
-| R3 prefill | 8K prompt 215 s to 61.0 s (FP32) / 37.6 s (half) | [R3](bench/qwen38_r3_20261102/README.md) |
-| R4 MTP | 33.2 / 25.6 / 27.0 / 41.0 tok/s on code / chat / story / counting | [R4](bench/qwen38_r4_20261103/README.md) |
+| R1 decode | 0.62x DwarfStar short prompt, 0.37x at 8K | [R1](bench/qwen38/r1_20261028/README.md) |
+| R2 decode | 24.15 vs 32.33 tok/s short (0.75x), 21.73 vs 30.14 at 8K (0.72x) | [R2](bench/qwen38/r2_20261030/README.md) |
+| Decode II | 25.97 vs 33.22 tok/s short (0.78x; R2 was 0.75x); decode token in 4 command buffers, fused shared-expert activation | [D1](bench/qwen38/d1_20261105/README.md) |
+| R3 prefill | 8K prompt 215 s to 61.0 s (FP32) / 37.6 s (half) | [R3](bench/qwen38/r3_20261102/README.md) |
+| R4 MTP | 33.2 / 25.6 / 27.0 / 41.0 tok/s on code / chat / story / counting | [R4](bench/qwen38/r4_20261103/README.md) |
 
 ## Repository layout
 
@@ -101,8 +101,8 @@ committed. They are small pilots, not general claims.
 | `src/` | Engine C sources and Metal kernels (`qwen38_*`), GGUF reader |
 | `tools/` | Python oracles, fixtures, benchmark runners, probes, the matmul microbenchmark |
 | `tests/` | Correctness harnesses and fixtures |
-| `bench/` | Measured data, run evidence and plots |
-| `docs/` | [Design](docs/DESIGN.md), [benchmark protocol](docs/BENCHMARKS.md), [roadmap](docs/specs/qwen38/roadmap.md), [devlog](docs/devlog.md) |
+| `bench/` | [Measured data](bench/README.md) by stage, microbenchmark CSVs, the Qwen3 archive |
+| `docs/` | [Design and stages](docs/DESIGN.md), [benchmark protocol](docs/BENCHMARKS.md), [devlog](docs/devlog.md), [history](docs/history.md) |
 
 An earlier Qwen3 dense/MoE engine and its tools are no longer in the tree; they remain
 in git history at the tag `archive/pre-qwen38-focus`.

@@ -2,7 +2,7 @@
 
 The source is cached only under build/ and verified before AST extraction.
 No model construction, weight download, GPU, or Transformers upgrade occurs.
-See docs/specs/qwen38/E.md for the derivation and checkpoint provenance.
+The checkpoint provenance is recorded in docs/weights.lock.
 """
 import ast
 import hashlib
@@ -220,7 +220,7 @@ def fixture():
     config = dict(ngram_size=3, heads_per_ngram=2, vocab=100, eos=99,
                   multipliers=[3, 5, 7], sizes=[11, 13, 17, 19],
                   offsets=[0, 11, 24, 41], rows=64)
-    inventory = ROOT / "bench/qwen38_q2_20261011_phase0/inventory.json"
+    inventory = ROOT / "bench/qwen38/q2_20261011_phase0/inventory.json"
     metadata = json.loads(inventory.read_text())["metadata"]
     real = {k: metadata["qwen4exp.ple." + key] for k, key in
             (("ngram_size", "ngram_size"), ("heads_per_ngram", "heads_per_ngram"),

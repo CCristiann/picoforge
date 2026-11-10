@@ -1,7 +1,6 @@
 # Oracle CPU dei formati Qwen3.8
 
-Stato successivo alla BASE_CONCORDATA: [implementazione C11/Metal e verifiche](native.md).
-Il resto di questo documento e `manifest.json` conservano il checkpoint
+Questo documento e `manifest.json` conservano il checkpoint
 dell'oracle indipendente precedente al consolidamento.
 
 Risultati del 2026-10-12, perimetro B indipendente dalla BASE_CONCORDATA.
@@ -96,7 +95,7 @@ per coppia di estrazioni, più 11.025.376 byte di header per estrazione. Nessun
 mmap completo, carico GPU o benchmark viene eseguito.
 
 Il SHA-256 dell'intero checkpoint proviene dalla verifica locale già registrata
-in `bench/qwen38_q2_20261011_phase0/checkpoint.verification.json`: non viene
+in `bench/qwen38/q2_20261011_phase0/checkpoint.verification.json`: non viene
 ricalcolato leggendo 137 GiB. L'estrazione controlla inode, dimensione, mtime,
 hash dell'header e stabilità dell'identità del file aperto; una copia con inode
 diverso viene rifiutata. I checksum delle slice attestano i byte letti qui.

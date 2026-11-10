@@ -3,7 +3,7 @@
 The numerical definitions are selected, unchanged, from pinned Transformers
 source (Qwen Team / Hugging Face, Apache-2.0). Only optional kernel-dispatch
 decorators are removed. We neither import that module nor execute its imports.
-See docs/specs/qwen38/C.md for layouts and the separate BF16-quality question.
+BF16 quality is a separate question: these references check the implementation.
 """
 
 import ast

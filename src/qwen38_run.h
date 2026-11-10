@@ -15,7 +15,7 @@
 /* Cooperative stop, checked between appends (SIGUSR1, and SIGINT in the REPL). */
 extern volatile sig_atomic_t q38_stopped;
 
-/* R4 draft policy (docs/specs/qwen38/R4-mtp.md): k drafts per cycle, fixed or
+/* R4 draft policy (devlog, R4.3): k drafts per cycle, fixed or
  * chosen to maximize expected tokens / cost with measured n-row append costs. */
 typedef struct {
     int fixed;                              /* 0..3, or -1 = auto (cost model) */

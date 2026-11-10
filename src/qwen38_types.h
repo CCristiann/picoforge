@@ -1,4 +1,4 @@
-/* Contract v1: declarations only. See docs/specs/qwen38/integration.md. */
+/* Contract v1: declarations only. */
 #ifndef PICOFORGE_QWEN38_TYPES_H
 #define PICOFORGE_QWEN38_TYPES_H
 #include <stdbool.h>

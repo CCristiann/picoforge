@@ -29,3 +29,10 @@ build/
 # Local assistant configuration, not part of the project
 CLAUDE.md
 .claude/
+
+# Private development notes: specs, plans, handoff prompts, research drafts.
+# Kept on disk, never pushed (the repository is public).
+notes/
+docs/specs/
+docs/plans/
+docs/superpowers/
