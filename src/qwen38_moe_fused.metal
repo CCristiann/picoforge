@@ -127,6 +127,75 @@ GATE_UP_KERNEL(q38_moe_gate_up_q2_k, Q38Q2K)
 GATE_UP_KERNEL(q38_moe_gate_up_q4_k, Q38Q4K)
 GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
 
+/* Decode III: IQ2_XXS gate+up+SwiGLU for K % 256 == 0, same contract and
+ * guards as gate_up<Q38Iq2Xxs> except the order of each dot. The decode, not
+ * the memory, bounds the R1.9b kernel (its loads alone take ~55% of its time
+ * at 40 slots, gbench), so here it is made cheaper: lanes 4g+j own entry j of
+ * group g of every 256-column super-block (8 columns, x read coalesced: idea
+ * from ds4 fc80bd6, MIT, metal/qwen4.metal: qwen4_row_dot), the grid is kept as
+ * floats and the 128 sign masks (parity bit included) in threadgroup memory,
+ * signs are applied to x by select, and the 8 products and the scaled sum are
+ * FMAs. One simdgroup per output as before, GATE_UP8_SG of them per
+ * threadgroup to amortise the tables. Q38_REF_KERNELS=exact keeps gate_up. */
+kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
+        device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
+        device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
+        device const uint *ids [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float4 gridf[512];  /* grid vector v as gridf[2v], gridf[2v+1] */
+    threadgroup uchar smask[128];
+    const uint tid = sg * 32 + lane, tgs = sgs * 32;
+    for (uint i = tid; i < 512; i += tgs) {
+        const uint w = uint(q38_iq2_grid[i / 2] >> (32 * (i & 1)));
+        gridf[i] = float4(float(w & 255u), float((w >> 8) & 255u), float((w >> 16) & 255u), float(w >> 24));
+    }
+    for (uint i = tid; i < 128; i += tgs) smask[i] = uchar(i | ((popcount(i) & 1u) << 7));
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    constant PackedArgs &p = a.gate.base, &q = a.up.base;
+    const ulong n = ulong(group.x) * sgs + sg;
+    const uint m = group.y;
+    if (n >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
+    const uint expert = ids[m];
+    const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
+    const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
+    const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4), yi = ulong(m) * (p.y_stride / 4) + n;
+    if (expert >= a.gate.experts || expert >= a.up.experts || grow > p.weight_end || p.row_bytes > p.weight_end - grow ||
+        urow > q.weight_end || q.row_bytes > q.weight_end - urow || (p.k_logical & 255u) || (xi & 3) ||
+        xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi || yi >= p.y_bytes / 4) {
+        if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    const uint nb = p.k_logical / 256, grp = lane / 4, j = lane % 4;
+    device const uchar *rows[2] = {gw + grow, uw + urow};
+    device const float4 *xv = (device const float4 *)(x + xi) + 2 * lane;
+    float acc[2] = {0.0f, 0.0f};
+    for (uint b = 0; b < nb; b++) {
+        const float4 x0 = xv[64 * b], x1 = xv[64 * b + 1];
+        for (uint r = 0; r < 2; r++) {
+            device const uchar *blk = rows[r] + 66 * ulong(b);
+            device const ushort *qp = (device const ushort *)(blk + 2) + 4 * grp; /* blocks are 2-byte aligned */
+            const uint qg = uint(qp[0]) | (uint(qp[1]) << 16), qs = uint(qp[2]) | (uint(qp[3]) << 16);
+            const float dl = (float(*(device const half *)blk) * float(2 * (qs >> 28) + 1)) * 0.125f;
+            const uint sm = smask[(qs >> (7 * j)) & 127u], gi = (qg >> (8 * j)) & 255u;
+            const float4 g0 = gridf[2 * gi], g1 = gridf[2 * gi + 1];
+            const float4 s0 = select(x0, -x0, bool4(sm & 1u, sm & 2u, sm & 4u, sm & 8u));
+            const float4 s1 = select(x1, -x1, bool4(sm & 16u, sm & 32u, sm & 64u, sm & 128u));
+            float part = g0.x * s0.x;
+            part = fma(g0.y, s0.y, part); part = fma(g0.z, s0.z, part); part = fma(g0.w, s0.w, part);
+            part = fma(g1.x, s1.x, part); part = fma(g1.y, s1.y, part); part = fma(g1.z, s1.z, part);
+            part = fma(g1.w, s1.w, part);
+            acc[r] = fma(dl, part, acc[r]);
+        }
+    }
+    const float g = simd_sum(acc[0]), u = simd_sum(acc[1]);
+    if (lane) return;
+    const float sv = q38_silu(g), h = sv * u;
+    act[yi] = h;
+    if (!isfinite(g) || !isfinite(u) || !isfinite(sv) || !isfinite(h))
+        atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}
+
 /* R1.5c: the routed down projection and q38f_reduce in one pass.
  * DownReduceArgs mirrors Q38DownReduceArgs (qwen38_b_internal.h): the down
  * projection as one indexed call over the tokens x slots pairs (x = act, its
@@ -205,6 +274,113 @@ DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q2_k, Q38Q2K)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q4_k, Q38Q4K)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_mxfp4, Q38Mxfp4)
 
+/* Decode III: down_reduce with the slots in parallel. One threadgroup per
+ * (DOWN_ROWS outputs, token) and one simdgroup per slot (the host dispatches
+ * 32 * slots threads): simdgroup s computes slot s's DOWN_ROWS dots with
+ * q38_quant_rows, exactly as down_reduce's slot loop does, and leaves them in
+ * threadgroup memory; then lane 0 of simdgroup 0 runs down_reduce's reduction
+ * in slot order 0..k-1 with the same expressions. y and routed are therefore
+ * bit-identical to down_reduce; what changes is that the k slots' weight
+ * loads are in flight together (down_reduce issued them one slot after the
+ * other from 640 simdgroups: 91 GB/s at 10 slots in dbench). Same guards:
+ * a bad slot sets bit 2 and (t, n..) is not written. */
+#define DOWN_SP_MAX_SLOTS 32
+/* Decode III: Q2_K chunk dot for the parallel-slot down, factored as
+ * dl * sum(q x) - ml * sum(x) with FMAs (~4 operations per weight instead of
+ * the decode-then-multiply 7): the same chunks and lane order as Q38Q2K, only
+ * each chunk's rounding differs (held to the moe_down tolerance). */
+struct Q38Q2KDot { static constant constexpr uint CHUNK = 16; };
+template <>
+inline float q38_quant_chunk<Q38Q2KDot>(device const uchar *row, device const float *x, uint k, uint c) {
+    const uint cols = min(16u, k - c * 16);
+    device const uchar *b = row + ulong(c / 16) * 84;
+    const uint j = c % 16, scale = b[j], shift = 2 * ((j % 8) / 2);
+    const half2 dm = *(device const half2 *)(b + 80);
+    const float dl = float(dm.x) * float(scale & 15u), ml = float(dm.y) * float(scale >> 4);
+    device const uint *q = (device const uint *)(b + 16 + (j / 8) * 32 + (j % 2) * 16);
+    device const float *xb = x + c * 16;
+    float sq = 0.0f, sx = 0.0f;
+    if (cols == 16) {
+        for (uint w = 0; w < 4; w++) {
+            const uint v = q[w] >> shift;
+            const float4 xv = ((device const float4 *)xb)[w];
+            sq = fma(float(v & 3u), xv.x, sq); sq = fma(float((v >> 8) & 3u), xv.y, sq);
+            sq = fma(float((v >> 16) & 3u), xv.z, sq); sq = fma(float((v >> 24) & 3u), xv.w, sq);
+            sx += (xv.x + xv.y) + (xv.z + xv.w);
+        }
+    } else {
+        for (uint i = 0; i < cols; i++) {
+            sq = fma(float(((q[i / 4] >> (8 * (i % 4) + shift))) & 3u), xb[i], sq);
+            sx += xb[i];
+        }
+    }
+    return fma(dl, sq, -(ml * sx));
+}
+template <typename F>
+static inline void down_reduce_sp(device const uchar *w, device const float *act, device const float *shared,
+        device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
+        device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
+        uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad) {
+    constant PackedArgs &p = a.down.base;
+    const ulong n0 = ulong(group.x) * DOWN_ROWS;
+    const uint t = group.y;
+    if (n0 >= p.n_out || t >= a.tokens) return; /* uniform over the threadgroup */
+    const uint nr = uint(min(ulong(DOWN_ROWS), p.n_out - n0));
+    const ulong yi = ulong(t) * (p.y_stride / 4) + n0, ri = ulong(t) * p.n_out + n0;
+    if (yi + nr > p.y_bytes / 4 || sgs != a.slots || a.slots > DOWN_SP_MAX_SLOTS) {
+        if (!lane && !sg) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    {
+        const uint s = sg, pair = t * a.slots + s, expert = ids[pair];
+        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n0 * p.row_bytes;
+        const ulong last = row + (nr - 1) * p.row_bytes, xi = ulong(pair) * (p.x_stride / 4);
+        const bool ok = !(expert >= a.down.experts || last > p.weight_end || p.row_bytes > p.weight_end - last ||
+                          xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi);
+        float d[DOWN_ROWS];
+        if (ok) q38_quant_rows<F, DOWN_ROWS>(w + row, p.row_bytes, nr, act + xi, p.k_logical, lane, d);
+        if (!lane) {
+            bad[s] = !ok;
+            for (uint r = 0; r < DOWN_ROWS; r++) part[s][r] = ok ? d[r] : 0.0f;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg || lane) return;
+    float sum[DOWN_ROWS];
+    for (uint r = 0; r < DOWN_ROWS; r++) sum[r] = 0.0f;
+    bool finite = true;
+    for (uint s = 0; s < a.slots; s++) {
+        if (bad[s]) { atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); return; }
+        const uint pair = t * a.slots + s;
+        for (uint r = 0; r < nr; r++) {
+            const float d = part[s][r];
+            finite = finite && isfinite(d);
+            sum[r] += scores[pair] * d;
+        }
+    }
+    for (uint r = 0; r < nr; r++) {
+        routed[ri + r] = sum[r];
+        const float v = sum[r] + sigmoid[t] * shared[ri + r];
+        if (!finite || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        y[yi + r] = v;
+    }
+}
+#define DOWN_REDUCE_SP_KERNEL(name, F) \
+kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[buffer(1)]], \
+        device const float *shared [[buffer(2)]], device const float *sigmoid [[buffer(3)]], \
+        device const float *scores [[buffer(4)]], device const uint *ids [[buffer(5)]], \
+        device float *routed [[buffer(6)]], device float *y [[buffer(7)]], device atomic_uint *error [[buffer(8)]], \
+        constant DownReduceArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]], \
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]], \
+        uint lane [[thread_index_in_simdgroup]]) { \
+    threadgroup float part[DOWN_SP_MAX_SLOTS][DOWN_ROWS]; threadgroup uint bad[DOWN_SP_MAX_SLOTS]; \
+    down_reduce_sp<F>(w, act, shared, sigmoid, scores, ids, routed, y, error, a, group, sg, sgs, lane, part, bad); \
+}
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_iq2_xxs, Q38Iq2Xxs)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q2_k, Q38Q2KDot)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q4_k, Q38Q4K)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_mxfp4, Q38Mxfp4)
+
 /* R1.5d router softmax + top-k, one threadgroup per token: bit-identical to
  * q38f_route (qwen38_moe.metal) in ids, weights and probs, which ran ONE thread
  * per token (512 exp, a serial sum, then k scans of all experts: 59 ms per
@@ -277,6 +453,66 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
         selected += value; /* serial in s, as the oracle (every thread tracks the same sum) */
     }
     if (a.norm && !tid) for (uint s = 0; s < a.k; s++) w[s] /= selected;
+}
+
+/* Decode III: the router in ONE simdgroup per token, values in registers (lane l
+ * owns experts l, l+32, ...): no threadgroup memory and no barrier, where
+ * q38_moe_route_fast pays a barrier per selection round and a serial exp sum
+ * on one thread. Same max, same exp per element, same selection rule (larger p,
+ * then smaller id) and the same serial running sum of the chosen weights; only
+ * the exp sum is a per-lane then simd tree sum, so probs and weights move by
+ * ULPs from q38f_route and a p tie made or broken by that rounding can swap two
+ * ids (test_route_simd_against_oracle). Same guards and fallback as
+ * q38_moe_route_fast; the host dispatches 32 threads per token.
+ * Q38_REF_KERNELS=exact keeps q38_moe_route_fast. */
+#define ROUTE_SIMD_PER_LANE (Q38F_ROUTE_MAX_EXPERTS / 32)
+kernel void q38_moe_route_simd(device const float *logits [[buffer(0)]], device float *probs [[buffer(1)]],
+        device uint *ids [[buffer(2)]], device float *weights [[buffer(3)]], constant RouteArgs &a [[buffer(4)]],
+        device atomic_uint *error [[buffer(5)]], uint token [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    if (sg || token >= a.t) return;
+    if (a.e == 0 || a.e > Q38F_ROUTE_MAX_EXPERTS || a.k == 0 || a.k > a.e) {
+        if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    device const float *z = logits + ulong(token) * a.pitch;
+    device float *p = probs + ulong(token) * a.e;
+    device uint *id = ids + ulong(token) * a.k;
+    device float *w = weights + ulong(token) * a.k;
+    float v[ROUTE_SIMD_PER_LANE];
+    float local = -INFINITY; bool bad = false;
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        const uint e = 32 * j + lane;
+        v[j] = e < a.e ? z[e] : -INFINITY;
+        if (e < a.e) { bad = bad || !isfinite(v[j]); local = max(local, v[j]); }
+    }
+    const float maximum = simd_max(local);
+    if (simd_any(bad)) { /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
+        if (!lane) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        for (uint s = lane; s < a.k; s += 32) { id[s] = s; w[s] = 0.0f; }
+        return;
+    }
+    float part = 0.0f;
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        v[j] = 32 * j + lane < a.e ? exp(v[j] - maximum) : 0.0f;
+        part += v[j];
+    }
+    const float sum = simd_sum(part);
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        const uint e = 32 * j + lane;
+        if (e < a.e) { v[j] = v[j] / sum; p[e] = v[j]; } else v[j] = -2.0f; /* below every p and the -1 mask */
+    }
+    float selected = 0.0f;
+    for (uint s = 0; s < a.k; s++) {
+        float best = -2.0f; uint at = 0xffffffffu; /* this lane's experts ascend: first strict > = smallest id */
+        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (v[j] > best) { best = v[j]; at = 32 * j + lane; }
+        const float top = simd_max(best);
+        const uint chosen = simd_min(best == top ? at : 0xffffffffu);
+        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (32 * j + lane == chosen) v[j] = -1.0f;
+        if (!lane) { id[s] = chosen; w[s] = top; }
+        selected += top; /* serial in s, as the oracle */
+    }
+    if (a.norm && !lane) for (uint s = 0; s < a.k; s++) w[s] /= selected;
 }
 
 /* ---- R3.2 grouped MoE for prefill. The kernels above read an expert's rows

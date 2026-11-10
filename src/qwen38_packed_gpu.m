@@ -13,8 +13,8 @@
  * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST],
-                      *hc_tail, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
+                      *hc_tail, *hc_tail8, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
                       size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
@@ -36,9 +36,9 @@ static size_t gemm_min_rows(void);
 static size_t env_size(const char *name, size_t fallback);
 /* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
  * output each) per threadgroup; the kernels read the count from the dispatch. */
-enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4 };
+enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4, Q38_GATE_UP8_SG = 8 };
 /* R2.7: down+reduce output rows per simdgroup (DOWN_ROWS in the kernel). */
-enum { Q38_DOWN_REDUCE_ROWS = 4 };
+enum { Q38_DOWN_REDUCE_ROWS = 4, Q38_DOWN_SP_MAX_SLOTS = 32 /* DOWN_SP_MAX_SLOTS */ };
 /* R2.6 fused HC tail: simdgroups (one d each) per threadgroup, and the
  * kernel's HC_TAIL_MAX_K and HC_TAIL_MAX_H. */
 enum { Q38_HC_TAIL_SG = 8, Q38_HC_TAIL_MAX_K = 1024, Q38_HC_TAIL_MAX_H = 4 };
@@ -162,6 +162,11 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
     ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
     ctx->hc_tail=fast_pipeline(hc_tail,Q38_HC_TAIL_SG);
+    if (!q38_ref_kernels("exact")) { /* Decode III: optional; absent -> the R2.6 kernel */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_tail8_f16"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->hc_tail8=p ? fast_pipeline(p,Q38_HC_TAIL_SG) : NULL;
+    }
     for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? Q38_DENSE_S : 1);
     for (size_t i=0;i<3;i++) ctx->gemm[i]=fast_pipeline(gemm[i],Q38_GEMM_SG);
     for (size_t i=0;i<3;i++) ctx->gemm_nax[i]=nax[i] ? fast_pipeline(nax[i],Q38_GEMM_SG) : NULL;
@@ -178,6 +183,20 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         ctx->indexed_fast[i]=fast_pipeline(matvec_indexed[i],Q38_IDX_SG);
         ctx->gate_up[i]=fast_pipeline(gate_up[i],Q38_GATE_UP_SG);
         ctx->down_reduce[i]=fast_pipeline(down[i],Q38_DOWN_REDUCE_SG);
+    }
+    if (!q38_ref_kernels("exact")) { /* Decode III: IQ2_XXS gate+up, reordered dot; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_gate_up8_iq2_xxs"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->gate_up8=p ? fast_pipeline(p,Q38_GATE_UP8_SG) : NULL;
+    }
+    { /* Decode III: slots in parallel (bit-identical to down_reduce except the Q2_K chunk dot); optional */
+        static NSString *const sp_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_sp_iq2_xxs",
+            @"q38_moe_down_reduce_sp_q2_k",@"q38_moe_down_reduce_sp_q4_k",@"q38_moe_down_reduce_sp_mxfp4"};
+        for (size_t i=0;i<Q38_INDEXED_FAST && !getenv("PICOFORGE_DOWN_SERIAL") && !q38_ref_kernels("exact");i++) {
+            id<MTLFunction> fn=[lib newFunctionWithName:sp_names[i]];
+            id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+            ctx->down_sp[i]=p ? (__bridge_retained void *)p : NULL;
+        }
     }
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
@@ -202,6 +221,8 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->f16) CFRelease(ctx->f16);
     if (ctx->f32) CFRelease(ctx->f32);
     if (ctx->hc_tail) CFRelease(ctx->hc_tail);
+    if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
+    if (ctx->gate_up8) CFRelease(ctx->gate_up8);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
@@ -216,6 +237,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
         if (ctx->indexed_fast[i]) CFRelease(ctx->indexed_fast[i]);
         if (ctx->gate_up[i]) CFRelease(ctx->gate_up[i]);
         if (ctx->down_reduce[i]) CFRelease(ctx->down_reduce[i]);
+        if (ctx->down_sp[i]) CFRelease(ctx->down_sp[i]);
     }
     CFRelease(ctx->device); free(ctx);
 }
@@ -510,8 +532,13 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
     [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:4];
     [encoder setBytes:args length:sizeof args atIndex:5];
     [encoder setBuffer:route offset:ids.offset_bytes atIndex:6];
-    MTLSize groups=MTLSizeMake((gl->n_out+Q38_GATE_UP_SG-1)/Q38_GATE_UP_SG,act.dim[0],1);
-    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_GATE_UP_SG,1,1)];
+    /* Decode III: the IQ2_XXS kernel with a reordered dot where its float4 x reads are aligned */
+    const bool eight=ctx->gate_up8 && gl->gguf_type==16 && !(gl->k_logical%256) && !(x.span.offset_bytes%16) &&
+        !(x.stride_bytes[0]%16);
+    const size_t sgs=eight ? Q38_GATE_UP8_SG : Q38_GATE_UP_SG;
+    if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
+    MTLSize groups=MTLSizeMake((gl->n_out+sgs-1)/sgs,act.dim[0],1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*sgs,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
 
@@ -664,6 +691,14 @@ Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *ctx, const Qwen38GpuCom
     [encoder setBuffer:a.output offset:y.span.offset_bytes atIndex:7];
     [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
     [encoder setBytes:&args length:sizeof args atIndex:9];
+    id<MTLComputePipelineState> sp=(__bridge id<MTLComputePipelineState>)indexed_kernel(ctx->down_sp,layout->gguf_type);
+    if (sp && k<=Q38_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==Q38_SIMD && sp.maxTotalThreadsPerThreadgroup>=Q38_SIMD*k) {
+        /* Decode III: one simdgroup per slot, DOWN_ROWS outputs per threadgroup (bit-identical) */
+        [encoder setComputePipelineState:sp];
+        [encoder dispatchThreadgroups:MTLSizeMake((n+Q38_DOWN_REDUCE_ROWS-1)/Q38_DOWN_REDUCE_ROWS,t,1)
+                threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*k,1,1)];
+        return q38_b_result(err,Q38_OK,"");
+    }
     const size_t per=Q38_DOWN_REDUCE_SG*Q38_DOWN_REDUCE_ROWS;
     MTLSize groups=MTLSizeMake((n+per-1)/per,t,1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_DOWN_REDUCE_SG,1,1)];
@@ -823,7 +858,8 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *ctx, const Qwen38GpuCommand
         .width=(uint32_t)width,.inject=inj,.low=low.stride_bytes[0]/4,.normed=normed.stride_bytes[0]/4,
         .mixed=mixed.stride_bytes[0]/4,.il=inj ? il.stride_bytes[0]/4 : 0,.out=inj ? inject.stride_bytes[0]/4 : 0};
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->hc_tail];
+    const bool tail8=ctx->hc_tail8 && !(layout->k_logical%8) && !(wo%16) && !(layout->row_bytes%16);
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)(tail8 ? ctx->hc_tail8 : ctx->hc_tail)];
     [encoder setBuffer:a.weights offset:0 atIndex:0];
     for (size_t i=0;i<7;i++) { /* the absent il and inject bind low, never read or written */
         size_t j=buffer[i] ? i : 0;

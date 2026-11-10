@@ -420,6 +420,79 @@ kernel void q38_hc_tail_f16(device const uchar *weights [[buffer(0)]], device co
     if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
 }
 
+/* Decode III: q38_hc_tail_f16 with a lane map for K 320. There one simdgroup's
+ * 32 lanes split each up row into 8-column chunks, ~1.25 chunk per lane and
+ * row, and every row paid a 5-step simd_sum: 155 GB/s in the decode graph.
+ * Here lanes 8s..8s+7 own stream s (h <= 4): lane i sums chunks i, i+8, ...
+ * of row s*E + d with 16-byte loads (8 lanes read 128 contiguous bytes), then
+ * a 3-step xor tree; lane 0 gathers the h gates and does HC_READ in ascending
+ * stream order as before. Same prologue (HC_LOW into threadgroup memory, act
+ * and inject written by threadgroup 0), same outputs and error bits; only the
+ * order of each gate's sum changes (tolerance in the fast-kernel tests).
+ * Needs k % 8 == 0 and 16-byte aligned rows (host-checked; else the R2.6
+ * kernel). Lane map idea: ds4 fc80bd6, MIT, metal/qwen4.metal:
+ * kernel_qwen4_hc_gate_mix. Q38_REF_KERNELS=exact keeps q38_hc_tail_f16. */
+kernel void q38_hc_tail8_f16(device const uchar *weights [[buffer(0)]], device const float *low [[buffer(1)]],
+        device const float *normed [[buffer(2)]], device const float *il [[buffer(3)]],
+        device float *act [[buffer(4)]], device float *gate [[buffer(5)]], device float *mixed [[buffer(6)]],
+        device float *inject [[buffer(7)]], device atomic_uint *error [[buffer(8)]],
+        constant HcTailArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]],
+        uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float xs[HC_TAIL_MAX_K];
+    const uint t = group.y, k = a.up.k_logical, h = a.streams, E = a.width, tid = sg * 32 + lane;
+    bool bad = false;
+    for (uint r = tid; r < k; r += sgs * 32) { /* HC_LOW: p1 = h, p2 = 1 */
+        const float v = low[t * a.low + r];
+        float x = v / float(h), y = x * hc_sigmoid(x);
+        y *= float(1u);
+        bad = bad || !isfinite(v) || !isfinite(y);
+        xs[r] = y;
+        if (!group.x) act[t * (a.up.x_stride / 4) + r] = y;
+    }
+    if (!group.x && a.inject && tid < h) { /* HC_INJECT: p1 = h, p2 = 2 */
+        const float v = il[t * a.il + tid];
+        float y = hc_sigmoid(v / float(h));
+        y *= float(2u);
+        bad = bad || !isfinite(v) || !isfinite(y);
+        inject[t * a.out + tid] = y;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint d = group.x * sgs + sg;
+    if (d < E) { /* uniform over the simdgroup */
+        const uint st = lane / 8, li = lane % 8, chunks = k / 8;
+        float acc = 0.0f;
+        if (st < h) {
+            device const half4 *row = (device const half4 *)(weights + a.up.weight_offset + ulong(st * E + d) * a.up.row_bytes);
+            for (uint c = li; c < chunks; c += 8) {
+                const half4 w0 = row[2 * c], w1 = row[2 * c + 1];
+                threadgroup const float *xb = xs + 8 * c;
+                float sm = 0.0f;
+                for (uint i = 0; i < 4; i++) sm += float(w0[i]) * xb[i];
+                for (uint i = 0; i < 4; i++) sm += float(w1[i]) * xb[4 + i];
+                acc += sm;
+            }
+        }
+        acc += simd_shuffle_xor(acc, ushort(1));
+        acc += simd_shuffle_xor(acc, ushort(2));
+        acc += simd_shuffle_xor(acc, ushort(4));
+        float g[HC_TAIL_MAX_H];
+        for (uint r = 0; r < HC_TAIL_MAX_H; r++) g[r] = simd_shuffle(acc, ushort(8 * r));
+        if (!lane) {
+            float sum = 0.0f;
+            for (uint r = 0; r < h; r++) { /* HC_READ, k = r in ascending order */
+                const float n = normed[t * a.normed + r * E + d];
+                gate[t * (a.up.y_stride / 4) + r * E + d] = g[r];
+                sum += n * hc_sigmoid(g[r]);
+                bad = bad || !isfinite(g[r]) || !isfinite(n);
+            }
+            bad = bad || !isfinite(sum);
+            mixed[t * a.mixed + d] = sum / float(h);
+        }
+    }
+    if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}
+
 /* R3.1 prefill GEMM: Y[m,n] = sum_k W[n,k] X[m,k] for many rows of x at once.
  * The matvecs above reread the whole matrix every Q8_T/DENSE_T rows, so a
  * 1024-row chunk read each weight ~256 times. Here a threadgroup of 4

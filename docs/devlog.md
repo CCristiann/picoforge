@@ -2,6 +2,43 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode III (from 2026-11-10): the MoE kernels against DwarfStar, rounding now allowed
+
+Branch `perf/qwen38-decode3`. The user approved optimisations that reorder FP32 sums, each
+validated against a measured tolerance with the G3 gate unchanged; `Q38_REF_KERNELS=exact`
+(new family) keeps the previous bit-identical kernels.
+
+**Is DwarfStar's gate+up faster? No.** A kernel with ds4's lane map (`kernel_qwen4_moe_mid`,
+fc80bd6: one 256-column super-block per round of 32 lanes) runs the IQ2_XXS gate+up in 58.3 us
+at 10 slots against our 61.7 (dbench `gbench fused`, 512 experts). Ablations on it: its loads
+alone take 135 us of 226 at 40 slots, so the IQ2 decode itself (~4 instructions per weight) is
+the limit, not the memory pattern; 8-byte aligned reads change nothing, more registers or more
+threadgroup memory make it slower (occupancy). Best variant so far: grid as floats and the sign
+masks in threadgroup memory, signs by select, FMA: 55.0 us (-11%), not shipped yet.
+
+**Router in one simdgroup** (6cfe0a7): values in registers, no barrier per selection round, a
+tree exp sum. moe.route 1295 -> ~900 us/token; logits against the exact router: scaled 1.1e-6,
+argmax 33/33.
+
+**Down projection, slots in parallel** (24615d2): one simdgroup per slot, lane 0 reduces in slot
+order: logits sha-identical, moe.down 3166 -> 2927 us/token.
+
+Decode profile (41-ID prompt, 32 forced): 37.73 -> 36.90 ms/token of GPU groups.
+
+**Then (2026-11-11):** the shared expert now runs beside the router and gate+up (its two
+barriers removed, bit-identical, -0.6 ms/token); the HC tail gives 8 lanes to each stream with
+16-byte loads and a 3-step xor tree (-1.4 ms); the IQ2_XXS gate+up table decode ships (-0.7 ms);
+the shared decoders read with 2- and 4-byte loads (byte loads cost ~12% in the IQ2 decode) and
+the parallel-slot Q2_K down uses dl*sum(qx) - ml*sum(x) (-0.2 ms). Tried and dropped: an F16
+multi-GEMV with 4 rows per threadgroup (bit-identical, -0.1 ms, noise). Every reordered kernel
+stays within the existing measured tolerances; G3 2.53e-7, 12/12.
+
+**Paired 3+20 with DwarfStar: 28.33 against 32.90 tok/s = 0.861x** (Decode II 0.782x).
+Evidence: `bench/qwen38/d3_20261111/README.md`.
+**Next:** ~4.9 ms/token remain. The dense Q8_0 matvecs (gdn.proj, gdn.out, lm_head, qsa.proj:
+~13.6 ms at ~250 GB/s) and the HC down (182 GB/s) are the largest block; then the small GDN ops
+(prep, scan, norm, conv: ~2.2 ms in 6 dispatches per layer).
+
 ## R7a (2026-11-10): Q2 against Q4 — KL 0.40, top-1 77%, PPL +8%
 
 Evidence: `bench/qwen38/r7_20261110/README.md`. Teacher-forced FP32 logits of both files on a

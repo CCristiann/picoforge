@@ -132,13 +132,15 @@ static void check_moe(uint32_t layer, size_t t) {
      * down+reduce are fused (the gate/up and down scratch are never written)
      * and y and routed have the bits of the unfused fast sequence (`moe`);
      * `indexed` runs the unfused indexed oracle. */
-    static const char *const envs[] = {NULL, "moe", "indexed"};
+    /* Decode III: run 0 is `exact` (the bit-identical kernels the comparisons below pin); run 3 is
+     * the default, whose router and kernels reorder sums: held to the CPU tolerances only. */
+    static const char *const envs[] = {"exact", "moe", "indexed", NULL};
     float *fused = malloc(x_n * 4), *fused_routed = malloc(x_n * 4);
     /* R1.5d router: the parallel kernel is the default and `moe` selects q38f_route; ids, weights
      * and probs have the same bits either way. */
     float *route_probs = malloc(t*c->experts*4), *route_weights = malloc(p*4);
     uint32_t *route_ids = malloc(p*4);
-    for (size_t r = 0; r < 3; ++r) {
+    for (size_t r = 0; r < 4; ++r) {
         assert(envs[r] ? setenv("Q38_REF_KERNELS", envs[r], 1) == 0 : unsetenv("Q38_REF_KERNELS") == 0);
         Q38FRouted *routed; Q38PackedGpu *b; Q38CGpu *ops;
         ok(q38f_routed_create((__bridge void *)device, (__bridge void *)library, &routed, &e), &e, "routed");
@@ -157,16 +159,18 @@ static void check_moe(uint32_t layer, size_t t) {
         bool untouched = true;
         for (size_t j = 0; j < p*i; ++j)
             untouched = untouched && ((uint32_t *)bg.contents)[j] == 0xa5a5a5a5u && ((uint32_t *)bu.contents)[j] == 0xa5a5a5a5u;
-        static const char *const names[] = {"moe_fused_selected", "moe_ref_moe_unfused", "moe_ref_indexed_unfused"};
-        report(names[r], layer, untouched == !r ? 0 : 1, 0, untouched);
+        static const char *const names[] = {"moe_fused_selected", "moe_ref_moe_unfused", "moe_ref_indexed_unfused",
+                                             "moe_default_fused_selected"};
+        report(names[r], layer, untouched == (r == 0 || r == 3) ? 0 : 1, 0, untouched);
         bool down_untouched = true;
         for (size_t j = 0; j < p*h; ++j) down_untouched = down_untouched && ((uint32_t *)bd.contents)[j] == 0xa5a5a5a5u;
         static const char *const down_names[] = {"moe_down_fused_selected", "moe_ref_moe_down_unfused",
-                                                  "moe_ref_indexed_down_unfused"};
-        report(down_names[r], layer, down_untouched == !r ? 0 : 1, 0, down_untouched);
+                                                  "moe_ref_indexed_down_unfused", "moe_default_down_fused_selected"};
+        report(down_names[r], layer, down_untouched == (r == 0 || r == 3) ? 0 : 1, 0, down_untouched);
         compare("moe_y",layer,by.contents,y,x_n,5e-4);
         bool fast_route = q38f_routed_fast_route(routed, c->experts, k);
-        static const char *const route_names[] = {"moe_route_fast_selected", "moe_ref_moe_route_oracle", "moe_ref_indexed_route_fast"};
+        static const char *const route_names[] = {"moe_route_fast_selected", "moe_ref_moe_route_oracle", "moe_ref_indexed_route_fast",
+                                                   "moe_default_route_fast"};
         report(route_names[r], layer, fast_route == (r != 1) ? 0 : 1, 0, fast_route);
         if (!r) { /* shapes the parallel kernel does not take keep q38f_route */
             bool shapes = q38f_routed_fast_route(routed, 1024, 10) && !q38f_routed_fast_route(routed, 1025, 10) &&
@@ -177,6 +181,11 @@ static void check_moe(uint32_t layer, size_t t) {
             bool same = !memcmp(route_probs, bp.contents, t*c->experts*4) && !memcmp(route_weights, bw.contents, p*4) &&
                 !memcmp(route_ids, bi.contents, p*4);
             report("moe_route_fast_bits_match_oracle", layer, same ? 0 : 1, 0, same);
+        }
+        if (r == 3) {
+            bool same_ids = !memcmp(bi.contents, ids, p*4);
+            report("moe_default_route_ids", layer, same_ids ? 0 : 1, 0, same_ids);
+            compare("moe_default_route_weights",layer,bw.contents,rw,p,4e-6);
         }
         if (!r) {
             bool same_ids = !memcmp(bi.contents, ids, p*4);

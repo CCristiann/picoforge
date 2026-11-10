@@ -63,12 +63,13 @@ class CliTests(unittest.TestCase):
 
     def test_fused_shared_expert_matches_moe_oracle(self):
         """D1.2: the shared expert's SILU, MUL and SIGMOID in one dispatch (q38f_shared_act) gives the same
-        ids and last-row logits, bit for bit, as the three separate ops that Q38_REF_KERNELS=moe selects."""
+        ids and last-row logits, bit for bit, as the three separate ops that Q38_REF_KERNELS=moe selects
+        (both under `exact`: Decode III's default router and kernels reorder sums)."""
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             path = Path(directory)
             results = {}
-            for mode in ('', 'moe'):
-                tag = mode or 'fast'
+            for mode in ('exact', 'exact,moe'):
+                tag = 'fast' if mode == 'exact' else 'moe'
                 cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
                        '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{tag}.f32'),
                        '--token-ids', str(path/f'{tag}.json')]

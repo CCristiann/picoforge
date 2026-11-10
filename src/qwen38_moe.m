@@ -211,11 +211,11 @@ Qwen38Status q38f_gpu_encode(Q38FMoeGpu *f,Qwen38GpuCommand cmd,Qwen38GpuF32 x,
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
 /* ref_moe: Q38_REF_KERNELS selects `moe` (read at creation): never fuse gate+up
  * or down+reduce. */
-struct Q38FRouted { void *device, *route, *iota, *product, *reduce, *route_fast, *shared_act; bool ref_moe; };
+struct Q38FRouted { void *device, *route, *iota, *product, *reduce, *route_fast, *shared_act, *route_simd; bool ref_moe; };
 void q38f_routed_destroy(Q38FRouted *r) {
     if (!r) return;
-    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->shared_act,r->device};
-    for (size_t i=0;i<7;i++) if (all[i]) CFRelease(all[i]);
+    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->shared_act,r->route_simd,r->device};
+    for (size_t i=0;i<sizeof all/sizeof *all;i++) if (all[i]) CFRelease(all[i]);
     free(r);
 }
 Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen38Error *err) {
@@ -238,6 +238,12 @@ Qwen38Status q38f_routed_create(void *device,void *library,Q38FRouted **out,Qwen
         id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
         if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38F_ROUTE_THREADS)
             r->route_fast=(__bridge_retained void *)p;
+    }
+    { /* Decode III: optional; `exact` keeps q38_moe_route_fast (bit-identical to q38f_route) */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_route_simd"];
+        id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
+        if (p && r->route_fast && p.threadExecutionWidth==32 && !q38_ref_kernels("exact"))
+            r->route_simd=(__bridge_retained void *)p;
     }
     { /* D1.2: optional; `moe` or `fuse` oracles keep the three separate ops */
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38f_shared_act"];
@@ -302,11 +308,24 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     MARK("moe.route",Q38_PROFILE_NONE,0);
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
     [enc setBytes:&ra length:sizeof ra atIndex:4]; at(enc,cmd.error_word,5);
+    /* Decode III: the shared expert's activation runs beside the router and its down matvec beside
+     * gate+up, without the two barriers of their own (same kernels, same bits); `barrier` keeps the
+     * old order. */
+    bool early_shared=r->shared_act && !w->mark && !q38_ref_kernels("barrier") && !q38_ref_kernels("exact"); /* profile: own group */
     if (q38f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
-        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)r->route_fast];
-        [enc dispatchThreadgroups:MTLSizeMake(t,1,1) threadsPerThreadgroup:MTLSizeMake(Q38F_ROUTE_THREADS,1,1)];
+        const bool simd=r->route_simd!=NULL; /* Decode III: one simdgroup per token */
+        [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)(simd ? r->route_simd : r->route_fast)];
+        [enc dispatchThreadgroups:MTLSizeMake(t,1,1) threadsPerThreadgroup:MTLSizeMake(simd ? 32 : Q38F_ROUTE_THREADS,1,1)];
+        if (early_shared) { /* Decode III: independent of the router (both read only shared_in's outputs) */
+            struct { uint32_t count,tokens; } sa={(uint32_t)(t*s),(uint32_t)t};
+            at(enc,w->sgate.span,0); at(enc,w->sup.span,1); at(enc,w->sact.span,2); at(enc,w->slogit.span,3);
+            at(enc,w->ssig.span,4); at(enc,cmd.error_word,5); [enc setBytes:&sa length:sizeof sa atIndex:6];
+            id<MTLComputePipelineState> ap=(__bridge id<MTLComputePipelineState>)r->shared_act;
+            [enc setComputePipelineState:ap];
+            [enc dispatchThreads:MTLSizeMake(t*s+t,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,ap.maxTotalThreadsPerThreadgroup),1,1)];
+        }
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-    } else run(enc,r->route,t);
+    } else { early_shared=false; run(enc,r->route,t); }
     Qwen38GpuSpan xids=w->ids;   /* what the expert kernels index: expert ids, or pool slots (R5.1b) */
     if (w->remap) {
         if (w->slots.bytes<p*4) return q38c_error(err,Q38_SHAPE,"routed MoE slot view");
@@ -328,11 +347,17 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
         q38_packed_encode_grouped_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],xids,k,x,w->act,w->group,err) :
         q38_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],xids,k,x,w->act,err);
     if (grouped && fused==Q38_UNSUPPORTED) return q38c_error(err,Q38_GPU_ERROR,"grouped gate+up refused");
-    if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
-    else if (fused!=Q38_UNSUPPORTED) return fused;
-    else { IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i); }
+    if (fused==Q38_OK) {
+        if (early_shared) Q38C_TRY(q38_packed_encode(b,&cmd,store,wb[6],&wl[6],0,w->sact,w->shared,err));
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    } else if (fused!=Q38_UNSUPPORTED) return fused;
+    else {
+        IDX(1,x,w->gate,k); IDX(2,x,w->up,k); ACT(Q38_SILU,w->gate,w->act); MUL(w->act,w->up,p*i);
+        if (early_shared) LIN(6,w->sact,w->shared);
+    }
     MARK("moe.shared",Q38_PROFILE_MIXED,WB(6));
-    if (r->shared_act) { /* D1.2: SILU, MUL and SIGMOID of the shared expert in one dispatch */
+    if (early_shared) {
+    } else if (r->shared_act) { /* D1.2: SILU, MUL and SIGMOID of the shared expert in one dispatch */
         struct { uint32_t count,tokens; } sa={(uint32_t)(t*s),(uint32_t)t};
         at(enc,w->sgate.span,0); at(enc,w->sup.span,1); at(enc,w->sact.span,2); at(enc,w->slogit.span,3);
         at(enc,w->ssig.span,4); at(enc,cmd.error_word,5); [enc setBytes:&sa length:sizeof sa atIndex:6];

@@ -728,13 +728,14 @@ static int down_main(int argc,char **argv,const char *library) {
  * q38f_routed_encode, which also falls back above 1024 experts: here the
  * kernel runs regardless, to check its own guard); oracle = q38f_route, 64-thread
  * groups. Always exit 0 (the word says what happened).
- *   rtbench <fast|oracle> experts slots tokens reps
+ * simd = q38_moe_route_simd (Decode III), one 32-thread simdgroup per token.
+ *   rtbench <fast|oracle|simd> experts slots tokens reps
  * the same dispatch on synthetic logits, 20 timed per command buffer (rbench's). */
 #define ROUTE_THREADS 256 /* Q38F_ROUTE_THREADS of qwen38_f_internal.h */
 static int route_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"rtbench");
-    assert(argc==(timing ? 7 : 8) &&(!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle")));
-    bool fast=!strcmp(argv[2],"fast");
+    assert(argc==(timing ? 7 : 8) &&(!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle") || !strcmp(argv[2],"simd")));
+    bool simd=!strcmp(argv[2],"simd"), fast=simd || !strcmp(argv[2],"fast");
     size_t experts=number(argv[3]), slots=number(argv[4]), tokens=number(argv[5]);
     size_t reps=timing ? number(argv[6]) : 1, norm=timing ? 1 : number(argv[6]), pitch=timing ? experts : number(argv[7]);
     assert(experts && experts<=65536 && slots && slots<=64 && tokens && tokens<=4096 && reps && reps<=1000);
@@ -750,7 +751,7 @@ static int route_main(int argc,char **argv,const char *library) {
         NSError *error=nil;
         id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
         id<MTLComputePipelineState> p=[dev newComputePipelineStateWithFunction:
-            [lib newFunctionWithName:fast ? @"q38_moe_route_fast" : @"q38f_route"] error:&error];
+            [lib newFunctionWithName:simd ? @"q38_moe_route_simd" : fast ? @"q38_moe_route_fast" : @"q38f_route"] error:&error];
         assert(p && (!fast || (p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=ROUTE_THREADS)));
         id<MTLBuffer> logits=shared(dev,4*tokens*pitch),probs=shared(dev,4*tokens*experts),ids=shared(dev,4*pairs),
             weights=shared(dev,4*pairs),word=shared(dev,4);
@@ -767,7 +768,7 @@ static int route_main(int argc,char **argv,const char *library) {
                 [encoder setBuffer:logits offset:0 atIndex:0]; [encoder setBuffer:probs offset:0 atIndex:1];
                 [encoder setBuffer:ids offset:0 atIndex:2]; [encoder setBuffer:weights offset:0 atIndex:3];
                 [encoder setBytes:&ra length:sizeof ra atIndex:4]; [encoder setBuffer:word offset:0 atIndex:5];
-                if (fast) [encoder dispatchThreadgroups:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(ROUTE_THREADS,1,1)];
+                if (fast) [encoder dispatchThreadgroups:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(simd ? 32 : ROUTE_THREADS,1,1)];
                 else [encoder dispatchThreads:MTLSizeMake(tokens,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,p.maxTotalThreadsPerThreadgroup),1,1)];
                 [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
             }
@@ -1233,7 +1234,9 @@ static int rope_main(int argc,char **argv,const char *library) {
 /* R2.6 fused HC read tail against the fast sequence (HC_LOW, F16 up, HC_READ, HC_INJECT):
  *   hctail t K h E inject poison: seeded F16 up [h*E, K], low [t,K], normed [t,h*E], il [t,h];
  *     poison 1 puts a NaN in low[t-1, K-1]. Runs both on the same inputs, prints one line:
- *     "status S equal B words W1 W2 dispatches D1 D2" (B: act, gate, mixed, inject byte-equal).
+ *     "status S equal B words W1 W2 dispatches D1 D2 act A scaled X" (B: act, gate, mixed, inject
+ *     byte-equal; A: act and inject byte-equal; X: max |fused - sequence| / max(1, max |sequence|)
+ *     over gate and mixed).
  *   hcbench <fused|sequence> t K h E reps: 3 + 20 command buffers, reps encodes each. */
 static int hctail_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"hcbench");
@@ -1313,9 +1316,16 @@ static int hctail_main(int argc,char **argv,const char *library) {
             }
         }
         if (!timing) {
-            bool equal=true;
+            bool equal=true, same_act=true; double worst=0.0; /* Decode III: scaled error of gate and mixed */
             for (size_t b=3;b<7;b++) if (inj || b<6) equal=equal && !memcmp(buf[0][b].contents,buf[1][b].contents,buf[0][b].length);
-            printf("status %d equal %d words %u %u dispatches %u %u\n",status,equal,words[0],words[1],dispatches[0],dispatches[1]);
+            for (size_t b=3;b<7;b+=3) if (inj || b<6) same_act=same_act && !memcmp(buf[0][b].contents,buf[1][b].contents,buf[0][b].length);
+            for (size_t b=4;b<6;b++) {
+                const float *f=buf[0][b].contents, *q=buf[1][b].contents; double peak=1.0, diff=0.0;
+                for (size_t i=0;i<t*cols[b];i++) { peak=fmax(peak,fabs((double)q[i])); diff=fmax(diff,fabs((double)f[i]-(double)q[i])); }
+                worst=fmax(worst,diff/peak);
+            }
+            printf("status %d equal %d words %u %u dispatches %u %u act %d scaled %.3e\n",status,equal,words[0],words[1],
+                   dispatches[0],dispatches[1],same_act,worst);
         }
         q38c_gpu_destroy(ops);
         q38_packed_gpu_free(ctx);

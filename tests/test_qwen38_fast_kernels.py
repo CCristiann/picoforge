@@ -425,6 +425,8 @@ def run_route(mode, logits, slots, norm, experts=None, env=None):
 
 ROUTE_PAD = 5  # columns of NaN past the experts in a padded router row (pitch = experts + ROUTE_PAD)
 ROUTE_KINDS = 11  # row shapes of route_logits
+HC_TAIL8_SCALED = 1e-6  # Decode III HC tail vs the sequence: measured 0.96e-7 (K 320) and 1.4e-7 (K 1024)
+ROUTE_SUM_RTOL = 2.0 ** -24 * 1024  # Decode III simd router vs q38f_route: the serial exp sum's error bound at 1024 experts
 
 
 def route_logits(rng, tokens, experts, offset=0):
@@ -631,10 +633,10 @@ def run_hctail(shape, inject=True, poison=False, env=None):
     result = subprocess.run([str(NATIVE), "hctail", *map(str, shape), str(int(inject)), str(int(poison))],
                             capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
     fields = result.stdout.decode().split()
-    if result.returncode or len(fields) != 10:
+    if result.returncode or len(fields) != 14:
         raise AssertionError(f"hctail: exit {result.returncode}, {result.stderr!r}")
     return dict(status=int(fields[1]), equal=int(fields[3]), words=(int(fields[5]), int(fields[6])),
-                dispatches=tuple(map(int, fields[-2:])))
+                dispatches=(int(fields[8]), int(fields[9])), act=int(fields[11]), scaled=float(fields[13]))
 
 
 def run_scan(mode, qkv, g, beta, state, dims, initial=0):
@@ -1615,7 +1617,14 @@ class FastKernelTests(unittest.TestCase):
         if dense:
             code, sequence, _, _, stderr = run_gate_up("sequence", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=plain)
             self.assertEqual((code, stderr), (0, b""), label)
-            np.testing.assert_array_equal(fused.view("<u4"), sequence.view("<u4"), label)
+            if kind == 16 and logical % 256 == 0:
+                # Decode III q38_moe_gate_up8_iq2_xxs (reordered dot): held to the measured moe_gate_up
+                # tolerance against the oracle below; Q38_REF_KERNELS=exact must restore the bit identity.
+                exact = run_gate_up("fused", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=view,
+                                    env={"Q38_REF_KERNELS": "exact"})[1]
+                np.testing.assert_array_equal(exact.view("<u4"), sequence.view("<u4"), label)
+            else:
+                np.testing.assert_array_equal(fused.view("<u4"), sequence.view("<u4"), label)
         code, y_oracle, _, _, stderr = run_gate_up("oracle", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=plain)
         self.assertEqual((code, stderr), (0, b""), label)
         dg, du = (dg, du) if decoded is None else decoded
@@ -1829,8 +1838,17 @@ class FastKernelTests(unittest.TestCase):
         self.assertEqual((code, stderr), (0, b""), label)
         code, y_seq, routed_seq, _, stderr = run("sequence")
         self.assertEqual((code, stderr), (0, b""), label)
-        np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
-        np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
+        if kind == 10 and inputs[1].shape[1] <= 32:
+            # Decode III Q2_K chunk dot in the parallel-slot kernel: held to the moe_down_reduce
+            # tolerance against the oracle below; Q38_REF_KERNELS=exact restores the bit identity.
+            _, y, routed, _, _ = run_down_reduce("fused", kind, physical, logical, n, experts, data, ids, *inputs,
+                                                 view=view, env={"Q38_REF_KERNELS": "exact"})
+            np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
+            np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
+            code, y, routed, cpu, stderr = run("fused")
+        else:
+            np.testing.assert_array_equal(y.view("<u4"), y_seq.view("<u4"), label)
+            np.testing.assert_array_equal(routed.view("<u4"), routed_seq.view("<u4"), label)
         code, y_oracle, routed_oracle, _, stderr = run("oracle")
         self.assertEqual((code, stderr), (0, b""), label)
         refs = down_reduce_fp64(cpu if decoded is None else decoded, ids, *inputs, logical, n)
@@ -2072,6 +2090,51 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual(word, 2)
                 for part in (ids, weights, probs):
                     self.assertEqual(part.tobytes(), b"\xa5" * part.nbytes)
+
+    # ---- Decode III router in one simdgroup (q38_moe_route_simd) ----
+    def test_route_simd_against_oracle(self):
+        """q38_moe_route_simd against q38f_route: the same error word; probs within ROUTE_SUM_RTOL (only the
+        exp sum is reordered, and the oracle's serial sum of E terms is itself off by up to ~E/2 ULP:
+        2^-24 * 512 = 3.05e-5); ids follow the (larger p, smaller id) rule on its OWN probs and equal the
+        oracle's on every row whose k-th and (k+1)-th oracle p are farther apart than twice that error;
+        weights within ROUTE_SUM_RTOL where the ids agree. Rows of every shape, tokens 1..128, 33..1024 experts."""
+        rng = np.random.default_rng(3929)
+        for tokens in (1, 3, 128):
+            for experts, slots in ((512, 10), (512, 1), (33, 10), (1024, 10), (1, 1)):
+                for norm in (0, 1):
+                    with self.subTest(tokens=tokens, experts=experts, slots=slots, norm=norm):
+                        logits = route_logits(rng, tokens, experts, offset=tokens + experts + slots)
+                        sw, sids, swt, sp = run_route("simd", logits, slots, norm)
+                        ow, oids, owt, op = run_route("oracle", logits, slots, norm)
+                        self.assertEqual((sw, ow), (0, 0))
+                        np.testing.assert_allclose(sp, op, rtol=ROUTE_SUM_RTOL, atol=1e-30)
+                        np.testing.assert_array_equal(sids, route_reference_ids(sp, slots))
+                        for row in range(tokens):
+                            ranked = np.sort(op[row])[::-1]
+                            gap = ranked[slots - 1] - ranked[slots] if slots < experts else np.inf
+                            if gap > 2 * ROUTE_SUM_RTOL * ranked[slots - 1]:
+                                np.testing.assert_array_equal(sids[row], oids[row], f"row {row}")
+                            if (sids[row] == oids[row]).all():
+                                np.testing.assert_allclose(swt[row], owt[row], rtol=ROUTE_SUM_RTOL, atol=1e-30)
+
+    def test_route_simd_guards(self):
+        """Nonfinite rows (bit 1, ids 0..k-1, zero weights, untouched probs) and the capacity guard (bit 2,
+        nothing written), as q38_moe_route_fast."""
+        rng = np.random.default_rng(3931)
+        logits = route_logits(rng, 7, 512, 1)
+        for row, value in ((1, np.nan), (3, np.inf), (4, -np.inf)):
+            logits[row, int(rng.integers(512))] = value
+        word, ids, weights, probs = run_route("simd", logits, 10, 1)
+        self.assertEqual(word, 1)
+        for row in (1, 3, 4):
+            np.testing.assert_array_equal(ids[row], np.arange(10))
+            self.assertEqual(weights[row].tobytes(), bytes(40))
+            self.assertEqual(probs[row].tobytes(), b"\xa5" * (4 * 512))
+        for experts, slots in ((2048, 10), (4, 6)):
+            word, ids, weights, probs = run_route("simd", route_logits(rng, 2, experts), slots, 1)
+            self.assertEqual(word, 2)
+            for part in (ids, weights, probs):
+                self.assertEqual(part.tobytes(), b"\xa5" * part.nbytes)
 
     # ---- R1.6a parallel RMSNorm (q38c_rms_fast, family fuse) ----
     def rms_case(self, label, x, gain, z=None, **view):
@@ -2484,7 +2547,8 @@ class FastKernelTests(unittest.TestCase):
                 for a, b in zip(got[3:], want[mode][3:]):
                     np.testing.assert_array_equal(a.view("<u4"), b.view("<u4"))
     def test_hc_tail_fused_bit_identical_to_sequence(self):
-        """R2.6: the fused HC tail writes act, gate, mixed and inject byte for byte as the fast sequence
+        """R2.6 (q38_hc_tail_f16, kept under Q38_REF_KERNELS=exact): the fused HC tail writes act, gate,
+        mixed and inject byte for byte as the fast sequence
         (HC_LOW, F16 up, HC_READ, HC_INJECT) in one dispatch instead of 5 (4 without inject; 7 and 5
         before R2.9 folded the activation checks): the real
         site (K 320, h 4, E 2560) at 1 and 3 tokens, and shapes with no chunk tail (K 256), no head
@@ -2495,13 +2559,32 @@ class FastKernelTests(unittest.TestCase):
         for shape in shapes:
             for inject in (True, False):
                 with self.subTest(shape=shape, inject=inject):
-                    got = run_hctail(shape, inject)
-                    self.assertEqual(got, dict(status=0, equal=1, words=(0, 0), dispatches=(1, 5 if inject else 4)))
+                    got = run_hctail(shape, inject, env={"Q38_REF_KERNELS": "exact"})
+                    self.assertEqual({k: got[k] for k in ("status", "equal", "words", "dispatches")},
+                                     dict(status=0, equal=1, words=(0, 0), dispatches=(1, 5 if inject else 4)))
         got = run_hctail((1, 320, 4, 2560), poison=True)
         self.assertEqual((got["status"], got["words"][0] & 1, got["words"][1] & 1), (0, 1, 1))
         for family in ("linear", "fuse", "1"):
             with self.subTest(reference=family):
                 self.assertEqual(run_hctail((1, 320, 4, 2560), env={"Q38_REF_KERNELS": family})["status"], 8)
+    def test_hc_tail8_against_sequence(self):
+        """Decode III q38_hc_tail8_f16 (default when K % 8 == 0 and rows are 16-byte aligned): act and
+        inject byte-equal to the sequence (same prologue), gate and mixed within HC_TAIL8_SCALED (only
+        each gate's sum is reordered), one dispatch; shapes it does not take (K 100, 300) keep the R2.6
+        kernel's bits. A NaN in low sets bit 1."""
+        for shape in [(1, 320, 4, 2560), (3, 320, 4, 2560), (1, 1024, 4, 64), (1, 256, 4, 50), (2, 8, 1, 9),
+                      (2, 320, 3, 37)]:
+            for inject in (True, False):
+                with self.subTest(shape=shape, inject=inject):
+                    got = run_hctail(shape, inject)
+                    self.assertEqual((got["status"], got["words"], got["dispatches"], got["act"]),
+                                     (0, (0, 0), (1, 5 if inject else 4), 1))
+                    self.assertLessEqual(got["scaled"], HC_TAIL8_SCALED)
+        for shape in [(2, 100, 3, 37), (1, 300, 2, 33)]:
+            with self.subTest(shape=shape, unaligned=True):
+                self.assertEqual(run_hctail(shape)["equal"], 1)
+        got = run_hctail((1, 320, 4, 2560), poison=True)
+        self.assertEqual((got["status"], got["words"][0] & 1, got["words"][1] & 1), (0, 1, 1))
     def test_rope_fast_bit_identical_to_oracle(self):
         """R2.8: the one-thread-per-element RoPE gives the oracle's bits (same per-element FP32
         expression) for the QSA q, k, index q and pooled-key shapes and a rotary width equal to d,

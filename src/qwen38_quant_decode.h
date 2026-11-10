@@ -54,12 +54,15 @@ struct Q38Iq2Xxs {
     static constant constexpr uint CHUNK = 32;
     static inline void decode(device const uchar *row, uint c, thread float *w) {
         device const uchar *b = row + ulong(c / 8) * 66, *g = b + 2 + (c % 8) * 8;
-        const uint bits = q38_le32(g + 4);
-        const float db = (q38_fp16(b) * float(2 * (bits >> 28) + 1)) * 0.125f;
+        /* Decode III: 2-byte loads (blocks and groups are 2-byte aligned in a 2-byte aligned
+         * row; the callers' rows are), the same values as byte loads: byte loads cost ~12%. */
+        device const ushort *g2 = (device const ushort *)g;
+        const uint idx = uint(g2[0]) | (uint(g2[1]) << 16), bits = uint(g2[2]) | (uint(g2[3]) << 16);
+        const float db = (float(*(device const half *)b) * float(2 * (bits >> 28) + 1)) * 0.125f;
         for (uint s = 0; s < 4; s++) {
             uint signs = (bits >> (7 * s)) & 127u;
             signs |= (metal::popcount(signs) & 1u) << 7;
-            const ulong grid = q38_iq2_grid[g[s]];
+            const ulong grid = q38_iq2_grid[(idx >> (8 * s)) & 255u];
             for (uint i = 0; i < 8; i++) {
                 const float v = db * float(uint(grid >> (8 * i)) & 255u);
                 w[8 * s + i] = signs & (1u << i) ? -v : v;
@@ -76,9 +79,12 @@ struct Q38Q2K {
     static inline void decode(device const uchar *row, uint c, thread float *w) {
         device const uchar *b = row + ulong(c / 16) * 84;
         const uint j = c % 16, scale = b[j], shift = 2 * ((j % 8) / 2);
-        const float dl = q38_fp16(b + 80) * float(scale & 15u), ml = q38_fp16(b + 82) * float(scale >> 4);
-        device const uchar *q = b + 16 + (j / 8) * 32 + (j % 2) * 16;
-        for (uint i = 0; i < 16; i++) w[i] = dl * float((q[i] >> shift) & 3u) - ml;
+        /* Decode III: d/dmin as one 4-byte load and the 16 code bytes as four (84-byte blocks
+         * keep 4-byte alignment in a 4-byte aligned row), the same values as byte loads. */
+        const half2 dm = *(device const half2 *)(b + 80);
+        const float dl = float(dm.x) * float(scale & 15u), ml = float(dm.y) * float(scale >> 4);
+        device const uint *q = (device const uint *)(b + 16 + (j / 8) * 32 + (j % 2) * 16);
+        for (uint i = 0; i < 16; i++) w[i] = dl * float((((q[i / 4] >> (8 * (i % 4))) & 255u) >> shift) & 3u) - ml;
     }
 };
 /* Q4_K (144-byte blocks of 256): fp16 d and dmin, 12 bytes of 6-bit scales
