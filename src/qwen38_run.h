@@ -33,7 +33,7 @@ size_t q38_policy_choose(const Q38Policy *, size_t kmax);
  * assistant"). Without one, Qwen3.8 in thinking mode invents its own settings
  * ("Desired oververbosity 9") and reasons until the context runs out.
  * PICOFORGE_SYSTEM overrides it; an empty value sends none (the tests' oracles). */
-static inline const char *q38_system_prompt(void) {
+static inline __attribute__((unused)) const char *q38_system_prompt(void) {
     const char *v=getenv("PICOFORGE_SYSTEM");
     return v ? v : "You are a helpful assistant";
 }

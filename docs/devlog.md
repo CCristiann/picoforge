@@ -2,6 +2,69 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## P5 (from 2026-11-09): attention in the long prefill
+
+Branch `perf/qwen38-p5-attention`. Evidence: `bench/qwen38_p5_20261109/README.md`.
+
+### P5.3 — batch indexer scores in tiles: bit-identical, -0.14 s
+
+scores_fast ran 8 lanes per block for 4 heads (half idle), each lane a 128-step chain with
+k read from device memory at a 512-byte stride across lanes. The batch kernel now takes
+tiles of 32 blocks x 8 tokens with q and k staged in threadgroup memory 32 features at a
+time; each thread keeps the dot's increasing-feature order and the head order of the clamped
+sum. Real FP32 logits at N 1000 and 8K equal byte for byte to the P5.2 binary; g2-parts green.
+Gain small: qsa.core 5.01 -> 4.88 s (the ablation's ~0.63 s was mostly not the loads).
+
+### P5.2 — two splits per MMA threadgroup: qsa.core 5.46 -> 5.01 s at 8K
+
+Ablations on P5.1: indexer scores ~0.63 s, merge ~0.84 s, the MMA body past one key per
+split ~2.23 s (near 60% of the FP32 MMA peak already), ~1.8 s fixed per-split cost and small
+stages. One MMA threadgroup now covers 4 consecutive R2.1 splits with an online softmax (O
+rescaled by an MMA against a diagonal tile when the row max grows), so the merge reads 4x
+fewer partials and the id scan, Q tiles and barriers are paid once per 4 splits: 4.83 s. The
+partial buffer then holds 128 tokens instead of 32, so the batch issues 4x fewer split/merge
+pairs: 4.60 s. Still a function of m only; batch and replay stay bitwise equal (g2-parts).
+
+Correctness: attend_fast unchanged (max 2.23e-4); the kernel against the oracle at every m
+900..1100 and a sweep to 2051 (232 cases) within 2.3e-6. Real FP32 logits vs the R2.1 kernel
+within 3.1e-6 up to N 950, then 0.074 at N 1000: the route log shows identical expert sets on
+every layer of tokens 0..219 and the first difference at token 220, layer 19 — the R3.1
+near-tie (gap 4e-8), flipped by this rounding and not by P5.1's. G3 PASS 2.17e-7.
+Lesson: `Q38_ROUTE_LOG` turns "probably a near-tie" into the exact (token, layer) in two runs.
+
+Then the decode: at 8K context G=4 took qsa.core from 2.18 to 3.52 ms/token (the decode is
+latency bound and a threadgroup's sub-blocks run in series; splitting O by feature quarter
+over 4 threadgroups changed nothing, S is the serial part). Clean rebuilds per group size:
+G=1 5.90 s / 2.18 ms, G=2 5.01 s / 2.51 ms, G=4 4.59 s / 3.52 ms. Chosen G=2: -0.9 s per 8K
+prefill for +0.33 ms per token. Second lesson: the Makefile rebuilt the metallib on a header
+change but not the host objects (only common.h was listed), so a G=2 metallib ran with a G=4
+host and stopped on error bit 1; every object now depends on every src header (163887f).
+
+### P5.1 — split attention on simdgroup matrices: qsa.core 8.65 -> 5.46 s at 8K
+
+A fresh 8K profile (main 78ea2a8) put qsa.core first in half mode: 8.65 of 28.3 s GPU,
+the same in FP32 (no GEMM in it, so half mode never touched it). Ablations on the real
+prompt: the split attention body is 5.7 s of it (one key per split: 8.65 -> 2.98 s), the
+O(n^2) block rank only ~0.3 s. attend_split ran one key at a time, a simd_sum per key and
+head and a rescale per key: ~0.75 TFLOPS. The new kernel (FP32 MMA, `attend_split_mma`)
+keeps the split layout and the partial format, so the merge is unchanged: the 8..16 heads
+of a KV group are two 8x8 row tiles (overlapping for 12), each simdgroup owns 64 of the 256
+features, S = Q K^T per chunk of 8 keys, weights for the whole split at once, O = P V
+stored straight to the partials. First version staged Q and O in 29 KB of threadgroup
+memory and was *slower* (10.99 s): one threadgroup per core. 13 KB and the id scan shared
+by the 128 threads instead of repeated by every simdgroup: 5.46 s. Used for d 256, 8..16
+heads per KV head, <= 40 keys per split (prefill and decode); the R2.1 kernel elsewhere and
+under `Q38_QSA_SPLIT=1`.
+
+Correctness: attend_fast cases within tol 2^-12 (max 2.23e-4 at attend:sharp64, R2.1
+1.46e-4; tolerance entry re-measured, tol unchanged), two new cases at the tiles' edges (8
+and 16 heads). G3 PASS scaled 2.17e-7, 12/12. Real Q2 FP32 logits, MMA vs R2.1 split: N 16
+.. 5000 within 2.1e-5 scaled, argmax 17/17; from N 6000 a jump to 0.026-0.067 (8K 0.038,
+argmax still 17/17). Not a drift: it is a step between 5000 and 6000, and the known R3.1
+regime (router top-10 near-ties): the already accepted GEMM reorder (`Q38_REF_KERNELS=gemm`)
+moves the same logits by 0.069 at N 5000 and 0.077 at 6000. 8K prefill (one run each, AC):
+FP32 50.7 -> 47.1 s, half 29.8 -> 26.6 s.
+
 ## P4 (from 2026-11-08): the GDN scan in the long prefill
 
 Branch `perf/qwen38-gdn-chunk`. Evidence: `bench/qwen38_p4_20261108/README.md`.

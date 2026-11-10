@@ -726,6 +726,19 @@ def run_index(mode, iq, blocks, visible, ratio, budget):
     return int(np.frombuffer(result.stdout[:4], "<u4")[0]), result.stdout[4:4 + 4 * n], result.stdout[4 + 4 * n:]
 
 
+def attend_parts(inputs):
+    """Partials of q38d_attend_encode: the R2.1 splits (>= 32 keys each, at most 64), grouped 4 per
+    threadgroup by the P5.2 MMA kernel (d 256, 8..16 heads per KV head, <= 40 keys per split); 2 is
+    Q38D_MMA_GROUP in src/qwen38_d_internal.h."""
+    q, m = inputs[0], len(inputs[4])
+    h, d = q.shape[-2], q.shape[-1]
+    j = inputs[2].shape[1]
+    splits = min(64, max(1, -(-m // 32)))
+    keys = -(-m // splits)
+    mma = d == 256 and 8 <= h // j <= 16 and keys <= 40 and not os.environ.get("Q38_QSA_SPLIT")  # run_attend drops REF
+    return -(-splits // 2) if mma else splits
+
+
 def attend_inputs(rng, dims, n, m, sharp=4.0):
     """q, k ~ N(0, sharp^2/sqrt(d)) so the scaled logits have std sharp^2/sqrt(d); v ~ N(0, 1) with one x100
     outlier row; gate = sigmoid outputs in (0, 1) with exact 0 and 1 present; ids a sorted random m-subset."""
@@ -2191,8 +2204,7 @@ class FastKernelTests(unittest.TestCase):
         """Fast and oracle on one case: clean words, 1 dispatch for the oracle and for one split, 2 with the merge;
         both within (a); fast within (b) of the oracle."""
         fast, oracle = (run_attend(mode, *inputs) for mode in ("fast", "oracle"))
-        splits = min(64, max(1, -(-len(inputs[4]) // 32)))
-        self.assertEqual((fast[:2], oracle[:2]), ((0, 1 if splits == 1 else 2), (0, 1)), label)
+        self.assertEqual((fast[:2], oracle[:2]), ((0, 1 if attend_parts(inputs) == 1 else 2), (0, 1)), label)
         ref, magnitude, factor = attend_fp64(*inputs)
         stats, oracle_stats = (attend_against_fp64(out[2], ref, magnitude, factor) for out in (fast, oracle))
         stats["vs_oracle"] = against_oracle(fast[2], oracle[2], magnitude)
@@ -2208,13 +2220,14 @@ class FastKernelTests(unittest.TestCase):
     def test_attend_fast_against_oracle_and_fp64(self):
         """The real dims (24 heads over 2 KV heads, d 256) from 1 key to the 2048-key budget and past the 64-split
         cap (keys per split grow), then groups off the 4x4 simdgroup slices (1, 3, 5, 12, 16 heads per KV
-        head), d = 32 (one feature per lane) and 128, and sharp logits (one key dominates)."""
+        head), d = 32 (one feature per lane) and 128, the P5.1 MMA tiles' edges (8 and 16 heads at d 256: A and B
+        disjoint, and B equal to rows 0..7), and sharp logits (one key dominates)."""
         rng = np.random.default_rng(4099)
         for m in (1, 2, 31, 32, 33, 64, 65, 100, 1000, 2047, 2048, 2049, 4100):
             with self.subTest(m=m):
                 self.attend_case(f"attend:{ATTEND_REAL}m{m}", attend_inputs(rng, ATTEND_REAL, max(m, 4 * m // 3), m))
         for dims, m in (((4, 4, 32), 70), ((3, 1, 128), 33), ((10, 2, 64), 200), ((12, 1, 256), 129),
-                        ((32, 2, 96), 500), ((16, 16, 256), 1)):
+                        ((32, 2, 96), 500), ((16, 16, 256), 1), ((16, 2, 256), 300), ((16, 1, 256), 77)):
             with self.subTest(dims=dims, m=m):
                 self.attend_case(f"attend:{dims}m{m}", attend_inputs(rng, dims, m + 7, m))
         for sharp in (16.0, 64.0):

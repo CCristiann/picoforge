@@ -142,7 +142,8 @@ class ReplTests(unittest.TestCase):
                               capture_output=True, check=True)
         self.assertEqual(chat.stdout, long.stdout)
         env.pop('PICOFORGE_MODEL')
-        none = subprocess.run([ENGINE, '-p', 'hi'], cwd=ROOT, env=env, capture_output=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as empty:  # not the real models/
+            none = subprocess.run([ENGINE, '-p', 'hi'], cwd=ROOT, env=dict(env, PICOFORGE_MODELS=empty), capture_output=True)
         self.assertNotEqual(none.returncode, 0)
         self.assertIn(b'no model', none.stderr)
 

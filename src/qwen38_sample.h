@@ -27,7 +27,7 @@ typedef struct {
 
 /* Qwen's recommendation for the thinking mode: T 0.6, top-k 20, top-p 0.95. */
 void q38_sampler_init(Q38Sampler *, float temperature, uint32_t top_k, float top_p, float min_p, uint64_t seed);
-static inline bool q38_sampler_greedy(const Q38Sampler *s) { return !s || s->temperature <= 0.0f; }
+static inline __attribute__((unused)) bool q38_sampler_greedy(const Q38Sampler *s) { return !s || s->temperature <= 0.0f; }
 /* One id from a row of n logits (all finite: the caller already checked). */
 int32_t q38_sample(Q38Sampler *, const float *logits, uint32_t n);
 #endif

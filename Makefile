@@ -20,10 +20,14 @@ FRAMEWORKS := -framework Metal -framework Foundation
 picoforge: $(OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
-src/%.o: src/%.c src/common.h
+# Every object depends on every header: a constant changed only in a header (a
+# Metal wire struct, a tile size) must rebuild the host code that mirrors it.
+HEADERS := $(wildcard src/*.h)
+
+src/%.o: src/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-src/%.m.o: src/%.m src/common.h
+src/%.m.o: src/%.m $(HEADERS)
 	$(CC) $(CFLAGS) -fobjc-arc -c -o $@ $<
 
 # Kernels compile to AIR, then link into a library loaded at runtime. Keeping
