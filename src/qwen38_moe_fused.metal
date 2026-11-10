@@ -127,6 +127,75 @@ GATE_UP_KERNEL(q38_moe_gate_up_q2_k, Q38Q2K)
 GATE_UP_KERNEL(q38_moe_gate_up_q4_k, Q38Q4K)
 GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
 
+/* Decode III: IQ2_XXS gate+up+SwiGLU for K % 256 == 0, same contract and
+ * guards as gate_up<Q38Iq2Xxs> except the order of each dot. The decode, not
+ * the memory, bounds the R1.9b kernel (its loads alone take ~55% of its time
+ * at 40 slots, gbench), so here it is made cheaper: lanes 4g+j own entry j of
+ * group g of every 256-column super-block (8 columns, x read coalesced: idea
+ * from ds4 fc80bd6, MIT, metal/qwen4.metal: qwen4_row_dot), the grid is kept as
+ * floats and the 128 sign masks (parity bit included) in threadgroup memory,
+ * signs are applied to x by select, and the 8 products and the scaled sum are
+ * FMAs. One simdgroup per output as before, GATE_UP8_SG of them per
+ * threadgroup to amortise the tables. Q38_REF_KERNELS=exact keeps gate_up. */
+kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
+        device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
+        device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
+        device const uint *ids [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float4 gridf[512];  /* grid vector v as gridf[2v], gridf[2v+1] */
+    threadgroup uchar smask[128];
+    const uint tid = sg * 32 + lane, tgs = sgs * 32;
+    for (uint i = tid; i < 512; i += tgs) {
+        const uint w = uint(q38_iq2_grid[i / 2] >> (32 * (i & 1)));
+        gridf[i] = float4(float(w & 255u), float((w >> 8) & 255u), float((w >> 16) & 255u), float(w >> 24));
+    }
+    for (uint i = tid; i < 128; i += tgs) smask[i] = uchar(i | ((popcount(i) & 1u) << 7));
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    constant PackedArgs &p = a.gate.base, &q = a.up.base;
+    const ulong n = ulong(group.x) * sgs + sg;
+    const uint m = group.y;
+    if (n >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
+    const uint expert = ids[m];
+    const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
+    const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
+    const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4), yi = ulong(m) * (p.y_stride / 4) + n;
+    if (expert >= a.gate.experts || expert >= a.up.experts || grow > p.weight_end || p.row_bytes > p.weight_end - grow ||
+        urow > q.weight_end || q.row_bytes > q.weight_end - urow || (p.k_logical & 255u) || (xi & 3) ||
+        xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi || yi >= p.y_bytes / 4) {
+        if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    const uint nb = p.k_logical / 256, grp = lane / 4, j = lane % 4;
+    device const uchar *rows[2] = {gw + grow, uw + urow};
+    device const float4 *xv = (device const float4 *)(x + xi) + 2 * lane;
+    float acc[2] = {0.0f, 0.0f};
+    for (uint b = 0; b < nb; b++) {
+        const float4 x0 = xv[64 * b], x1 = xv[64 * b + 1];
+        for (uint r = 0; r < 2; r++) {
+            device const uchar *blk = rows[r] + 66 * ulong(b);
+            device const ushort *qp = (device const ushort *)(blk + 2) + 4 * grp; /* blocks are 2-byte aligned */
+            const uint qg = uint(qp[0]) | (uint(qp[1]) << 16), qs = uint(qp[2]) | (uint(qp[3]) << 16);
+            const float dl = (float(*(device const half *)blk) * float(2 * (qs >> 28) + 1)) * 0.125f;
+            const uint sm = smask[(qs >> (7 * j)) & 127u], gi = (qg >> (8 * j)) & 255u;
+            const float4 g0 = gridf[2 * gi], g1 = gridf[2 * gi + 1];
+            const float4 s0 = select(x0, -x0, bool4(sm & 1u, sm & 2u, sm & 4u, sm & 8u));
+            const float4 s1 = select(x1, -x1, bool4(sm & 16u, sm & 32u, sm & 64u, sm & 128u));
+            float part = g0.x * s0.x;
+            part = fma(g0.y, s0.y, part); part = fma(g0.z, s0.z, part); part = fma(g0.w, s0.w, part);
+            part = fma(g1.x, s1.x, part); part = fma(g1.y, s1.y, part); part = fma(g1.z, s1.z, part);
+            part = fma(g1.w, s1.w, part);
+            acc[r] = fma(dl, part, acc[r]);
+        }
+    }
+    const float g = simd_sum(acc[0]), u = simd_sum(acc[1]);
+    if (lane) return;
+    const float sv = q38_silu(g), h = sv * u;
+    act[yi] = h;
+    if (!isfinite(g) || !isfinite(u) || !isfinite(sv) || !isfinite(h))
+        atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}
+
 /* R1.5c: the routed down projection and q38f_reduce in one pass.
  * DownReduceArgs mirrors Q38DownReduceArgs (qwen38_b_internal.h): the down
  * projection as one indexed call over the tokens x slots pairs (x = act, its

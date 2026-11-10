@@ -1617,7 +1617,14 @@ class FastKernelTests(unittest.TestCase):
         if dense:
             code, sequence, _, _, stderr = run_gate_up("sequence", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=plain)
             self.assertEqual((code, stderr), (0, b""), label)
-            np.testing.assert_array_equal(fused.view("<u4"), sequence.view("<u4"), label)
+            if kind == 16 and logical % 256 == 0:
+                # Decode III q38_moe_gate_up8_iq2_xxs (reordered dot): held to the measured moe_gate_up
+                # tolerance against the oracle below; Q38_REF_KERNELS=exact must restore the bit identity.
+                exact = run_gate_up("fused", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=view,
+                                    env={"Q38_REF_KERNELS": "exact"})[1]
+                np.testing.assert_array_equal(exact.view("<u4"), sequence.view("<u4"), label)
+            else:
+                np.testing.assert_array_equal(fused.view("<u4"), sequence.view("<u4"), label)
         code, y_oracle, _, _, stderr = run_gate_up("oracle", kind, physical, logical, n, experts, gate, up, ids, x, divisor, view=plain)
         self.assertEqual((code, stderr), (0, b""), label)
         dg, du = (dg, du) if decoded is None else decoded

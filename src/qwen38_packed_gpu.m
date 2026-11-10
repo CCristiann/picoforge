@@ -13,7 +13,7 @@
  * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST],
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
                       *hc_tail, *hc_tail8, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
@@ -36,7 +36,7 @@ static size_t gemm_min_rows(void);
 static size_t env_size(const char *name, size_t fallback);
 /* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
  * output each) per threadgroup; the kernels read the count from the dispatch. */
-enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4 };
+enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4, Q38_GATE_UP8_SG = 8 };
 /* R2.7: down+reduce output rows per simdgroup (DOWN_ROWS in the kernel). */
 enum { Q38_DOWN_REDUCE_ROWS = 4, Q38_DOWN_SP_MAX_SLOTS = 32 /* DOWN_SP_MAX_SLOTS */ };
 /* R2.6 fused HC tail: simdgroups (one d each) per threadgroup, and the
@@ -184,6 +184,11 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         ctx->gate_up[i]=fast_pipeline(gate_up[i],Q38_GATE_UP_SG);
         ctx->down_reduce[i]=fast_pipeline(down[i],Q38_DOWN_REDUCE_SG);
     }
+    if (!q38_ref_kernels("exact")) { /* Decode III: IQ2_XXS gate+up, reordered dot; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_gate_up8_iq2_xxs"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->gate_up8=p ? fast_pipeline(p,Q38_GATE_UP8_SG) : NULL;
+    }
     { /* Decode III: slots in parallel, bit-identical to down_reduce; optional (absent -> down_reduce) */
         static NSString *const sp_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_sp_iq2_xxs",
             @"q38_moe_down_reduce_sp_q2_k",@"q38_moe_down_reduce_sp_q4_k",@"q38_moe_down_reduce_sp_mxfp4"};
@@ -217,6 +222,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->f32) CFRelease(ctx->f32);
     if (ctx->hc_tail) CFRelease(ctx->hc_tail);
     if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
+    if (ctx->gate_up8) CFRelease(ctx->gate_up8);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
@@ -526,8 +532,13 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
     [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:4];
     [encoder setBytes:args length:sizeof args atIndex:5];
     [encoder setBuffer:route offset:ids.offset_bytes atIndex:6];
-    MTLSize groups=MTLSizeMake((gl->n_out+Q38_GATE_UP_SG-1)/Q38_GATE_UP_SG,act.dim[0],1);
-    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_GATE_UP_SG,1,1)];
+    /* Decode III: the IQ2_XXS kernel with a reordered dot where its float4 x reads are aligned */
+    const bool eight=ctx->gate_up8 && gl->gguf_type==16 && !(gl->k_logical%256) && !(x.span.offset_bytes%16) &&
+        !(x.stride_bytes[0]%16);
+    const size_t sgs=eight ? Q38_GATE_UP8_SG : Q38_GATE_UP_SG;
+    if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
+    MTLSize groups=MTLSizeMake((gl->n_out+sgs-1)/sgs,act.dim[0],1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*sgs,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
 
