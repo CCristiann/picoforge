@@ -205,6 +205,82 @@ DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q2_k, Q38Q2K)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_q4_k, Q38Q4K)
 DOWN_REDUCE_KERNEL(q38_moe_down_reduce_mxfp4, Q38Mxfp4)
 
+/* Decode III: down_reduce with the slots in parallel. One threadgroup per
+ * (DOWN_ROWS outputs, token) and one simdgroup per slot (the host dispatches
+ * 32 * slots threads): simdgroup s computes slot s's DOWN_ROWS dots with
+ * q38_quant_rows, exactly as down_reduce's slot loop does, and leaves them in
+ * threadgroup memory; then lane 0 of simdgroup 0 runs down_reduce's reduction
+ * in slot order 0..k-1 with the same expressions. y and routed are therefore
+ * bit-identical to down_reduce; what changes is that the k slots' weight
+ * loads are in flight together (down_reduce issued them one slot after the
+ * other from 640 simdgroups: 91 GB/s at 10 slots in dbench). Same guards:
+ * a bad slot sets bit 2 and (t, n..) is not written. */
+#define DOWN_SP_MAX_SLOTS 32
+template <typename F>
+static inline void down_reduce_sp(device const uchar *w, device const float *act, device const float *shared,
+        device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
+        device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
+        uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad) {
+    constant PackedArgs &p = a.down.base;
+    const ulong n0 = ulong(group.x) * DOWN_ROWS;
+    const uint t = group.y;
+    if (n0 >= p.n_out || t >= a.tokens) return; /* uniform over the threadgroup */
+    const uint nr = uint(min(ulong(DOWN_ROWS), p.n_out - n0));
+    const ulong yi = ulong(t) * (p.y_stride / 4) + n0, ri = ulong(t) * p.n_out + n0;
+    if (yi + nr > p.y_bytes / 4 || sgs != a.slots || a.slots > DOWN_SP_MAX_SLOTS) {
+        if (!lane && !sg) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return;
+    }
+    {
+        const uint s = sg, pair = t * a.slots + s, expert = ids[pair];
+        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n0 * p.row_bytes;
+        const ulong last = row + (nr - 1) * p.row_bytes, xi = ulong(pair) * (p.x_stride / 4);
+        const bool ok = !(expert >= a.down.experts || last > p.weight_end || p.row_bytes > p.weight_end - last ||
+                          xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi);
+        float d[DOWN_ROWS];
+        if (ok) q38_quant_rows<F, DOWN_ROWS>(w + row, p.row_bytes, nr, act + xi, p.k_logical, lane, d);
+        if (!lane) {
+            bad[s] = !ok;
+            for (uint r = 0; r < DOWN_ROWS; r++) part[s][r] = ok ? d[r] : 0.0f;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg || lane) return;
+    float sum[DOWN_ROWS];
+    for (uint r = 0; r < DOWN_ROWS; r++) sum[r] = 0.0f;
+    bool finite = true;
+    for (uint s = 0; s < a.slots; s++) {
+        if (bad[s]) { atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); return; }
+        const uint pair = t * a.slots + s;
+        for (uint r = 0; r < nr; r++) {
+            const float d = part[s][r];
+            finite = finite && isfinite(d);
+            sum[r] += scores[pair] * d;
+        }
+    }
+    for (uint r = 0; r < nr; r++) {
+        routed[ri + r] = sum[r];
+        const float v = sum[r] + sigmoid[t] * shared[ri + r];
+        if (!finite || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        y[yi + r] = v;
+    }
+}
+#define DOWN_REDUCE_SP_KERNEL(name, F) \
+kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[buffer(1)]], \
+        device const float *shared [[buffer(2)]], device const float *sigmoid [[buffer(3)]], \
+        device const float *scores [[buffer(4)]], device const uint *ids [[buffer(5)]], \
+        device float *routed [[buffer(6)]], device float *y [[buffer(7)]], device atomic_uint *error [[buffer(8)]], \
+        constant DownReduceArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]], \
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]], \
+        uint lane [[thread_index_in_simdgroup]]) { \
+    threadgroup float part[DOWN_SP_MAX_SLOTS][DOWN_ROWS]; threadgroup uint bad[DOWN_SP_MAX_SLOTS]; \
+    down_reduce_sp<F>(w, act, shared, sigmoid, scores, ids, routed, y, error, a, group, sg, sgs, lane, part, bad); \
+}
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_iq2_xxs, Q38Iq2Xxs)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q2_k, Q38Q2K)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q4_k, Q38Q4K)
+DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_mxfp4, Q38Mxfp4)
+
 /* R1.5d router softmax + top-k, one threadgroup per token: bit-identical to
  * q38f_route (qwen38_moe.metal) in ids, weights and probs, which ran ONE thread
  * per token (512 exp, a serial sum, then k scans of all experts: 59 ms per

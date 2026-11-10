@@ -13,7 +13,7 @@
  * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST],
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST],
                       *hc_tail, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
@@ -38,7 +38,7 @@ static size_t env_size(const char *name, size_t fallback);
  * output each) per threadgroup; the kernels read the count from the dispatch. */
 enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4 };
 /* R2.7: down+reduce output rows per simdgroup (DOWN_ROWS in the kernel). */
-enum { Q38_DOWN_REDUCE_ROWS = 4 };
+enum { Q38_DOWN_REDUCE_ROWS = 4, Q38_DOWN_SP_MAX_SLOTS = 32 /* DOWN_SP_MAX_SLOTS */ };
 /* R2.6 fused HC tail: simdgroups (one d each) per threadgroup, and the
  * kernel's HC_TAIL_MAX_K and HC_TAIL_MAX_H. */
 enum { Q38_HC_TAIL_SG = 8, Q38_HC_TAIL_MAX_K = 1024, Q38_HC_TAIL_MAX_H = 4 };
@@ -179,6 +179,15 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         ctx->gate_up[i]=fast_pipeline(gate_up[i],Q38_GATE_UP_SG);
         ctx->down_reduce[i]=fast_pipeline(down[i],Q38_DOWN_REDUCE_SG);
     }
+    { /* Decode III: slots in parallel, bit-identical to down_reduce; optional (absent -> down_reduce) */
+        static NSString *const sp_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_sp_iq2_xxs",
+            @"q38_moe_down_reduce_sp_q2_k",@"q38_moe_down_reduce_sp_q4_k",@"q38_moe_down_reduce_sp_mxfp4"};
+        for (size_t i=0;i<Q38_INDEXED_FAST && !getenv("PICOFORGE_DOWN_SERIAL");i++) {
+            id<MTLFunction> fn=[lib newFunctionWithName:sp_names[i]];
+            id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+            ctx->down_sp[i]=p ? (__bridge_retained void *)p : NULL;
+        }
+    }
     ctx->ref_linear=q38_ref_kernels("linear");
     ctx->ref_indexed=q38_ref_kernels("indexed");
     ctx->ref_fuse=q38_ref_kernels("fuse");
@@ -216,6 +225,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
         if (ctx->indexed_fast[i]) CFRelease(ctx->indexed_fast[i]);
         if (ctx->gate_up[i]) CFRelease(ctx->gate_up[i]);
         if (ctx->down_reduce[i]) CFRelease(ctx->down_reduce[i]);
+        if (ctx->down_sp[i]) CFRelease(ctx->down_sp[i]);
     }
     CFRelease(ctx->device); free(ctx);
 }
@@ -664,6 +674,14 @@ Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *ctx, const Qwen38GpuCom
     [encoder setBuffer:a.output offset:y.span.offset_bytes atIndex:7];
     [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
     [encoder setBytes:&args length:sizeof args atIndex:9];
+    id<MTLComputePipelineState> sp=(__bridge id<MTLComputePipelineState>)indexed_kernel(ctx->down_sp,layout->gguf_type);
+    if (sp && k<=Q38_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==Q38_SIMD && sp.maxTotalThreadsPerThreadgroup>=Q38_SIMD*k) {
+        /* Decode III: one simdgroup per slot, DOWN_ROWS outputs per threadgroup (bit-identical) */
+        [encoder setComputePipelineState:sp];
+        [encoder dispatchThreadgroups:MTLSizeMake((n+Q38_DOWN_REDUCE_ROWS-1)/Q38_DOWN_REDUCE_ROWS,t,1)
+                threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*k,1,1)];
+        return q38_b_result(err,Q38_OK,"");
+    }
     const size_t per=Q38_DOWN_REDUCE_SG*Q38_DOWN_REDUCE_ROWS;
     MTLSize groups=MTLSizeMake((n+per-1)/per,t,1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_DOWN_REDUCE_SG,1,1)];
