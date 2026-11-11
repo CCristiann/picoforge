@@ -552,11 +552,22 @@ static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t l
 #define V(x) time_view(f->x,t)
 #define OP(k,op,...) do { MARK(layer,n[k],Q38_PROFILE_NONE,0); Qwen38GpuF32 vv[]={__VA_ARGS__}; \
     TRY(q38c_gpu_encode(f->ops,*cmd,Q38C_##op,&spec,vv,sizeof vv/sizeof *vv,e)); } while(0)
-    OP(0,RMS,V(r),hc->gain,V(normed));
+    bool folded=false; /* Decode III: RMS folded into the down (and inject) projection */
+    if (q38_packed_hc_down_rms_ready(f->b,hc->down.binding->tensor.type,t,hc->down.layout.k_logical,f->c.hc.streams)) {
+        MARK(layer,n[1],hc->down.binding->tensor.type,hc->down.binding->tensor.bytes);
+        const Qwen38GpuF32 none={0};
+        Qwen38Status status=q38_packed_encode_hc_down_rms(f->b,cmd,f->store,hc->down.binding,&hc->down.layout,
+            hc->inject.binding,hc->inject.binding ? &hc->inject.layout : NULL,f->c.hc.streams,f->c.hc.rms_eps,
+            flat(V(r)),hc->gain,flat(V(normed)),flat(V(low)),hc->inject.binding ? flat(V(il)) : none,e);
+        if (!status) { barrier(*cmd); folded=true; }
+        else if (status!=Q38_UNSUPPORTED) return status;
+    }
+    if (!folded) OP(0,RMS,V(r),hc->gain,V(normed));
     /* R2.5: down and inject read the same normed rows: one multi call (bit-identical
      * to two single calls), profiled as the down group; the lone inject matvec
      * (4 rows) ran at ~10 GB/s. */
-    if (hc->inject.binding)
+    if (folded) {}
+    else if (hc->inject.binding)
         TRY(linears(f,cmd,layer,n[1],(G2Weight[]){hc->down,hc->inject},2,V(normed),(Qwen38GpuF32[]){V(low),V(il)},e));
     else TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
     if (!q38_packed_gemm_rows(f->b,hc->up.binding->tensor.type,t)) {
@@ -630,7 +641,18 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t i,siz
     Qwen38GpuF32 outputs[]={w.qg,w.k,w.v,w.iq,w.ik};
     TRY(linears(f,cmd,i,"qsa.proj",l->qsa,5,time_view(f->mixed,t),outputs,e));
     MARK(i,"qsa.core",Q38_PROFILE_MIXED,0); TRY(q38d_layer_encode(f->d,f->ops,*cmd,&l->ac,pos,(uint32_t)t,&w,e));
-    TRY(linear(f,cmd,i,"qsa.out",l->qsa[5],w.out,time_view(f->block,t),e));
+    const G2Weight qo=l->qsa[5];
+    if (q38_packed_add_ready(f->b,qo.binding->tensor.type,t,qo.layout.n_out)) { /* Decode III: out + HC_ADD */
+        MARK(i,"qsa.out",qo.binding->tensor.type,qo.binding->tensor.bytes);
+        Qwen38Status added=q38_packed_encode_add(f->b,cmd,f->store,qo.binding,&qo.layout,flat(w.out),
+            flat(time_view(f->block,t)),time_view(f->r,t),time_view(f->inject,t),e);
+        if (added) return added;
+        barrier(*cmd);
+        emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
+        emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t));
+        return Q38_OK;
+    }
+    TRY(linear(f,cmd,i,"qsa.out",qo,w.out,time_view(f->block,t),e));
     emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
     emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t)); MARK(i,"hc_add",Q38_PROFILE_NONE,0); return hc_add(f,*cmd,t,e);
 }
@@ -677,8 +699,9 @@ static Qwen38Status stream_remap(void *ctx,Qwen38GpuCommand *cmd,Qwen38GpuSpan i
     if (fill_slots(f,s->layer,routed,out,pairs)) return fail(e,Q38_CAPACITY,"expert pool: every slot pinned or a read failed");
     return Q38_OK;
 }
-static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand *cmdp,uint32_t i,size_t t,Qwen38Error *e) {
+static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand *cmdp,uint32_t i,size_t t,bool *hc_added,Qwen38Error *e) {
     G2Layer *l=&f->layer[i];
+    if (hc_added) *hc_added=false;
     Qwen38MoeConfig mc=f->c.moe;
     if (i>=f->c.trunk_blocks) mc.down_physical=mc.intermediate;
     MoeMark mark={f,i};
@@ -696,8 +719,11 @@ static Qwen38Status moe(Qwen38GpuForward *f,Qwen38GpuCommand *cmdp,uint32_t i,si
             if (!f->pool) return fail(e,Q38_BAD_STATE,"streamed experts without a pool");
             w.remap=stream_remap; w.remap_ctx=&sc; w.slots=f->slots.span;
         }
+        bool added=false;
+        if (n==t) { w.hc_residual=time_view(f->r,t); w.hc_inject=time_view(f->inject,t); w.hc_added=&added; }
         TRY(q38f_routed_encode(f->moe,f->b,f->ops,*cmdp,&mc,f->store,l->fb,l->fl,
             slice(f->mixed,start,n),slice(f->block,start,n),&w,e));
+        if (hc_added) *hc_added=added;
         Qwen38GpuCommand cmd=*cmdp;
         if (!cmd.concurrent) barrier(cmd);   /* R1.6b: routed_encode already ends with one */
         if (f->route_buf && i<f->c.trunk_blocks) {   /* R4 diagnostic: ids are final after the barrier */
@@ -735,8 +761,10 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
         emit(f,*cmd,i,Q38G_ATTN_RESIDUAL,time_view(f->r,t));
         TRY(hc_read(f,cmd,i,&l->ffn,HC_FFN,t,e));
         emit(f,*cmd,i,Q38G_FFN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_FFN_INJECT,time_view(f->inject,t));
-        TRY(moe(f,cmd,i,t,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
-        MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
+        bool added=false; /* Decode III: the fused down may have done the HC_ADD */
+        TRY(moe(f,cmd,i,t,&added,e)); emit(f,*cmd,i,Q38G_MOE,time_view(f->block,t));
+        if (!added) { MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); }
+        emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
         /* D1: a decode token (or a few verify rows) is split into cmd_split command buffers so the GPU starts early. */
         if (f->flush_ticket && t<=4 && f->cmd_split>1 && i+1<layers && (i+1)*f->cmd_split%layers<f->cmd_split)
             TRY(q38g_session_flush(f->session,f->flush_ticket,cmd,e));
@@ -1049,8 +1077,9 @@ static Qwen38Status mtp_run(Qwen38GpuForward *f,Qwen38GpuCommand cmd,Qwen38GpuF3
     Qwen38GpuF32 trunk=f->r; f->r=f->mtp_r; uint32_t i=f->c.trunk_blocks;
     Qwen38Status rc=qsa(f,&cmd,i,t,pos,e);
     if (!rc) rc=hc_read(f,&cmd,i,&f->layer[i].ffn,HC_FFN,t,e);
-    if (!rc) rc=moe(f,&cmd,i,t,e);
-    if (!rc) rc=hc_add(f,cmd,t,e);
+    bool added=false;
+    if (!rc) rc=moe(f,&cmd,i,t,&added,e);
+    if (!rc && !added) rc=hc_add(f,cmd,t,e);
     if (!rc && rows) rc=hc_read(f,&cmd,QWEN38_GLOBAL_LAYER,&f->mtp_head,HC_FINAL,t,e);
     if (!rc && rows) rc=linear(f,&cmd,QWEN38_GLOBAL_LAYER,"lm_head",f->head,slice(f->mixed,t-rows,rows),time_view(f->logits,rows),e);
     f->r=trunk; return rc;

@@ -126,7 +126,7 @@ static void check_moe(uint32_t layer, size_t t) {
     Q38FRoutedWork rwk = {gview(bl,0,t,c->experts), gview(bp,0,t,c->experts), gview(bw,0,t,k),
         gview(bg,0,p,i), gview(bu,0,p,i), gview(ba,0,p,i), gview(bd,0,p,h), gview(sg,0,t,s), gview(su,0,t,s),
         gview(sa,0,t,s), gview(sh,0,t,h), gview(sl,0,t,1), gview(ss,0,t,1), gview(br,0,t,h),
-        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL, {0}, NULL, NULL, {0}};
+        {(__bridge void *)bi, 0, p*4}, {(__bridge void *)bm, 0, p*4}, NULL, NULL, {0}, NULL, NULL, {0}, {0}, {0}, NULL};
     /* R1.5b/c selection (Q38_REF_KERNELS read at creation, unset for the default
      * whatever the caller's environment): by default gate+up+SwiGLU and
      * down+reduce are fused (the gate/up and down scratch are never written)
@@ -134,7 +134,7 @@ static void check_moe(uint32_t layer, size_t t) {
      * `indexed` runs the unfused indexed oracle. */
     /* Decode III: run 0 is `exact` (the bit-identical kernels the comparisons below pin); run 3 is
      * the default, whose router and kernels reorder sums: held to the CPU tolerances only. */
-    static const char *const envs[] = {"exact", "moe", "indexed", NULL};
+    static const char *const envs[] = {"exact", "exact,moe", "indexed", NULL};
     float *fused = malloc(x_n * 4), *fused_routed = malloc(x_n * 4);
     /* R1.5d router: the parallel kernel is the default and `moe` selects q38f_route; ids, weights
      * and probs have the same bits either way. */

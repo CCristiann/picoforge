@@ -12,6 +12,16 @@ DwarfStar `fc80bd6`. Code: branch `perf/qwen38-decode3` at 417e558.
 
 **0.861x** (Decode II closure: 0.782x, 25.97 tok/s). Raw samples in `paired-short/`.
 
+8K frontier (8063 IDs prefilled, then 128 forced appends), same protocol, run on main b45693d
+(the merged branch), `paired-8k/`:
+
+| engine | median tok/s | p10 | p90 |
+|---|---:|---:|---:|
+| picoforge | 27.64 | 27.31 | 27.71 |
+| DwarfStar | 31.97 | 31.45 | 32.06 |
+
+**0.865x** (R2: 0.721x; 8K was not re-measured in Decode II).
+
 What changed since Decode II (A/B on the same machine, 41-ID prompt + 128 forced, ms/token):
 
 | commit | change | bits | decode |

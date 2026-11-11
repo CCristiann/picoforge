@@ -284,6 +284,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
         return q38c_error(err,Q38_SHAPE,"routed MoE workspace views");
     if (!t) return q38c_error(err,Q38_OK,NULL);
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    if (w->hc_added) *w->hc_added=false;
 #define LIN(slot,in,out) do { Q38C_TRY(q38_packed_encode(b,&cmd,store,wb[slot],&wl[slot],0,in,out,err)); \
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
 #define IDX(slot,in,out,div) do { Q38C_TRY(q38_packed_encode_indexed(b,&cmd,store,wb[slot],&wl[slot],xids,div,in,out,err)); \
@@ -376,7 +377,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
      * selected (B answers UNSUPPORTED under `indexed` or for a format without
      * a row dot), else IDX down then q38f_reduce, as before R1.5c. */
     MARK("moe.down",Q38_PROFILE_MIXED,p*wl[3].expert_bytes);
-    const Q38DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed};
+    const Q38DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed,w->hc_residual,w->hc_inject,w->hc_added};
     fused=r->ref_moe || grouped ? Q38_UNSUPPORTED : q38_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],xids,w->act,&dv,y,err);
     if (fused==Q38_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     else if (fused!=Q38_UNSUPPORTED) return fused;

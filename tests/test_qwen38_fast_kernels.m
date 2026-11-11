@@ -658,7 +658,7 @@ static int down_main(int argc,char **argv,const char *library) {
         Q38DownReduceViews views={{{(__bridge void *)scores,0,tokens*slots*4},2,{tokens,slots,1,1},{slots*4,4,0,0}},
             {{(__bridge void *)sh,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}},
             {{(__bridge void *)sig,0,tokens*4},2,{tokens,1,1,1},{4,4,0,0}},
-            {{(__bridge void *)routed,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}}};
+            {{(__bridge void *)routed,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}},{0},{0},NULL};
         Qwen38GpuSpan span={(__bridge void *)route_ids,0,pairs*4};
         uint32_t *flags=word.contents;
         bool fused=!strcmp(r.mode,"fused"), fast=!strcmp(r.mode,"sequence");
@@ -1335,6 +1335,87 @@ static int hctail_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* Decode III HC down with the RMSNorm folded in, against the sequence (q38c RMS fast, then the
+ * F16 multi-GEMV of down [+ inject]) on the same seeded inputs:
+ *   hcdown t K h n_down n_inject gain_rank
+ * F16 down [n_down, K] and inject [n_inject, K] (n_inject 0: none), r [t, K] in [-2, 2), gain
+ * [width] or [h, width] in [0.5, 1.5), eps 1e-6. Prints one line:
+ * "status S words W1 W2 low X normed Y": X, Y = max |fused - sequence| / max(1, max |sequence|)
+ * over low (and il) and over normed. */
+static int hcdown_main(int argc,char **argv,const char *library) {
+    assert(argc==8);
+    size_t t=number(argv[2]), k=number(argv[3]), h=number(argv[4]), nd=number(argv[5]), ni=number(argv[6]), rank=number(argv[7]);
+    assert(t && t<=8 && k && h && h<=4 && k%h==0 && nd && (rank==1 || rank==2));
+    size_t width=k/h, count=ni ? 2 : 1;
+    Request r[2]={{.mode="fast",.type=1,.physical=k,.logical=k,.n=nd,.m=t,.bytes=2*k*nd},
+                  {.mode="fast",.type=1,.physical=k,.logical=k,.n=ni ? ni : 1,.m=t,.bytes=2*k*(ni ? ni : 1)}};
+    unsigned char *raw=malloc(r[0].bytes+r[1].bytes); assert(raw);
+    uint64_t seed=5303;
+    synthesize(raw,r[0].bytes,&seed,1); synthesize(raw+r[0].bytes,r[1].bytes,&seed,1);
+    Qwen38Status status=Q38_OK; double worst_low=0, worst_normed=0; uint32_t words[2]={0,0};
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38PackedGpu *ctx=NULL; Q38CGpu *ops=NULL;
+        assert(q38_packed_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ctx,NULL)==Q38_OK);
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        Gguf g={0}; GgufTensor tensor[2];
+        GpuWeightStore *store=make_store(dev,count,r,raw,&g,tensor);
+        const GgufBinding *b[2]={&gpu_weights_plan(store)->weights[0],ni ? &gpu_weights_plan(store)->weights[1] : NULL};
+        Q38PackedLayout l[2];
+        for (size_t i=0;i<count;i++) assert(q38_packed_layout_init(&b[i]->tensor,k,&l[i],NULL)==Q38_OK);
+        size_t gcount=(rank==2 ? h : 1)*width;
+        id<MTLBuffer> rb=shared(dev,4*t*k), gb=shared(dev,4*gcount), nb[2], lb[2], ib[2];
+        for (size_t s=0;s<2;s++) { nb[s]=shared(dev,4*t*k); lb[s]=shared(dev,4*t*nd); ib[s]=shared(dev,4*t*(ni ? ni : 1)); }
+        for (size_t i=0;i<t*k;i++) ((float *)rb.contents)[i]=((float)(mix(&seed)>>40)*0x1p-23f-1.0f)*2.0f;
+        for (size_t i=0;i<gcount;i++) ((float *)gb.contents)[i]=1.0f+((float)(mix(&seed)>>40)*0x1p-24f-0.5f);
+        Qwen38GpuF32 rv={{(__bridge void *)rb,0,4*t*k},2,{t,k,1,1},{4*k,4,0,0}};
+        Qwen38GpuF32 gv=rank==2 ? (Qwen38GpuF32){{(__bridge void *)gb,0,4*gcount},2,{h,width,1,1},{4*width,4,0,0}} :
+                                  (Qwen38GpuF32){{(__bridge void *)gb,0,4*gcount},1,{width,1,1,1},{4,0,0,0}};
+        id<MTLCommandQueue> queue=[dev newCommandQueue];
+        id<MTLBuffer> word=shared(dev,8);
+        for (size_t s=0;s<2;s++) {
+            Qwen38GpuF32 nv={{(__bridge void *)nb[s],0,4*t*k},2,{t,k,1,1},{4*k,4,0,0}};
+            Qwen38GpuF32 lv={{(__bridge void *)lb[s],0,4*t*nd},2,{t,nd,1,1},{4*nd,4,0,0}};
+            Qwen38GpuF32 iv={{(__bridge void *)ib[s],0,4*t*(ni ? ni : 1)},2,{t,ni ? ni : 1,1,1},{4*(ni ? ni : 1),4,0,0}};
+            memset(word.contents,0,8);
+            id<MTLCommandBuffer> command=[queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc=[command computeCommandEncoder];
+            Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)enc,{(__bridge void *)word,0,4},false};
+            Qwen38Error err;
+            if (!s) {
+                status=q38_packed_encode_hc_down_rms(ctx,&cmd,store,b[0],&l[0],b[1],ni ? &l[1] : NULL,h,1e-6f,rv,gv,nv,lv,
+                                                     ni ? iv : (Qwen38GpuF32){0},&err);
+                if (status) fprintf(stderr,"hc down: %d %s\n",status,err.detail);
+            } else {
+                Qwen38GpuF32 r3=rv, n3=nv;
+                r3.rank=n3.rank=3; r3.dim[1]=n3.dim[1]=h; r3.dim[2]=n3.dim[2]=width;
+                r3.stride_bytes[1]=n3.stride_bytes[1]=4*width; r3.stride_bytes[2]=n3.stride_bytes[2]=4;
+                Q38CGpuSpec spec={.hc={.streams=h,.hidden_size=width,.rms_eps=1e-6f},.eps=1e-6f};
+                assert(q38c_gpu_encode(ops,cmd,Q38C_RMS,&spec,(Qwen38GpuF32[]){r3,gv,n3},3,NULL)==Q38_OK);
+                const Qwen38GpuF32 outs[2]={lv,iv};
+                assert(q38_packed_encode_multi(ctx,&cmd,store,b,l,count,nv,outs,NULL)==Q38_OK);
+            }
+            [enc endEncoding]; [command commit]; [command waitUntilCompleted];
+            assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+            words[s]=((uint32_t *)word.contents)[0];
+        }
+        const float *pairs[3][2]={{lb[0].contents,lb[1].contents},{ib[0].contents,ib[1].contents},{nb[0].contents,nb[1].contents}};
+        const size_t lens[3]={t*nd,ni ? t*ni : 0,t*k};
+        for (size_t p=0;p<3;p++) {
+            double peak=1.0, diff=0.0;
+            for (size_t i=0;i<lens[p];i++) { peak=fmax(peak,fabs((double)pairs[p][1][i])); diff=fmax(diff,fabs((double)pairs[p][0][i]-(double)pairs[p][1][i])); }
+            if (p<2) worst_low=fmax(worst_low,diff/peak); else worst_normed=diff/peak;
+        }
+        q38c_gpu_destroy(ops); q38_packed_gpu_free(ctx);
+        gpu_weights_close(store); assert(close(g.fd)==0);
+    }
+    printf("status %d words %u %u low %.3e normed %.3e\n",status,words[0],words[1],worst_low,worst_normed);
+    free(raw);
+    return 0;
+}
+
 int main(int argc,char **argv) {
     if (argc==2 && !strcmp(argv[1],"selector")) return selector_cases();
     const char *lock=getenv("PICOFORGE_GPU_LOCK_FD"), *library=getenv("Q38_PACKED_LIBRARY");
@@ -1356,6 +1437,7 @@ int main(int argc,char **argv) {
     if (argc>2 && !strcmp(argv[1],"hcadd")) return hcadd_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"act")) return act_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"hctail") || !strcmp(argv[1],"hcbench"))) return hctail_main(argc,argv,library);
+    if (argc>2 && !strcmp(argv[1],"hcdown")) return hcdown_main(argc,argv,library);
     Request r=request(argc,argv);
     bool timing=!strcmp(argv[1],"bench");
     unsigned char *raw=malloc(r.bytes);

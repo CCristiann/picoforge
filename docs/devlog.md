@@ -2,6 +2,33 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode IV (2026-11-11): Q8_0 matvecs, fewer dispatches — 0.919x
+
+Branch `perf/qwen38-decode4`. Evidence: `bench/qwen38/d4_20261111/README.md`.
+The Decode III 8K pairing first: 27.64 against 31.97 tok/s, 0.865x (R2: 0.721x).
+
+The dense Q8_0 matvecs ran at ~285 GB/s in isolation but 225-250 in the graph; a variant with 4
+lanes per block, the codes read as 2-byte pairs and acc += d * sum(code * x) is only 3% faster
+alone but 1.1 ms/token faster in the graph (A/B with a swapped metallib). Its row order holds for
+any number of rows of x, so MTP verify still matches decode; a first version that fell back to the
+old loop for unaligned x views broke that (the multi-vs-single test caught it), so x is now read as
+float4 or as floats with the same arithmetic. Then dispatches: the GDN conv does its check and
+history update in the same thread per channel (3 -> 1); the HC read's RMSNorm is folded into its
+F16 down projection (each row accumulates sum(w x g) and sum(x^2) per stream and applies the stream
+scales at the end, threadgroup 0 writes N for the tail: 2.3e-7 against RMS + multi in the new
+`hcdown` harness mode); HC_ADD moves into the epilogue of the GDN/QSA output projections and of the
+MoE down. 1089 -> 993 dispatches per token. One negative result, kept in history: folding the router
+into every gate+up threadgroup (and the shared activation into its matvec) is bit-identical but
+2 ms/token slower — each threadgroup waits on the serial top-k and the router's registers cost the
+gate+up occupancy.
+
+**Paired 3+20 with DwarfStar: 30.03 against 32.67 tok/s = 0.919x.** Whole branch against main:
+35.44 -> 33.20 ms/token. Lesson again: `make` compares mtimes, so a stash + build + pop in the same
+minute left a stale `.air` and an A/B measured the wrong kernel; delete the airs between builds.
+**Next:** ~2.6 ms/token remain. The MoE kernels (gate+up 2.86 ms at 142 GB/s, down 2.7 ms) are at
+the IQ2/Q2_K decode's ALU limit; the GDN small ops (prep, scan, norm: ~1.4 ms in 3 dispatches) and
+the router (0.9 ms) are the next candidates.
+
 ## Decode III (from 2026-11-10): the MoE kernels against DwarfStar, rounding now allowed
 
 Branch `perf/qwen38-decode3`. The user approved optimisations that reorder FP32 sums, each

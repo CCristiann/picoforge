@@ -425,6 +425,7 @@ def run_route(mode, logits, slots, norm, experts=None, env=None):
 
 ROUTE_PAD = 5  # columns of NaN past the experts in a padded router row (pitch = experts + ROUTE_PAD)
 ROUTE_KINDS = 11  # row shapes of route_logits
+HC_DOWN_RMS_SCALED = 1e-6  # Decode III RMS-folded HC down vs RMS + multi-GEMV: measured 2.3e-7
 HC_TAIL8_SCALED = 1e-6  # Decode III HC tail vs the sequence: measured 0.96e-7 (K 320) and 1.4e-7 (K 1024)
 ROUTE_SUM_RTOL = 2.0 ** -24 * 1024  # Decode III simd router vs q38f_route: the serial exp sum's error bound at 1024 experts
 
@@ -637,6 +638,19 @@ def run_hctail(shape, inject=True, poison=False, env=None):
         raise AssertionError(f"hctail: exit {result.returncode}, {result.stderr!r}")
     return dict(status=int(fields[1]), equal=int(fields[3]), words=(int(fields[5]), int(fields[6])),
                 dispatches=(int(fields[8]), int(fields[9])), act=int(fields[11]), scaled=float(fields[13]))
+
+
+def run_hcdown(shape, env=None):
+    """Decode III: the native hcdown mode, shape = (t, K, h, n_down, n_inject, gain_rank):
+    {status, words, low, normed} (scaled errors of the fused kernel against RMS + multi-GEMV)."""
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    result = subprocess.run([str(NATIVE), "hcdown", *map(str, shape)], capture_output=True, timeout=60,
+                            pass_fds=(int(lock),) if lock else (), env=environment)
+    fields = result.stdout.decode().split()
+    if result.returncode or len(fields) != 9:
+        raise AssertionError(f"hcdown: exit {result.returncode}, {result.stderr!r}")
+    return dict(status=int(fields[1]), words=(int(fields[3]), int(fields[4])), low=float(fields[6]), normed=float(fields[8]))
 
 
 def run_scan(mode, qkv, g, beta, state, dims, initial=0):
@@ -2585,6 +2599,19 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual(run_hctail(shape)["equal"], 1)
         got = run_hctail((1, 320, 4, 2560), poison=True)
         self.assertEqual((got["status"], got["words"][0] & 1, got["words"][1] & 1), (0, 1, 1))
+    def test_hc_down_rms_against_sequence(self):
+        """Decode III q38_hc_down_rms_f16: low (and il) and normed within HC_DOWN_RMS_SCALED of q38c RMS +
+        the F16 multi-GEMV, at the real site (K 10240, h 4, down 320 + inject 4, per-stream gain) at 1 and 3
+        tokens, without inject and with a [width] gain, and at h 2; UNSUPPORTED (8) under exact or fuse."""
+        for shape in [(1, 10240, 4, 320, 4, 2), (3, 10240, 4, 320, 4, 2), (1, 10240, 4, 320, 0, 1), (1, 4096, 2, 64, 4, 2)]:
+            with self.subTest(shape=shape):
+                got = run_hcdown(shape)
+                self.assertEqual((got["status"], got["words"]), (0, (0, 0)))
+                self.assertLessEqual(got["low"], HC_DOWN_RMS_SCALED)
+                self.assertLessEqual(got["normed"], HC_DOWN_RMS_SCALED)
+        for family in ("exact", "fuse"):
+            with self.subTest(reference=family):
+                self.assertEqual(run_hcdown((1, 10240, 4, 320, 4, 2), env={"Q38_REF_KERNELS": family})["status"], 8)
     def test_rope_fast_bit_identical_to_oracle(self):
         """R2.8: the one-thread-per-element RoPE gives the oracle's bits (same per-element FP32
         expression) for the QSA q, k, index q and pooled-key shapes and a rotary width equal to d,

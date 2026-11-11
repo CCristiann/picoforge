@@ -14,7 +14,7 @@
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
                       *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
-                      *hc_tail, *hc_tail8, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
+                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
                       size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
@@ -71,7 +71,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLFunction> function=[lib newFunctionWithName:@"q38_packed_linear"];
     id<MTLFunction> gather=[lib newFunctionWithName:@"q38_packed_linear_indexed"];
     id<MTLFunction> lookup=[lib newFunctionWithName:@"q38_packed_lookup"];
-    id<MTLFunction> q8=[lib newFunctionWithName:@"q38_matvec_q8_0"];
+    /* Decode III: the _dec Q8_0 kernels (reordered dot) unless `exact`; an older library lacks them */
+    const bool q8_dec=!q38_ref_kernels("exact") && [lib newFunctionWithName:@"q38_matvec_q8_0_dec"] &&
+        [lib newFunctionWithName:@"q38_matvec_multi_q8_0_dec"];
+    id<MTLFunction> q8=[lib newFunctionWithName:q8_dec ? @"q38_matvec_q8_0_dec" : @"q38_matvec_q8_0"];
     id<MTLFunction> f16=[lib newFunctionWithName:@"q38_matvec_f16"];
     id<MTLFunction> f32=[lib newFunctionWithName:@"q38_matvec_f32"];
     id<MTLFunction> tail=[lib newFunctionWithName:@"q38_hc_tail_f16"];
@@ -111,6 +114,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     static NSString *const multi_names[3]={@"q38_matvec_multi_q8_0",@"q38_matvec_multi_f16",@"q38_matvec_multi_f32"};
     id<MTLFunction> multi[3];
     for (size_t i=0;i<3;i++) multi[i]=[lib newFunctionWithName:multi_names[i]];
+    if (q8_dec) multi[0]=[lib newFunctionWithName:@"q38_matvec_multi_q8_0_dec"];
     static NSString *const indexed_names[Q38_INDEXED_FAST]={@"q38_matvec_indexed_iq2_xxs",@"q38_matvec_indexed_q2_k",
         @"q38_matvec_indexed_q4_k",@"q38_matvec_indexed_mxfp4"};
     static NSString *const gate_up_names[Q38_INDEXED_FAST]={@"q38_moe_gate_up_iq2_xxs",@"q38_moe_gate_up_q2_k",
@@ -162,6 +166,16 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
     ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
     ctx->hc_tail=fast_pipeline(hc_tail,Q38_HC_TAIL_SG);
+    if (!q38_ref_kernels("exact") && !q38_ref_kernels("fuse")) { /* Decode III: Q8_0 linear + HC_ADD; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_matvec_q8_0_add"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->q8_add=p ? fast_pipeline(p,1) : NULL;
+    }
+    if (!q38_ref_kernels("exact") && !q38_ref_kernels("fuse")) { /* Decode III: RMS folded into the HC down; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_down_rms_f16"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->hc_down=p ? fast_pipeline(p,Q38_DENSE_S) : NULL;
+    }
     if (!q38_ref_kernels("exact")) { /* Decode III: optional; absent -> the R2.6 kernel */
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_tail8_f16"];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
@@ -222,6 +236,8 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->f32) CFRelease(ctx->f32);
     if (ctx->hc_tail) CFRelease(ctx->hc_tail);
     if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
+    if (ctx->hc_down) CFRelease(ctx->hc_down);
+    if (ctx->q8_add) CFRelease(ctx->q8_add);
     if (ctx->gate_up8) CFRelease(ctx->gate_up8);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
@@ -695,6 +711,23 @@ Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *ctx, const Qwen38GpuCom
     if (sp && k<=Q38_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==Q38_SIMD && sp.maxTotalThreadsPerThreadgroup>=Q38_SIMD*k) {
         /* Decode III: one simdgroup per slot, DOWN_ROWS outputs per threadgroup (bit-identical) */
         [encoder setComputePipelineState:sp];
+        struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={0,0,0,0};
+        const Qwen38GpuF32 hr=v->hc_residual, hi=v->hc_inject;
+        id<MTLBuffer> rb=nil, ib=nil;
+        if (hr.span.buffer && hr.rank==3 && hr.dim[0]==t && hr.dim[2]==n && hr.stride_bytes[2]==4 &&
+            hr.stride_bytes[1]==n*4 && hi.span.buffer && hi.rank==2 && hi.dim[0]==t && hi.dim[1]==hr.dim[1] &&
+            hi.stride_bytes[1]==4 && !ctx->ref_fuse) {
+            size_t rbytes=(t-1)*hr.stride_bytes[0]+hr.dim[1]*n*4, ibytes=(t-1)*hi.stride_bytes[0]+hi.dim[1]*4;
+            if (!gpu_span(dev,hr.span,rbytes,&rb) && !gpu_span(dev,hi.span,ibytes,&ib) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,a.output,y.span.offset_bytes,a.yb) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,ib,hi.span.offset_bytes,ibytes) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,a.input,act.span.offset_bytes,a.xb))
+                { ea.h=(uint32_t)hr.dim[1]; ea.width=(uint32_t)n; ea.res_stride=hr.stride_bytes[0]/4; ea.inj_stride=hi.stride_bytes[0]/4; }
+        }
+        [encoder setBuffer:ea.h ? rb : a.output offset:ea.h ? hr.span.offset_bytes : y.span.offset_bytes atIndex:10];
+        [encoder setBuffer:ea.h ? ib : a.output offset:ea.h ? hi.span.offset_bytes : y.span.offset_bytes atIndex:11];
+        [encoder setBytes:&ea length:sizeof ea atIndex:12];
+        if (v->hc_added) *v->hc_added=ea.h!=0;
         [encoder dispatchThreadgroups:MTLSizeMake((n+Q38_DOWN_REDUCE_ROWS-1)/Q38_DOWN_REDUCE_ROWS,t,1)
                 threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*k,1,1)];
         return q38_b_result(err,Q38_OK,"");
@@ -809,6 +842,103 @@ Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *
         [encoder dispatchThreadgroups:MTLSizeMake(columns,(x.dim[0]+tile-1)/tile,1)
                 threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*simdgroups,1,1)];
     }
+    return q38_b_result(err,Q38_OK,"");
+}
+
+/* Decode III Q8_0 linear + HC_ADD (qwen38_b_internal.h). */
+bool q38_packed_add_ready(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t n_out) {
+    return ctx && ctx->q8_add && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==8 && !gemm_kernel(ctx,8,rows,n_out);
+}
+Qwen38Status q38_packed_encode_add(Q38PackedGpu *ctx, const Qwen38GpuCommand *command, const GpuWeightStore *store,
+        const GgufBinding *binding, const Q38PackedLayout *layout, Qwen38GpuF32 x, Qwen38GpuF32 y,
+        Qwen38GpuF32 residual, Qwen38GpuF32 inject, Qwen38Error *err) {
+    Admitted a;
+    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
+    if (status) return status;
+    size_t t=y.dim[0], n=layout->n_out, h=residual.rank==3 ? residual.dim[1] : 0;
+    if (!q38_packed_add_ready(ctx,layout->gguf_type,t,n) || layout->n_experts!=1 || !h ||
+        residual.dim[0]!=t || residual.dim[2]!=n || residual.stride_bytes[2]!=4 || residual.stride_bytes[1]!=n*4 ||
+        inject.rank!=2 || inject.dim[0]!=t || inject.dim[1]!=h || inject.stride_bytes[1]!=4)
+        return q38_b_result(err,Q38_UNSUPPORTED,"no fused linear + HC_ADD for this shape or selection");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLBuffer> rb, ib; size_t rbytes=(t-1)*residual.stride_bytes[0]+h*n*4, ibytes=(t-1)*inject.stride_bytes[0]+h*4;
+    if (!t) return q38_b_result(err,Q38_OK,"");
+    if ((status=gpu_span(dev,residual.span,rbytes,&rb)) || (status=gpu_span(dev,inject.span,ibytes,&ib)))
+        return q38_b_result(err,status,"invalid HC_ADD view");
+    size_t ro=residual.span.offset_bytes, wo=binding->offset;
+    if (gpu_alias(rb,ro,rbytes,a.input,x.span.offset_bytes,a.xb) || gpu_alias(rb,ro,rbytes,a.output,y.span.offset_bytes,a.yb) ||
+        gpu_alias(rb,ro,rbytes,ib,inject.span.offset_bytes,ibytes) || gpu_alias(rb,ro,rbytes,a.weights,wo,layout->tensor_bytes) ||
+        gpu_alias(rb,ro,rbytes,a.word,command->error_word.offset_bytes,4))
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"HC_ADD residual aliases an operand");
+    Q38PackedArgs args=wire(layout,wo,wo+layout->expert_bytes,t,x,y,&a);
+    struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={(uint32_t)h,(uint32_t)n,
+        residual.stride_bytes[0]/4,inject.stride_bytes[0]/4};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->q8_add];
+    bind(encoder,&a,x,y,command);
+    [encoder setBytes:&args length:sizeof args atIndex:4];
+    [encoder setBuffer:rb offset:ro atIndex:5];
+    [encoder setBuffer:ib offset:inject.span.offset_bytes atIndex:6];
+    [encoder setBytes:&ea length:sizeof ea atIndex:7];
+    [encoder dispatchThreadgroups:MTLSizeMake(n,(t+Q38_Q8_T-1)/Q38_Q8_T,1) threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
+    return q38_b_result(err,Q38_OK,"");
+}
+
+/* Decode III HC down with the RMSNorm folded in (qwen38_b_internal.h). */
+bool q38_packed_hc_down_rms_ready(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t k, size_t streams) {
+    return ctx && ctx->hc_down && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==1 &&
+        !gemm_kernel(ctx,1,rows,SIZE_MAX) && streams && streams<=4 && !(k%streams) && !((k/streams)%8) &&
+        dense_split(k)>=2;
+}
+Qwen38Status q38_packed_encode_hc_down_rms(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *down, const Q38PackedLayout *dl,
+        const GgufBinding *inject, const Q38PackedLayout *il_layout, size_t streams, float eps,
+        Qwen38GpuF32 r, Qwen38GpuF32 gain, Qwen38GpuF32 normed, Qwen38GpuF32 low, Qwen38GpuF32 il, Qwen38Error *err) {
+    Admitted a, b={0};
+    Qwen38Status status=admit(ctx,command,store,down,dl,r,low,r.dim[0],&a,err);
+    if (status) return status;
+    const bool inj=inject!=NULL;
+    if (inj && (status=admit(ctx,command,store,inject,il_layout,r,il,r.dim[0],&b,err))) return status;
+    size_t t=r.dim[0], k=dl->k_logical, h=streams, width=h ? k/h : 0;
+    if (!ctx->hc_down || ctx->ref_linear || ctx->ref_fuse || gemm_kernel(ctx,1,t,SIZE_MAX) || dl->gguf_type!=1 ||
+        dl->n_experts!=1 || (inj && (il_layout->gguf_type!=1 || il_layout->n_experts!=1 || il_layout->k_logical!=k)) ||
+        !h || h>4 || k%h || width%8 || dense_split(k)<2 || t>UINT32_MAX)
+        return q38_b_result(err,Q38_UNSUPPORTED,"no fused HC down for this shape or selection");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    /* r, normed, low, il dense [t, cols]; gain [width] or [h, width] */
+    const bool g2=gain.rank==2;
+    if (r.stride_bytes[0]!=k*4 || normed.rank!=2 || normed.dim[0]!=t || normed.dim[1]!=k || normed.stride_bytes[0]!=k*4 ||
+        low.stride_bytes[0]!=dl->n_out*4 || (inj && il.stride_bytes[0]!=il_layout->n_out*4) ||
+        !(g2 ? gain.dim[0]==h && gain.dim[1]==width && gain.stride_bytes[0]==width*4 && gain.stride_bytes[1]==4 :
+               gain.rank==1 && gain.dim[0]==width && gain.stride_bytes[0]==4))
+        return q38_b_result(err,Q38_UNSUPPORTED,"HC down views not dense");
+    id<MTLBuffer> gb, nb; size_t gbytes=(g2 ? h : 1)*width*4, nbytes=t*k*4;
+    if ((status=gpu_span(dev,gain.span,gbytes,&gb)) || (status=gpu_span(dev,normed.span,nbytes,&nb)))
+        return q38_b_result(err,status,"invalid HC down view");
+    if (gpu_alias(nb,normed.span.offset_bytes,nbytes,a.input,r.span.offset_bytes,a.xb) ||
+        gpu_alias(nb,normed.span.offset_bytes,nbytes,a.output,low.span.offset_bytes,a.yb) ||
+        (inj && gpu_alias(nb,normed.span.offset_bytes,nbytes,b.output,il.span.offset_bytes,b.yb)) ||
+        (inj && gpu_alias(a.output,low.span.offset_bytes,a.yb,b.output,il.span.offset_bytes,b.yb)) ||
+        gpu_alias(nb,normed.span.offset_bytes,nbytes,a.word,command->error_word.offset_bytes,4))
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"HC down outputs alias an operand");
+    if (!t) return q38_b_result(err,Q38_OK,"");
+    size_t wo=down->offset;
+    Q38HcDownArgs args={.down=wire(dl,wo,wo+dl->tensor_bytes,t,r,low,&a),.streams=(uint32_t)h,.width=(uint32_t)width,
+        .n_inject=inj ? (uint32_t)il_layout->n_out : 0,.gain_rank=g2 ? 2 : 1,.eps=eps};
+    if (inj) { size_t io=inject->offset; args.inject=wire(il_layout,io,io+il_layout->tensor_bytes,t,r,il,&b); }
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->hc_down];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:inj ? b.weights : a.weights offset:0 atIndex:1];
+    [encoder setBuffer:a.input offset:r.span.offset_bytes atIndex:2];
+    [encoder setBuffer:gb offset:gain.span.offset_bytes atIndex:3];
+    [encoder setBuffer:nb offset:normed.span.offset_bytes atIndex:4];
+    [encoder setBuffer:a.output offset:low.span.offset_bytes atIndex:5];
+    [encoder setBuffer:inj ? b.output : a.output offset:inj ? il.span.offset_bytes : low.span.offset_bytes atIndex:6];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:7];
+    [encoder setBytes:&args length:sizeof args atIndex:8];
+    [encoder dispatchThreadgroups:MTLSizeMake(dl->n_out+(inj ? il_layout->n_out : 0),t,1)
+            threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*dense_split(k),1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
 
