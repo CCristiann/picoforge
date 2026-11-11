@@ -35,22 +35,10 @@ static_assert(sizeof(PackedArgs) == 80, "host/Metal wire record size");
  * bit 1 and that residual element is not written; nothing is written when the word
  * was set before). Row pitches in floats. */
 struct AddArgs { uint h, width; ulong res_stride, inj_stride; };
-/* q38f_shared_act's expressions (qwen38_moe_fused.metal), for the _swiglu kernel. */
-static float mv_sigmoid(float x) {
-    if (x >= 0.0f) return 1.0f / (1.0f + exp(-x));
-    float z = exp(x); return z / (1.0f + z);
-}
-static float mv_silu(float g) {
-    float s = g / 1.0f;
-    s = s * mv_sigmoid(s);
-    s *= 1.0f;
-    return s;
-}
-template <bool DEC, bool ADD = false, bool SWIGLU = false>
+template <bool DEC, bool ADD = false>
 static inline void q8_0_matvec(device const uchar *weights, device const float *x, device float *y,
         device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile, uint lane,
-        device float *res = nullptr, device const float *inj = nullptr, constant AddArgs *e = nullptr,
-        device const float *xu = nullptr) {
+        device float *res = nullptr, device const float *inj = nullptr, constant AddArgs *e = nullptr) {
     const ulong m0 = ulong(tile) * Q8_T;
     if (n >= o.n_out || m0 >= p.rows) return;
     const uint mt = uint(min(ulong(Q8_T), p.rows - m0));
@@ -101,17 +89,6 @@ static inline void q8_0_matvec(device const uchar *weights, device const float *
                 float4 x0, x1;
                 if (x4) { x0 = ((device const float4 *)xs)[0]; x1 = ((device const float4 *)xs)[1]; }
                 else { x0 = float4(xs[0], xs[1], xs[2], xs[3]); x1 = float4(xs[4], xs[5], xs[6], xs[7]); }
-                if (SWIGLU) { /* x = silu(gate) * up, q38f_shared_act's act: the same values it would store */
-                    device const float *us = xu + xi[t] + b * 32 + 8 * it;
-                    for (uint i = 0; i < 4; i++) {
-                        const float a0 = mv_silu(x0[i]), a1 = mv_silu(x1[i]);
-                        const float v0 = a0 * us[i], v1 = a1 * us[4 + i];
-                        if (!isfinite(x0[i]) || !isfinite(a0) || !isfinite(us[i]) || !isfinite(v0) ||
-                            !isfinite(x1[i]) || !isfinite(a1) || !isfinite(us[4 + i]) || !isfinite(v1))
-                            atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-                        x0[i] = v0; x1[i] = v1;
-                    }
-                }
                 float sm = code[0] * x0.x;
                 sm = fma(code[1], x0.y, sm); sm = fma(code[2], x0.z, sm); sm = fma(code[3], x0.w, sm);
                 sm = fma(code[4], x1.x, sm); sm = fma(code[5], x1.y, sm); sm = fma(code[6], x1.z, sm);
@@ -166,28 +143,6 @@ kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
         device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
         uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     q8_0_matvec<false>(weights, x, y, error, p, p, group.x, group.y, lane);
-}
-/* Decode III: the shared expert's down matvec reading silu(sgate) * sup on the fly
- * (bit-identical to q38f_shared_act + q38_matvec_q8_0_dec: same act values, same
- * dot) and threadgroup (0, *) writing ssig = sigmoid(slogit) as q38f_shared_act;
- * the activation dispatch and its dependency are gone, so the down runs beside
- * gate+up. Needs K % 32 == 0 (host-checked). */
-kernel void q38_matvec_q8_0_swiglu(device const uchar *weights [[buffer(0)]],
-        device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
-        device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
-        device const float *xu [[buffer(5)]], device const float *slogit [[buffer(6)]], device float *ssig [[buffer(7)]],
-        uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    if (group.x == 0 && lane < Q8_T) {
-        const ulong m = ulong(group.y) * Q8_T + lane;
-        if (m < p.rows) {
-            const float xv = slogit[m];
-            float yv = mv_sigmoid(xv / 1.0f);
-            yv *= 1.0f;
-            if (!isfinite(xv) || !isfinite(yv)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-            ssig[m] = yv;
-        }
-    }
-    q8_0_matvec<true, false, true>(weights, x, y, error, p, p, group.x, group.y, lane, nullptr, nullptr, nullptr, xu);
 }
 kernel void q38_matvec_q8_0_add(device const uchar *weights [[buffer(0)]],
         device const float *x [[buffer(1)]], device float *y [[buffer(2)]],

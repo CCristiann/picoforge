@@ -137,20 +137,26 @@ GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
  * signs are applied to x by select, and the 8 products and the scaled sum are
  * FMAs. One simdgroup per output as before, GATE_UP8_SG of them per
  * threadgroup to amortise the tables. Q38_REF_KERNELS=exact keeps gate_up. */
-static inline void gate_up8_tables(threadgroup float4 *gridf, threadgroup uchar *smask, uint tid, uint tgs) {
+kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
+        device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
+        device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
+        device const uint *ids [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float4 gridf[512];  /* grid vector v as gridf[2v], gridf[2v+1] */
+    threadgroup uchar smask[128];
+    const uint tid = sg * 32 + lane, tgs = sgs * 32;
     for (uint i = tid; i < 512; i += tgs) {
         const uint w = uint(q38_iq2_grid[i / 2] >> (32 * (i & 1)));
         gridf[i] = float4(float(w & 255u), float((w >> 8) & 255u), float((w >> 16) & 255u), float(w >> 24));
     }
     for (uint i = tid; i < 128; i += tgs) smask[i] = uchar(i | ((popcount(i) & 1u) << 7));
-}
-static inline void gate_up8_body(device const uchar *gw, device const uchar *uw, device const float *x, device float *act,
-        device atomic_uint *error, constant GateUpArgs &a, uint expert, uint2 group, uint sg, uint sgs, uint lane,
-        threadgroup const float4 *gridf, threadgroup const uchar *smask) {
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     constant PackedArgs &p = a.gate.base, &q = a.up.base;
     const ulong n = ulong(group.x) * sgs + sg;
     const uint m = group.y;
     if (n >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
+    const uint expert = ids[m];
     const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
     const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
     const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4), yi = ulong(m) * (p.y_stride / 4) + n;
@@ -188,19 +194,6 @@ static inline void gate_up8_body(device const uchar *gw, device const uchar *uw,
     act[yi] = h;
     if (!isfinite(g) || !isfinite(u) || !isfinite(sv) || !isfinite(h))
         atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-}
-kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
-        device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
-        device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
-        device const uint *ids [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
-        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
-        uint lane [[thread_index_in_simdgroup]]) {
-    threadgroup float4 gridf[512];  /* grid vector v as gridf[2v], gridf[2v+1] */
-    threadgroup uchar smask[128];
-    gate_up8_tables(gridf, smask, sg * 32 + lane, sgs * 32);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (group.y >= a.gate.base.rows) return;
-    gate_up8_body(gw, uw, x, act, error, a, ids[group.y], group, sg, sgs, lane, gridf, smask);
 }
 
 /* R1.5c: the routed down projection and q38f_reduce in one pass.
@@ -486,101 +479,53 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
  * q38_moe_route_fast; the host dispatches 32 threads per token.
  * Q38_REF_KERNELS=exact keeps q38_moe_route_fast. */
 #define ROUTE_SIMD_PER_LANE (Q38F_ROUTE_MAX_EXPERTS / 32)
-#define ROUTE_MAX_K 16
-/* The router of one token in one simdgroup (lane l owns experts l, l+32, ...):
- * returns true (uniform) when a logit is nonfinite; else every lane gets the k
- * ids and weights (normalized when norm) and p, when non-null, the probs. */
-static inline bool route_token(device const float *z, uint e_n, uint k, uint norm, uint lane, device float *p,
-        thread uint *ids, thread float *ws) {
-    float v[ROUTE_SIMD_PER_LANE];
-    float local = -INFINITY; bool bad = false;
-    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
-        const uint e = 32 * j + lane;
-        v[j] = e < e_n ? z[e] : -INFINITY;
-        if (e < e_n) { bad = bad || !isfinite(v[j]); local = max(local, v[j]); }
-    }
-    const float maximum = simd_max(local);
-    if (simd_any(bad)) return true;
-    float part = 0.0f;
-    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
-        v[j] = 32 * j + lane < e_n ? exp(v[j] - maximum) : 0.0f;
-        part += v[j];
-    }
-    const float sum = simd_sum(part);
-    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
-        const uint e = 32 * j + lane;
-        if (e < e_n) { v[j] = v[j] / sum; if (p) p[e] = v[j]; } else v[j] = -2.0f; /* below every p and the -1 mask */
-    }
-    float selected = 0.0f;
-    for (uint s = 0; s < k; s++) {
-        float best = -2.0f; uint at = 0xffffffffu; /* this lane's experts ascend: first strict > = smallest id */
-        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (v[j] > best) { best = v[j]; at = 32 * j + lane; }
-        const float top = simd_max(best);
-        const uint chosen = simd_min(best == top ? at : 0xffffffffu);
-        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (32 * j + lane == chosen) v[j] = -1.0f;
-        ids[s] = chosen; ws[s] = top;
-        selected += top; /* serial in s, as the oracle */
-    }
-    if (norm) for (uint s = 0; s < k; s++) ws[s] /= selected;
-    return false;
-}
 kernel void q38_moe_route_simd(device const float *logits [[buffer(0)]], device float *probs [[buffer(1)]],
         device uint *ids [[buffer(2)]], device float *weights [[buffer(3)]], constant RouteArgs &a [[buffer(4)]],
         device atomic_uint *error [[buffer(5)]], uint token [[threadgroup_position_in_grid]],
         uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
     if (sg || token >= a.t) return;
-    if (a.e == 0 || a.e > Q38F_ROUTE_MAX_EXPERTS || a.k == 0 || a.k > a.e || a.k > ROUTE_MAX_K) {
+    if (a.e == 0 || a.e > Q38F_ROUTE_MAX_EXPERTS || a.k == 0 || a.k > a.e) {
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
+    device const float *z = logits + ulong(token) * a.pitch;
+    device float *p = probs + ulong(token) * a.e;
     device uint *id = ids + ulong(token) * a.k;
     device float *w = weights + ulong(token) * a.k;
-    uint ri[ROUTE_MAX_K]; float rw[ROUTE_MAX_K];
-    if (route_token(logits + ulong(token) * a.pitch, a.e, a.k, a.norm, lane, probs + ulong(token) * a.e, ri, rw)) {
-        /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
+    float v[ROUTE_SIMD_PER_LANE];
+    float local = -INFINITY; bool bad = false;
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        const uint e = 32 * j + lane;
+        v[j] = e < a.e ? z[e] : -INFINITY;
+        if (e < a.e) { bad = bad || !isfinite(v[j]); local = max(local, v[j]); }
+    }
+    const float maximum = simd_max(local);
+    if (simd_any(bad)) { /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
         if (!lane) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
         for (uint s = lane; s < a.k; s += 32) { id[s] = s; w[s] = 0.0f; }
         return;
     }
-    if (!lane) for (uint s = 0; s < a.k; s++) { id[s] = ri[s]; w[s] = rw[s]; }
-}
-
-/* Decode III: the router folded into the IQ2_XXS gate+up. Threadgroup (x, m) serves
- * pair m = token * k + slot: simdgroup 0 runs route_token for the token (the same
- * code as q38_moe_route_simd, so ids, weights and probs have its bits) while the
- * others build the decode tables, and the barrier hands over the slot's expert.
- * Threadgroups with x == 0 write ids[m] and weights[m]; the one of slot 0 also the
- * probs. A nonfinite logit: bit 1, ids s and zero weights, act of the slot from
- * expert s (unspecified, as the session discards the command). The dispatch and
- * barrier of the router are gone. */
-kernel void q38_moe_gate_up8r_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
-        device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
-        device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
-        device uint *ids [[buffer(6)]], device const float *logits [[buffer(7)]], device float *probs [[buffer(8)]],
-        device float *weights [[buffer(9)]], constant RouteArgs &ra [[buffer(10)]],
-        uint2 group [[threadgroup_position_in_grid]],
-        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
-        uint lane [[thread_index_in_simdgroup]]) {
-    threadgroup float4 gridf[512];
-    threadgroup uchar smask[128];
-    threadgroup uint expert;
-    const uint m = group.y, token = m / ra.k, slot = m % ra.k;
-    if (!sg) {
-        uint ri[ROUTE_MAX_K]; float rw[ROUTE_MAX_K];
-        const bool write = group.x == 0 && slot == 0;
-        const bool bad = route_token(logits + ulong(token) * ra.pitch, ra.e, ra.k, ra.norm, lane,
-                                     write ? probs + ulong(token) * ra.e : nullptr, ri, rw);
-        if (!lane) {
-            uint e = 0; float w = 0.0f;
-            for (uint s = 0; s < ra.k; s++) if (s == slot) { e = bad ? s : ri[s]; w = bad ? 0.0f : rw[s]; }
-            expert = e;
-            if (!group.x) { ids[m] = e; weights[m] = w; }
-            if (bad && write) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-        }
-    } else gate_up8_tables(gridf, smask, (sg - 1) * 32 + lane, (sgs - 1) * 32);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (m >= a.gate.base.rows) return;
-    gate_up8_body(gw, uw, x, act, error, a, expert, group, sg, sgs, lane, gridf, smask);
+    float part = 0.0f;
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        v[j] = 32 * j + lane < a.e ? exp(v[j] - maximum) : 0.0f;
+        part += v[j];
+    }
+    const float sum = simd_sum(part);
+    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
+        const uint e = 32 * j + lane;
+        if (e < a.e) { v[j] = v[j] / sum; p[e] = v[j]; } else v[j] = -2.0f; /* below every p and the -1 mask */
+    }
+    float selected = 0.0f;
+    for (uint s = 0; s < a.k; s++) {
+        float best = -2.0f; uint at = 0xffffffffu; /* this lane's experts ascend: first strict > = smallest id */
+        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (v[j] > best) { best = v[j]; at = 32 * j + lane; }
+        const float top = simd_max(best);
+        const uint chosen = simd_min(best == top ? at : 0xffffffffu);
+        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (32 * j + lane == chosen) v[j] = -1.0f;
+        if (!lane) { id[s] = chosen; w[s] = top; }
+        selected += top; /* serial in s, as the oracle */
+    }
+    if (a.norm && !lane) for (uint s = 0; s < a.k; s++) w[s] /= selected;
 }
 
 /* ---- R3.2 grouped MoE for prefill. The kernels above read an expert's rows

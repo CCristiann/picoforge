@@ -13,8 +13,8 @@
  * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8, *gate_up8r,
-                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *q8_swiglu, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
+                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
                       size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
@@ -170,9 +170,6 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_matvec_q8_0_add"];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
         ctx->q8_add=p ? fast_pipeline(p,1) : NULL;
-        id<MTLFunction> fs=[lib newFunctionWithName:@"q38_matvec_q8_0_swiglu"];
-        id<MTLComputePipelineState> ps=fs ? [dev newComputePipelineStateWithFunction:fs error:&failure] : nil;
-        ctx->q8_swiglu=ps ? fast_pipeline(ps,1) : NULL;
     }
     if (!q38_ref_kernels("exact") && !q38_ref_kernels("fuse")) { /* Decode III: RMS folded into the HC down; optional */
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_down_rms_f16"];
@@ -205,9 +202,6 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_gate_up8_iq2_xxs"];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
         ctx->gate_up8=p ? fast_pipeline(p,Q38_GATE_UP8_SG) : NULL;
-        id<MTLFunction> fr=[lib newFunctionWithName:@"q38_moe_gate_up8r_iq2_xxs"];
-        id<MTLComputePipelineState> pr=fr ? [dev newComputePipelineStateWithFunction:fr error:&failure] : nil;
-        ctx->gate_up8r=pr && ctx->gate_up8 ? fast_pipeline(pr,Q38_GATE_UP8_SG) : NULL;
     }
     { /* Decode III: slots in parallel (bit-identical to down_reduce except the Q2_K chunk dot); optional */
         static NSString *const sp_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_sp_iq2_xxs",
@@ -244,9 +238,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
     if (ctx->hc_down) CFRelease(ctx->hc_down);
     if (ctx->q8_add) CFRelease(ctx->q8_add);
-    if (ctx->q8_swiglu) CFRelease(ctx->q8_swiglu);
     if (ctx->gate_up8) CFRelease(ctx->gate_up8);
-    if (ctx->gate_up8r) CFRelease(ctx->gate_up8r);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
@@ -527,27 +519,10 @@ Qwen38Status q38_packed_encode_indexed_fast(Q38PackedGpu *ctx, const Qwen38GpuCo
 }
 /* R1.5b fused gate+up+SwiGLU (qwen38_b_internal.h): each projection admitted
  * as q38_packed_encode_indexed with act as its output, then the choice. */
-static Qwen38Status gate_up_impl(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
-        const GpuWeightStore *store, const GgufBinding *gate, const Q38PackedLayout *gl,
-        const GgufBinding *up, const Q38PackedLayout *ul, Qwen38GpuSpan ids, size_t divisor,
-        Qwen38GpuF32 x, Qwen38GpuF32 act, const Q38GateUpRoute *rt, Qwen38Error *err);
 Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *gate, const Q38PackedLayout *gl,
         const GgufBinding *up, const Q38PackedLayout *ul, Qwen38GpuSpan ids, size_t divisor,
         Qwen38GpuF32 x, Qwen38GpuF32 act, Qwen38Error *err) {
-    return gate_up_impl(ctx,command,store,gate,gl,up,ul,ids,divisor,x,act,NULL,err);
-}
-Qwen38Status q38_packed_encode_gate_up_routed(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
-        const GpuWeightStore *store, const GgufBinding *gate, const Q38PackedLayout *gl,
-        const GgufBinding *up, const Q38PackedLayout *ul, Qwen38GpuSpan ids, size_t divisor,
-        Qwen38GpuF32 x, Qwen38GpuF32 act, const Q38GateUpRoute *rt, Qwen38Error *err) {
-    if (!rt) return q38_b_result(err,Q38_INVALID_ARGUMENT,"missing route");
-    return gate_up_impl(ctx,command,store,gate,gl,up,ul,ids,divisor,x,act,rt,err);
-}
-static Qwen38Status gate_up_impl(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
-        const GpuWeightStore *store, const GgufBinding *gate, const Q38PackedLayout *gl,
-        const GgufBinding *up, const Q38PackedLayout *ul, Qwen38GpuSpan ids, size_t divisor,
-        Qwen38GpuF32 x, Qwen38GpuF32 act, const Q38GateUpRoute *rt, Qwen38Error *err) {
     Admitted a, b; id<MTLBuffer> route=nil;
     Qwen38Status status=admit_indexed(ctx,command,store,gate,gl,ids,divisor,x,act,&a,&route,err);
     if (!status) status=admit_indexed(ctx,command,store,up,ul,ids,divisor,x,act,&b,&route,err);
@@ -577,21 +552,7 @@ static Qwen38Status gate_up_impl(Q38PackedGpu *ctx, const Qwen38GpuCommand *comm
     const bool eight=ctx->gate_up8 && gl->gguf_type==16 && !(gl->k_logical%256) && !(x.span.offset_bytes%16) &&
         !(x.stride_bytes[0]%16);
     const size_t sgs=eight ? Q38_GATE_UP8_SG : Q38_GATE_UP_SG;
-    if (rt) { /* Decode III: router folded in; only the table-decode kernel takes it */
-        id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
-        id<MTLBuffer> lb, pb, wb;
-        const size_t pairs=(size_t)rt->t*rt->k;
-        if (!eight || !ctx->gate_up8r || !rt->k || rt->k>16 || !rt->e || rt->e>1024 || rt->k>rt->e || act.dim[0]!=pairs ||
-            divisor!=rt->k || gpu_span(dev,rt->logits.span,(size_t)rt->t*rt->pitch*4,&lb) ||
-            gpu_span(dev,rt->probs.span,(size_t)rt->t*rt->e*4,&pb) || gpu_span(dev,rt->weights.span,pairs*4,&wb))
-            return q38_b_result(err,Q38_UNSUPPORTED,"no routed gate+up for this shape or selection");
-        struct { uint32_t t,e,k,norm,pitch; } ra={rt->t,rt->e,rt->k,rt->norm,rt->pitch};
-        [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8r];
-        [encoder setBuffer:lb offset:rt->logits.span.offset_bytes atIndex:7];
-        [encoder setBuffer:pb offset:rt->probs.span.offset_bytes atIndex:8];
-        [encoder setBuffer:wb offset:rt->weights.span.offset_bytes atIndex:9];
-        [encoder setBytes:&ra length:sizeof ra atIndex:10];
-    } else if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
+    if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
     MTLSize groups=MTLSizeMake((gl->n_out+sgs-1)/sgs,act.dim[0],1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*sgs,1,1)];
     return q38_b_result(err,Q38_OK,"");
@@ -920,45 +881,6 @@ Qwen38Status q38_packed_encode_add(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
     [encoder setBuffer:ib offset:inject.span.offset_bytes atIndex:6];
     [encoder setBytes:&ea length:sizeof ea atIndex:7];
     [encoder dispatchThreadgroups:MTLSizeMake(n,(t+Q38_Q8_T-1)/Q38_Q8_T,1) threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
-    return q38_b_result(err,Q38_OK,"");
-}
-
-/* Decode III shared down with its activation folded in (qwen38_b_internal.h). */
-Qwen38Status q38_packed_encode_swiglu(Q38PackedGpu *ctx, const Qwen38GpuCommand *command, const GpuWeightStore *store,
-        const GgufBinding *binding, const Q38PackedLayout *layout, Qwen38GpuF32 gate, Qwen38GpuF32 up, Qwen38GpuF32 y,
-        Qwen38GpuF32 slogit, Qwen38GpuF32 ssig, Qwen38Error *err) {
-    Admitted a;
-    Qwen38Status status=admit(ctx,command,store,binding,layout,gate,y,y.dim[0],&a,err);
-    if (status) return status;
-    size_t t=y.dim[0], k=layout->k_logical;
-    if (!ctx->q8_swiglu || ctx->ref_linear || ctx->ref_fuse || layout->gguf_type!=8 || layout->n_experts!=1 || k%32 ||
-        gemm_kernel(ctx,8,t,layout->n_out) || up.rank!=2 || up.dim[0]!=t || up.dim[1]!=k ||
-        up.stride_bytes[0]!=gate.stride_bytes[0] || up.stride_bytes[1]!=4 || gate.stride_bytes[1]!=4 ||
-        slogit.dim[0]!=t || ssig.dim[0]!=t || slogit.stride_bytes[0]!=4 || ssig.stride_bytes[0]!=4)
-        return q38_b_result(err,Q38_UNSUPPORTED,"no fused shared activation + down for this shape or selection");
-    if (!t) return q38_b_result(err,Q38_OK,"");
-    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
-    id<MTLBuffer> ub, lb, sb; size_t ubytes=(t-1)*up.stride_bytes[0]+k*4;
-    if ((status=gpu_span(dev,up.span,ubytes,&ub)) || (status=gpu_span(dev,slogit.span,t*4,&lb)) ||
-        (status=gpu_span(dev,ssig.span,t*4,&sb)))
-        return q38_b_result(err,status,"invalid shared view");
-    if (gpu_alias(sb,ssig.span.offset_bytes,t*4,a.output,y.span.offset_bytes,a.yb) ||
-        gpu_alias(sb,ssig.span.offset_bytes,t*4,a.input,gate.span.offset_bytes,a.xb) ||
-        gpu_alias(sb,ssig.span.offset_bytes,t*4,ub,up.span.offset_bytes,ubytes) ||
-        gpu_alias(sb,ssig.span.offset_bytes,t*4,lb,slogit.span.offset_bytes,t*4) ||
-        gpu_alias(a.output,y.span.offset_bytes,a.yb,ub,up.span.offset_bytes,ubytes) ||
-        gpu_alias(a.output,y.span.offset_bytes,a.yb,lb,slogit.span.offset_bytes,t*4))
-        return q38_b_result(err,Q38_INVALID_ARGUMENT,"shared outputs alias an operand");
-    size_t wo=binding->offset;
-    Q38PackedArgs args=wire(layout,wo,wo+layout->expert_bytes,t,gate,y,&a);
-    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
-    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->q8_swiglu];
-    bind(encoder,&a,gate,y,command);
-    [encoder setBytes:&args length:sizeof args atIndex:4];
-    [encoder setBuffer:ub offset:up.span.offset_bytes atIndex:5];
-    [encoder setBuffer:lb offset:slogit.span.offset_bytes atIndex:6];
-    [encoder setBuffer:sb offset:ssig.span.offset_bytes atIndex:7];
-    [encoder dispatchThreadgroups:MTLSizeMake(layout->n_out,(t+Q38_Q8_T-1)/Q38_Q8_T,1) threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
 

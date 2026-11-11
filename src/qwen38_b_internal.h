@@ -103,15 +103,6 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *gate, const Q38PackedLayout *gate_layout,
     const GgufBinding *up, const Q38PackedLayout *up_layout, Qwen38GpuSpan expert_ids,
     size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 act, Qwen38Error *);
-/* Decode III: the same with the router folded in (IQ2_XXS table-decode kernel only):
- * expert_ids, weights and probs are WRITTEN from logits [t, pitch] as
- * q38_moe_route_simd would (t tokens, e experts, k slots, norm). Q38_UNSUPPORTED,
- * nothing encoded, whenever that kernel does not apply; the caller then routes first. */
-typedef struct { Qwen38GpuF32 logits, probs, weights; uint32_t t, e, k, norm, pitch; } Q38GateUpRoute;
-Qwen38Status q38_packed_encode_gate_up_routed(Q38PackedGpu *, const Qwen38GpuCommand *,
-    const GpuWeightStore *, const GgufBinding *gate, const Q38PackedLayout *gate_layout,
-    const GgufBinding *up, const Q38PackedLayout *up_layout, Qwen38GpuSpan expert_ids,
-    size_t x_divisor, Qwen38GpuF32 x, Qwen38GpuF32 act, const Q38GateUpRoute *, Qwen38Error *);
 /* R1.5c fused routed down + weighted reduce (qwen38_moe_fused.metal), the
  * graph's IDX down (divisor 1) then q38f_reduce (identity map) in one pass:
  * routed[t, n] = sum over s = 0..k-1 of scores[t, s] (down_e[n] . act[t*k+s]),
@@ -165,13 +156,6 @@ _Static_assert(sizeof(Q38HcDownArgs) == 192, "HC down Metal argument layout"); /
 Qwen38Status q38_packed_encode_add(Q38PackedGpu *, const Qwen38GpuCommand *, const GpuWeightStore *,
     const GgufBinding *, const Q38PackedLayout *, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38GpuF32 residual,
     Qwen38GpuF32 inject, Qwen38Error *);
-/* Decode III: the shared expert's Q8_0 down, y = W . (silu(gate) * up), plus
- * ssig = sigmoid(slogit) [t, 1], in one dispatch (bit-identical to q38f_shared_act
- * then the Q8_0 linear). Q38_UNSUPPORTED: not Q8_0, K % 32, GEMM rows, the exact,
- * linear or fuse family, or views not dense. */
-Qwen38Status q38_packed_encode_swiglu(Q38PackedGpu *, const Qwen38GpuCommand *, const GpuWeightStore *,
-    const GgufBinding *, const Q38PackedLayout *, Qwen38GpuF32 gate, Qwen38GpuF32 up, Qwen38GpuF32 y,
-    Qwen38GpuF32 slogit, Qwen38GpuF32 ssig, Qwen38Error *);
 bool q38_packed_add_ready(const Q38PackedGpu *, uint32_t gguf_type, size_t rows, size_t n_out); /* selection only */
 bool q38_packed_hc_down_rms_ready(const Q38PackedGpu *, uint32_t gguf_type, size_t rows, size_t k, size_t streams); /* selection only */
 Qwen38Status q38_packed_encode_hc_down_rms(Q38PackedGpu *, const Qwen38GpuCommand *,
