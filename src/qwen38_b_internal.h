@@ -136,6 +136,21 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *up, const Q38PackedLayout *up_layout, size_t streams,
     Qwen38GpuF32 low, Qwen38GpuF32 normed, Qwen38GpuF32 il, Qwen38GpuF32 act, Qwen38GpuF32 gate,
     Qwen38GpuF32 mixed, Qwen38GpuF32 inject, Qwen38Error *);
+/* Decode III: the HC read's RMSNorm folded into its F16 down projection (and the
+ * optional inject, n_out rows each, K = streams * width): low = down . N,
+ * il = inject . N and normed = N, N = rmsnorm(r) * gain per stream (eps), from
+ * r [t, K] in one dispatch instead of RMS + multi-GEMV. gain is [width] or
+ * [streams, width]. The sums are reordered (tolerance in the fast-kernel tests).
+ * Q38_UNSUPPORTED, nothing encoded: not F16, GEMM rows, streams above 4, width
+ * not a multiple of 8, or the exact, linear or fuse family selected: the caller
+ * encodes RMS + the multi-GEMV. No barrier after the dispatch. */
+typedef struct { Q38PackedArgs down, inject; uint32_t streams, width, n_inject, gain_rank; float eps; uint32_t pad[3]; } Q38HcDownArgs;
+_Static_assert(sizeof(Q38HcDownArgs) == 192, "HC down Metal argument layout"); /* HcDownArgs */
+bool q38_packed_hc_down_rms_ready(const Q38PackedGpu *, uint32_t gguf_type, size_t rows, size_t k, size_t streams); /* selection only */
+Qwen38Status q38_packed_encode_hc_down_rms(Q38PackedGpu *, const Qwen38GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *down, const Q38PackedLayout *down_layout,
+    const GgufBinding *inject, const Q38PackedLayout *inject_layout, size_t streams, float eps,
+    Qwen38GpuF32 r, Qwen38GpuF32 gain, Qwen38GpuF32 normed, Qwen38GpuF32 low, Qwen38GpuF32 il, Qwen38Error *);
 /* R3.1: true when a linear of this GGUF type over this many rows of x runs the
  * prefill GEMM (then the HC tail answers UNSUPPORTED and the caller, which
  * opens profile groups before encoding, takes the sequence directly). */

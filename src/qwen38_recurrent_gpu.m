@@ -345,6 +345,16 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     &l->weight[Q38CW_##slot].layout,0,V(input),V(output),e)); \
     [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; } while (0)
     MARK("gdn.hc_pre",Q38_PROFILE_MIXED,BYTES(HD)+BYTES(HU)+BYTES(HI));
+    Qwen38Status folded=Q38_UNSUPPORTED;
+    if (q38_packed_hc_down_rms_ready(b,TYPE(HD),t,l->weight[Q38CW_HD].layout.k_logical,h)) { /* Decode III: RMS folded into HC down + inject */
+        Qwen38GpuF32 r2=w->residual, n2=V(N);
+        r2.rank=n2.rank=2; r2.dim[1]=n2.dim[1]=h*width; r2.stride_bytes[1]=n2.stride_bytes[1]=4;
+        folded=q38_packed_encode_hc_down_rms(b,&cmd,store,bindings[Q38CW_HD],&l->weight[Q38CW_HD].layout,
+            bindings[Q38CW_HI],&l->weight[Q38CW_HI].layout,h,l->config.hc.rms_eps,r2,K(HN),n2,V(LOW),V(IL),e);
+        if (folded && folded!=Q38_UNSUPPORTED) return folded;
+        if (!folded) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    if (folded) {
     OP(RMS,w->residual,K(HN),group_view(V(N),h,width));
     { /* R2.5: HC down and inject read the same N: one multi call, bit-identical to two */
         const GgufBinding *mb[2]={bindings[Q38CW_HD],bindings[Q38CW_HI]};
@@ -352,6 +362,7 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
         const Qwen38GpuF32 out[2]={V(LOW),V(IL)};
         Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,2,V(N),out,e));
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
     }
     { /* R2.6: low, up, read and inject in one dispatch, bit-identical; the sequence when unsupported */
         Qwen38Status status=q38_packed_encode_hc_tail(b,&cmd,store,bindings[Q38CW_HU],&l->weight[Q38CW_HU].layout,h,

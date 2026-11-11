@@ -540,6 +540,84 @@ kernel void q38_hc_tail8_f16(device const uchar *weights [[buffer(0)]], device c
     if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
 }
 
+/* Decode III: the HC read's RMSNorm folded into its F16 down (and inject)
+ * projection. N[s, j] = (x[s, j] * scale_s) * g[s, j] per stream s, so a row's
+ * dot is sum_s scale_s * sum_j w[s, j] x[s, j] g[s, j]: every lane accumulates
+ * that inner sum and sum_j x^2 per stream in one pass over its chunks (the
+ * dense_matvec lane map, S simdgroups per row), the threadgroup joins them in
+ * simdgroup order, and scale_s = 1 / sqrt(sum_s / width + eps) as in
+ * q38c_rms_fast. Threadgroup 0 of each token also writes N (the HC tail reads
+ * it) with q38c_rms_fast's expression. Rows: down rows 0..n_down-1 then the
+ * inject rows; the row's arithmetic depends on K alone. A nonfinite x, gain or
+ * output sets bit 1 (outputs then unspecified). Q38_REF_KERNELS=exact or fuse
+ * keeps q38c_rms_fast + the multi-GEMV. */
+struct HcDownArgs { PackedArgs down, inject; uint streams, width, n_inject, gain_rank; float eps; uint pad0, pad1, pad2; };
+static_assert(sizeof(HcDownArgs) == 192, "HC down wire record size");
+#define HC_DOWN_MAX_H 4
+kernel void q38_hc_down_rms_f16(device const uchar *wd [[buffer(0)]], device const uchar *wi [[buffer(1)]],
+        device const float *r [[buffer(2)]], device const float *gain [[buffer(3)]], device float *normed [[buffer(4)]],
+        device float *low [[buffer(5)]], device float *il [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+        constant HcDownArgs &a [[buffer(8)]], uint2 group [[threadgroup_position_in_grid]],
+        uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]],
+        uint sgs [[simdgroups_per_threadgroup]]) {
+    threadgroup float part[DENSE_S][2 * HC_DOWN_MAX_H];
+    threadgroup float scales[HC_DOWN_MAX_H];
+    const uint h = a.streams, width = a.width, k = h * width, t = group.y;
+    const bool inj = group.x >= a.down.n_out;
+    constant PackedArgs &o = inj ? a.inject : a.down;
+    const uint n = inj ? group.x - uint(a.down.n_out) : group.x;
+    if (n >= o.n_out || t >= a.down.rows) return; /* uniform over the threadgroup */
+    device const uchar *w = inj ? wi : wd;
+    const ulong row = o.weight_offset + ulong(n) * o.row_bytes;
+    const bool aligned = (row & 15) == 0;
+    device const float *x = r + ulong(t) * k;
+    float acc[HC_DOWN_MAX_H], sq[HC_DOWN_MAX_H];
+    for (uint s = 0; s < HC_DOWN_MAX_H; s++) { acc[s] = 0.0f; sq[s] = 0.0f; }
+    bool bad = false;
+    const uint chunks = k / DENSE_C;
+    for (uint c = sg * 32 + lane; c < chunks; c += 32 * sgs) {
+        const uint col = c * DENSE_C, st = col / width, j0 = col - st * width;
+        float wt[DENSE_C];
+        dense_chunk<1>(w + row + ulong(col) * 2, aligned, wt, DENSE_C);
+        device const float *xs = x + col, *gs = gain + (a.gain_rank == 2 ? st * width : 0) + j0;
+        float sm = 0.0f, q = 0.0f;
+        for (uint i = 0; i < DENSE_C; i++) {
+            const float xv = xs[i], gv = gs[i];
+            bad = bad || !isfinite(xv) || !isfinite(gv);
+            sm = fma(wt[i], xv * gv, sm);
+            q = fma(xv, xv, q);
+        }
+        for (uint s = 0; s < HC_DOWN_MAX_H; s++) if (s == st) { acc[s] += sm; sq[s] += q; }
+    }
+    for (uint s = 0; s < HC_DOWN_MAX_H; s++) { acc[s] = simd_sum(acc[s]); sq[s] = simd_sum(sq[s]); }
+    if (!lane) for (uint s = 0; s < HC_DOWN_MAX_H; s++) { part[sg][s] = acc[s]; part[sg][HC_DOWN_MAX_H + s] = sq[s]; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!sg && !lane) {
+        float y = 0.0f;
+        for (uint s = 0; s < h; s++) {
+            float as = part[0][s], qs = part[0][HC_DOWN_MAX_H + s];
+            for (uint g = 1; g < sgs; g++) { as += part[g][s]; qs += part[g][HC_DOWN_MAX_H + s]; }
+            const float variance = qs / float(width) + a.eps, scale = 1.0f / sqrt(variance);
+            bad = bad || !isfinite(qs) || !isfinite(variance);
+            scales[s] = scale;
+            y = fma(as, scale, y);
+        }
+        bad = bad || !isfinite(y);
+        if (inj) il[ulong(t) * a.n_inject + n] = y;
+        else low[ulong(t) * a.down.n_out + n] = y;
+    }
+    if (group.x == 0) { /* N for the HC tail, q38c_rms_fast's y */
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = sg * 32 + lane; i < k; i += 32 * sgs) {
+            const uint st = i / width;
+            const float yv = (x[i] * scales[st]) * gain[(a.gain_rank == 2 ? st * width : 0) + i - st * width];
+            bad = bad || !isfinite(yv);
+            normed[ulong(t) * k + i] = yv;
+        }
+    }
+    if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}
+
 /* R3.1 prefill GEMM: Y[m,n] = sum_k W[n,k] X[m,k] for many rows of x at once.
  * The matvecs above reread the whole matrix every Q8_T/DENSE_T rows, so a
  * 1024-row chunk read each weight ~256 times. Here a threadgroup of 4

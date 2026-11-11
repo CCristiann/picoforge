@@ -552,11 +552,22 @@ static Qwen38Status hc_read(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t l
 #define V(x) time_view(f->x,t)
 #define OP(k,op,...) do { MARK(layer,n[k],Q38_PROFILE_NONE,0); Qwen38GpuF32 vv[]={__VA_ARGS__}; \
     TRY(q38c_gpu_encode(f->ops,*cmd,Q38C_##op,&spec,vv,sizeof vv/sizeof *vv,e)); } while(0)
-    OP(0,RMS,V(r),hc->gain,V(normed));
+    bool folded=false; /* Decode III: RMS folded into the down (and inject) projection */
+    if (q38_packed_hc_down_rms_ready(f->b,hc->down.binding->tensor.type,t,hc->down.layout.k_logical,f->c.hc.streams)) {
+        MARK(layer,n[1],hc->down.binding->tensor.type,hc->down.binding->tensor.bytes);
+        const Qwen38GpuF32 none={0};
+        Qwen38Status status=q38_packed_encode_hc_down_rms(f->b,cmd,f->store,hc->down.binding,&hc->down.layout,
+            hc->inject.binding,hc->inject.binding ? &hc->inject.layout : NULL,f->c.hc.streams,f->c.hc.rms_eps,
+            flat(V(r)),hc->gain,flat(V(normed)),flat(V(low)),hc->inject.binding ? flat(V(il)) : none,e);
+        if (!status) { barrier(*cmd); folded=true; }
+        else if (status!=Q38_UNSUPPORTED) return status;
+    }
+    if (!folded) OP(0,RMS,V(r),hc->gain,V(normed));
     /* R2.5: down and inject read the same normed rows: one multi call (bit-identical
      * to two single calls), profiled as the down group; the lone inject matvec
      * (4 rows) ran at ~10 GB/s. */
-    if (hc->inject.binding)
+    if (folded) {}
+    else if (hc->inject.binding)
         TRY(linears(f,cmd,layer,n[1],(G2Weight[]){hc->down,hc->inject},2,V(normed),(Qwen38GpuF32[]){V(low),V(il)},e));
     else TRY(linear(f,cmd,layer,n[1],hc->down,V(normed),V(low),e));
     if (!q38_packed_gemm_rows(f->b,hc->up.binding->tensor.type,t)) {
