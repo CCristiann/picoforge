@@ -1,0 +1,4 @@
+GPU lock acquired: /Users/cristiancirje/Desktop/Dev/picoforge/.git/qwen38-gpu.lock
+picoforge: median 30.027 tok/s, p10 29.667, p90 30.193, n 20
+dwarfstar: median 32.670 tok/s, p10 31.970, p90 32.910, n 20
+picoforge/DwarfStar 0.9190956257611131, on battery False, complete True
