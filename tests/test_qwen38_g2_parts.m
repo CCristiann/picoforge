@@ -134,7 +134,7 @@ static void check_moe(uint32_t layer, size_t t) {
      * `indexed` runs the unfused indexed oracle. */
     /* Decode III: run 0 is `exact` (the bit-identical kernels the comparisons below pin); run 3 is
      * the default, whose router and kernels reorder sums: held to the CPU tolerances only. */
-    static const char *const envs[] = {"exact", "moe", "indexed", NULL};
+    static const char *const envs[] = {"exact", "exact,moe", "indexed", NULL};
     float *fused = malloc(x_n * 4), *fused_routed = malloc(x_n * 4);
     /* R1.5d router: the parallel kernel is the default and `moe` selects q38f_route; ids, weights
      * and probs have the same bits either way. */

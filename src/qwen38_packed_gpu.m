@@ -71,7 +71,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     id<MTLFunction> function=[lib newFunctionWithName:@"q38_packed_linear"];
     id<MTLFunction> gather=[lib newFunctionWithName:@"q38_packed_linear_indexed"];
     id<MTLFunction> lookup=[lib newFunctionWithName:@"q38_packed_lookup"];
-    id<MTLFunction> q8=[lib newFunctionWithName:@"q38_matvec_q8_0"];
+    /* Decode III: the _dec Q8_0 kernels (reordered dot) unless `exact`; an older library lacks them */
+    const bool q8_dec=!q38_ref_kernels("exact") && [lib newFunctionWithName:@"q38_matvec_q8_0_dec"] &&
+        [lib newFunctionWithName:@"q38_matvec_multi_q8_0_dec"];
+    id<MTLFunction> q8=[lib newFunctionWithName:q8_dec ? @"q38_matvec_q8_0_dec" : @"q38_matvec_q8_0"];
     id<MTLFunction> f16=[lib newFunctionWithName:@"q38_matvec_f16"];
     id<MTLFunction> f32=[lib newFunctionWithName:@"q38_matvec_f32"];
     id<MTLFunction> tail=[lib newFunctionWithName:@"q38_hc_tail_f16"];
@@ -111,6 +114,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     static NSString *const multi_names[3]={@"q38_matvec_multi_q8_0",@"q38_matvec_multi_f16",@"q38_matvec_multi_f32"};
     id<MTLFunction> multi[3];
     for (size_t i=0;i<3;i++) multi[i]=[lib newFunctionWithName:multi_names[i]];
+    if (q8_dec) multi[0]=[lib newFunctionWithName:@"q38_matvec_multi_q8_0_dec"];
     static NSString *const indexed_names[Q38_INDEXED_FAST]={@"q38_matvec_indexed_iq2_xxs",@"q38_matvec_indexed_q2_k",
         @"q38_matvec_indexed_q4_k",@"q38_matvec_indexed_mxfp4"};
     static NSString *const gate_up_names[Q38_INDEXED_FAST]={@"q38_moe_gate_up_iq2_xxs",@"q38_moe_gate_up_q2_k",

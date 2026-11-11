@@ -29,6 +29,7 @@ static_assert(sizeof(PackedArgs) == 80, "host/Metal wire record size");
  * Each decoded block is reused for the tile's Q8_T rows of x.
  * p: the x side (rows, x_stride, x_bytes, k_logical); o: output row n's
  * tensor (n_out, weights, y). A single call passes its record twice. */
+template <bool DEC>
 static inline void q8_0_matvec(device const uchar *weights, device const float *x, device float *y,
         device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile, uint lane) {
     const ulong m0 = ulong(tile) * Q8_T;
@@ -53,6 +54,42 @@ static inline void q8_0_matvec(device const uchar *weights, device const float *
     float acc[Q8_T];
     for (uint t = 0; t < Q8_T; t++) acc[t] = 0.0f;
     const uint blocks = (p.k_logical + 31) / 32;
+    /* Decode III (the _dec kernels): 4 lanes per block, 8 blocks per round
+     * (lane = 4*ix + it owns codes 8it..8it+7 of blocks ix, ix+8, ...), the
+     * codes read as 2-byte pairs, s = sum(code * x) with FMAs and acc += d * s:
+     * the block's 32 byte loads and 32 scale multiplies are gone (decode
+     * 35.32 -> 34.20 ms/token in an A/B). Each row's order still depends on K
+     * alone, for any number of rows of x, so decode and MTP verify agree; it
+     * differs from the oracle's exact d*code products (tolerance linear_q8_dec).
+     * Needs K % 32 == 0 (else the R1.2a loop below); x is read as float4 when
+     * its rows are 16-byte aligned, as floats otherwise (same values, same
+     * bits). Lane map idea: ds4 fc80bd6, MIT, qwen4_row_dot. */
+    if (DEC && !(p.k_logical & 31)) {
+        const bool x4 = !(ulong(x) & 15) && !(p.x_stride & 15); /* load width only: same values, same bits */
+        const uint ix = lane / 4, it = lane % 4;
+        for (uint b = ix; b < blocks; b += 8) {
+            device const uchar *q = weights + row + ulong(b) * 34;
+            const float d = float(*(device const half *)q);
+            device const ushort *c = (device const ushort *)(q + 2) + 4 * it; /* blocks are 2-byte aligned */
+            float code[8];
+            for (uint i = 0; i < 4; i++) {
+                const char2 v = as_type<char2>(c[i]);
+                code[2 * i] = float(v.x); code[2 * i + 1] = float(v.y);
+            }
+            for (uint t = 0; t < Q8_T; t++) {
+                if (t >= mt) break; /* uniform */
+                device const float *xs = x + xi[t] + b * 32 + 8 * it;
+                float4 x0, x1;
+                if (x4) { x0 = ((device const float4 *)xs)[0]; x1 = ((device const float4 *)xs)[1]; }
+                else { x0 = float4(xs[0], xs[1], xs[2], xs[3]); x1 = float4(xs[4], xs[5], xs[6], xs[7]); }
+                float sm = code[0] * x0.x;
+                sm = fma(code[1], x0.y, sm); sm = fma(code[2], x0.z, sm); sm = fma(code[3], x0.w, sm);
+                sm = fma(code[4], x1.x, sm); sm = fma(code[5], x1.y, sm); sm = fma(code[6], x1.z, sm);
+                sm = fma(code[7], x1.w, sm);
+                acc[t] = fma(d, sm, acc[t]);
+            }
+        }
+    } else
     for (uint b = lane; b < blocks; b += 32) {
         /* Only the last block may be partial: its columns past k_logical are
          * left out of the sum and never read from x. */
@@ -85,7 +122,13 @@ kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
         device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
         device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
         uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
-    q8_0_matvec(weights, x, y, error, p, p, group.x, group.y, lane);
+    q8_0_matvec<false>(weights, x, y, error, p, p, group.x, group.y, lane);
+}
+kernel void q38_matvec_q8_0_dec(device const uchar *weights [[buffer(0)]],
+        device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
+        device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
+        uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    q8_0_matvec<true>(weights, x, y, error, p, p, group.x, group.y, lane);
 }
 
 /* Dense formats (F16, F32): rows of x per threadgroup (mirrored by Q38_DENSE_T
@@ -250,7 +293,11 @@ struct MultiArgs { uint count, first[MULTI_MAX]; };
     switch (j) { MULTI_CASE(1) MULTI_CASE(2) MULTI_CASE(3) MULTI_CASE(4) MULTI_CASE(5) MULTI_CASE(6) MULTI_CASE(7) }
 kernel void q38_matvec_multi_q8_0(MULTI_PARAMS) {
     MULTI_PICK
-    q8_0_matvec(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane);
+    q8_0_matvec<false>(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane);
+}
+kernel void q38_matvec_multi_q8_0_dec(MULTI_PARAMS) {
+    MULTI_PICK
+    q8_0_matvec<true>(w, x, y, error, p[0], p[j], group.x - m.first[j], group.y, lane);
 }
 kernel void q38_matvec_multi_f16(MULTI_PARAMS, uint sg [[simdgroup_index_in_threadgroup]],
         uint sgs [[simdgroups_per_threadgroup]]) {
