@@ -2,6 +2,26 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode V (2026-11-11): GDN prepare in the scan, a faster router
+
+Branch `perf/qwen38-decode5`. The Decode IV 8K pairing first (`bench/qwen38/d4_20261111/README.md`):
+29.47 against 32.00 tok/s, 0.921x (Decode III: 0.865x); the first attempt stopped on the memory guard.
+
+The GDN prepare (L2 norms of q and k, q / sqrt(dk), g = A softplus(alpha + dt), beta = sigmoid(br))
+now runs inside the fast scan, from the P elements each lane already holds: one dispatch and one
+barrier fewer per GDN layer. Only the L2 sums change order (3.3e-7 scaled against the two fast ops,
+new `prepscan` harness mode); real logits argmax 33/33, G3 2.76e-7. gdn.prep (0.33 ms) is gone but
+the scan grows 0.83 -> 1.02 ms: 33.09 -> 32.97 ms/token.
+
+The router: a probe that skipped its dispatch saved 0.78 ms/token, and skipping its barrier too only
+0.11 more, so the kernel itself was slow. It scanned 32 values per lane (the 1024-expert capacity)
+on every one of the 10 selection rounds; now the width is a template (16 at 512 experts) and each
+lane caches its best, so a round is simd_max + simd_min and one lane's rescan. Bit-identical;
+rtbench 7.8 -> 4.6 us, 33.00 -> 32.68 ms/token.
+
+**Next:** the small F16/mixed matvecs (hc_ffn, hc_pre, shared_in: ~7.6 ms at 190-210 GB/s) before
+the remaining small ops (gdn.norm 0.24 ms).
+
 ## Decode IV (2026-11-11): Q8_0 matvecs, fewer dispatches — 0.919x
 
 Branch `perf/qwen38-decode4`. Evidence: `bench/qwen38/d4_20261111/README.md`.
