@@ -192,6 +192,43 @@ kernel void q38c_history(Q38C_BUFFERS) {
         v3[at(a.v[3],j*c+i)]=x;
     }
 }
+/* Decode III: q38c_check + q38c_conv + q38c_history in one dispatch (3 dispatches
+ * and 3 barriers per GDN layer before). One thread per channel walks the t rows
+ * with q38c_conv's expression, so y has its bits, then shifts its channel's
+ * history as q38c_history does: every read of the old history precedes the
+ * update in the same thread, and no other thread touches the channel. The check
+ * is folded in as in q38c_hc_add_fast: each thread tests the qkv rows, conv
+ * taps and history rows of its channel (together all of v0, v1, v3); a
+ * nonfinite one sets bit 1, and nothing is written when the word was set
+ * before. Outputs are unspecified when the word ends nonzero (the session then
+ * discards the command). Channels on the grid. */
+kernel void q38c_conv_fast(Q38C_BUFFERS) {
+    uint c=a.v[0].dim[1], t=a.v[0].dim[0], l=a.v[3].dim[0];
+    if (i>=c) return;
+    bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0, bad=false;
+    for (uint j=0;j<a.p[0];++j) bad=bad || !isfinite(v1[at(a.v[1],i*a.p[0]+j)]);
+    for (uint r=0;r<l;++r) bad=bad || !isfinite(v3[at(a.v[3],r*c+i)]);
+    for (uint r=0;r<t;++r) bad=bad || !isfinite(v0[at(a.v[0],r*c+i)]);
+    if (bad) { atomic_fetch_or_explicit(error,1u,memory_order_relaxed); return; }
+    if (skip) return;
+    for (uint r=0;r<t;++r) { /* q38c_conv, thread (r, i) */
+        float sum=0;
+        for (uint j=0;j<a.p[0];++j) {
+            ulong row=ulong(r)+ulong(j)*a.p[1];
+            float x=row<l ? v3[at(a.v[3],uint(row)*c+i)] : v0[at(a.v[0],uint(row-l)*c+i)];
+            sum+=v1[at(a.v[1],i*a.p[0]+j)]*x;
+        }
+        if (!valid(sum,error)) return;
+        float y=a.p[2] ? sum*sigmoid(sum) : sum;
+        if (!valid(y,error)) return;
+        v2[at(a.v[2],r*c+i)]=y;
+    }
+    for (uint j=0;j<l;++j) { /* q38c_history, thread i */
+        ulong row=ulong(t)+j;
+        float x=row<l ? v3[at(a.v[3],uint(row)*c+i)] : v0[at(a.v[0],uint(row-l)*c+i)];
+        v3[at(a.v[3],j*c+i)]=x;
+    }
+}
 kernel void q38c_gdn_prepare(Q38C_BUFFERS) {
     if (i>=a.v[0].dim[0] || atomic_load_explicit(error,memory_order_relaxed)) return;
     uint hk=a.p[0], hv=a.p[1], dk=a.p[2], dv=a.p[3];

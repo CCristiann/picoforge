@@ -8,7 +8,7 @@
 /* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide
  * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run
  * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */
-struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast; bool ref_fuse; };
+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast, *conv_fast; bool ref_fuse; };
 void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }
 void q38c_gpu_destroy(Q38CGpu *g) {
     if (!g) return;
@@ -20,6 +20,7 @@ void q38c_gpu_destroy(Q38CGpu *g) {
     if (g->scan_fast) CFRelease(g->scan_fast);
     if (g->add_fast) CFRelease(g->add_fast);
     if (g->act_fast) CFRelease(g->act_fast);
+    if (g->conv_fast) CFRelease(g->conv_fast);
     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
     free(g);
 }
@@ -45,9 +46,9 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
         else g->pipeline[i]=(__bridge_retained void *)p;
     }
     NSString *fast[]={@"q38c_rms_fast",@"q38c_gdn_prepare_fast",@"q38c_gdn_scan_fast",@"q38c_hc_add_fast",
-        @"q38c_activate_fast"};
-    void **slot[]={&g->rms_fast,&g->prep_fast,&g->scan_fast,&g->add_fast,&g->act_fast};
-    for (size_t i=0;i<5;++i) {
+        @"q38c_activate_fast",@"q38c_conv_fast"};
+    void **slot[]={&g->rms_fast,&g->prep_fast,&g->scan_fast,&g->add_fast,&g->act_fast,&g->conv_fast};
+    for (size_t i=0;i<6;++i) {
         id<MTLFunction> fn=[lib newFunctionWithName:fast[i]];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
         if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
@@ -253,6 +254,14 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     for (size_t i=0;i<count;++i) for (size_t j=0;j<count && overlap;++j)
         if ((writes&(1u<<i)) && (a.read_mask&(1u<<j)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j]))
             overlap=false;
+    if (op==Q38C_CONV && g->conv_fast && !g->ref_fuse) { /* Decode III: check, conv and history in one dispatch */
+        const NSUInteger channels=a.v[0].dim[1];
+        id<MTLComputePipelineState> cp=(__bridge id<MTLComputePipelineState>)g->conv_fast;
+        [enc setComputePipelineState:cp];
+        [enc dispatchThreads:MTLSizeMake(channels,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)64,cp.maxTotalThreadsPerThreadgroup),1,1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        return q38c_error(e,Q38_OK,NULL);
+    }
     void *folded=op==Q38C_HC_ADD ? g->add_fast : (op==Q38C_ACT || op==Q38C_HC_LOW || op==Q38C_HC_INJECT) ? g->act_fast : NULL;
     if (folded && !g->ref_fuse) { /* R2.9: HC_ADD and the activations with the check folded, one dispatch */
         uint32_t split=overlap;   /* the check's word as above: word 1 when it may overlap the op */
