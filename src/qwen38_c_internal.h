@@ -238,6 +238,12 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **, Qwen38Erro
 void q38c_gpu_destroy(Q38CGpu *);
 Qwen38Status q38c_gpu_encode(Q38CGpu *, Qwen38GpuCommand, Q38CGpuOp,
     const Q38CGpuSpec *, const Qwen38GpuF32 *, size_t count, Qwen38Error *);
+/* Decode V: GDN_PREP (views pv[8], as its q38c_gpu_encode) then GDN_SCAN (sv[5])
+ * in one dispatch; the scan's PREP, LOGG and BETA views are neither read nor
+ * written. Q38_UNSUPPORTED, nothing encoded: exact or fuse family, or a shape
+ * outside the fast scan; the caller then encodes the two ops. */
+Qwen38Status q38c_gpu_encode_prep_scan(Q38CGpu *, Qwen38GpuCommand, const Q38CGpuSpec *,
+    const Qwen38GpuF32 *pv, const Qwen38GpuF32 *sv, Qwen38Error *);
 /* R1.6a: true = RMS and GDN_NORM run check + q38c_rms (the oracle), false =
  * q38c_rms_fast with the check folded in. q38c_gpu_create sets it from
  * Q38_REF_KERNELS (family fuse); this override is for tests only. */

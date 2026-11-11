@@ -330,15 +330,27 @@ kernel void q38c_gdn_prepare_fast(device float *v0 [[buffer(0)]], device float *
  * - P = dk/32 is a template parameter, so the per-lane loops unroll without the
  *   i < P guards (9.9 -> 4.9 ms). The kernel picks the instance with a switch on
  *   a uniform value. */
-template <uint P>
+/* Decode V: FUSED reads the raw qkv rows and does q38c_gdn_prepare's work in the
+ * scan itself (pa: the GDN_PREP record; v1, v2 alpha and br; pA, pdt the A and dt
+ * vectors): q and k of head h%hk are L2-normalized from the P elements each lane
+ * already holds (their squares summed per lane then simd_sum, so the order differs
+ * from q38c_gdn_prepare_fast's strided lanes: tolerance gdn_prep_scan), q scaled by
+ * 1/sqrt(dk), v read raw (the prepare only copies it), g = A softplus(alpha + dt)
+ * and beta = sigmoid(br) with its expressions. A > 0 sets bit 4 as the prepare. */
+template <uint P, bool FUSED = false>
 static void gdn_scan_rows(device const float *v0, device const float *v1, device const float *v2,
         device float *v3, device float *v4, constant Q38CGpuArgs &a, uint r0, ushort lane,
-        bool skip, thread bool &bad, thread bool &fault, thread bool &range) {
+        bool skip, thread bool &bad, thread bool &fault, thread bool &range,
+        constant Q38CGpuArgs *pa = nullptr, device const float *pA = nullptr, device const float *pdt = nullptr) {
     const uint hk=a.p[0], dk=a.p[2], dv=a.p[3], h=r0/dv, v0i=r0%dv;
-    const uint xs=a.v[0].stride[0], gs0=a.v[1].stride[0], gs1=a.v[1].stride[1];
-    const uint bs0=a.v[2].stride[0], bs1=a.v[2].stride[1];
+    const uint xs=FUSED ? pa->v[0].stride[0] : a.v[0].stride[0];
+    const uint gs0=FUSED ? pa->v[1].stride[0] : a.v[1].stride[0], gs1=FUSED ? pa->v[1].stride[1] : a.v[1].stride[1];
+    const uint bs0=FUSED ? pa->v[2].stride[0] : a.v[2].stride[0], bs1=FUSED ? pa->v[2].stride[1] : a.v[2].stride[1];
     const uint os0=a.v[4].stride[0], oh=h*a.v[4].stride[1]+v0i*a.v[4].stride[2], os2=a.v[4].stride[2];
-    const uint qo=(h%hk)*dk+lane*P, ko=qo+hk*dk, vo=(2*hk*dk+h*dv+v0i)*a.v[0].stride[1];
+    const uint es=FUSED ? pa->v[0].stride[1] : a.v[0].stride[1];
+    const uint qo=(h%hk)*dk+lane*P, ko=qo+hk*dk, vo=(2*hk*dk+h*dv+v0i)*es;
+    float A=0.0f, dt=0.0f;
+    if (FUSED) { A=pA[h*pa->v[3].stride[0]]; dt=pdt[h*pa->v[4].stride[0]]; bad|=!isfinite(A) || !isfinite(dt); range|=A>0; }
     uint row[Q38C_SCAN_ROWS];
     float S[Q38C_SCAN_ROWS][P];
     for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
@@ -352,6 +364,20 @@ static void gdn_scan_rows(device const float *v0, device const float *v1, device
             qx[i]=v0[x+qo+i]; kx[i]=v0[x+ko+i];
             bad|=!isfinite(qx[i]) || !isfinite(kx[i]);
         }
+        if (FUSED) { /* q38c_gdn_prepare: L2 norms, gate and beta */
+            float sq=0, sk=0;
+            for (uint i=0;i<P;i++) { sq+=qx[i]*qx[i]; sk+=kx[i]*kx[i]; }
+            const float nq=simd_sum(sq)+pa->eps, nk=simd_sum(sk)+pa->eps;
+            fault|=!isfinite(nq) || !isfinite(nk);
+            const float iq=1.0f/sqrt(nq), ik=1.0f/sqrt(nk), qscale=1.0f/sqrt(float(dk));
+            for (uint i=0;i<P;i++) { qx[i]=(qx[i]*iq)*qscale; kx[i]=(kx[i]*ik)*1.0f; }
+            const float alpha=g, br=beta;
+            bad|=!isfinite(alpha) || !isfinite(br);
+            const float value=alpha+dt;
+            g=A*softplus(value);
+            fault|=!isfinite(value) || !isfinite(g);
+            beta=sigmoid(br);
+        }
         bad|=!isfinite(g) || !isfinite(beta); range|=g>0 || beta<0 || beta>1;
         float decay=exp(g), prediction[Q38C_SCAN_ROWS], result[Q38C_SCAN_ROWS];
         for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
@@ -360,7 +386,7 @@ static void gdn_scan_rows(device const float *v0, device const float *v1, device
             prediction[j]=simd_sum(prediction[j]);
         }
         for (uint j=0;j<Q38C_SCAN_ROWS;j++) {
-            float value=v0[x+vo+j*a.v[0].stride[1]];
+            float value=v0[x+vo+j*es];
             bad|=!isfinite(value);
             float delta=(value-prediction[j])*beta;
             result[j]=0;
@@ -393,6 +419,33 @@ kernel void q38c_gdn_scan_fast(device float *v0 [[buffer(0)]], device float *v1 
     case 6: gdn_scan_rows<6>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
     case 7: gdn_scan_rows<7>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
     default: gdn_scan_rows<8>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range); break;
+    }
+    if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
+    if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);
+}
+/* Decode V: GDN_PREP + GDN_SCAN in one dispatch (gdn_scan_rows<P, true>): v0 the
+ * raw qkv rows, v1 alpha, v2 br, v5 A, v6 dt, v3 the state, v4 the output; a the
+ * GDN_SCAN record (state and output views), pa the GDN_PREP one (qkv, alpha, br,
+ * A, dt views, eps). The PREP, LOGG and BETA scratch are not written. */
+kernel void q38c_gdn_prep_scan_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],
+    device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],
+    device float *v5 [[buffer(5)]], device float *v6 [[buffer(6)]],
+    constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]], constant Q38CGpuArgs &pa [[buffer(10)]],
+    uint tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    const uint r0=(tg*sn+sg)*Q38C_SCAN_ROWS;
+    if (r0>=a.p[1]*a.p[3]) return;
+    const bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;
+    bool bad=false, fault=false, range=false;
+    switch (a.p[2]/32) {
+    case 1: gdn_scan_rows<1,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    case 2: gdn_scan_rows<2,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    case 3: gdn_scan_rows<3,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    case 4: gdn_scan_rows<4,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    case 5: gdn_scan_rows<5,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    case 6: gdn_scan_rows<6,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    case 7: gdn_scan_rows<7,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
+    default: gdn_scan_rows<8,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;
     }
     if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);
     if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);

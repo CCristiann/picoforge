@@ -425,6 +425,7 @@ def run_route(mode, logits, slots, norm, experts=None, env=None):
 
 ROUTE_PAD = 5  # columns of NaN past the experts in a padded router row (pitch = experts + ROUTE_PAD)
 ROUTE_KINDS = 11  # row shapes of route_logits
+GDN_PREP_SCAN_SCALED = 1e-6  # Decode V fused GDN prepare + scan vs the two fast ops (out, state): measured 3.3e-7
 HC_DOWN_RMS_SCALED = 1e-6  # Decode III RMS-folded HC down vs RMS + multi-GEMV: measured 2.3e-7
 HC_TAIL8_SCALED = 1e-6  # Decode III HC tail vs the sequence: measured 0.96e-7 (K 320) and 1.4e-7 (K 1024)
 ROUTE_SUM_RTOL = 2.0 ** -24 * 1024  # Decode III simd router vs q38f_route: the serial exp sum's error bound at 1024 experts
@@ -726,6 +727,34 @@ def scan_magnitudes(qkv, g, beta, state, dims):
         m = m + np.abs(delta[..., None] * k) + np.abs(k) * (np.abs(bt)[:, None] * np.abs(s * k).sum(-1))[..., None]
         s = s + delta[..., None] * k
     return np.abs(s * q).sum(-1), m
+
+
+def run_prepscan(mode, qkv, alpha, br, A, dt, state, dims, initial=0, env=None):
+    """Decode V: (status, error word, dispatches, out [t, hv, dv], state [hv, dv, dk]) of
+    q38c_gpu_encode_prep_scan (fused) or GDN_PREP + GDN_SCAN (seq) on raw qkv rows."""
+    hk, hv, dk, dv = dims
+    t = len(qkv)
+    lock = os.environ.get("PICOFORGE_GPU_LOCK_FD")
+    environment = {k: v for k, v in os.environ.items() if k != "Q38_REF_KERNELS"} | (env or {})
+    result = subprocess.run([str(NATIVE), "prepscan", mode, *map(str, (t, *dims, initial))],
+                            input=b"".join(np.ascontiguousarray(a, "<f4").tobytes() for a in (qkv, alpha, br, A, dt, state)),
+                            capture_output=True, timeout=60, pass_fds=(int(lock),) if lock else (), env=environment)
+    stderr = BANNER.sub(b"", result.stderr)
+    if result.returncode or stderr or len(result.stdout) != 12 + 4 * (t * hv * dv + hv * dv * dk):
+        raise AssertionError(f"prepscan {mode}: exit {result.returncode}, {stderr!r}")
+    status, word, dispatches = (int(x) for x in np.frombuffer(result.stdout[:12], "<u4"))
+    out = np.frombuffer(result.stdout[12:], "<f4")
+    return status, word, dispatches, out[:t * hv * dv].reshape(t, hv, dv), out[t * hv * dv:].reshape(hv, dv, dk)
+
+
+def prepscan_prepared(qkv, alpha, br, A, dt, dims):
+    """FP64 prepare (as q38c_gdn_prepare) for scan_magnitudes: (qkv', g, beta)."""
+    hk, hv, dk, dv = dims
+    r, _ = prep_fp64(qkv, dims)
+    value = alpha.astype(np.float64) + dt.astype(np.float64)
+    g = A.astype(np.float64) * np.logaddexp(0, value)
+    beta = 1 / (1 + np.exp(-br.astype(np.float64)))
+    return np.concatenate([r, qkv[:, 2 * hk * dk:].astype(np.float64)], 1), g, beta
 
 
 def run_index(mode, iq, blocks, visible, ratio, budget):
@@ -2599,6 +2628,40 @@ class FastKernelTests(unittest.TestCase):
                 self.assertEqual(run_hctail(shape)["equal"], 1)
         got = run_hctail((1, 320, 4, 2560), poison=True)
         self.assertEqual((got["status"], got["words"][0] & 1, got["words"][1] & 1), (0, 1, 1))
+    def test_gdn_prep_scan_against_sequence(self):
+        """Decode V q38c_gdn_prep_scan_fast: one dispatch (the sequence: two), clean error word, out and state
+        within GDN_PREP_SCAN_SCALED of q38c_gdn_prepare_fast + q38c_gdn_scan_fast, scaled by the FP64 replay
+        magnitudes (scan_magnitudes on the prepared inputs: the L2 sums only change order); a NaN in alpha
+        sets bit 1 and A > 0 bit 4 as in the sequence; UNSUPPORTED (8) under exact or fuse."""
+        rng = np.random.default_rng(5101)
+        worst = 0.0
+        for dims, t in ((GDN_REAL, 1), (GDN_REAL, 3), ((2, 4, 64, 32), 5)):
+            with self.subTest(dims=dims, t=t):
+                inputs = prep_inputs(rng, t, dims)
+                state = rng.normal(0, 0.5, (dims[1], dims[3], dims[2])).astype(np.float32)
+                fused = run_prepscan("fused", *inputs, state, dims)
+                seq = run_prepscan("seq", *inputs, state, dims)
+                self.assertEqual(fused[:3], (0, 0, 1))
+                self.assertEqual(seq[:3], (0, 0, 2))
+                mag, mag_s = scan_magnitudes(*prepscan_prepared(*inputs, dims), state, dims)
+                out_err = np.abs(fused[3][-1].astype(np.float64) - seq[3][-1]) / np.maximum(mag, 2.0**-126)
+                state_err = np.abs(fused[4].astype(np.float64) - seq[4]) / np.maximum(mag_s, 2.0**-126)
+                worst = max(worst, float(out_err.max()), float(state_err.max()))
+                self.assertLessEqual(float(out_err.max()), GDN_PREP_SCAN_SCALED)
+                self.assertLessEqual(float(state_err.max()), GDN_PREP_SCAN_SCALED)
+        print(f"gdn_prep_scan worst scaled {worst:.3g}", file=sys.stderr)
+        inputs = list(prep_inputs(rng, 2, GDN_REAL))
+        state = rng.normal(0, 0.5, (GDN_REAL[1], GDN_REAL[3], GDN_REAL[2])).astype(np.float32)
+        bad = [a.copy() for a in inputs]; bad[1][1, 3] = np.nan
+        pos = [a.copy() for a in inputs]; pos[3][5] = 0.5
+        for mode in ("fused", "seq"):
+            with self.subTest(mode=mode):
+                self.assertEqual(run_prepscan(mode, *bad, state, GDN_REAL)[1] & 1, 1)
+                self.assertEqual(run_prepscan(mode, *pos, state, GDN_REAL)[1] & 4, 4)
+        for family in ("exact", "fuse"):
+            with self.subTest(reference=family):
+                got = run_prepscan("fused", *inputs, state, GDN_REAL, env={"Q38_REF_KERNELS": family})
+                self.assertEqual(got[:3], (8, 0, 0))
     def test_hc_down_rms_against_sequence(self):
         """Decode III q38_hc_down_rms_f16: low (and il) and normed within HC_DOWN_RMS_SCALED of q38c RMS +
         the F16 multi-GEMV, at the real site (K 10240, h 4, down 320 + inject 4, per-stream gain) at 1 and 3
