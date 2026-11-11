@@ -29,9 +29,16 @@ static_assert(sizeof(PackedArgs) == 80, "host/Metal wire record size");
  * Each decoded block is reused for the tile's Q8_T rows of x.
  * p: the x side (rows, x_stride, x_bytes, k_logical); o: output row n's
  * tensor (n_out, weights, y). A single call passes its record twice. */
-template <bool DEC>
+/* Decode III epilogue of q38_matvec_q8_0_add: HC_ADD of the output into the residual,
+ * res[m, s, n] = res[m, s, n] + inject[m, s] * y[m, n] for the h streams, with
+ * q38c_hc_add_fast's expression and check (a nonfinite residual, inject or y sets
+ * bit 1 and that residual element is not written; nothing is written when the word
+ * was set before). Row pitches in floats. */
+struct AddArgs { uint h, width; ulong res_stride, inj_stride; };
+template <bool DEC, bool ADD = false>
 static inline void q8_0_matvec(device const uchar *weights, device const float *x, device float *y,
-        device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile, uint lane) {
+        device atomic_uint *error, constant PackedArgs &p, constant PackedArgs &o, ulong n, uint tile, uint lane,
+        device float *res = nullptr, device const float *inj = nullptr, constant AddArgs *e = nullptr) {
     const ulong m0 = ulong(tile) * Q8_T;
     if (n >= o.n_out || m0 >= p.rows) return;
     const uint mt = uint(min(ulong(Q8_T), p.rows - m0));
@@ -116,6 +123,19 @@ static inline void q8_0_matvec(device const uchar *weights, device const float *
         if (lane || t >= mt) continue;
         y[(m0 + t) * (o.y_stride / 4) + n] = v;
         if (!isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        if (ADD) {
+            const ulong m = m0 + t;
+            const bool skip = atomic_load_explicit(error, memory_order_relaxed) != 0;
+            for (uint s = 0; s < e->h; s++) {
+                const ulong ri = m * e->res_stride + ulong(s) * e->width + n;
+                const float r = res[ri], sc = inj[m * e->inj_stride + s];
+                if (!isfinite(r) || !isfinite(sc) || !isfinite(v)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
+                if (skip) continue;
+                const float yv = r + sc * v;
+                if (!isfinite(yv)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
+                res[ri] = yv;
+            }
+        }
     }
 }
 kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
@@ -123,6 +143,13 @@ kernel void q38_matvec_q8_0(device const uchar *weights [[buffer(0)]],
         device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
         uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
     q8_0_matvec<false>(weights, x, y, error, p, p, group.x, group.y, lane);
+}
+kernel void q38_matvec_q8_0_add(device const uchar *weights [[buffer(0)]],
+        device const float *x [[buffer(1)]], device float *y [[buffer(2)]],
+        device atomic_uint *error [[buffer(3)]], constant PackedArgs &p [[buffer(4)]],
+        device float *res [[buffer(5)]], device const float *inj [[buffer(6)]], constant AddArgs &e [[buffer(7)]],
+        uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]]) {
+    q8_0_matvec<true, true>(weights, x, y, error, p, p, group.x, group.y, lane, res, inj, &e);
 }
 kernel void q38_matvec_q8_0_dec(device const uchar *weights [[buffer(0)]],
         device const float *x [[buffer(1)]], device float *y [[buffer(2)]],

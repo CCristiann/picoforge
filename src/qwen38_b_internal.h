@@ -146,6 +146,14 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *, const Qwen38GpuCommand *,
  * encodes RMS + the multi-GEMV. No barrier after the dispatch. */
 typedef struct { Q38PackedArgs down, inject; uint32_t streams, width, n_inject, gain_rank; float eps; uint32_t pad[3]; } Q38HcDownArgs;
 _Static_assert(sizeof(Q38HcDownArgs) == 192, "HC down Metal argument layout"); /* HcDownArgs */
+/* Decode III: q38_packed_encode of a Q8_0 linear (y [t, n_out]) followed by HC_ADD
+ * into residual [t, h, n_out] with inject [t, h], in one dispatch (bit-identical
+ * to the linear then q38c_hc_add_fast). Q38_UNSUPPORTED, nothing encoded: not
+ * Q8_0, GEMM rows, the exact, linear or fuse family, or views not dense. */
+Qwen38Status q38_packed_encode_add(Q38PackedGpu *, const Qwen38GpuCommand *, const GpuWeightStore *,
+    const GgufBinding *, const Q38PackedLayout *, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38GpuF32 residual,
+    Qwen38GpuF32 inject, Qwen38Error *);
+bool q38_packed_add_ready(const Q38PackedGpu *, uint32_t gguf_type, size_t rows, size_t n_out); /* selection only */
 bool q38_packed_hc_down_rms_ready(const Q38PackedGpu *, uint32_t gguf_type, size_t rows, size_t k, size_t streams); /* selection only */
 Qwen38Status q38_packed_encode_hc_down_rms(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *down, const Q38PackedLayout *down_layout,

@@ -398,9 +398,18 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     MARK("gdn.norm",Q38_PROFILE_NONE,0);
     OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));
     MARK("gdn.out",TYPE(OUT),BYTES(OUT));
-    LINEAR(OUT,NORM,OUT);
-    MARK("gdn.add",Q38_PROFILE_NONE,0);
-    OP(HC_ADD,w->residual,V(OUT),V(INJECT));
+    Qwen38Status added=Q38_UNSUPPORTED;
+    if (q38_packed_add_ready(b,TYPE(OUT),t,l->weight[Q38CW_OUT].layout.n_out)) { /* Decode III: out + HC_ADD */
+        added=q38_packed_encode_add(b,&cmd,store,bindings[Q38CW_OUT],&l->weight[Q38CW_OUT].layout,V(NORM),V(OUT),
+            w->residual,V(INJECT),e);
+        if (added && added!=Q38_UNSUPPORTED) return added;
+        if (!added) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+    if (added) {
+        LINEAR(OUT,NORM,OUT);
+        MARK("gdn.add",Q38_PROFILE_NONE,0);
+        OP(HC_ADD,w->residual,V(OUT),V(INJECT));
+    }
 #undef LINEAR
 #undef MARK
 #undef TYPE

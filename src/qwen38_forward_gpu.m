@@ -641,7 +641,18 @@ static Qwen38Status qsa(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,uint32_t i,siz
     Qwen38GpuF32 outputs[]={w.qg,w.k,w.v,w.iq,w.ik};
     TRY(linears(f,cmd,i,"qsa.proj",l->qsa,5,time_view(f->mixed,t),outputs,e));
     MARK(i,"qsa.core",Q38_PROFILE_MIXED,0); TRY(q38d_layer_encode(f->d,f->ops,*cmd,&l->ac,pos,(uint32_t)t,&w,e));
-    TRY(linear(f,cmd,i,"qsa.out",l->qsa[5],w.out,time_view(f->block,t),e));
+    const G2Weight qo=l->qsa[5];
+    if (q38_packed_add_ready(f->b,qo.binding->tensor.type,t,qo.layout.n_out)) { /* Decode III: out + HC_ADD */
+        MARK(i,"qsa.out",qo.binding->tensor.type,qo.binding->tensor.bytes);
+        Qwen38Status added=q38_packed_encode_add(f->b,cmd,f->store,qo.binding,&qo.layout,flat(w.out),
+            flat(time_view(f->block,t)),time_view(f->r,t),time_view(f->inject,t),e);
+        if (added) return added;
+        barrier(*cmd);
+        emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
+        emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t));
+        return Q38_OK;
+    }
+    TRY(linear(f,cmd,i,"qsa.out",qo,w.out,time_view(f->block,t),e));
     emit(f,*cmd,i,Q38G_ATTN_MIXED,time_view(f->mixed,t)); emit(f,*cmd,i,Q38G_ATTN_INJECT,time_view(f->inject,t));
     emit(f,*cmd,i,Q38G_ATTN_CONTRIBUTION,time_view(f->block,t)); MARK(i,"hc_add",Q38_PROFILE_NONE,0); return hc_add(f,*cmd,t,e);
 }

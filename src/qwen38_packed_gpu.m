@@ -14,7 +14,7 @@
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
                       *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
-                      *hc_tail, *hc_tail8, *hc_down, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
+                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
                       size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
@@ -166,6 +166,11 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->f16=fast_pipeline(matvec_f16,Q38_DENSE_S);
     ctx->f32=fast_pipeline(matvec_f32,Q38_DENSE_S);
     ctx->hc_tail=fast_pipeline(hc_tail,Q38_HC_TAIL_SG);
+    if (!q38_ref_kernels("exact") && !q38_ref_kernels("fuse")) { /* Decode III: Q8_0 linear + HC_ADD; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38_matvec_q8_0_add"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->q8_add=p ? fast_pipeline(p,1) : NULL;
+    }
     if (!q38_ref_kernels("exact") && !q38_ref_kernels("fuse")) { /* Decode III: RMS folded into the HC down; optional */
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_down_rms_f16"];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
@@ -232,6 +237,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->hc_tail) CFRelease(ctx->hc_tail);
     if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
     if (ctx->hc_down) CFRelease(ctx->hc_down);
+    if (ctx->q8_add) CFRelease(ctx->q8_add);
     if (ctx->gate_up8) CFRelease(ctx->gate_up8);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
@@ -819,6 +825,45 @@ Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *
         [encoder dispatchThreadgroups:MTLSizeMake(columns,(x.dim[0]+tile-1)/tile,1)
                 threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*simdgroups,1,1)];
     }
+    return q38_b_result(err,Q38_OK,"");
+}
+
+/* Decode III Q8_0 linear + HC_ADD (qwen38_b_internal.h). */
+bool q38_packed_add_ready(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t n_out) {
+    return ctx && ctx->q8_add && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==8 && !gemm_kernel(ctx,8,rows,n_out);
+}
+Qwen38Status q38_packed_encode_add(Q38PackedGpu *ctx, const Qwen38GpuCommand *command, const GpuWeightStore *store,
+        const GgufBinding *binding, const Q38PackedLayout *layout, Qwen38GpuF32 x, Qwen38GpuF32 y,
+        Qwen38GpuF32 residual, Qwen38GpuF32 inject, Qwen38Error *err) {
+    Admitted a;
+    Qwen38Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
+    if (status) return status;
+    size_t t=y.dim[0], n=layout->n_out, h=residual.rank==3 ? residual.dim[1] : 0;
+    if (!q38_packed_add_ready(ctx,layout->gguf_type,t,n) || layout->n_experts!=1 || !h ||
+        residual.dim[0]!=t || residual.dim[2]!=n || residual.stride_bytes[2]!=4 || residual.stride_bytes[1]!=n*4 ||
+        inject.rank!=2 || inject.dim[0]!=t || inject.dim[1]!=h || inject.stride_bytes[1]!=4)
+        return q38_b_result(err,Q38_UNSUPPORTED,"no fused linear + HC_ADD for this shape or selection");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLBuffer> rb, ib; size_t rbytes=(t-1)*residual.stride_bytes[0]+h*n*4, ibytes=(t-1)*inject.stride_bytes[0]+h*4;
+    if (!t) return q38_b_result(err,Q38_OK,"");
+    if ((status=gpu_span(dev,residual.span,rbytes,&rb)) || (status=gpu_span(dev,inject.span,ibytes,&ib)))
+        return q38_b_result(err,status,"invalid HC_ADD view");
+    size_t ro=residual.span.offset_bytes, wo=binding->offset;
+    if (gpu_alias(rb,ro,rbytes,a.input,x.span.offset_bytes,a.xb) || gpu_alias(rb,ro,rbytes,a.output,y.span.offset_bytes,a.yb) ||
+        gpu_alias(rb,ro,rbytes,ib,inject.span.offset_bytes,ibytes) || gpu_alias(rb,ro,rbytes,a.weights,wo,layout->tensor_bytes) ||
+        gpu_alias(rb,ro,rbytes,a.word,command->error_word.offset_bytes,4))
+        return q38_b_result(err,Q38_INVALID_ARGUMENT,"HC_ADD residual aliases an operand");
+    Q38PackedArgs args=wire(layout,wo,wo+layout->expert_bytes,t,x,y,&a);
+    struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={(uint32_t)h,(uint32_t)n,
+        residual.stride_bytes[0]/4,inject.stride_bytes[0]/4};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->q8_add];
+    bind(encoder,&a,x,y,command);
+    [encoder setBytes:&args length:sizeof args atIndex:4];
+    [encoder setBuffer:rb offset:ro atIndex:5];
+    [encoder setBuffer:ib offset:inject.span.offset_bytes atIndex:6];
+    [encoder setBytes:&ea length:sizeof ea atIndex:7];
+    [encoder dispatchThreadgroups:MTLSizeMake(n,(t+Q38_Q8_T-1)/Q38_Q8_T,1) threadsPerThreadgroup:MTLSizeMake(Q38_SIMD,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
 
