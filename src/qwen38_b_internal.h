@@ -114,7 +114,10 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *, const Qwen38GpuCommand *,
  * other operand. Q38_UNSUPPORTED, nothing encoded: the format has no fused
  * kernel or the indexed oracle is selected: the caller encodes the unfused
  * sequence. No barrier after the dispatch. */
-typedef struct { Qwen38GpuF32 scores, shared, sigmoid, routed; } Q38DownReduceViews;
+/* Decode III: hc_residual [t, h, n] and hc_inject [t, h] (buffer NULL: none) ask the
+ * parallel-slot kernel to add y into the residual (HC_ADD, q38c_hc_add_fast's
+ * expression); *hc_added (when non-NULL) tells whether it did. */
+typedef struct { Qwen38GpuF32 scores, shared, sigmoid, routed, hc_residual, hc_inject; bool *hc_added; } Q38DownReduceViews;
 typedef struct { Q38PackedIndexedArgs down; uint32_t tokens, slots; } Q38DownReduceArgs;
 _Static_assert(sizeof(Q38DownReduceArgs) == 104, "down+reduce Metal argument layout"); /* DownReduceArgs */
 Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *, const Qwen38GpuCommand *,

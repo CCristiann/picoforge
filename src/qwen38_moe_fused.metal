@@ -316,11 +316,13 @@ inline float q38_quant_chunk<Q38Q2KDot>(device const uchar *row, device const fl
     }
     return fma(dl, sq, -(ml * sx));
 }
+struct SpAddArgs { uint h, width; ulong res_stride, inj_stride; }; /* h 0: no HC_ADD */
 template <typename F>
 static inline void down_reduce_sp(device const uchar *w, device const float *act, device const float *shared,
         device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
         device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
-        uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad) {
+        uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad,
+        device float *res, device const float *inj, constant SpAddArgs &e) {
     constant PackedArgs &p = a.down.base;
     const ulong n0 = ulong(group.x) * DOWN_ROWS;
     const uint t = group.y;
@@ -358,11 +360,21 @@ static inline void down_reduce_sp(device const uchar *w, device const float *act
             sum[r] += scores[pair] * d;
         }
     }
+    const bool skip = e.h && atomic_load_explicit(error, memory_order_relaxed) != 0;
     for (uint r = 0; r < nr; r++) {
         routed[ri + r] = sum[r];
         const float v = sum[r] + sigmoid[t] * shared[ri + r];
         if (!finite || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
         y[yi + r] = v;
+        for (uint s = 0; s < e.h; s++) { /* Decode III HC_ADD: q38c_hc_add_fast's expression and check */
+            const ulong i = ulong(t) * e.res_stride + ulong(s) * e.width + n0 + r;
+            const float rv = res[i], sc = inj[ulong(t) * e.inj_stride + s];
+            if (!isfinite(rv) || !isfinite(sc) || !isfinite(v)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
+            if (skip) continue;
+            const float out = rv + sc * v;
+            if (!isfinite(out)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
+            res[i] = out;
+        }
     }
 }
 #define DOWN_REDUCE_SP_KERNEL(name, F) \
@@ -372,9 +384,10 @@ kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[
         device float *routed [[buffer(6)]], device float *y [[buffer(7)]], device atomic_uint *error [[buffer(8)]], \
         constant DownReduceArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]], \
         uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]], \
-        uint lane [[thread_index_in_simdgroup]]) { \
+        uint lane [[thread_index_in_simdgroup]], device float *res [[buffer(10)]], \
+        device const float *inj [[buffer(11)]], constant SpAddArgs &e [[buffer(12)]]) { \
     threadgroup float part[DOWN_SP_MAX_SLOTS][DOWN_ROWS]; threadgroup uint bad[DOWN_SP_MAX_SLOTS]; \
-    down_reduce_sp<F>(w, act, shared, sigmoid, scores, ids, routed, y, error, a, group, sg, sgs, lane, part, bad); \
+    down_reduce_sp<F>(w, act, shared, sigmoid, scores, ids, routed, y, error, a, group, sg, sgs, lane, part, bad, res, inj, e); \
 }
 DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_iq2_xxs, Q38Iq2Xxs)
 DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_q2_k, Q38Q2KDot)

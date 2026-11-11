@@ -658,7 +658,7 @@ static int down_main(int argc,char **argv,const char *library) {
         Q38DownReduceViews views={{{(__bridge void *)scores,0,tokens*slots*4},2,{tokens,slots,1,1},{slots*4,4,0,0}},
             {{(__bridge void *)sh,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}},
             {{(__bridge void *)sig,0,tokens*4},2,{tokens,1,1,1},{4,4,0,0}},
-            {{(__bridge void *)routed,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}}};
+            {{(__bridge void *)routed,0,tokens*r.n*4},2,{tokens,r.n,1,1},{r.n*4,4,0,0}},{0},{0},NULL};
         Qwen38GpuSpan span={(__bridge void *)route_ids,0,pairs*4};
         uint32_t *flags=word.contents;
         bool fused=!strcmp(r.mode,"fused"), fast=!strcmp(r.mode,"sequence");

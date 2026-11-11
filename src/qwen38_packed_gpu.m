@@ -711,6 +711,23 @@ Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *ctx, const Qwen38GpuCom
     if (sp && k<=Q38_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==Q38_SIMD && sp.maxTotalThreadsPerThreadgroup>=Q38_SIMD*k) {
         /* Decode III: one simdgroup per slot, DOWN_ROWS outputs per threadgroup (bit-identical) */
         [encoder setComputePipelineState:sp];
+        struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={0,0,0,0};
+        const Qwen38GpuF32 hr=v->hc_residual, hi=v->hc_inject;
+        id<MTLBuffer> rb=nil, ib=nil;
+        if (hr.span.buffer && hr.rank==3 && hr.dim[0]==t && hr.dim[2]==n && hr.stride_bytes[2]==4 &&
+            hr.stride_bytes[1]==n*4 && hi.span.buffer && hi.rank==2 && hi.dim[0]==t && hi.dim[1]==hr.dim[1] &&
+            hi.stride_bytes[1]==4 && !ctx->ref_fuse) {
+            size_t rbytes=(t-1)*hr.stride_bytes[0]+hr.dim[1]*n*4, ibytes=(t-1)*hi.stride_bytes[0]+hi.dim[1]*4;
+            if (!gpu_span(dev,hr.span,rbytes,&rb) && !gpu_span(dev,hi.span,ibytes,&ib) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,a.output,y.span.offset_bytes,a.yb) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,ib,hi.span.offset_bytes,ibytes) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,a.input,act.span.offset_bytes,a.xb))
+                { ea.h=(uint32_t)hr.dim[1]; ea.width=(uint32_t)n; ea.res_stride=hr.stride_bytes[0]/4; ea.inj_stride=hi.stride_bytes[0]/4; }
+        }
+        [encoder setBuffer:ea.h ? rb : a.output offset:ea.h ? hr.span.offset_bytes : y.span.offset_bytes atIndex:10];
+        [encoder setBuffer:ea.h ? ib : a.output offset:ea.h ? hi.span.offset_bytes : y.span.offset_bytes atIndex:11];
+        [encoder setBytes:&ea length:sizeof ea atIndex:12];
+        if (v->hc_added) *v->hc_added=ea.h!=0;
         [encoder dispatchThreadgroups:MTLSizeMake((n+Q38_DOWN_REDUCE_ROWS-1)/Q38_DOWN_REDUCE_ROWS,t,1)
                 threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*k,1,1)];
         return q38_b_result(err,Q38_OK,"");

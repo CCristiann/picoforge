@@ -52,6 +52,10 @@ typedef struct {
     Qwen38Status (*remap)(void *ctx, Qwen38GpuCommand *cmd, Qwen38GpuSpan ids, Qwen38GpuSpan slots, size_t pairs, Qwen38Error *);
     void *remap_ctx;
     Qwen38GpuSpan slots;
+    /* Decode III (buffer NULL otherwise): the HC_ADD after the MoE, residual [T,h,H] += inject [T,h] * y,
+     * done by the fused down when it can; *hc_added (non-NULL) reports it, else the caller adds. */
+    Qwen38GpuF32 hc_residual, hc_inject;
+    bool *hc_added;
 } Q38FRoutedWork;
 typedef struct Q38FRouted Q38FRouted;
 /* R1.5d parallel router (q38_moe_route_fast): one threadgroup of this many
