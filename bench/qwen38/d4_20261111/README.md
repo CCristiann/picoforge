@@ -26,3 +26,16 @@ Changes since Decode III (A/B on the same machine, 41-ID prompt + 128 forced, ms
 Whole branch against main b45693d: 35.44 -> 33.20 ms/token (5 alternating pairs).
 Gates at fe78e0f: fast kernels 97/97, c-gpu, g2-parts, g2, g2-state, cli, session, mtp,
 speculative, repl, server, compare green; G3 pass_fp32 scaled 2.62e-7, argmax 12/12.
+
+## 8K frontier (`paired-8k`)
+
+Same harness and protocol, 8K frontier, 3 warm-ups + 20 measured per engine, alternating. picoforge
+from `--picoforge-bin build/d4/main` (main at 8818300, the PR #20 merge: the same code as fe78e0f).
+
+| engine | median tok/s | p10 | p90 |
+|---|---:|---:|---:|
+| picoforge | 29.47 | 29.16 | 29.54 |
+| DwarfStar | 32.00 | 31.60 | 32.08 |
+
+**0.921x** (Decode III: 0.865x). A first attempt stopped at sample 5 on the memory guard (system
+memory pressure from other applications); the rerun is clean.
