@@ -305,6 +305,35 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
         Q38C_TRY(q38_packed_encode_multi(b,&cmd,store,mb,ml,4,x,out,err));
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
+    bool early_shared=r->shared_act && !w->mark && !q38_ref_kernels("barrier") && !q38_ref_kernels("exact"); /* profile: own group */
+    /* R3.2: a prefill-sized group of pairs runs one GEMM per expert instead (then down too, below). */
+    const bool grouped=!r->ref_moe && w->group.buffer && q38_packed_grouped_rows(b,wl[1].gguf_type,p) &&
+        q38_packed_grouped_rows(b,wl[3].gguf_type,p) && wl[1].gguf_type==wl[2].gguf_type;
+    Qwen38Status fused=Q38_UNSUPPORTED;
+    Qwen38GpuSpan xids=w->ids;   /* what the expert kernels index: expert ids, or pool slots (R5.1b) */
+    /* Decode III: [gate+up with the router folded in, shared down with its activation folded in], one
+     * barrier, then down: the router's dispatch and barrier and the activation's dispatch are gone
+     * (same kernels' arithmetic, same bits). Not when profiling, streaming or grouped. */
+    bool folded=false;
+    if (early_shared && !w->remap && !grouped && !r->ref_moe && r->route_simd && q38f_routed_fast_route(r,e,k)) {
+        const Q38GateUpRoute rt={w->logits,w->probs,w->weights,(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
+        Qwen38Status st=q38_packed_encode_gate_up_routed(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->ids,k,x,w->act,&rt,err);
+        if (st && st!=Q38_UNSUPPORTED) return st;
+        if (!st) {
+            folded=true;
+            Qwen38Status sh=q38_packed_encode_swiglu(b,&cmd,store,wb[6],&wl[6],w->sgate,w->sup,w->shared,w->slogit,w->ssig,err);
+            if (sh && sh!=Q38_UNSUPPORTED) return sh;
+            if (sh) { /* the activation then its matvec, as before */
+                struct { uint32_t count,tokens; } sa={(uint32_t)(t*s),(uint32_t)t};
+                at(enc,w->sgate.span,0); at(enc,w->sup.span,1); at(enc,w->sact.span,2); at(enc,w->slogit.span,3);
+                at(enc,w->ssig.span,4); at(enc,cmd.error_word,5); [enc setBytes:&sa length:sizeof sa atIndex:6];
+                run(enc,r->shared_act,t*s+t);
+                Q38C_TRY(q38_packed_encode(b,&cmd,store,wb[6],&wl[6],0,w->sact,w->shared,err));
+            }
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        }
+    }
+    if (!folded) {
     struct { uint32_t t,e,k,norm,pitch; } ra={(uint32_t)t,(uint32_t)e,(uint32_t)k,c->norm_topk_prob,(uint32_t)e};
     MARK("moe.route",Q38_PROFILE_NONE,0);
     at(enc,w->logits.span,0); at(enc,w->probs.span,1); at(enc,w->ids,2); at(enc,w->weights.span,3);
@@ -312,7 +341,6 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     /* Decode III: the shared expert's activation runs beside the router and its down matvec beside
      * gate+up, without the two barriers of their own (same kernels, same bits); `barrier` keeps the
      * old order. */
-    bool early_shared=r->shared_act && !w->mark && !q38_ref_kernels("barrier") && !q38_ref_kernels("exact"); /* profile: own group */
     if (q38f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
         const bool simd=r->route_simd!=NULL; /* Decode III: one simdgroup per token */
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)(simd ? r->route_simd : r->route_fast)];
@@ -327,7 +355,6 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
         }
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     } else { early_shared=false; run(enc,r->route,t); }
-    Qwen38GpuSpan xids=w->ids;   /* what the expert kernels index: expert ids, or pool slots (R5.1b) */
     if (w->remap) {
         if (w->slots.bytes<p*4) return q38c_error(err,Q38_SHAPE,"routed MoE slot view");
         Q38C_TRY(w->remap(w->remap_ctx,&cmd,w->ids,w->slots,p,err));
@@ -340,11 +367,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
      * would not match the oracle indexed sequence; so does a format without a
      * row dot. Then the unfused sequence. */
     MARK("moe.gate_up",Q38_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
-    /* R3.2: a prefill-sized group of pairs runs one GEMM per expert instead
-     * (then down too, below); the per-pair kernels otherwise. */
-    const bool grouped=!r->ref_moe && w->group.buffer && q38_packed_grouped_rows(b,wl[1].gguf_type,p) &&
-        q38_packed_grouped_rows(b,wl[3].gguf_type,p) && wl[1].gguf_type==wl[2].gguf_type;
-    Qwen38Status fused=r->ref_moe ? Q38_UNSUPPORTED : grouped ?
+    fused=r->ref_moe ? Q38_UNSUPPORTED : grouped ?
         q38_packed_encode_grouped_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],xids,k,x,w->act,w->group,err) :
         q38_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],xids,k,x,w->act,err);
     if (grouped && fused==Q38_UNSUPPORTED) return q38c_error(err,Q38_GPU_ERROR,"grouped gate+up refused");
@@ -369,6 +392,7 @@ Qwen38Status q38f_routed_encode(Q38FRouted *r,Q38PackedGpu *b,Q38CGpu *ops,Qwen3
     LIN(6,w->sact,w->shared);
     ACT(Q38_SIGMOID,w->slogit,w->ssig);
     }
+    } /* !folded */
     /* R1.5c: the routed down projection and q38f_reduce in one fused dispatch
      * after the shared expert (it reads shared and ssig as q38f_reduce does);
      * y and routed are bit-identical to the unfused fast sequence below and
