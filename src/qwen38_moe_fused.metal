@@ -478,7 +478,57 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
  * ids (test_route_simd_against_oracle). Same guards and fallback as
  * q38_moe_route_fast; the host dispatches 32 threads per token.
  * Q38_REF_KERNELS=exact keeps q38_moe_route_fast. */
+/* Decode V: PL = ceil(e/32) values per lane as a template parameter (16 at the
+ * real 512 experts, was always 32), and each lane caches its own best (p, id):
+ * a selection round is simd_max + simd_min, then only the lane that owned the
+ * winner rescans its PL values. Same values, same rule (larger p, then smaller
+ * id: a lane's experts ascend, so its first strict > is its smallest id), same
+ * serial running sum: bit-identical to the Decode III kernel. */
 #define ROUTE_SIMD_PER_LANE (Q38F_ROUTE_MAX_EXPERTS / 32)
+template <uint PL>
+static void route_simd_rows(device const float *z, device float *p, device uint *id, device float *w,
+        constant RouteArgs &a, device atomic_uint *error, uint lane) {
+    float v[PL];
+    float local = -INFINITY; bool bad = false;
+    for (uint j = 0; j < PL; j++) {
+        const uint e = 32 * j + lane;
+        v[j] = e < a.e ? z[e] : -INFINITY;
+        if (e < a.e) { bad = bad || !isfinite(v[j]); local = max(local, v[j]); }
+    }
+    const float maximum = simd_max(local);
+    if (simd_any(bad)) { /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
+        if (!lane) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+        for (uint s = lane; s < a.k; s += 32) { id[s] = s; w[s] = 0.0f; }
+        return;
+    }
+    float part = 0.0f;
+    for (uint j = 0; j < PL; j++) {
+        v[j] = 32 * j + lane < a.e ? exp(v[j] - maximum) : 0.0f;
+        part += v[j];
+    }
+    const float sum = simd_sum(part);
+    float best = -2.0f; uint at = 0xffffffffu;
+    for (uint j = 0; j < PL; j++) {
+        const uint e = 32 * j + lane;
+        if (e < a.e) { v[j] = v[j] / sum; p[e] = v[j]; } else v[j] = -2.0f; /* below every p and the -1 mask */
+        if (v[j] > best) { best = v[j]; at = e; }
+    }
+    float selected = 0.0f;
+    for (uint s = 0; s < a.k; s++) {
+        const float top = simd_max(best);
+        const uint chosen = simd_min(best == top ? at : 0xffffffffu);
+        if (at == chosen) { /* this lane lost its best: mask it and rescan */
+            best = -2.0f; at = 0xffffffffu;
+            for (uint j = 0; j < PL; j++) {
+                if (32 * j + lane == chosen) v[j] = -1.0f;
+                if (v[j] > best) { best = v[j]; at = 32 * j + lane; }
+            }
+        }
+        if (!lane) { id[s] = chosen; w[s] = top; }
+        selected += top; /* serial in s, as the oracle */
+    }
+    if (a.norm && !lane) for (uint s = 0; s < a.k; s++) w[s] /= selected;
+}
 kernel void q38_moe_route_simd(device const float *logits [[buffer(0)]], device float *probs [[buffer(1)]],
         device uint *ids [[buffer(2)]], device float *weights [[buffer(3)]], constant RouteArgs &a [[buffer(4)]],
         device atomic_uint *error [[buffer(5)]], uint token [[threadgroup_position_in_grid]],
@@ -492,40 +542,11 @@ kernel void q38_moe_route_simd(device const float *logits [[buffer(0)]], device 
     device float *p = probs + ulong(token) * a.e;
     device uint *id = ids + ulong(token) * a.k;
     device float *w = weights + ulong(token) * a.k;
-    float v[ROUTE_SIMD_PER_LANE];
-    float local = -INFINITY; bool bad = false;
-    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
-        const uint e = 32 * j + lane;
-        v[j] = e < a.e ? z[e] : -INFINITY;
-        if (e < a.e) { bad = bad || !isfinite(v[j]); local = max(local, v[j]); }
-    }
-    const float maximum = simd_max(local);
-    if (simd_any(bad)) { /* the oracle: bit 1, fallback IDs and zero weights, probs untouched */
-        if (!lane) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-        for (uint s = lane; s < a.k; s += 32) { id[s] = s; w[s] = 0.0f; }
-        return;
-    }
-    float part = 0.0f;
-    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
-        v[j] = 32 * j + lane < a.e ? exp(v[j] - maximum) : 0.0f;
-        part += v[j];
-    }
-    const float sum = simd_sum(part);
-    for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) {
-        const uint e = 32 * j + lane;
-        if (e < a.e) { v[j] = v[j] / sum; p[e] = v[j]; } else v[j] = -2.0f; /* below every p and the -1 mask */
-    }
-    float selected = 0.0f;
-    for (uint s = 0; s < a.k; s++) {
-        float best = -2.0f; uint at = 0xffffffffu; /* this lane's experts ascend: first strict > = smallest id */
-        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (v[j] > best) { best = v[j]; at = 32 * j + lane; }
-        const float top = simd_max(best);
-        const uint chosen = simd_min(best == top ? at : 0xffffffffu);
-        for (uint j = 0; j < ROUTE_SIMD_PER_LANE; j++) if (32 * j + lane == chosen) v[j] = -1.0f;
-        if (!lane) { id[s] = chosen; w[s] = top; }
-        selected += top; /* serial in s, as the oracle */
-    }
-    if (a.norm && !lane) for (uint s = 0; s < a.k; s++) w[s] /= selected;
+    const uint pl = (a.e + 31) / 32;
+    if (pl <= 4) route_simd_rows<4>(z, p, id, w, a, error, lane);
+    else if (pl <= 8) route_simd_rows<8>(z, p, id, w, a, error, lane);
+    else if (pl <= 16) route_simd_rows<16>(z, p, id, w, a, error, lane);
+    else route_simd_rows<ROUTE_SIMD_PER_LANE>(z, p, id, w, a, error, lane);
 }
 
 /* ---- R3.2 grouped MoE for prefill. The kernels above read an expert's rows
