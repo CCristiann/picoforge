@@ -1,0 +1,343 @@
+{
+  "complete": true,
+  "frontier": "8k",
+  "engines": [
+    "picoforge",
+    "dwarfstar"
+  ],
+  "counts": {
+    "picoforge": [
+      3,
+      20
+    ],
+    "dwarfstar": [
+      3,
+      20
+    ]
+  },
+  "block": 1,
+  "plan": [
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        true
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        true
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ],
+    [
+      "picoforge",
+      [
+        false
+      ]
+    ],
+    [
+      "dwarfstar",
+      [
+        false
+      ]
+    ]
+  ],
+  "protocol": "One process per sample for both engines (ds4-bench measures one frontier per process): prefill to the frontier, then 128 forced one-token appends. tok/s = forced IDs / decode seconds (picoforge decode_s, ds4-bench gen_tps). Warm-ups discarded. OS file cache warm, not purged: no cold-start claim.",
+  "suite_sha256": "d0bcf8bfd4ed69b4a881be724d1bf9022d574437ee1b0eae9137d10e41307379",
+  "guard": {
+    "pressure": 2,
+    "swap_bytes": 268435456,
+    "samples": 2,
+    "gap_s": 5
+  },
+  "revision": "8818300866f2f8b63412aecf2ff9698d26f07ea4",
+  "diff": "diff --git a/src/qwen38_recurrent.metal b/src/qwen38_recurrent.metal\nindex c3e11d6..23a95dc 100644\n--- a/src/qwen38_recurrent.metal\n+++ b/src/qwen38_recurrent.metal\n@@ -330,15 +330,27 @@ kernel void q38c_gdn_prepare_fast(device float *v0 [[buffer(0)]], device float *\n  * - P = dk/32 is a template parameter, so the per-lane loops unroll without the\n  *   i < P guards (9.9 -> 4.9 ms). The kernel picks the instance with a switch on\n  *   a uniform value. */\n-template <uint P>\n+/* Decode V: FUSED reads the raw qkv rows and does q38c_gdn_prepare's work in the\n+ * scan itself (pa: the GDN_PREP record; v1, v2 alpha and br; pA, pdt the A and dt\n+ * vectors): q and k of head h%hk are L2-normalized from the P elements each lane\n+ * already holds (their squares summed per lane then simd_sum, so the order differs\n+ * from q38c_gdn_prepare_fast's strided lanes: tolerance gdn_prep_scan), q scaled by\n+ * 1/sqrt(dk), v read raw (the prepare only copies it), g = A softplus(alpha + dt)\n+ * and beta = sigmoid(br) with its expressions. A > 0 sets bit 4 as the prepare. */\n+template <uint P, bool FUSED = false>\n static void gdn_scan_rows(device const float *v0, device const float *v1, device const float *v2,\n         device float *v3, device float *v4, constant Q38CGpuArgs &a, uint r0, ushort lane,\n-        bool skip, thread bool &bad, thread bool &fault, thread bool &range) {\n+        bool skip, thread bool &bad, thread bool &fault, thread bool &range,\n+        constant Q38CGpuArgs *pa = nullptr, device const float *pA = nullptr, device const float *pdt = nullptr) {\n     const uint hk=a.p[0], dk=a.p[2], dv=a.p[3], h=r0/dv, v0i=r0%dv;\n-    const uint xs=a.v[0].stride[0], gs0=a.v[1].stride[0], gs1=a.v[1].stride[1];\n-    const uint bs0=a.v[2].stride[0], bs1=a.v[2].stride[1];\n+    const uint xs=FUSED ? pa->v[0].stride[0] : a.v[0].stride[0];\n+    const uint gs0=FUSED ? pa->v[1].stride[0] : a.v[1].stride[0], gs1=FUSED ? pa->v[1].stride[1] : a.v[1].stride[1];\n+    const uint bs0=FUSED ? pa->v[2].stride[0] : a.v[2].stride[0], bs1=FUSED ? pa->v[2].stride[1] : a.v[2].stride[1];\n     const uint os0=a.v[4].stride[0], oh=h*a.v[4].stride[1]+v0i*a.v[4].stride[2], os2=a.v[4].stride[2];\n-    const uint qo=(h%hk)*dk+lane*P, ko=qo+hk*dk, vo=(2*hk*dk+h*dv+v0i)*a.v[0].stride[1];\n+    const uint es=FUSED ? pa->v[0].stride[1] : a.v[0].stride[1];\n+    const uint qo=(h%hk)*dk+lane*P, ko=qo+hk*dk, vo=(2*hk*dk+h*dv+v0i)*es;\n+    float A=0.0f, dt=0.0f;\n+    if (FUSED) { A=pA[h*pa->v[3].stride[0]]; dt=pdt[h*pa->v[4].stride[0]]; bad|=!isfinite(A) || !isfinite(dt); range|=A>0; }\n     uint row[Q38C_SCAN_ROWS];\n     float S[Q38C_SCAN_ROWS][P];\n     for (uint j=0;j<Q38C_SCAN_ROWS;j++) {\n@@ -352,6 +364,20 @@ static void gdn_scan_rows(device const float *v0, device const float *v1, device\n             qx[i]=v0[x+qo+i]; kx[i]=v0[x+ko+i];\n             bad|=!isfinite(qx[i]) || !isfinite(kx[i]);\n         }\n+        if (FUSED) { /* q38c_gdn_prepare: L2 norms, gate and beta */\n+            float sq=0, sk=0;\n+            for (uint i=0;i<P;i++) { sq+=qx[i]*qx[i]; sk+=kx[i]*kx[i]; }\n+            const float nq=simd_sum(sq)+pa->eps, nk=simd_sum(sk)+pa->eps;\n+            fault|=!isfinite(nq) || !isfinite(nk);\n+            const float iq=1.0f/sqrt(nq), ik=1.0f/sqrt(nk), qscale=1.0f/sqrt(float(dk));\n+            for (uint i=0;i<P;i++) { qx[i]=(qx[i]*iq)*qscale; kx[i]=(kx[i]*ik)*1.0f; }\n+            const float alpha=g, br=beta;\n+            bad|=!isfinite(alpha) || !isfinite(br);\n+            const float value=alpha+dt;\n+            g=A*softplus(value);\n+            fault|=!isfinite(value) || !isfinite(g);\n+            beta=sigmoid(br);\n+        }\n         bad|=!isfinite(g) || !isfinite(beta); range|=g>0 || beta<0 || beta>1;\n         float decay=exp(g), prediction[Q38C_SCAN_ROWS], result[Q38C_SCAN_ROWS];\n         for (uint j=0;j<Q38C_SCAN_ROWS;j++) {\n@@ -360,7 +386,7 @@ static void gdn_scan_rows(device const float *v0, device const float *v1, device\n             prediction[j]=simd_sum(prediction[j]);\n         }\n         for (uint j=0;j<Q38C_SCAN_ROWS;j++) {\n-            float value=v0[x+vo+j*a.v[0].stride[1]];\n+            float value=v0[x+vo+j*es];\n             bad|=!isfinite(value);\n             float delta=(value-prediction[j])*beta;\n             result[j]=0;\n@@ -397,6 +423,33 @@ kernel void q38c_gdn_scan_fast(device float *v0 [[buffer(0)]], device float *v1\n     if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);\n     if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);\n }\n+/* Decode V: GDN_PREP + GDN_SCAN in one dispatch (gdn_scan_rows<P, true>): v0 the\n+ * raw qkv rows, v1 alpha, v2 br, v5 A, v6 dt, v3 the state, v4 the output; a the\n+ * GDN_SCAN record (state and output views), pa the GDN_PREP one (qkv, alpha, br,\n+ * A, dt views, eps). The PREP, LOGG and BETA scratch are not written. */\n+kernel void q38c_gdn_prep_scan_fast(device float *v0 [[buffer(0)]], device float *v1 [[buffer(1)]],\n+    device float *v2 [[buffer(2)]], device float *v3 [[buffer(3)]], device float *v4 [[buffer(4)]],\n+    device float *v5 [[buffer(5)]], device float *v6 [[buffer(6)]],\n+    constant Q38CGpuArgs &a [[buffer(8)]], device atomic_uint *error [[buffer(9)]], constant Q38CGpuArgs &pa [[buffer(10)]],\n+    uint tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],\n+    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {\n+    const uint r0=(tg*sn+sg)*Q38C_SCAN_ROWS;\n+    if (r0>=a.p[1]*a.p[3]) return;\n+    const bool skip=atomic_load_explicit(error,memory_order_relaxed)!=0;\n+    bool bad=false, fault=false, range=false;\n+    switch (a.p[2]/32) {\n+    case 1: gdn_scan_rows<1,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    case 2: gdn_scan_rows<2,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    case 3: gdn_scan_rows<3,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    case 4: gdn_scan_rows<4,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    case 5: gdn_scan_rows<5,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    case 6: gdn_scan_rows<6,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    case 7: gdn_scan_rows<7,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    default: gdn_scan_rows<8,true>(v0,v1,v2,v3,v4,a,r0,lane,skip,bad,fault,range,&pa,v5,v6); break;\n+    }\n+    if (bad || (fault && !skip)) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);\n+    if (range) atomic_fetch_or_explicit(error,4u,memory_order_relaxed);\n+}\n /* Each lane owns an entire (value-head,value-channel) state row. FP32 and\n  * sequential feature/time order deliberately mirror C before optimization. */\n kernel void q38c_gdn_scan(Q38C_BUFFERS) {\ndiff --git a/src/qwen38_recurrent_gpu.m b/src/qwen38_recurrent_gpu.m\nindex bcb3693..1b1608d 100644\n--- a/src/qwen38_recurrent_gpu.m\n+++ b/src/qwen38_recurrent_gpu.m\n@@ -8,7 +8,7 @@\n /* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide\n  * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run\n  * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */\n-struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast, *conv_fast; bool ref_fuse; };\n+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast, *conv_fast, *prep_scan; bool ref_fuse; };\n void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }\n void q38c_gpu_destroy(Q38CGpu *g) {\n     if (!g) return;\n@@ -21,6 +21,7 @@ void q38c_gpu_destroy(Q38CGpu *g) {\n     if (g->add_fast) CFRelease(g->add_fast);\n     if (g->act_fast) CFRelease(g->act_fast);\n     if (g->conv_fast) CFRelease(g->conv_fast);\n+    if (g->prep_scan) CFRelease(g->prep_scan);\n     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);\n     free(g);\n }\n@@ -54,6 +55,11 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E\n         if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)\n             *slot[i]=(__bridge_retained void *)p;\n     }\n+    if (!q38_ref_kernels(\"exact\")) { /* Decode V: GDN prepare folded into the scan (reordered L2 sums); optional */\n+        id<MTLFunction> fn=[lib newFunctionWithName:@\"q38c_gdn_prep_scan_fast\"];\n+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;\n+        if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=128) g->prep_scan=(__bridge_retained void *)p;\n+    }\n     g->ref_fuse=q38_ref_kernels(\"fuse\"); /* once per context, never per token */\n     *out=g; return q38c_error(e,Q38_OK,NULL);\n }\n@@ -284,6 +290,43 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,\n     return q38c_error(e,Q38_OK,NULL);\n }\n \n+/* Decode V: GDN_PREP then GDN_SCAN in one dispatch (q38c_gdn_prep_scan_fast) with the\n+ * prepare's eight views and the scan's five, whose PREP, LOGG and BETA inputs are not\n+ * read (nor written). Q38_UNSUPPORTED, nothing encoded: no kernel, the fuse or exact\n+ * family, or a shape the fast scan does not take; the caller encodes the two ops. */\n+static Qwen38Status gdn_prep_scan(Q38CGpu *g, Qwen38GpuCommand cmd, const Q38CGpuSpec *spec,\n+        const Qwen38GpuF32 *pv, const Qwen38GpuF32 *sv, Qwen38Error *e) {\n+    if (!g->prep_scan || g->ref_fuse) return q38c_error(e,Q38_UNSUPPORTED,\"no fused GDN prepare + scan\");\n+    id<MTLDevice> dev=(__bridge id<MTLDevice>)cmd.device;\n+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;\n+    Q38C_TRY(gpu_span(cmd.error_word,dev,e));\n+    Q38CGpuArgs pa={0}, sa={0}; size_t pspan[8]={0}, sspan[8]={0}, work, sw; uint32_t writes; uint64_t inplace;\n+    for (size_t j=0;j<8;++j) Q38C_TRY(gpu_view(pv[j],dev,&pa.v[j],&pspan[j],e));\n+    for (size_t j=0;j<5;++j) Q38C_TRY(gpu_view(sv[j],dev,&sa.v[j],&sspan[j],e));\n+    Q38C_TRY(stage(Q38C_GDN_PREP,spec,&pa,&work,&writes,&inplace,e));\n+    Q38C_TRY(stage(Q38C_GDN_SCAN,spec,&sa,&sw,&writes,&inplace,e));\n+    if (!(sa.p[2]%32==0 && sa.p[2]<=256 && sa.p[3]%4==0 && pa.v[0].stride[1]==1 && sa.v[3].stride[2]==1 &&\n+          pa.v[0].dim[0]==sa.v[0].dim[0]))\n+        return q38c_error(e,Q38_UNSUPPORTED,\"GDN shape outside the fused prepare + scan\");\n+    /* outputs (state, out) must not alias the inputs (qkv, alpha, br, A, dt) or each other */\n+    for (size_t i=3;i<5;++i) {\n+        for (size_t j=0;j<5;++j) if (gpu_overlap(sv[i].span,sspan[i],pv[j].span,pspan[j]))\n+            return q38c_error(e,Q38_INVALID_ARGUMENT,\"fused GDN output aliases an input\");\n+        if (gpu_overlap(sv[i].span,sspan[i],cmd.error_word,4)) return q38c_error(e,Q38_INVALID_ARGUMENT,\"GDN view aliases the error word\");\n+    }\n+    if (gpu_overlap(sv[3].span,sspan[3],sv[4].span,sspan[4])) return q38c_error(e,Q38_INVALID_ARGUMENT,\"GDN state aliases its output\");\n+    if (!sw) return q38c_error(e,Q38_OK,NULL);\n+    const Qwen38GpuSpan bind[7]={pv[0].span,pv[1].span,pv[2].span,sv[3].span,sv[4].span,pv[3].span,pv[4].span};\n+    for (size_t j=0;j<7;++j) [enc setBuffer:(__bridge id<MTLBuffer>)bind[j].buffer offset:bind[j].offset_bytes atIndex:j];\n+    [enc setBuffer:(__bridge id<MTLBuffer>)pv[0].span.buffer offset:pv[0].span.offset_bytes atIndex:7];\n+    [enc setBytes:&sa length:sizeof sa atIndex:8];\n+    [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:9];\n+    [enc setBytes:&pa length:sizeof pa atIndex:10];\n+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->prep_scan];\n+    [enc dispatchThreadgroups:MTLSizeMake((sa.p[1]*sa.p[3]+15)/16,1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];\n+    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];\n+    return q38c_error(e,Q38_OK,NULL);\n+}\n /* Row r of a [T,...] view, as a one-row view (R4 per-row scan). */\n static Qwen38GpuF32 row_view(Qwen38GpuF32 v, size_t r) {\n     v.span.offset_bytes+=r*v.stride_bytes[0]; v.dim[0]=1; v.span.bytes=v.stride_bytes[0]; return v;\n@@ -385,6 +428,16 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd\n     }\n     MARK(\"gdn.conv\",Q38_PROFILE_NONE,0);\n     OP(CONV,V(QKV),K(CONV),V(CONV),w->history);\n+    Qwen38Status fused_scan=Q38_UNSUPPORTED;\n+    if (!(w->snap && w->snap_rows)) { /* Decode V: prepare folded into the scan */\n+        const Qwen38GpuF32 pv[8]={V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA)};\n+        const Qwen38GpuF32 sv[5]={V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv)};\n+        MARK(\"gdn.scan\",Q38_PROFILE_NONE,0);\n+        fused_scan=gdn_prep_scan(g,cmd,&spec,pv,sv,e);\n+        if (fused_scan && fused_scan!=Q38_UNSUPPORTED) return fused_scan;\n+    }\n+    if (!fused_scan) {}\n+    else {\n     MARK(\"gdn.prep\",Q38_PROFILE_NONE,0);\n     OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));\n     MARK(\"gdn.scan\",Q38_PROFILE_NONE,0);\n@@ -395,6 +448,7 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd\n             if (r<w->snap_rows) { w->snap(w->snap_ctx,&cmd,r); enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; }\n         }\n     } else OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));\n+    }\n     MARK(\"gdn.norm\",Q38_PROFILE_NONE,0);\n     OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));\n     MARK(\"gdn.out\",TYPE(OUT),BYTES(OUT));\n",
+  "dwarfstar_revision": "fc80bd695da76ee14bcb86820bf900a5cdfda806",
+  "checkpoint": "models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf",
+  "checkpoint_bytes": 147207127040,
+  "checkpoint_sha256_recomputed": false,
+  "sha256": {
+    "picoforge": "96446e32f86cd03bb8bccbf3735cfab680013f39424991b24b6a8e4124d5af4a",
+    "picoforge.metallib": "43324be345b3f1845e361bccbe4d1ef165e649fee1a1e437858d124604d921b8",
+    "ds4-bench": "27e2c3666d82123ca3d3bd93f6fff09545df4de91e606ee52c78445c99a4e5d0",
+    "ds4": "411ab7fff5d7c5b5e7cc5dc1be11500a4808bb13383a9ab6f7c3ba88ecf222ff",
+    "tool": "a6b13e314cb3286b5a954c2b5ab95eed9392172935acc2c3e6701b2dfe9bdbbb"
+  },
+  "before": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t88%; charging; (no estimate) present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 3735552,
+    "graphics": true,
+    "lid_open": true,
+    "clamshell_causes_sleep": true,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "thermal_state": "nominal"
+  },
+  "picoforge_bin": "build/d4/main",
+  "after": {
+    "batt": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=7864419)\t71%; charging; (no estimate) present: true\n",
+    "therm": "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\nNote: No CPU power status has been recorded\n",
+    "swap_used_bytes": 5439488,
+    "graphics": true,
+    "lid_open": false,
+    "clamshell_causes_sleep": false,
+    "lid_ok": true,
+    "ac_power": true,
+    "systemstate": "Current System Capabilities are: CPU Graphics Audio Network",
+    "thermal_state": "fair"
+  }
+}

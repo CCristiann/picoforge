@@ -1083,6 +1083,64 @@ static int scan_main(int argc,char **argv,const char *library) {
     return 0;
 }
 
+/* Decode V fused GDN prepare + scan (q38c_gpu_encode_prep_scan) against the two fast ops:
+ *   prepscan <fused|seq> t hk hv dk dv initial
+ * stdin: qkv [t,c] raw (as after the conv), alpha [t,hv], br [t,hv], A [hv], dt [hv], state
+ * [hv,dv,dk] FP32. stdout: status, error word, dispatches (uint32), out [t,hv,dv], state. */
+static int prepscan_main(int argc,char **argv,const char *library) {
+    bool fused=!strcmp(argv[2],"fused");
+    assert(argc==9 && (fused || !strcmp(argv[2],"seq")));
+    size_t t=number(argv[3]), hk=number(argv[4]), hv=number(argv[5]), dk=number(argv[6]), dv=number(argv[7]),
+           c=2*hk*dk+hv*dv;
+    uint32_t initial=(uint32_t)number(argv[8]);
+    assert(t && t<=1024 && hk && hv && hv%hk==0 && dk && dk<=256 && dv);
+    /* qkv alpha br A dt | prep logg beta state out */
+    size_t elems[10]={t*c,t*hv,t*hv,hv,hv,t*c,t*hv,t*hv,hv*dv*dk,t*hv*dv};
+    @autoreleasepool {
+        id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
+        NSError *error=nil;
+        id<MTLLibrary> lib=[dev newLibraryWithURL:[NSURL fileURLWithPath:@(library)] error:&error]; assert(lib);
+        Q38CGpu *ops=NULL;
+        assert(q38c_gpu_create((__bridge void *)dev,(__bridge void *)lib,&ops,NULL)==Q38_OK);
+        id<MTLBuffer> buf[10], word=shared(dev,4); Qwen38GpuSpan sp[10];
+        for (size_t b=0;b<10;b++) {
+            buf[b]=shared(dev,4*elems[b]);
+            if (b<5 || b==8) assert(fread(buf[b].contents,4,elems[b],stdin)==elems[b]);
+            else memset(buf[b].contents,0xa5,buf[b].length);
+            sp[b]=(Qwen38GpuSpan){(__bridge void *)buf[b],0,buf[b].length};
+        }
+        assert(fgetc(stdin)==EOF);
+        Qwen38GpuF32 row2c[2], th[6], vec[2];
+        row2c[0]=(Qwen38GpuF32){sp[0],2,{t,c,1,1},{c*4,4,0,0}}; row2c[1]=(Qwen38GpuF32){sp[5],2,{t,c,1,1},{c*4,4,0,0}};
+        const size_t thb[4]={1,2,6,7};
+        for (size_t i=0;i<4;i++) th[i]=(Qwen38GpuF32){sp[thb[i]],2,{t,hv,1,1},{hv*4,4,0,0}};
+        vec[0]=(Qwen38GpuF32){sp[3],1,{hv,1,1,1},{4,0,0,0}}; vec[1]=(Qwen38GpuF32){sp[4],1,{hv,1,1,1},{4,0,0,0}};
+        Qwen38GpuF32 state=(Qwen38GpuF32){sp[8],3,{hv,dv,dk,1},{dv*dk*4,dk*4,4,0}};
+        Qwen38GpuF32 out=(Qwen38GpuF32){sp[9],3,{t,hv,dv,1},{hv*dv*4,dv*4,4,0}};
+        const Qwen38GpuF32 pv[8]={row2c[0],th[0],th[1],vec[0],vec[1],row2c[1],th[2],th[3]};
+        const Qwen38GpuF32 sv[5]={row2c[1],th[2],th[3],state,out};
+        Q38CGpuSpec spec={.gdn={.key_heads=hk,.value_heads=hv,.key_dim=dk,.value_dim=dv,.rms_eps=1e-6f,.l2_eps=1e-6f}};
+        ((uint32_t *)word.contents)[0]=initial;
+        id<MTLCommandBuffer> command=[[dev newCommandQueue] commandBuffer];
+        Q38DispatchCounter *counter=[Q38DispatchCounter alloc];
+        counter->target=[command computeCommandEncoder]; counter->dispatches=counter->barriers=0;
+        Qwen38GpuCommand cmd={(__bridge void *)dev,(__bridge void *)counter,{(__bridge void *)word,0,4},false};
+        Qwen38Status st;
+        if (fused) st=q38c_gpu_encode_prep_scan(ops,cmd,&spec,pv,sv,NULL);
+        else {
+            st=q38c_gpu_encode(ops,cmd,Q38C_GDN_PREP,&spec,pv,8,NULL);
+            if (!st) st=q38c_gpu_encode(ops,cmd,Q38C_GDN_SCAN,&spec,sv,5,NULL);
+        }
+        [counter->target endEncoding]; [command commit]; [command waitUntilCompleted];
+        assert(command.status==MTLCommandBufferStatusCompleted && !command.error);
+        uint32_t head[3]={(uint32_t)st,((uint32_t *)word.contents)[0],counter->dispatches};
+        assert(fwrite(head,4,3,stdout)==3 && fwrite(buf[9].contents,4,elems[9],stdout)==elems[9] &&
+               fwrite(buf[8].contents,4,elems[8],stdout)==elems[8]);
+        q38c_gpu_destroy(ops);
+    }
+    return 0;
+}
+
 /* R2.2 exact index scores + device selection (q38d_gpu_encode SCORES, then q38d_select_encode):
  *   index <oracle|fast> h d visible ratio budget
  * stdin: iq [h,d], block keys [visible/ratio,d] FP32. stdout: error word, scores [n], ids
@@ -1433,6 +1491,7 @@ int main(int argc,char **argv) {
     if (argc>2 && (!strcmp(argv[1],"attend") || !strcmp(argv[1],"attbench"))) return attend_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"index")) return index_main(argc,argv,library);
     if (argc>2 && (!strcmp(argv[1],"scan") || !strcmp(argv[1],"scanbench"))) return scan_main(argc,argv,library);
+    if (argc>2 && !strcmp(argv[1],"prepscan")) return prepscan_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"rope")) return rope_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"hcadd")) return hcadd_main(argc,argv,library);
     if (argc>2 && !strcmp(argv[1],"act")) return act_main(argc,argv,library);

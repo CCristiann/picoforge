@@ -8,7 +8,7 @@
 /* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide
  * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run
  * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */
-struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast, *conv_fast; bool ref_fuse; };
+struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast, *conv_fast, *prep_scan; bool ref_fuse; };
 void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }
 void q38c_gpu_destroy(Q38CGpu *g) {
     if (!g) return;
@@ -21,6 +21,7 @@ void q38c_gpu_destroy(Q38CGpu *g) {
     if (g->add_fast) CFRelease(g->add_fast);
     if (g->act_fast) CFRelease(g->act_fast);
     if (g->conv_fast) CFRelease(g->conv_fast);
+    if (g->prep_scan) CFRelease(g->prep_scan);
     for (size_t i=0;i<Q38C_GPU_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
     free(g);
 }
@@ -53,6 +54,11 @@ Qwen38Status q38c_gpu_create(void *device, void *library, Q38CGpu **out, Qwen38E
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
         if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=Q38C_RMS_THREADS)
             *slot[i]=(__bridge_retained void *)p;
+    }
+    if (!q38_ref_kernels("exact")) { /* Decode V: GDN prepare folded into the scan (reordered L2 sums); optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"q38c_gdn_prep_scan_fast"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:NULL] : nil;
+        if (p && p.threadExecutionWidth==32 && p.maxTotalThreadsPerThreadgroup>=128) g->prep_scan=(__bridge_retained void *)p;
     }
     g->ref_fuse=q38_ref_kernels("fuse"); /* once per context, never per token */
     *out=g; return q38c_error(e,Q38_OK,NULL);
@@ -284,6 +290,69 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     return q38c_error(e,Q38_OK,NULL);
 }
 
+/* Decode V: GDN_PREP then GDN_SCAN in one dispatch (q38c_gdn_prep_scan_fast) with the
+ * prepare's eight views and the scan's five, whose PREP, LOGG and BETA inputs are not
+ * read (nor written). gdn_prep_scan_plan validates and fills the two records without
+ * encoding, so the caller can MARK the profile group only when the dispatch follows
+ * (an empty group breaks the profile). Q38_UNSUPPORTED: no kernel, the fuse or exact
+ * family, or a shape the fast scan does not take; the caller encodes the two ops. */
+typedef struct { Q38CGpuArgs pa, sa; size_t work; } Q38CPrepScan;
+static Qwen38Status gdn_prep_scan_plan(Q38CGpu *g, Qwen38GpuCommand cmd, const Q38CGpuSpec *spec,
+        const Qwen38GpuF32 *pv, const Qwen38GpuF32 *sv, Q38CPrepScan *ps, Qwen38Error *e) {
+    if (!g->prep_scan || g->ref_fuse) return q38c_error(e,Q38_UNSUPPORTED,"no fused GDN prepare + scan");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)cmd.device;
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    if (!enc || g->device!=cmd.device || enc.device!=dev) return q38c_error(e,Q38_OWNER,"foreign GPU command");
+    Q38C_TRY(gpu_span(cmd.error_word,dev,e));
+    id<MTLBuffer> error=(__bridge id<MTLBuffer>)cmd.error_word.buffer;
+    if (error.storageMode!=MTLStorageModeShared || cmd.error_word.bytes<4)
+        return q38c_error(e,Q38_CAPACITY,"error word needs four Shared bytes");
+    const size_t word=cmd.concurrent && cmd.error_word.bytes>=8 ? 8 : 4;
+    size_t pspan[8]={0}, sspan[8]={0}, sw; uint32_t writes; uint64_t inplace;
+    memset(ps,0,sizeof *ps);
+    for (size_t j=0;j<8;++j) Q38C_TRY(gpu_view(pv[j],dev,&ps->pa.v[j],&pspan[j],e));
+    for (size_t j=0;j<5;++j) Q38C_TRY(gpu_view(sv[j],dev,&ps->sa.v[j],&sspan[j],e));
+    Q38C_TRY(stage(Q38C_GDN_PREP,spec,&ps->pa,&ps->work,&writes,&inplace,e));
+    Q38C_TRY(stage(Q38C_GDN_SCAN,spec,&ps->sa,&sw,&writes,&inplace,e));
+    const Q38CGpuArgs *pa=&ps->pa, *sa=&ps->sa;
+    if (!(sa->p[2]%32==0 && sa->p[2]<=256 && sa->p[3]%4==0 && pa->v[0].stride[1]==1 && sa->v[3].stride[2]==1 &&
+          pa->v[0].dim[0]==sa->v[0].dim[0]))
+        return q38c_error(e,Q38_UNSUPPORTED,"GDN shape outside the fused prepare + scan");
+    /* no bound view may alias the error word; the outputs (state, out) must not alias
+     * the inputs (qkv, alpha, br, A, dt) or each other */
+    for (size_t j=0;j<5;++j) if (gpu_overlap(pv[j].span,pspan[j],cmd.error_word,word))
+        return q38c_error(e,Q38_INVALID_ARGUMENT,"view aliases GPU error word");
+    for (size_t i=3;i<5;++i) {
+        if (gpu_overlap(sv[i].span,sspan[i],cmd.error_word,word)) return q38c_error(e,Q38_INVALID_ARGUMENT,"view aliases GPU error word");
+        for (size_t j=0;j<5;++j) if (gpu_overlap(sv[i].span,sspan[i],pv[j].span,pspan[j]))
+            return q38c_error(e,Q38_INVALID_ARGUMENT,"fused GDN output aliases an input");
+    }
+    if (gpu_overlap(sv[3].span,sspan[3],sv[4].span,sspan[4])) return q38c_error(e,Q38_INVALID_ARGUMENT,"forbidden GPU alias");
+    ps->work=sw;
+    return q38c_error(e,Q38_OK,NULL);
+}
+static void gdn_prep_scan_encode(Q38CGpu *g, Qwen38GpuCommand cmd, const Qwen38GpuF32 *pv,
+        const Qwen38GpuF32 *sv, const Q38CPrepScan *ps) {
+    if (!ps->work) return;
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    const Qwen38GpuSpan bind[7]={pv[0].span,pv[1].span,pv[2].span,sv[3].span,sv[4].span,pv[3].span,pv[4].span};
+    for (size_t j=0;j<7;++j) [enc setBuffer:(__bridge id<MTLBuffer>)bind[j].buffer offset:bind[j].offset_bytes atIndex:j];
+    [enc setBytes:&ps->sa length:sizeof ps->sa atIndex:8];
+    [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:9];
+    [enc setBytes:&ps->pa length:sizeof ps->pa atIndex:10];
+    [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->prep_scan];
+    [enc dispatchThreadgroups:MTLSizeMake((ps->sa.p[1]*ps->sa.p[3]+15)/16,1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+    [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+Qwen38Status q38c_gpu_encode_prep_scan(Q38CGpu *g, Qwen38GpuCommand cmd, const Q38CGpuSpec *spec,
+        const Qwen38GpuF32 *pv, const Qwen38GpuF32 *sv, Qwen38Error *e) {
+    if (!g || !spec || !pv || !sv || !cmd.compute_encoder || !cmd.device)
+        return q38c_error(e,Q38_INVALID_ARGUMENT,"missing GPU dispatch argument");
+    Q38CPrepScan ps;
+    Q38C_TRY(gdn_prep_scan_plan(g,cmd,spec,pv,sv,&ps,e));
+    gdn_prep_scan_encode(g,cmd,pv,sv,&ps);
+    return q38c_error(e,Q38_OK,NULL);
+}
 /* Row r of a [T,...] view, as a one-row view (R4 per-row scan). */
 static Qwen38GpuF32 row_view(Qwen38GpuF32 v, size_t r) {
     v.span.offset_bytes+=r*v.stride_bytes[0]; v.dim[0]=1; v.span.bytes=v.stride_bytes[0]; return v;
@@ -385,6 +454,19 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     }
     MARK("gdn.conv",Q38_PROFILE_NONE,0);
     OP(CONV,V(QKV),K(CONV),V(CONV),w->history);
+    bool fused_scan=false;
+    const Qwen38GpuF32 pv[8]={V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA)};
+    const Qwen38GpuF32 sv[5]={V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv)};
+    Q38CPrepScan ps;
+    if (!(w->snap && w->snap_rows)) { /* Decode V: prepare folded into the scan */
+        Qwen38Status st=gdn_prep_scan_plan(g,cmd,&spec,pv,sv,&ps,e);
+        if (st && st!=Q38_UNSUPPORTED) return st;
+        fused_scan=!st;
+    }
+    if (fused_scan) {
+        MARK("gdn.scan",Q38_PROFILE_NONE,0);
+        gdn_prep_scan_encode(g,cmd,pv,sv,&ps);
+    } else {
     MARK("gdn.prep",Q38_PROFILE_NONE,0);
     OP(GDN_PREP,V(CONV),V(ALPHA),V(BR),K(A),K(DT),V(PREP),V(LOGG),V(BETA));
     MARK("gdn.scan",Q38_PROFILE_NONE,0);
@@ -395,6 +477,7 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
             if (r<w->snap_rows) { w->snap(w->snap_ctx,&cmd,r); enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder; }
         }
     } else OP(GDN_SCAN,V(PREP),V(LOGG),V(BETA),w->state,group_view(V(SCAN),hv,dv));
+    }
     MARK("gdn.norm",Q38_PROFILE_NONE,0);
     OP(GDN_NORM,group_view(V(SCAN),hv,dv),K(GN),group_view(V(NORM),hv,dv),group_view(V(Z),hv,dv));
     MARK("gdn.out",TYPE(OUT),BYTES(OUT));

@@ -49,7 +49,7 @@ Measured on the Q2 file. DwarfStar `fc80bd6` ran on the same file and machine.
 | | picoforge | DwarfStar |
 |---|---:|---:|
 | Decode, short prompt | 30.0 tok/s | 32.7 tok/s |
-| Decode, 8K context | 27.6 tok/s | 32.0 tok/s |
+| Decode, 8K context | 29.5 tok/s | 32.0 tok/s |
 | Prefill, 8K prompt | 46.2 s FP32, 24.9 s half | ~14 s |
 | MTP over plain decode | 1.09–1.65x | — |
 | Q4 file, experts streamed from SSD | ~18–19 tok/s | doesn't fit on 64 GB |

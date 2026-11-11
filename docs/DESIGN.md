@@ -53,7 +53,8 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | R4 MTP | Adaptive, cost-aware draft depth; multi-row verify | Done: 1.09-1.65x over plain decode, exact greedy |
 | Decode II | Token split over 4 command buffers, fused shared-expert activation | Done: 0.78x (target 0.95x not met) |
 | Decode III | Reordered-sum kernels under measured tolerances (router, HC tail, IQ2 gate+up, Q2_K down), shared expert overlapped | Done: 0.86x short, 0.86x at 8K |
-| Decode IV | Q8_0 matvec lane map, RMS and HC_ADD folded into neighbouring kernels, one-dispatch GDN conv | Done: 0.92x short |
+| Decode IV | Q8_0 matvec lane map, RMS and HC_ADD folded into neighbouring kernels, one-dispatch GDN conv | Done: 0.92x short, 0.92x at 8K |
+| Decode V | GDN prepare folded into the scan, router top-k with per-lane cache | In progress: 33.09 -> 32.68 ms/token (A/B) |
 | R5 SSD streaming | Expert pool with parallel reads and event gates; the Q4 file on 64 GiB | Done: Q4 at ~18-19 tok/s with a warm pool |
 | P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done: 8K prompt 46.2 s (FP32), 24.9 s (half) |
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
