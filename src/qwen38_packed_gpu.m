@@ -36,7 +36,7 @@ static size_t gemm_min_rows(void);
 static size_t env_size(const char *name, size_t fallback);
 /* Fused gate+up and down+reduce (qwen38_moe_fused.metal): simdgroups (one
  * output each) per threadgroup; the kernels read the count from the dispatch. */
-enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4, Q38_GATE_UP8_SG = 8 };
+enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4, Q38_GATE_UP8_SG = 8, Q38_GATE_UP8_ROWS = 2 /* GATE_UP8_ROWS */ };
 /* R2.7: down+reduce output rows per simdgroup (DOWN_ROWS in the kernel). */
 enum { Q38_DOWN_REDUCE_ROWS = 4, Q38_DOWN_SP_MAX_SLOTS = 32 /* DOWN_SP_MAX_SLOTS */ };
 /* R2.6 fused HC tail: simdgroups (one d each) per threadgroup, and the
@@ -555,9 +555,9 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
     /* Decode III: the IQ2_XXS kernel with a reordered dot where its float4 x reads are aligned */
     const bool eight=ctx->gate_up8 && gl->gguf_type==16 && !(gl->k_logical%256) && !(x.span.offset_bytes%16) &&
         !(x.stride_bytes[0]%16);
-    const size_t sgs=eight ? Q38_GATE_UP8_SG : Q38_GATE_UP_SG;
+    const size_t sgs=eight ? Q38_GATE_UP8_SG : Q38_GATE_UP_SG, per=eight ? sgs*Q38_GATE_UP8_ROWS : sgs;
     if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
-    MTLSize groups=MTLSizeMake((gl->n_out+sgs-1)/sgs,act.dim[0],1);
+    MTLSize groups=MTLSizeMake((gl->n_out+per-1)/per,act.dim[0],1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*sgs,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }

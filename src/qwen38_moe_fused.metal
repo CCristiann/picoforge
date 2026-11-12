@@ -135,8 +135,16 @@ GATE_UP_KERNEL(q38_moe_gate_up_mxfp4, Q38Mxfp4)
  * from ds4 fc80bd6, MIT, metal/qwen4.metal: qwen4_row_dot), the grid is kept as
  * floats and the 128 sign masks (parity bit included) in threadgroup memory,
  * signs are applied to x by select, and the 8 products and the scaled sum are
- * FMAs. One simdgroup per output as before, GATE_UP8_SG of them per
- * threadgroup to amortise the tables. Q38_REF_KERNELS=exact keeps gate_up. */
+ * FMAs. GATE_UP8_SG simdgroups per threadgroup amortise the tables.
+ * Decode VII: each simdgroup computes GATE_UP8_ROWS consecutive outputs (the
+ * host divides by it): the x loads, the loop and the reduction are shared,
+ * while every row keeps its own arithmetic and order, so act is bit-identical
+ * to one row per simdgroup (gbench 640x2560, 10 slots: 55.0 -> 48.2 us). A row
+ * whose weights fall outside the tensor or whose act element is out of range
+ * sets bit 2 and is not written, as before. Q38_REF_KERNELS=exact keeps gate_up.
+ * (Half products measured 36 us with 4 rows, not shipped: an 8-product partial
+ * overflows half once |x| passes ~190.) */
+#define GATE_UP8_ROWS 2
 kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
         device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
         device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
@@ -153,47 +161,62 @@ kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], devic
     for (uint i = tid; i < 128; i += tgs) smask[i] = uchar(i | ((popcount(i) & 1u) << 7));
     threadgroup_barrier(mem_flags::mem_threadgroup);
     constant PackedArgs &p = a.gate.base, &q = a.up.base;
-    const ulong n = ulong(group.x) * sgs + sg;
+    const ulong n0 = (ulong(group.x) * sgs + sg) * GATE_UP8_ROWS;
     const uint m = group.y;
-    if (n >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
+    if (n0 >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
     const uint expert = ids[m];
-    const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
-    const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
-    const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4), yi = ulong(m) * (p.y_stride / 4) + n;
-    if (expert >= a.gate.experts || expert >= a.up.experts || grow > p.weight_end || p.row_bytes > p.weight_end - grow ||
-        urow > q.weight_end || q.row_bytes > q.weight_end - urow || (p.k_logical & 255u) || (xi & 3) ||
-        xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi || yi >= p.y_bytes / 4) {
+    const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4);
+    if (expert >= a.gate.experts || expert >= a.up.experts || (p.k_logical & 255u) || (xi & 3) ||
+        xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi) {
         if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
         return;
     }
+    device const uchar *rows[GATE_UP8_ROWS][2];
+    bool live[GATE_UP8_ROWS], outside = false;
+    for (uint k = 0; k < GATE_UP8_ROWS; k++) {
+        const ulong n = n0 + k;
+        const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
+        const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
+        const bool bad = grow > p.weight_end || p.row_bytes > p.weight_end - grow ||
+            urow > q.weight_end || q.row_bytes > q.weight_end - urow || ulong(m) * (p.y_stride / 4) + n >= p.y_bytes / 4;
+        live[k] = n < p.n_out && !bad;
+        outside = outside || (n < p.n_out && bad);
+        rows[k][0] = gw + (live[k] ? grow : 0); rows[k][1] = uw + (live[k] ? urow : 0);
+    }
+    if (outside && !lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
     const uint nb = p.k_logical / 256, grp = lane / 4, j = lane % 4;
-    device const uchar *rows[2] = {gw + grow, uw + urow};
     device const float4 *xv = (device const float4 *)(x + xi) + 2 * lane;
-    float acc[2] = {0.0f, 0.0f};
+    float acc[GATE_UP8_ROWS][2];
+    for (uint k = 0; k < GATE_UP8_ROWS; k++) { acc[k][0] = 0.0f; acc[k][1] = 0.0f; }
     for (uint b = 0; b < nb; b++) {
         const float4 x0 = xv[64 * b], x1 = xv[64 * b + 1];
-        for (uint r = 0; r < 2; r++) {
-            device const uchar *blk = rows[r] + 66 * ulong(b);
-            device const ushort *qp = (device const ushort *)(blk + 2) + 4 * grp; /* blocks are 2-byte aligned */
-            const uint qg = uint(qp[0]) | (uint(qp[1]) << 16), qs = uint(qp[2]) | (uint(qp[3]) << 16);
-            const float dl = (float(*(device const half *)blk) * float(2 * (qs >> 28) + 1)) * 0.125f;
-            const uint sm = smask[(qs >> (7 * j)) & 127u], gi = (qg >> (8 * j)) & 255u;
-            const float4 g0 = gridf[2 * gi], g1 = gridf[2 * gi + 1];
-            const float4 s0 = select(x0, -x0, bool4(sm & 1u, sm & 2u, sm & 4u, sm & 8u));
-            const float4 s1 = select(x1, -x1, bool4(sm & 16u, sm & 32u, sm & 64u, sm & 128u));
-            float part = g0.x * s0.x;
-            part = fma(g0.y, s0.y, part); part = fma(g0.z, s0.z, part); part = fma(g0.w, s0.w, part);
-            part = fma(g1.x, s1.x, part); part = fma(g1.y, s1.y, part); part = fma(g1.z, s1.z, part);
-            part = fma(g1.w, s1.w, part);
-            acc[r] = fma(dl, part, acc[r]);
+        for (uint k = 0; k < GATE_UP8_ROWS; k++) { /* a dead row reads the tensor's first bytes, unused */
+            for (uint r = 0; r < 2; r++) {
+                device const uchar *blk = rows[k][r] + 66 * ulong(b);
+                device const ushort *qp = (device const ushort *)(blk + 2) + 4 * grp; /* blocks are 2-byte aligned */
+                const uint qg = uint(qp[0]) | (uint(qp[1]) << 16), qs = uint(qp[2]) | (uint(qp[3]) << 16);
+                const float dl = (float(*(device const half *)blk) * float(2 * (qs >> 28) + 1)) * 0.125f;
+                const uint sm = smask[(qs >> (7 * j)) & 127u], gi = (qg >> (8 * j)) & 255u;
+                const float4 g0 = gridf[2 * gi], g1 = gridf[2 * gi + 1];
+                const float4 s0 = select(x0, -x0, bool4(sm & 1u, sm & 2u, sm & 4u, sm & 8u));
+                const float4 s1 = select(x1, -x1, bool4(sm & 16u, sm & 32u, sm & 64u, sm & 128u));
+                float part = g0.x * s0.x;
+                part = fma(g0.y, s0.y, part); part = fma(g0.z, s0.z, part); part = fma(g0.w, s0.w, part);
+                part = fma(g1.x, s1.x, part); part = fma(g1.y, s1.y, part); part = fma(g1.z, s1.z, part);
+                part = fma(g1.w, s1.w, part);
+                acc[k][r] = fma(dl, part, acc[k][r]);
+            }
         }
     }
-    const float g = simd_sum(acc[0]), u = simd_sum(acc[1]);
-    if (lane) return;
-    const float sv = q38_silu(g), h = sv * u;
-    act[yi] = h;
-    if (!isfinite(g) || !isfinite(u) || !isfinite(sv) || !isfinite(h))
-        atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    bool bad = false;
+    for (uint k = 0; k < GATE_UP8_ROWS; k++) {
+        const float g = simd_sum(acc[k][0]), u = simd_sum(acc[k][1]);
+        if (lane || !live[k]) continue;
+        const float sv = q38_silu(g), h = sv * u;
+        act[ulong(m) * (p.y_stride / 4) + n0 + k] = h;
+        bad = bad || !isfinite(g) || !isfinite(u) || !isfinite(sv) || !isfinite(h);
+    }
+    if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
 }
 
 /* R1.5c: the routed down projection and q38f_reduce in one pass.
@@ -347,34 +370,33 @@ static inline void down_reduce_sp(device const uchar *w, device const float *act
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (sg || lane) return;
-    float sum[DOWN_ROWS];
-    for (uint r = 0; r < DOWN_ROWS; r++) sum[r] = 0.0f;
+    /* Decode VII: lane r of simdgroup 0 reduces row r (lane 0 did all DOWN_ROWS
+     * rows, then their HC_ADD, one after the other), each row in the same slot
+     * order with the same expressions: y, routed and res keep their bits
+     * (dbench Q2_K 2560x640, 10 slots: 51 -> 44 us). */
+    if (sg || lane >= nr) return;
+    const uint r = lane;
+    float sum = 0.0f;
     bool finite = true;
     for (uint s = 0; s < a.slots; s++) {
         if (bad[s]) { atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); return; }
-        const uint pair = t * a.slots + s;
-        for (uint r = 0; r < nr; r++) {
-            const float d = part[s][r];
-            finite = finite && isfinite(d);
-            sum[r] += scores[pair] * d;
-        }
+        const float d = part[s][r];
+        finite = finite && isfinite(d);
+        sum += scores[t * a.slots + s] * d;
     }
     const bool skip = e.h && atomic_load_explicit(error, memory_order_relaxed) != 0;
-    for (uint r = 0; r < nr; r++) {
-        routed[ri + r] = sum[r];
-        const float v = sum[r] + sigmoid[t] * shared[ri + r];
-        if (!finite || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
-        y[yi + r] = v;
-        for (uint s = 0; s < e.h; s++) { /* Decode III HC_ADD: q38c_hc_add_fast's expression and check */
-            const ulong i = ulong(t) * e.res_stride + ulong(s) * e.width + n0 + r;
-            const float rv = res[i], sc = inj[ulong(t) * e.inj_stride + s];
-            if (!isfinite(rv) || !isfinite(sc) || !isfinite(v)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
-            if (skip) continue;
-            const float out = rv + sc * v;
-            if (!isfinite(out)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
-            res[i] = out;
-        }
+    routed[ri + r] = sum;
+    const float v = sum + sigmoid[t] * shared[ri + r];
+    if (!finite || !isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+    y[yi + r] = v;
+    for (uint s = 0; s < e.h; s++) { /* Decode III HC_ADD: q38c_hc_add_fast's expression and check */
+        const ulong i = ulong(t) * e.res_stride + ulong(s) * e.width + n0 + r;
+        const float rv = res[i], sc = inj[ulong(t) * e.inj_stride + s];
+        if (!isfinite(rv) || !isfinite(sc) || !isfinite(v)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
+        if (skip) continue;
+        const float out = rv + sc * v;
+        if (!isfinite(out)) { atomic_fetch_or_explicit(error, 1u, memory_order_relaxed); continue; }
+        res[i] = out;
     }
 }
 #define DOWN_REDUCE_SP_KERNEL(name, F) \
