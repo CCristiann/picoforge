@@ -2,6 +2,26 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode VII (2026-11-12): MoE kernels, and what did not work
+
+Branch `perf/qwen38-decode7`. Encoding the next token ahead was dropped after a look: the PLE n-gram
+table is 320M BF16 rows (~102 GB), read from the SSD on the CPU once the argmax is known; running the
+GPU ahead speculatively would advance every GDN state before an EOS is seen (undoing it means copying
+~110 MB per token), and the safe variant (encode early, commit when the id is known) saves only the
+encode of the first layer, ~0.05-0.1 ms of the 0.37 ms boundary.
+
+MoE, both bit-identical (real logits sha unchanged, fast kernels 98/98, model tests, G3 2.76e-7):
+the IQ2_XXS gate+up computes two outputs per simdgroup, sharing the x loads, the loop and the
+reduction (gbench 640x2560, 10 slots: 55 -> 48.5 us); the parallel-slot down reduces row r on lane r
+instead of lane 0 doing all rows and their HC_ADD (dbench Q2_K: 51 -> 43.5 us). A/B against main,
+6 alternating pairs: median 32.97 -> 32.18 ms/token (noisy machine; best 32.31 -> 31.64).
+
+Rejected, kept in the notes: half products in the gate+up (36 us, -24%) move the real logits by 0.12
+scaled with argmax 32/33 and KL 0.012 mean (x / 16 to avoid half overflow: 0.15, KL 0.032): the
+per-kernel error is small against S (2.1e-3) but compounds over 48 layers, far outside the G3 gate.
+Also slower or equal: 4 rows (FP32), 16 simdgroups, half in the Q2_K down, 8 down rows, the sign
+applied as an XOR on x's sign bit (53 vs 48.7 us).
+
 ## Decode VI (2026-11-12): the GPU starts earlier
 
 Branch `perf/qwen38-decode6`. Both changes are bit-identical (real logits sha unchanged).

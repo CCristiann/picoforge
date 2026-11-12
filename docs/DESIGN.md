@@ -56,6 +56,7 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | Decode IV | Q8_0 matvec lane map, RMS and HC_ADD folded into neighbouring kernels, one-dispatch GDN conv | Done: 0.92x short, 0.92x at 8K |
 | Decode V | GDN prepare folded into the scan, router top-k with per-lane cache | Done: 33.09 -> 32.68 ms/token (A/B) |
 | Decode VI | Doubling command-buffer cuts, HC tail with 16 simdgroups | Done: ~-0.8 ms/token (A/B); paired bench pending |
+| Decode VII | MoE gate+up two rows per simdgroup, parallel down epilogue | Done: ~-0.7 ms/token (A/B) |
 | R5 SSD streaming | Expert pool with parallel reads and event gates; the Q4 file on 64 GiB | Done: Q4 at ~18-19 tok/s with a warm pool |
 | P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done: 8K prompt 46.2 s (FP32), 24.9 s (half) |
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
