@@ -2,6 +2,23 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Decode VI (2026-11-12): the GPU starts earlier
+
+Branch `perf/qwen38-decode6`. Both changes are bit-identical (real logits sha unchanged).
+
+The runs.jsonl decode profile showed wall - GPU time = 0.87 ms per token: the token was cut into 4
+even command buffers, so the GPU idled while the CPU encoded the first 12 layers (of a 2.1 ms
+encode). The cuts now double (after layers 1, 3, 7, 15, 31): the GPU starts after one layer's encode
+and the CPU stays ahead; idle 0.87 -> 0.37 ms, A/B against main median 33.49 -> 32.46 ms/token.
+`PICOFORGE_CMD_SPLIT=K` keeps K even buffers. The rest of the idle is the token boundary (wait, argmax
+readback, first layer); hiding it needs the next token encoded ahead, which the CPU-side PLE n-gram
+rows prevent for now. The HC tail8 kernel runs 16 simdgroups per threadgroup instead of 8 (half the
+HC_LOW prologues): 32.26 -> 32.03 ms/token.
+
+Negative, not kept: the RMS-folded HC down with 2 or 4 rows per threadgroup (slower: fewer
+threadgroups), float4 x loads, 16 simdgroups (no change). Measurements stopped there: system
+memory pressure from other applications made the runs noisy, so no paired bench yet.
+
 ## Decode V (2026-11-11): GDN prepare in the scan, a faster router
 
 Branch `perf/qwen38-decode5`. The Decode IV 8K pairing first (`bench/qwen38/d4_20261111/README.md`):
