@@ -41,6 +41,10 @@ enum { Q38_GATE_UP_SG = 4, Q38_DOWN_REDUCE_SG = 4, Q38_GATE_UP8_SG = 8 };
 enum { Q38_DOWN_REDUCE_ROWS = 4, Q38_DOWN_SP_MAX_SLOTS = 32 /* DOWN_SP_MAX_SLOTS */ };
 /* R2.6 fused HC tail: simdgroups (one d each) per threadgroup, and the
  * kernel's HC_TAIL_MAX_K and HC_TAIL_MAX_H. */
+/* Decode VI: the K-320 tail8 kernel with 16 simdgroups per threadgroup (each simdgroup owns one output
+ * column, so the bits do not change): half the threadgroups repeat the HC_LOW prologue and its barrier
+ * (A/B -0.2 ms/token against 8; 32 and 4 slower). */
+enum { Q38_HC_TAIL8_SG = 16 };
 enum { Q38_HC_TAIL_SG = 8, Q38_HC_TAIL_MAX_K = 1024, Q38_HC_TAIL_MAX_H = 4 };
 static const uint32_t q38_indexed_types[Q38_INDEXED_FAST]={16,10,12,39};
 /* Mirror of dense_split in qwen38_matvec.metal (the kernel checks the match):
@@ -179,7 +183,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     if (!q38_ref_kernels("exact")) { /* Decode III: optional; absent -> the R2.6 kernel */
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_hc_tail8_f16"];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
-        ctx->hc_tail8=p ? fast_pipeline(p,Q38_HC_TAIL_SG) : NULL;
+        ctx->hc_tail8=p ? fast_pipeline(p,Q38_HC_TAIL8_SG) : NULL;
     }
     for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? Q38_DENSE_S : 1);
     for (size_t i=0;i<3;i++) ctx->gemm[i]=fast_pipeline(gemm[i],Q38_GEMM_SG);
@@ -997,7 +1001,8 @@ Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *ctx, const Qwen38GpuCommand
     }
     [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
     [encoder setBytes:&args length:sizeof args atIndex:9];
-    [encoder dispatchThreadgroups:MTLSizeMake((width+Q38_HC_TAIL_SG-1)/Q38_HC_TAIL_SG,t,1)
-            threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*Q38_HC_TAIL_SG,1,1)];
+    const size_t tsg=tail8 ? Q38_HC_TAIL8_SG : Q38_HC_TAIL_SG;
+    [encoder dispatchThreadgroups:MTLSizeMake((width+tsg-1)/tsg,t,1)
+            threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*tsg,1,1)];
     return q38_b_result(err,Q38_OK,"");
 }
