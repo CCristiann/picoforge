@@ -46,20 +46,24 @@ class CliTests(unittest.TestCase):
 
     def test_command_split_is_bit_identical(self):
         """D1: a decode token split into several command buffers (PICOFORGE_CMD_SPLIT) gives the same
-        ids and the same last-row logits, bit for bit, as one command buffer."""
+        ids and the same last-row logits, bit for bit, as one command buffer; so does the default
+        (Decode VI: doubling cuts)."""
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             path = Path(directory)
             results = {}
-            for split in ('1', '3', '8'):
+            for split in ('1', '3', '8', 'default'):
                 cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
                        '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{split}.f32'),
                        '--token-ids', str(path/f'{split}.json')]
-                done = subprocess.run(cmd, cwd=ROOT, capture_output=True, env={**os.environ, 'PICOFORGE_CMD_SPLIT': split})
+                env = {k: v for k, v in os.environ.items() if k != 'PICOFORGE_CMD_SPLIT'}
+                done = subprocess.run(cmd, cwd=ROOT, capture_output=True,
+                                      env=env if split == 'default' else {**env, 'PICOFORGE_CMD_SPLIT': split})
                 self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
                 results[split] = ((path/f'{split}.f32').read_bytes(), json.loads((path/f'{split}.json').read_text())['generated_ids'])
             self.assertGreater(len(results['1'][1]), 4)
             self.assertEqual(results['3'], results['1'])
             self.assertEqual(results['8'], results['1'])
+            self.assertEqual(results['default'], results['1'])
 
     def test_fused_shared_expert_matches_moe_oracle(self):
         """D1.2: the shared expert's SILU, MUL and SIGMOID in one dispatch (q38f_shared_act) gives the same

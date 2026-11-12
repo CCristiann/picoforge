@@ -58,7 +58,7 @@ struct Qwen38GpuForward {
     void *snapshot; size_t snapshot_bytes;
     Qwen38GpuCheckpoint saved;
     Q38Profile *prof; const Qwen38GpuTicket *prof_ticket; bool prof_failed; /* R0.2, trunk appends only */
-    const Qwen38GpuTicket *flush_ticket; uint32_t cmd_split; /* D1: command buffers per decode token (1 = one) */
+    const Qwen38GpuTicket *flush_ticket; uint32_t cmd_split; /* D1: even command buffers per decode token (1 = one); 0 = doubling cuts (Decode VI) */
     /* R4 diagnostic, off unless Q38_ROUTE_LOG names a new file: the routed expert ids of
      * every trunk append, [layer][token][top_k], to count the experts a multi-row
      * verify reads beyond one row. Never read by the forward itself. */
@@ -373,7 +373,7 @@ static Qwen38Status create(Qwen38GpuForward *f,void *library,Qwen38Error *e) {
         if (rb) f->route_buf=(__bridge_retained void *)rb;
         if (!rb || !f->route_log) return fail(e,Q38_GPU_ERROR,"route log (Q38_ROUTE_LOG must name a new file)");
     }
-    { const char *sp=getenv("PICOFORGE_CMD_SPLIT"); long n=sp ? strtol(sp,NULL,10) : 4; f->cmd_split=n<1 ? 1 : n>8 ? 8 : (uint32_t)n; }
+    { const char *sp=getenv("PICOFORGE_CMD_SPLIT"); long n=sp ? strtol(sp,NULL,10) : 0; f->cmd_split=!sp ? 0 : n<1 ? 1 : n>8 ? 8 : (uint32_t)n; }
     f->gpu_argmax=!q38_ref_kernels("argmax");  /* oracle mode builds no argmax pipeline (as 360acf0) */
     if (f->gpu_argmax && !(f->argmax=argmax_pipeline(f->device,library))) return fail(e,Q38_GPU_ERROR,"graph argmax pipeline");
     TRY(bind_weight(f,QWEN38_GLOBAL_LAYER,Q38_TOKEN_EMBD,&f->embed,e));
@@ -766,7 +766,11 @@ static Qwen38Status run(Qwen38GpuForward *f,Qwen38GpuCommand *cmd,size_t t,uint3
         if (!added) { MARK(i,"hc_add",Q38_PROFILE_NONE,0); TRY(hc_add(f,*cmd,t,e)); }
         emit(f,*cmd,i,Q38G_OUTPUT,time_view(f->r,t));
         /* D1: a decode token (or a few verify rows) is split into cmd_split command buffers so the GPU starts early. */
-        if (f->flush_ticket && t<=4 && f->cmd_split>1 && i+1<layers && (i+1)*f->cmd_split%layers<f->cmd_split)
+        /* Decode VI: by default (cmd_split 0) the cuts double: after layers 1, 3, 7, 15, 31, so the GPU
+         * starts after one layer's encode instead of a quarter of the token's (~0.5 ms idle per token)
+         * and the CPU stays ahead; PICOFORGE_CMD_SPLIT=K keeps K even buffers (1 = one). */
+        const bool cut=f->cmd_split ? (i+1)*f->cmd_split%layers<f->cmd_split : ((i+2)&(i+1))==0;
+        if (f->flush_ticket && t<=4 && f->cmd_split!=1 && i+1<layers && cut)
             TRY(q38g_session_flush(f->session,f->flush_ticket,cmd,e));
     }
     TRY(hc_read(f,cmd,QWEN38_GLOBAL_LAYER,&f->final,HC_FINAL,t,e)); emit(f,*cmd,QWEN38_GLOBAL_LAYER,Q38G_FINAL,time_view(f->mixed,t));
