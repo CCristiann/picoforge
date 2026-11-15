@@ -49,15 +49,14 @@ Measured on the Q2 file. DwarfStar `fc80bd6` ran on the same file and machine.
 | | picoforge | DwarfStar |
 |---|---:|---:|
 | Decode, short prompt | 32.2 tok/s | 33.2 tok/s |
-| Decode, 8K context | 29.5 tok/s | 32.0 tok/s |
-| Prefill, 8K prompt | 24.9 s FP32 (`--chunk 2048`), ~27 s at the default chunk | ~14 s |
+| Decode, 8K context | 29.0 tok/s | 31.1 tok/s |
+| Prefill, 8K prompt | 26.9 s FP32 (24.9 s with `--chunk 2048`) | ~14 s |
 | MTP over plain decode | 1.09–1.65x | — |
 | Q4 file, experts streamed from SSD | ~18–19 tok/s | doesn't fit on 64 GB |
 
-Decode short is the paired 3+20 run of 2026-11-15 (0.969x); the 8K decode row is from Decode IV and
-waits for its re-pairing. The prefill figures are single warm runs; FP32 is the default and runs its
-GEMMs on the Neural Accelerators with FP32 operands, bit-identical to the simdgroup path. The 3+20
-protocol pass of the prefill comes with R8.
+Decode rows are the paired 3+20 runs of 2026-11-15 (0.969x short, 0.935x at 8K). The 8K prefill is
+the median of the same 20 picoforge samples (FP32, the default; its GEMMs and attention run on the
+Neural Accelerators with FP32 operands); the `--chunk 2048` figure is a single warm run.
 
 Q2 against Q4 on a corpus neither model was trained on: KL 0.40, 77% top-1
 agreement, perplexity +8%. The protocol is in

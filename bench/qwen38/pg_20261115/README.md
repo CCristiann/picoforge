@@ -12,3 +12,17 @@ the prefill work; decode kernels as Decode VII).
 
 **0.969x** (Decode IV: 0.919x). The first pairing of Decode VI + VII. During the run the binary was relinked
 once with the `--power` option (default 100, no change on this path).
+
+## 8K frontier (`paired-8k`)
+
+Same harness and protocol, 8K frontier (8063-token prompt, then 128 forced appends), 3 warm-ups + 20 measured per
+engine, alternating, AC, swap delta 0. Code: 1a4081a (materialized prefill attention, default chunk 1024).
+
+| engine | decode median tok/s | p10 | p90 |
+|---|---:|---:|---:|
+| picoforge | 29.04 | 28.87 | 31.27 |
+| DwarfStar | 31.06 | 30.47 | 32.14 |
+
+**0.935x** (Decode IV: 0.921x). picoforge's prefill of the 8K prompt in the same 20 samples (FP32, chunk 1024):
+median **26.86 s**, p10 26.06, p90 27.79 (session start: 46.2 s single run). ds4-bench reports no prefill time here;
+DwarfStar's ~14 s is the R3 reference.
