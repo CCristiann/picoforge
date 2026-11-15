@@ -31,6 +31,7 @@ static void help(void) {
          "  /ctx N         New context size (clears the conversation).\n"
          "  /reset         Start a new conversation.\n"
          "  /think, /nothink  Reasoning on or off for the next turns.\n"
+         "  /power [N]     GPU duty cycle 1..100 (100: full speed); no N shows it.\n"
          "  /quit, /exit   Leave (Ctrl+D too).\n"
          "  Ctrl+C         Stop the reply and come back here.\n"
          "Anything else is your next chat message.");
@@ -197,6 +198,11 @@ int q38_repl(Q38Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
             ch.thinking=!strcmp(cmd,"/think"); printf("Thinking %s.\n",ch.thinking ? "on" : "off");
         }
         else if (!strcmp(cmd,"/reset")) { forget(&ch); puts("New conversation."); }
+        else if (!strncmp(cmd,"/power",6) && (!cmd[6] || isspace((unsigned char)cmd[6]))) {
+            const char *arg=trim(cmd+6); char *end; errno=0; long n=*arg ? strtol(arg,&end,10) : r->power;
+            if (*arg && (errno || *end || n<1 || n>100)) fprintf(stderr,"picoforge: /power needs N in [1,100]\n");
+            else { r->power=(int)n; r->power_prefill_avg=r->power_decode_avg=0; printf("Power: %d%%.\n",r->power); }
+        }
         else if (!strncmp(cmd,"/ctx",4) && (!cmd[4] || isspace((unsigned char)cmd[4]))) resize(&ch,trim(cmd+4));
         else if (!strncmp(cmd,"/read",5) && (!cmd[5] || isspace((unsigned char)cmd[5]))) {
             char *text=*trim(cmd+5) ? read_file(trim(cmd+5)) : NULL;

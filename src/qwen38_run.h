@@ -50,7 +50,15 @@ typedef struct {
     Q38Sampler sampler;                     /* temperature <= 0: greedy (bench, oracles) */
     size_t last_count;                      /* tokens in the last trunk append */
     struct Q38ExpertPool *pool; int pool_fd; /* R5.1b: PICOFORGE_STREAM_EXPERTS, else NULL */
+    /* --power N / /power N: GPU duty cycle in percent (100: off). After each step (a prefill
+     * chunk, a decode append or an MTP cycle) the host sleeps avg * (100 - N) / N, avg the
+     * running mean of the step's wall time, so work / (work + sleep) = N%. It only spaces
+     * the steps: the numbers do not change. Idea from DwarfStar fc80bd6 (MIT), ds4.c
+     * graph_power_sleep. Measurements (bench, teacher forcing) refuse or skip it. */
+    int power; double power_prefill_avg, power_decode_avg;
 } Q38Run;
+/* Sleep after a step of `work` seconds (avg: that kind of step's running mean). */
+void q38_power_pause(const Q38Run *, double *avg, double work);
 
 typedef struct {
     uint32_t chunk, max_new, stop_after, forced;

@@ -113,6 +113,29 @@ class CliTests(unittest.TestCase):
             expected = [257, *b'user\nhi', 258, 10, 257, *b'assistant\n', 280, 10, 10, 281, 10, 10]
             self.assertEqual(json.loads(ids.read_text())['prompt_ids'], expected)
 
+    def test_power_duty_cycle(self):
+        """--power N only spaces the steps: the same ids and logits bit for bit, a longer run; out of
+        range values and measurements (bench, teacher forcing) are refused."""
+        import time
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
+            path = Path(directory)
+            seconds = {}
+            for power in ('100', '25'):
+                cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT*4)),
+                       '--context', '64', '--chunk', '4', '--max-new', '12', '--power', power,
+                       '--logits', str(path/f'{power}.f32'), '--token-ids', str(path/f'{power}.json')]
+                start = time.monotonic(); self.run_cli(cmd); seconds[power] = time.monotonic() - start
+            self.assertEqual(json.loads((path/'100.json').read_text())['generated_ids'],
+                             json.loads((path/'25.json').read_text())['generated_ids'])
+            self.assertEqual((path/'100.f32').read_bytes(), (path/'25.f32').read_bytes())
+            self.assertGreater(seconds['25'], seconds['100'])
+        base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--tokens', '5,17,300']
+        for args in (['--power', '0'], ['--power', '101'], ['--power', '50', '--bench'],
+                     ['--power', '50', '--teacher-forced', '1']):
+            with self.subTest(args=args):
+                done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
+                self.assertNotEqual(done.returncode, 0)
+
     def test_admission(self):
         base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF)]
         for args in (['--tokens', '5,', '--max-new', '0'], ['--tokens', '512'],
