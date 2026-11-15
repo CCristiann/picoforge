@@ -387,8 +387,8 @@ Qwen38Status q38c_block_encode(Q38CGpu *g, Q38PackedGpu *b, Qwen38GpuCommand cmd
     size_t physical_bytes=0;
     for (size_t i=0;i<count;++i) {
         Q38CGpuView v={0}; Q38C_TRY(gpu_view(all[i],dev,&v,&extent[i],e));
-        if (!q38c_add(physical_bytes,extent[i],&physical_bytes) || physical_bytes>512u*1024u*1024u)
-            return q38c_error(e,Q38_CAPACITY,"composed GPU physical views exceed 512 MiB");
+        if (!q38c_add(physical_bytes,extent[i],&physical_bytes) || physical_bytes>1024u*1024u*1024u)
+            return q38c_error(e,Q38_CAPACITY,"composed GPU physical views exceed 1 GiB");
         if (gpu_overlap(all[i].span,extent[i],cmd.error_word,4))
             return q38c_error(e,Q38_INVALID_ARGUMENT,"composed view aliases error word");
         for (size_t j=0;j<i;++j)

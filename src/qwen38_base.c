@@ -200,8 +200,8 @@ Qwen38Status q38c_work_size(const Q38CLayer *l, size_t tokens, size_t *out, Qwen
     size_t extra=l->constant_bytes, sizes[]={cs.metadata_bytes,cs.payload_bytes,gs.metadata_bytes,gs.payload_bytes};
     for (size_t i=0;i<4;++i) if (!q38c_add(extra,sizes[i],&extra))
         return q38c_error(e,Q38_OVERFLOW,"C state budget overflows");
-    if (extra>512u*1024u*1024u || total>512u*1024u*1024u-extra)
-        return q38c_error(e,Q38_CAPACITY,"C workspace plus layer state exceeds 512 MiB");
+    if (extra>1024u*1024u*1024u || total>1024u*1024u*1024u-extra)
+        return q38c_error(e,Q38_CAPACITY,"C workspace plus layer state exceeds 1 GiB");
     *out=total; return q38c_error(e,Q38_OK,NULL);
 }
 Qwen38Status q38c_work_init(const Q38CLayer *l, size_t tokens, Qwen38Memory memory,
