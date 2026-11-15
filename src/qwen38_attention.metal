@@ -713,3 +713,154 @@ kernel void q38d_merge_mma_batch_gpu(device const float *gate [[buffer(1)]], dev
     attend_merge(gate+row,ids+(ulong)z*b.ids_stride,out+row,s,error,part+(ulong)h.y*(Q38D_MAX_SPLITS/Q38D_MMA_GROUP)*a.h*(a.d+2),
                  h.x,f,tn.x,invalid);
 }
+
+/* ---- Prefill-gap: materialized attention for the prefill batch, on the Neural
+ * Accelerators with FP32 operands (matmul2d float x float: FP32 accuracy, 7.9 TFLOPS
+ * in tools/probe). The split kernels above walk 8 keys at a time with three barriers
+ * and an online rescale (~1 TFLOPS at 8K). Here, per token and KV head, the G <= 16
+ * query heads are the rows of one 16-row tile and the whole selection is done in
+ * three passes over a scratch S [token][kv][16][sp] (sp = the id stride rounded up to
+ * 64; it lives in the split-partials buffer):
+ *   1. q38d_mat_scores_gpu: S = Q K^T over 64-key chunks, d in four 64-wide quarters;
+ *   2. q38d_mat_softmax_gpu: per row, s * 1/sqrt(d), max, exp(s - max) in place, sum;
+ *   3. q38d_mat_pv_gpu: O = P V per quarter of d, then out = O / l * gate.
+ * Same inputs, outputs and error bits as split + merge; the sums run in another order
+ * (attend tolerance), and prefill no longer shares the decode kernel's bits, as the
+ * GEMMs from 32 rows already do. Keys are staged per chunk (gathered by id). */
+#include <metal_tensor>
+#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+#define QM_ROWS 16u
+#define QM_KEYS 64u
+#define QM_QUARTER 64u
+using QmMatmul = mpp::tensor_ops::matmul2d<
+    mpp::tensor_ops::matmul2d_descriptor(16, 64, 32, false, true, false,
+                                         mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
+    execution_simdgroups<4>>;
+using QmMatmulNT = mpp::tensor_ops::matmul2d<   /* right operand stored [k][n]: V as [key][dim] */
+    mpp::tensor_ops::matmul2d_descriptor(16, 64, 32, false, false, false,
+                                         mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
+    execution_simdgroups<4>>;
+static inline uint qm_stride(constant Q38DBatch &b) { return (b.ids_stride + QM_KEYS - 1u) / QM_KEYS * QM_KEYS; }
+kernel void q38d_mat_scores_gpu(device const float *q [[buffer(0)]], device const float *k [[buffer(2)]],
+    device const uint *ids [[buffer(4)]], constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device float *part [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]], uint3 tg [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float ks[QM_KEYS * QM_QUARTER];
+    const uint z = b.first + tg.z, kv = tg.y, group = a.h / a.j;
+    if (tg.z >= b.count) return;
+    const Q38DSplit s = q38d_token_split(a, b, z);
+    const uint k0 = tg.x * QM_KEYS;
+    if (k0 >= s.m) return;
+    const uint nk = min(QM_KEYS, s.m - k0), sp = qm_stride(b);
+    device const uint *id = ids + (ulong)z * b.ids_stride;
+    if (tid < nk && (id[k0 + tid] >= s.n || (k0 + tid && id[k0 + tid] <= id[k0 + tid - 1]))) fail(error, 2);
+    /* Q straight from device memory: the group's rows are contiguous; rows past the group
+     * are outside the tensor's extents (the op reads them as zeros). */
+    auto tq = tensor<device float, dextents<int32_t, 2>, tensor_inline>(
+        (device float *)(q + (ulong)z * a.h * a.d + (ulong)kv * group * a.d), dextents<int32_t, 2>(int(a.d), int(group)),
+        array<int32_t, 2>({1, int(a.d)}));
+    auto tk = tensor(ks, dextents<int32_t, 2>(QM_QUARTER, QM_KEYS));
+    QmMatmul mm;
+    auto acc = mm.get_destination_cooperative_tensor<decltype(tq), decltype(tk), float>();
+    for (uint16_t i = 0; i < acc.get_capacity(); i++) if (acc.is_valid_element(i)) acc[i] = 0.0f;
+    for (uint d0 = 0; d0 < a.d; d0 += QM_QUARTER) {
+        for (uint i = tid; i < QM_KEYS * QM_QUARTER / 4; i += 128) {
+            const uint r = i / (QM_QUARTER / 4), c = (i % (QM_QUARTER / 4)) * 4;
+            float4 v = float4(0.0f);
+            if (r < nk) { const uint key = min(id[k0 + r], s.n - 1u); v = *(device const float4 *)(k + ((ulong)key * a.j + kv) * a.d + d0 + c); }
+            *(threadgroup float4 *)(ks + r * QM_QUARTER + c) = v;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk < QM_QUARTER; kk += 32) {
+            auto sq = tq.slice(int(d0 + kk), 0); auto sk = tk.slice(int(kk), 0);
+            mm.run(sq, sk, acc);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    device float *dst = part + ((ulong)(tg.z * a.j + kv) * QM_ROWS) * sp + k0;
+    auto td = tensor<device float, dextents<int32_t, 2>, tensor_inline>(dst, dextents<int32_t, 2>(int(QM_KEYS), int(QM_ROWS)),
+        array<int32_t, 2>({1, int(sp)}));
+    auto sd = td.slice(0, 0);
+    acc.store(sd);
+}
+kernel void q38d_mat_softmax_gpu(constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    device float *part [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]], uint3 tg [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup float red[8];
+    const uint z = b.first + tg.z, kv = tg.y, r = tg.x;
+    if (tg.z >= b.count || r >= a.h / a.j) return;
+    const Q38DSplit s = q38d_token_split(a, b, z);
+    const uint sp = qm_stride(b);
+    device float *row = part + ((ulong)(tg.z * a.j + kv) * QM_ROWS + r) * sp;
+    const float scale = 1.0f / sqrt(float(a.d));
+    float mx = -INFINITY; bool bad = false;
+    for (uint i = tid; i < s.m; i += 256) { const float v = row[i] * scale; bad = bad || !isfinite(v); mx = max(mx, v); }
+    mx = simd_max(mx); if (!lane) red[sg] = mx;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    mx = red[0]; for (uint i = 1; i < 8; i++) mx = max(mx, red[i]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float l = 0.0f;
+    for (uint i = tid; i < s.m; i += 256) { const float w = exp(row[i] * scale - mx); row[i] = w; l += w; }
+    l = simd_sum(l); if (!lane) red[sg] = l;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (!tid) {
+        float t = 0.0f; for (uint i = 0; i < 8; i++) t += red[i];
+        part[((ulong)b.count * a.j * QM_ROWS) * sp + (ulong)(tg.z * a.j + kv) * QM_ROWS + r] = t;
+        if (!isfinite(t) || t <= 0.0f) bad = true;
+    }
+    if (bad) fail(error, 1);
+}
+kernel void q38d_mat_pv_gpu(device const float *gate [[buffer(1)]], device const float *v [[buffer(3)]],
+    device const uint *ids [[buffer(4)]], device float *out [[buffer(5)]], constant Q38DGpuArgs &a [[buffer(6)]],
+    device atomic_uint *error [[buffer(7)]], device float *part [[buffer(8)]], constant Q38DBatch &b [[buffer(9)]],
+    uint3 tg [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float ps[QM_ROWS * QM_KEYS], vs[QM_QUARTER * QM_KEYS];
+    const uint z = b.first + tg.z, kv = tg.y, d0 = tg.x * QM_QUARTER, group = a.h / a.j;
+    if (tg.z >= b.count || d0 >= a.d) return;
+    const Q38DSplit s = q38d_token_split(a, b, z);
+    const uint sp = qm_stride(b);
+    device const uint *id = ids + (ulong)z * b.ids_stride;
+    device const float *prow = part + ((ulong)(tg.z * a.j + kv) * QM_ROWS) * sp;
+    /* P straight from S: extents (m keys, group rows), so columns past m and rows past the
+     * group read as zeros. */
+    auto tp = tensor<device float, dextents<int32_t, 2>, tensor_inline>((device float *)prow,
+        dextents<int32_t, 2>(int(s.m), int(group)), array<int32_t, 2>({1, int(sp)}));
+    auto tv = tensor(vs, dextents<int32_t, 2>(QM_QUARTER, QM_KEYS));   /* [key][dim]: extents (dims, keys) */
+    QmMatmulNT mm;
+    auto acc = mm.get_destination_cooperative_tensor<decltype(tp), decltype(tv), float>();
+    for (uint16_t i = 0; i < acc.get_capacity(); i++) if (acc.is_valid_element(i)) acc[i] = 0.0f;
+    bool bad = false;
+    for (uint k0 = 0; k0 < s.m; k0 += QM_KEYS) {
+        const uint nk = min(QM_KEYS, s.m - k0);
+        for (uint i = tid; i < QM_KEYS * QM_QUARTER / 4; i += 128) {   /* V rows of the selected keys */
+            const uint key = i / (QM_QUARTER / 4), c = (i % (QM_QUARTER / 4)) * 4;
+            float4 x = float4(0.0f);
+            if (key < nk) { const uint kid = min(id[k0 + key], s.n - 1u); x = *(device const float4 *)(v + ((ulong)kid * a.j + kv) * a.d + d0 + c); }
+            bad = bad || !all(isfinite(x));
+            *(threadgroup float4 *)(vs + key * QM_QUARTER + c) = x;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk < QM_KEYS; kk += 32) {
+            auto sp2 = tp.slice(int(k0 + kk), 0); auto sv = tv.slice(0, int(kk));
+            mm.run(sp2, sv, acc);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    auto tc = tensor(ps, dextents<int32_t, 2>(QM_QUARTER, QM_ROWS));   /* the 16 x 64 result reuses ps */
+    auto sc = tc.slice(0, 0);
+    acc.store(sc);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device const float *lsum = part + ((ulong)b.count * a.j * QM_ROWS) * sp + (ulong)(tg.z * a.j + kv) * QM_ROWS;
+    bool range = false;
+    for (uint i = tid; i < group * QM_QUARTER; i += 128) {
+        const uint r = i / QM_QUARTER, c = i % QM_QUARTER, h = kv * group + r;
+        const ulong o = (ulong)z * a.h * a.d + (ulong)h * a.d + d0 + c;
+        const float gt = gate[o], l = lsum[r];
+        bad = bad || !isfinite(gt); range = range || gt < 0 || gt > 1;
+        const float y = ps[r * QM_QUARTER + c] / l * gt;
+        bad = bad || !isfinite(y);
+        out[o] = y;
+    }
+    if (bad) fail(error, 1);
+    if (range) fail(error, 2);
+}
