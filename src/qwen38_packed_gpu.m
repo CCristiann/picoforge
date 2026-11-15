@@ -624,6 +624,7 @@ static Qwen38Status encode_grouped(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
          .experts=(uint32_t)experts,.x_divisor=(uint32_t)divisor},
         {.base=wire(up ? ul : gl,o1,o1+(up ? ul : gl)->tensor_bytes,pairs,x,y,up ? &b : &a),
          .expert_bytes=(up ? ul : gl)->expert_bytes,.experts=(uint32_t)experts,.x_divisor=(uint32_t)divisor}};
+    args[0].base.reserved=x.span.offset_bytes%16==0; /* Prefill-gap: float4 x loads allowed */
     [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
     [encoder setBuffer:a.weights offset:0 atIndex:0];
     [encoder setBuffer:up ? b.weights : a.weights offset:0 atIndex:1];

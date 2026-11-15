@@ -656,8 +656,21 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
         for (uint i = 0; i < 2; i++)
             for (uint j = 0; j < 4; j++) acc[m][i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
     constexpr uint CPS = GG_K / F::CHUNK; /* chunks per K step: 1, or 2 for Q2_K */
+    const bool xvec = p.reserved == 1 && p.x_stride % 16 == 0; /* x binding and rows 16-byte aligned */
     for (uint k0 = 0; k0 < p.k_logical; k0 += GG_K) {
         const uint kc = min(uint(GG_K), p.k_logical - k0);
+        if (xvec && kc == GG_K) { /* Prefill-gap: float4 x loads, the same values and checks */
+            for (uint i = tid; i < GG_M * GG_K / 4; i += GG_THREADS) {
+                const uint r = i / (GG_K / 4), c = (i % (GG_K / 4)) * 4;
+                float4 v = float4(0.0f);
+                if (r < mt) {
+                    const ulong xi = ulong(order[r0 + r] / ga.x_divisor) * (p.x_stride / 4);
+                    if (xi <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xi) v = *(device const float4 *)(x + xi + k0 + c);
+                    else if (!c) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+                }
+                *(threadgroup float4 *)(xs + r * GG_K + c) = v;
+            }
+        } else {
         for (uint i = tid; i < GG_M * GG_K; i += GG_THREADS) {
             const uint r = i / GG_K, c = i % GG_K;
             float v = 0.0f;
@@ -667,6 +680,7 @@ static inline void grouped(device const uchar *gw, device const uchar *uw, devic
                 else if (!c) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
             }
             xs[i] = v;
+        }
         }
         for (uint job = tid; job < M * GG_N * CPS; job += GG_THREADS) {
             const uint m = job / (GG_N * CPS), r = job / CPS % GG_N, j = job % CPS;
@@ -784,6 +798,7 @@ static inline void grouped_nax(device const uchar *gw, device const uchar *uw, d
     for (uint16_t i = 0; i < cg.get_capacity(); i++) if (cg.is_valid_element(i)) { cg[i] = 0.0f; cu[i] = 0.0f; }
     /* Each staging thread owns the x rows it gathers for the whole K loop. */
     constexpr uint CPS = GN_K / F::CHUNK;
+    const bool xvec = p.reserved == 1 && p.x_stride % 16 == 0;
     for (uint k0 = 0; k0 < p.k_logical; k0 += GN_K) {
         const uint kc = min(uint(GN_K), p.k_logical - k0);
         for (uint i = tid; i < GN_M * GN_K / 4; i += GG_THREADS) {
@@ -792,7 +807,8 @@ static inline void grouped_nax(device const uchar *gw, device const uchar *uw, d
             if (r < mt) {
                 const ulong xi = ulong(order[r0 + r] / ga.x_divisor) * (p.x_stride / 4);
                 if (xi <= p.x_bytes / 4 && p.k_logical <= p.x_bytes / 4 - xi) {
-                    for (uint j = 0; j < 4; j++) v[j] = c + j < kc ? half(x[xi + k0 + c + j]) : 0.0h;
+                    if (xvec && kc == GN_K) v = half4(*(device const float4 *)(x + xi + k0 + c)); /* Prefill-gap */
+                    else for (uint j = 0; j < 4; j++) v[j] = c + j < kc ? half(x[xi + k0 + c + j]) : 0.0h;
                 } else if (!c) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
             }
             *(threadgroup half4 *)(xs + r * GN_K + c) = v;
