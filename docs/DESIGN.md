@@ -61,6 +61,7 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done: 8K prompt 46.2 s (FP32), 24.9 s (half) |
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
 | R6 Next generation | Support for the next Qwen release (a 27B dense and a Flash-Next sibling) | Waiting for the release |
+| Prefill gap | GDN prefill kernels restored, vector staging, FP32 GEMMs and attention on the Neural Accelerators (FP32 operands), grouped MoE occupancy, `--power` | Done: 8K prompt FP32 46.2 -> 26.9 s; decode 0.969x short, 0.935x at 8K |
 | R8 Closure | Final protocol benchmarks, the per-technique ladder, writeup | Next |
 
 **Not goals:** an API server or coding agent, vision, batched sessions, other

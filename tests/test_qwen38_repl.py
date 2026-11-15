@@ -56,8 +56,11 @@ class ReplTests(unittest.TestCase):
         self.assertEqual((plain['replays'], mtp['replays']), (0, 0))
 
     def test_commands_and_full_context(self):
-        done, state = self.repl(['/help', '/nope', '/quit', 'never sent'])
+        done, state = self.repl(['/help', '/nope', '/power 40', '/power', '/power 0', '/quit', 'never sent'])
         self.assertIn(b'/quit', done.stdout)
+        self.assertIn(b'/power', done.stdout)
+        self.assertEqual(done.stdout.count(b'Power: 40%.'), 2)   # set, then shown
+        self.assertIn(b'/power needs N in [1,100]', done.stderr)
         self.assertIn(b'unknown command /nope', done.stderr)
         self.assertIsNone(state)
         done, state = self.repl(['short', 'x' * 400])

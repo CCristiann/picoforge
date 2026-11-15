@@ -6,7 +6,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-struct Q38DGpu { void *device, *pipeline[Q38D_ALL_OPS]; bool scalar_attention, reference, mma; };
+struct Q38DGpu { void *device, *pipeline[Q38D_ALL_OPS], *mat[3]; bool scalar_attention, reference, mma; };
 /* P5.1: the MMA split kernel for this layout and this many keys per split (else the
  * R2.1 split kernel; Q38_QSA_SPLIT set at creation keeps the R2.1 kernel always). */
 static bool use_mma(const Q38DGpu *g, uint32_t h, uint32_t j, uint32_t d, uint32_t keys) {
@@ -19,6 +19,7 @@ void q38d_gpu_destroy(Q38DGpu *g) {
     if (!g) return;
     if (g->device) CFRelease(g->device);
     for (size_t i=0;i<Q38D_ALL_OPS;++i) if (g->pipeline[i]) CFRelease(g->pipeline[i]);
+    for (size_t i=0;i<3;++i) if (g->mat[i]) CFRelease(g->mat[i]);
     free(g);
 }
 Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Error *e) {
@@ -60,6 +61,20 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
         if (i>=Q38D_SPLIT && p.threadExecutionWidth!=32)
             g->reference=true;  /* the fast kernels' simd_sum, simd_any and 8-lane groups assume 32 lanes */
         g->pipeline[i]=(__bridge_retained void *)p;
+    }
+    /* Prefill-gap: the materialized attention for prefill batches (8K FP32: qsa.core 4.91 ->
+     * 2.57 s). Q38_QSA_MAT=0 or Q38_REF_KERNELS=exact keep the MMA split (and its decode bits);
+     * the attention oracle family keeps the reference path anyway. */
+    const char *mv=getenv("Q38_QSA_MAT");
+    if (!(mv && *mv=='0') && !q38_ref_kernels("exact")) {
+        NSString *const mat[3]={@"q38d_mat_scores_gpu",@"q38d_mat_softmax_gpu",@"q38d_mat_pv_gpu"};
+        bool ok=true; id<MTLComputePipelineState> ps[3];
+        for (size_t i=0;i<3;i++) {
+            id<MTLFunction> f=[lib newFunctionWithName:mat[i]];
+            ps[i]=f ? [dev newComputePipelineStateWithFunction:f error:NULL] : nil;
+            ok=ok && ps[i] && ps[i].maxTotalThreadsPerThreadgroup>=(i==1 ? 256u : 128u) && ps[i].threadExecutionWidth==32;
+        }
+        if (ok) for (size_t i=0;i<3;i++) g->mat[i]=(__bridge_retained void *)ps[i];
     }
     *out=g; return result(e,Q38_OK);
 }
@@ -377,6 +392,32 @@ static Qwen38Status layer_batch(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
     batch(g,cmd,Q38D_TAIL_BATCH,&a,&b,&l->bids,1,MTLSizeMake(r,t,1),MTLSizeMake(MIN(r,256u),1,1),false);
     wait_all(cmd);
     Q38DGpuArgs at={.h=h,.j=j,.d=d};
+    /* Prefill-gap: materialized attention, S [tokens][j][16][sp] then the row sums, in the
+     * split-partials buffer (need checked above: 128 tokens x 2 x 16 x 2112 floats fit). */
+    const uint32_t sp=(ids_stride+63u)/64u*64u, mat_step=128u;
+    if (g->mat[0] && d%64u==0 && d<=256u && j && h%j==0 && h/j<=16u &&
+        ((size_t)mat_step*j*16u*sp+(size_t)mat_step*j*16u)*4u<=l->bpart.bytes) {
+        id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+        for (uint32_t first=0;first<t;first+=mat_step) {
+            b.first=first; b.count=MIN(mat_step,t-first);
+            Qwen38GpuSpan v[]={row(l->qr,0,t),row(l->gate,0,t),row(l->key_cache,0,pos0+t),row(l->value_cache,0,pos0+t),
+                l->bids,row(l->out,0,t)};
+            /* the batch's last token sees the most keys: at most min(id stride, visible) */
+            const uint32_t most=MIN(ids_stride,pos0+first+b.count), group=h/j;
+            const MTLSize grids[3]={MTLSizeMake((most+63u)/64u,j,b.count),MTLSizeMake(group,j,b.count),MTLSizeMake(d/64u,j,b.count)};
+            for (size_t k=0;k<3;k++) {
+                [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->mat[k]];
+                for (size_t i=0;i<6;++i) [enc setBuffer:(__bridge id<MTLBuffer>)v[i].buffer offset:v[i].offset_bytes atIndex:i];
+                [enc setBytes:&at length:sizeof at atIndex:6];
+                [enc setBuffer:(__bridge id<MTLBuffer>)cmd.error_word.buffer offset:cmd.error_word.offset_bytes atIndex:7];
+                [enc setBuffer:(__bridge id<MTLBuffer>)l->bpart.buffer offset:l->bpart.offset_bytes atIndex:8];
+                [enc setBytes:&b length:sizeof b atIndex:9];
+                [enc dispatchThreadgroups:grids[k] threadsPerThreadgroup:MTLSizeMake(k==1 ? 256 : 128,1,1)];
+                wait_all(cmd);
+            }
+        }
+        return result(e,Q38_OK);
+    }
     uint32_t most_keys; { uint32_t splits; q38d_attend_splits(ids_stride,&splits,&most_keys); } /* m <= budget+r-1 */
     const uint32_t split_op=use_mma(g,h,j,d,most_keys) ? Q38D_SPLIT_MMA_BATCH : Q38D_SPLIT_BATCH;
     /* P5.2: the MMA path writes MAX_SPLITS/GROUP partials per token, so the same buffer holds GROUP x the tokens. */

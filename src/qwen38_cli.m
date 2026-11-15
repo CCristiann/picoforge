@@ -50,12 +50,14 @@ static void usage(void) {
         "        $PICOFORGE_MTP_COST=c2,c3,c4,delta[,mu]; exact greedy verification of up to 1+3 rows)\n"
         "       [--profile FILE.csv] (per-op GPU time of trunk appends; MTP appends are not profiled)\n"
         "       [--teacher-forced N] (--tokens only: prefill all but the last N IDs, append those one by one)\n"
+        "       [--power N] (or $PICOFORGE_POWER; GPU duty cycle 1..100, default 100: pauses between steps\n"
+        "        trade speed for a cooler, quieter Mac; not with bench or --teacher-forced)\n"
         "       [--prefill-precision fp32|half] (or $PICOFORGE_PREFILL_PRECISION; half: prefill GEMMs on the\n"
         "        Neural Accelerators, half operands, FP32 accumulation; decode stays FP32)\n"
         "       [--temp T] [--top-k K] [--top-p P] [--min-p P] [--seed N] [--no-mtp]\n"
         "Chat (REPL, --chat): sampled (T 0.6, top-k 20, top-p 0.95) with MTP; --temp 0 is greedy.\n"
         "Measurements (bench, --tokens, --logits): greedy, no MTP unless asked.\n"
-        "Defaults: context 8192, chunk 1024, max-new 32.\n");
+        "Defaults: context 8192, chunk 1024 (2048: ~5%% faster long prefill, +1.2 GB; only with memory to spare), max-new 32.\n");
 }
 /* Greedy choice shared by ordinary and teacher-forced decode: first maximum wins. */
 static int32_t greedy(const float *logits,uint32_t n) {
@@ -210,6 +212,13 @@ size_t q38_policy_choose(const Q38Policy *p,size_t kmax) {
     }
     return best;
 }
+void q38_power_pause(const Q38Run *r,double *avg,double work) {
+    if (r->power<=0 || r->power>=100 || !(work>0) || !isfinite(work)) return;
+    *avg=*avg>0 ? *avg*0.875+work*0.125 : work;          /* as ds4: 1/8 of each new step */
+    const double pause=*avg*(100.0-r->power)/r->power;
+    struct timespec ts={(time_t)pause,(long)((pause-(double)(time_t)pause)*1e9)};
+    while (nanosleep(&ts,&ts) && errno==EINTR && !q38_stopped) {}
+}
 void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
     const Qwen38ConfigView *c=r->c; Qwen38GpuForward *graph=r->graph; Qwen38Error e;
     float *logits=r->logits; Qwen38F32Mut *y=&r->y; *t=(Q38Turn){.reason="length"};
@@ -219,6 +228,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
     const bool use_id=!o.logfile && q38_sampler_greedy(&r->sampler); int32_t next_id=0;
     t->prefill_start=q38_now();
     for (size_t start=0;start<count && !q38_stopped;start+=o.chunk) {
+        const double chunk_start=q38_now();
         size_t n=MIN((size_t)o.chunk,count-start); y->dim[0]=start+n==count ? 1 : 0;
         append(r,tokens+start,n,"prefill",use_id && start+n==count ? &next_id : NULL,&t->prefill);
         residual_offset=n-1;
@@ -233,6 +243,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
             fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
             fflush(stdout);
         }
+        if (start+n<count) q38_power_pause(r,&r->power_prefill_avg,q38_now()-chunk_start);
     }
     t->prefill_end=q38_now(); y->dim[0]=1;
     if (q38_stopped) t->reason="cancelled";
@@ -260,7 +271,11 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
     Q38Policy *pol=&r->policy; const uint32_t vocab=c->vocab_size;
     bool have_id=use_id; size_t pend_off=residual_offset,pend_n=0; int32_t pend[QWEN38_VERIFY_ROWS],probe=-1;
     uint64_t mtp_done=r->mtp ? qwen38_gpu_mtp_info(graph).next_pos : 0;
+    double step_mark=q38_now();
     for (uint32_t step=0;step<MAX(o.max_new,1u) && !q38_stopped;step++) {
+        if (step && r->power>0 && r->power<100) {   /* the previous step, then its pause */
+            q38_power_pause(r,&r->power_decode_avg,q38_now()-step_mark); step_mark=q38_now();
+        }
         if (got==o.stop_after) { t->reason="cancelled"; break; }
         if (o.logfile && fwrite(logits,4,vocab,o.logfile)!=vocab) die("logits write failed");
         if (!o.max_new) break;
@@ -429,7 +444,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
  * model comes from $PICOFORGE_MODEL, the only model in models/, or a prompt
  * (model_select.c). A bare ./picoforge is the chat. */
 bool qwen38_short_form(int argc,char **argv) {
-    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision",NULL};
+    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision","--power",NULL};
     if (argc==1) return true;
     for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
     return false;
@@ -474,6 +489,8 @@ int qwen38_cli(int argc,char **argv) {
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
     bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false,no_mtp=false;
     float temp=-1,top_p=0.95f,min_p=0; uint32_t top_k=20; uint64_t seed=(uint64_t)time(NULL);
+    uint32_t power=100;
+    { const char *p=getenv("PICOFORGE_POWER"); if (p && *p) power=number(p,1,100,"PICOFORGE_POWER"); }
     const char *mtp_draft=getenv("PICOFORGE_MTP_DRAFT");
     { const char *p=getenv("PICOFORGE_PREFILL_PRECISION");
       if (p && *p && strcmp(p,"fp32") && strcmp(p,"half")) die("PICOFORGE_PREFILL_PRECISION must be fp32 or half"); }
@@ -499,7 +516,8 @@ int qwen38_cli(int argc,char **argv) {
             if (strcmp(value,"fp32") && strcmp(value,"half")) die("--prefill-precision must be fp32 or half");
             setenv("PICOFORGE_PREFILL_PRECISION",value,1);
         }
-        else if (!strcmp(opt,"--chunk")) chunk=number(value,1,1024,opt);
+        else if (!strcmp(opt,"--chunk")) chunk=number(value,1,2048,opt);
+        else if (!strcmp(opt,"--power")) power=number(value,1,100,opt);
         else if (!strcmp(opt,"--temp")) temp=fnumber(value,0,10,opt);
         else if (!strcmp(opt,"--top-k")) top_k=number(value,1,Q38_SAMPLE_MAX_K,opt);
         else if (!strcmp(opt,"--top-p")) top_p=fnumber(value,0.01f,1,opt);
@@ -510,7 +528,7 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--metallib")) metallib=value;
         else if (!strcmp(opt,"--repeat")) repeat=number(value,1,1000,opt);
         else if (!strcmp(opt,"--warmup")) warmup=number(value,0,1000,opt);
-        else if (!strcmp(opt,"--replay-chunk")) replay_chunk=number(value,1,1024,opt);
+        else if (!strcmp(opt,"--replay-chunk")) replay_chunk=number(value,1,2048,opt);
         else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,32768,opt);
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
         else if (!strcmp(opt,"--profile")) profile_path=value;
@@ -532,10 +550,11 @@ int qwen38_cli(int argc,char **argv) {
     if (temp<0) temp=chat_use ? 0.6f : 0.0f;
     if (no_mtp) mtp=false; else if (chat_use && !getenv("PICOFORGE_NO_MTP")) mtp=true;
     if (repl && (runs_path || profile_path || logits_path || encode_only || repeat!=1 || warmup || replay_chunk ||
-                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --no-mtp, --thinking, --token-ids and the sampling options");
+                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --no-mtp, --thinking, --power, --token-ids and the sampling options");
     if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
     if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
+    if (power<100 && (bench || forced)) die("--power below 100 would slow the measurement: bench and --teacher-forced run at 100");
     if (weight_mb>0 && mtp) die("--weight-mb assumes one weight read per token; MTP verifies two rows per read");
     if (bench && (session || repl || encode_only)) die("bench needs a prompt and measures a one-shot run");
     if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
@@ -558,7 +577,7 @@ int qwen38_cli(int argc,char **argv) {
     struct sigaction action={0}; action.sa_handler=stop_generation; action.sa_flags=SA_RESTART; sigemptyset(&action.sa_mask);
     if (sigaction(SIGUSR1,&action,NULL)) die("cannot install stop handler");
     @autoreleasepool {
-        Q38Run run={.chunk=chunk_request,.mtp=mtp}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
+        Q38Run run={.chunk=chunk_request,.mtp=mtp,.power=(int)power}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
         q38_policy_init(&r->policy,mtp_draft,getenv("PICOFORGE_MTP_COST"));
         q38_sampler_init(&r->sampler,temp,top_k,top_p,min_p,seed);
         gguf_open(argv[2],&r->g);

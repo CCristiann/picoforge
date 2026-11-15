@@ -2,6 +2,87 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Prefill-gap III (2026-11-15): materialized attention — 8K FP32 24.9 s at chunk 2048
+
+Attention for prefill batches now runs in three passes on the tensor units with FP32 operands
+(`q38d_mat_*`): S = Q K^T over the whole selection in 64-key chunks (Q read from device memory,
+gathered keys staged per quarter of d), one softmax per row, O = P V (P read from S) and
+out = O / l * gate; S lives in the split-partials buffer, 128 tokens per batch. Against an FP64
+reference (`tools/probe/qwen38_mat_attention_probe.m`): 1.5e-7 dense, 1.75e-6 with 2051 keys.
+8K FP32, chunk 2048, two alternating pairs: qsa.core 4.91 -> 2.57 s, wall 27.4 -> 24.9 s. The
+scores grid covers only the keys the batch's last token can see (a fixed 2112-key grid made
+short prompts slower; now N 300 1.14 vs 1.15 s). Real logits: 2.95e-6 scaled at N 300; from N 900
+a ~0.08 step whose route logs are identical for every layer of tokens 0..483, then token 484
+layer 5 swaps its 10th expert only (259 <-> 479): a top-10 near-tie. 8K: argmax 129/129, KL mean
+0.0065, NLL -0.012 nat. `Q38_QSA_MAT=0` keeps the MMA split. G3 2.76e-7 12/12 (full run).
+
+Negative, committed then reverted (0487d99): expert dedup in the MTP verify gate+up. Consecutive
+tokens share 24% / 35% / 42% of their (token, slot) pairs at 2 / 3 / 4 tokens, and a kernel that
+decodes each IQ2_XXS block once per expert kept every pair's bits (greedy MTP = plain, 256 tokens),
+but chat MTP fell from 40-41.5 to 36-38.6 tok/s: the shared part is small next to each pair's
+selects and FMAs, and the pairs lost the parallelism of separate threadgroups.
+
+Chunk 2048 is no longer the default: with an editor and a VM open, 8K runs at 2048 hit the memory
+guard while 1024 ran. `--chunk 2048` stays (~5% on long prompts, +1.2 GB). Also new: `--power N`
+(GPU duty cycle, bit-identical output) and the paired short decode, 32.15 vs 33.19 tok/s = 0.969x
+DwarfStar (`bench/qwen38/pg_20261115`). The MTP cost table re-measured 1.26/1.68/2.10 (draft 0.133,
+predictor 0.039) but the policy change stayed within noise: defaults kept.
+
+## Prefill-gap II (2026-11-15): FP32 on the Neural Accelerators, bit-identical — 8K FP32 27.1 s
+
+FP32 stays the default (user's call; half stays `--prefill-precision half`), so the work moved
+to the FP32 path. **Finding:** a probe (`matmul2d` with FP32 operands, device tensors) runs at
+7.9 TFLOPS with FP32 error (1.9e-6 scaled at K 4096; half 2.6e-4, bf16 2.0e-3), against 4.2 for
+the simdgroup MMA. The dense prefill GEMMs now run there with the unit reading x straight from
+device memory and only the decoded weight tile staged (8 KB): **logits sha identical** to the
+simdgroup GEMM at N 1000 and on the 8K frontier (the unit sums in the same order). gdn qkv at 2048
+rows 19.2 -> 15.9 ms, HC down 3.84 -> 2.32 ms. `Q38_FP32_NAX=0` keeps the simdgroup GEMM.
+
+Grouped MoE (FP32, simdgroup): ablations showed it occupancy-bound (+8 KB of threadgroup memory:
+31-49% slower). 16-column K steps in padded rows, a 16-weight decode, hoisted addresses, one 8 KB
+result tile (gate through y) and skipped padding fragments: 20.5 -> 10.5 KB, gate+up 36.3 -> 33.5
+ms, down 20.9 -> 18.1 ms at 20480 pairs, same bits. The FP32 tensor-unit grouped variant is
+slower (the gathered x must be staged as FP32) and stays opt-in (`Q38_GROUPED_NAXF=1`).
+
+Attention, measured before redesigning it: the 2048-key selections of consecutive tokens overlap
+heavily at 8K (union of 8 tokens = 1.6-1.8x one list, of 16 = 1.8-2.1x), but putting tokens on
+the fastest grid axis (same keys in flight together) changed nothing (qsa.core 5.08 s, same bits):
+it is not bound by key/value reads. Reverted. qsa.core (~5 s) is compute and per-split latency;
+a union-tile kernel stays the open idea.
+
+8K prompt, chunk 2048, warm: FP32 27.1 s (session start 46.2), half 20.3 s at chunk 1024.
+Fast kernels 98/98 after each change.
+
+## Prefill-gap I (2026-11-15): 8K prompt 26.4 -> 20.3 s half, 46.2 -> 32.7 s FP32
+
+Branch `perf/qwen38-prefill-gap`. Toolchain first: Xcode moved to the macOS 27.2 SDK and dropped the
+Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); a metallib that mixed old and new
+`.air` files failed 51 of 118 pipelines (`air.atomic.global.or.u.i32` unlowered), a full rebuild is
+clean and bit-identical to the Decode VII build (short logits sha equal).
+
+Negative first: keeping the F32-weight GEMMs (router, ssm_alpha/beta) in FP32 inside half mode does
+not tame half's drift (N 1000 KL max 0.148 vs 0.099, mean 0.031 vs 0.034): the near-ties flip on
+inputs already rounded by earlier layers, not in the router GEMM. Reverted.
+
+A regression found in the fresh 8K profile: the Decode IV/V one-dispatch conv and fused prepare +
+scan walk tokens serially, so the prefill lost ~0.6 s; from 32 rows the P4 kernels are back
+(gdn.conv 0.87 -> 0.73 s, prep + scan 1.61 -> 1.15 s). Then staging: the prefill GEMMs loaded
+operands one element at a time; F16/F32 weights as half4/float4, x as float4, Q8_0 codes as char2,
+grouped-MoE x rows as float4. Every one stages the same values: logits sha identical at N 1000 in
+FP32 and half (HC down bench 1954 -> 992 us half, 4820 -> 2895 us FP32; gdn qkv at 2048 rows
+33.6 -> 27.7 ms FP32, 13.0 -> 8.9 ms half). Last, chunks of 2048 tokens by default (the grouped
+MoE decodes each expert weight once per tile, so its decode work scales with the chunk count):
+half 23.3 -> 22.3 s, FP32 37.5 -> 35.7 s, against 1024-token chunks KL mean 0.0008 / max 0.017 in
+FP32 (reorder noise), graph buffers 1.7 -> 2.9 GiB, the Q4 stream still fits (51.1 of 55.7 GB).
+
+8K prompt (warm, single runs, AC): half 26.4 -> 20.3 s (GPU 25.4 -> 20.4), FP32 46.2 -> 32.7 s;
+DwarfStar ~14 s. Gates: fast kernels 98/98, cli, session, repl, g2-parts, mtp, speculative,
+compare, server green; G3 2.76e-7 12/12 (its chat step tripped the memory guard twice with other
+applications open; the numeric comparison passes). Now in half: qsa.core 4.86 s, moe.gate_up 3.72,
+moe.down 2.42, gdn.proj 1.74, gdn.scan 1.07.
+**Next:** attention on the Neural Accelerators in half mode (12 query heads share one key selection
+per token: a 16 x 64 x 256 matmul2d per KV head), then the IQ2/Q2_K tile decode.
+
 ## Decode VII (2026-11-12): MoE kernels, and what did not work
 
 Branch `perf/qwen38-decode7`. Encoding the next token ahead was dropped after a look: the PLE n-gram

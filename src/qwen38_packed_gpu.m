@@ -14,9 +14,9 @@
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
                       *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
-                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
+                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *gemm_naxd[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
-                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half;
+                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half, fp32_nax;
                       size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
 /* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
  * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
@@ -88,6 +88,9 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     static NSString *const nax_names[3]={@"q38_gemm_nax_q8_0",@"q38_gemm_nax_f16",@"q38_gemm_nax_f32"};
     id<MTLFunction> nax_fn[3];
     for (size_t i=0;i<3;i++) nax_fn[i]=[lib newFunctionWithName:nax_names[i]];
+    static NSString *const naxd_names[3]={@"q38_gemm_naxd_q8_0",@"q38_gemm_naxd_f16",@"q38_gemm_naxd_f32"};
+    id<MTLFunction> naxd_fn[3];
+    for (size_t i=0;i<3;i++) naxd_fn[i]=[lib newFunctionWithName:naxd_names[i]];
     static NSString *const gg_names[Q38_INDEXED_FAST]={@"q38_moe_grouped_gate_up_iq2_xxs",@"q38_moe_grouped_gate_up_q2_k",
         @"q38_moe_grouped_gate_up_q4_k",@"q38_moe_grouped_gate_up_mxfp4"};
     static NSString *const gd_names[Q38_INDEXED_FAST]={@"q38_moe_grouped_down_iq2_xxs",@"q38_moe_grouped_down_q2_k",
@@ -151,6 +154,8 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
      * stays off (nil pipeline), it never fails creation. */
     id<MTLComputePipelineState> nax[3];
     for (size_t i=0;i<3;i++) nax[i]=nax_fn[i] ? [dev newComputePipelineStateWithFunction:nax_fn[i] error:&failure] : nil;
+    id<MTLComputePipelineState> naxd[3];
+    for (size_t i=0;i<3;i++) naxd[i]=naxd_fn[i] ? [dev newComputePipelineStateWithFunction:naxd_fn[i] error:&failure] : nil;
     id<MTLComputePipelineState> matvec_indexed[Q38_INDEXED_FAST], gate_up[Q38_INDEXED_FAST], down[Q38_INDEXED_FAST];
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         present=(matvec_indexed[i]=[dev newComputePipelineStateWithFunction:indexed_fn[i] error:&failure])!=nil && present;
@@ -188,6 +193,7 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? Q38_DENSE_S : 1);
     for (size_t i=0;i<3;i++) ctx->gemm[i]=fast_pipeline(gemm[i],Q38_GEMM_SG);
     for (size_t i=0;i<3;i++) ctx->gemm_nax[i]=nax[i] ? fast_pipeline(nax[i],Q38_GEMM_SG) : NULL;
+    for (size_t i=0;i<3;i++) ctx->gemm_naxd[i]=naxd[i] ? fast_pipeline(naxd[i],Q38_GEMM_SG) : NULL;
     if (grouped_ok) {
         for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
             ctx->grouped_gate_up[i]=fast_pipeline(grouped[0][i],Q38_GEMM_SG);
@@ -221,6 +227,10 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
     ctx->ref_fuse=q38_ref_kernels("fuse");
     ctx->ref_gemm=q38_ref_kernels("gemm");
     ctx->prefill_half=q38_prefill_half();
+    /* Prefill-gap: FP32 GEMMs on the tensor units with FP32 operands, x read from device
+     * memory (same bits as the simdgroup GEMM). Q38_FP32_NAX=0 or Q38_REF_KERNELS=exact keep
+     * the simdgroup GEMM. */
+    { const char *v=getenv("Q38_FP32_NAX"); ctx->fp32_nax=!(v && *v=='0') && !q38_ref_kernels("exact"); }
     ctx->gemm_min_rows=gemm_min_rows();
     /* Measured on the real Q2 (bench/qwen38/p3_20261108): a 60-token chat prefill
      * 1294 -> 671 ms with both, 417 tokens 3601 -> 3563 ms; 1024-row chunks are unchanged
@@ -246,6 +256,7 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
+    for (size_t i=0;i<3;i++) if (ctx->gemm_naxd[i]) CFRelease(ctx->gemm_naxd[i]);
     for (size_t i=0;i<Q38_INDEXED_FAST;i++) {
         if (ctx->grouped_gate_up[i]) CFRelease(ctx->grouped_gate_up[i]);
         if (ctx->grouped_down[i]) CFRelease(ctx->grouped_down[i]);
@@ -384,9 +395,11 @@ static void *gemm_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows, si
 /* R3.5: the tensor-unit GEMM that replaces gemm_kernel's in half mode (NULL:
  * FP32 GEMM). Admission is gemm_kernel's, so the mode only ever touches rows
  * that already run a GEMM: never decode, never the REF oracle. */
-static void *nax_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows, size_t n_out) {
-    if (!ctx->prefill_half || !gemm_kernel(ctx,type,rows,n_out)) return NULL;
-    return type==8 ? ctx->gemm_nax[0] : type==1 ? ctx->gemm_nax[1] : type==0 ? ctx->gemm_nax[2] : NULL;
+static void *nax_kernel(const Q38PackedGpu *ctx, uint32_t type, size_t rows, size_t n_out, size_t k_logical) {
+    if (!gemm_kernel(ctx,type,rows,n_out)) return NULL;
+    void *const *k=ctx->prefill_half ? ctx->gemm_nax : ctx->fp32_nax && k_logical%32==0 ? ctx->gemm_naxd : NULL;
+    if (!k) return NULL;
+    return type==8 ? k[0] : type==1 ? k[1] : type==0 ? k[2] : NULL;
 }
 
 bool q38_packed_gemm_rows(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows) {
@@ -418,8 +431,9 @@ static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *com
     Q38PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
     void *gemm=fast ? gemm_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
-    void *nax=fast ? nax_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
-    if (nax) { gemm=nax; args.reserved=x.span.offset_bytes%16==0; } /* NAX: float4 x loads allowed */
+    void *nax=fast ? nax_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out,layout->k_logical) : NULL;
+    if (nax) gemm=nax;
+    if (gemm) args.reserved=x.span.offset_bytes%16==0; /* GEMM and NAX: float4 x loads allowed */
     id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(gemm ? gemm : fast ? kernel : ctx->linear);
     [encoder setComputePipelineState:pipeline];
     bind(encoder,&a,x,y,command);
@@ -623,6 +637,7 @@ static Qwen38Status encode_grouped(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
          .experts=(uint32_t)experts,.x_divisor=(uint32_t)divisor},
         {.base=wire(up ? ul : gl,o1,o1+(up ? ul : gl)->tensor_bytes,pairs,x,y,up ? &b : &a),
          .expert_bytes=(up ? ul : gl)->expert_bytes,.experts=(uint32_t)experts,.x_divisor=(uint32_t)divisor}};
+    args[0].base.reserved=x.span.offset_bytes%16==0; /* Prefill-gap: float4 x loads allowed */
     [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
     [encoder setBuffer:a.weights offset:0 atIndex:0];
     [encoder setBuffer:up ? b.weights : a.weights offset:0 atIndex:1];

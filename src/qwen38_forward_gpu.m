@@ -406,7 +406,7 @@ Qwen38Status qwen38_gpu_forward_create(const Gguf *g,const Qwen38Config *config,
     if (out) *out=NULL;
     if (!g || !config || !weights || !store || !device || !library || !out) return fail(e,Q38_INVALID_ARGUMENT,"graph arguments");
     const Qwen38ConfigView *c=qwen38_config_view(config);
-    if (!c || !max_tokens || max_tokens>1024 || max_tokens>capacity || capacity>32768 || capacity>c->max_positions || max_logits_rows>max_tokens)
+    if (!c || !max_tokens || max_tokens>2048 || max_tokens>capacity || capacity>32768 || capacity>c->max_positions || max_logits_rows>max_tokens)
         return fail(e,Q38_CAPACITY,"graph chunk/context/logits capacities");
     Qwen38GpuForward *f=calloc(1,sizeof *f); if (!f) return fail(e,Q38_OOM,"graph allocation");
     f->gguf=g; f->config=config; f->weights=weights; f->store=store; f->c=*c; f->max_tokens=max_tokens;
