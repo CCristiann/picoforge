@@ -62,10 +62,11 @@ Qwen38Status q38d_gpu_create(void *device,void *library,Q38DGpu **out,Qwen38Erro
             g->reference=true;  /* the fast kernels' simd_sum, simd_any and 8-lane groups assume 32 lanes */
         g->pipeline[i]=(__bridge_retained void *)p;
     }
-    /* Prefill-gap: the materialized attention, opt-in (Q38_QSA_MAT=1) until its speed is
-     * measured on AC; the attention oracle family keeps the reference path anyway. */
+    /* Prefill-gap: the materialized attention for prefill batches (8K FP32: qsa.core 4.91 ->
+     * 2.57 s). Q38_QSA_MAT=0 or Q38_REF_KERNELS=exact keep the MMA split (and its decode bits);
+     * the attention oracle family keeps the reference path anyway. */
     const char *mv=getenv("Q38_QSA_MAT");
-    if (mv && *mv=='1' && !q38_ref_kernels("exact")) {
+    if (!(mv && *mv=='0') && !q38_ref_kernels("exact")) {
         NSString *const mat[3]={@"q38d_mat_scores_gpu",@"q38d_mat_softmax_gpu",@"q38d_mat_pv_gpu"};
         bool ok=true; id<MTLComputePipelineState> ps[3];
         for (size_t i=0;i<3;i++) {
@@ -401,7 +402,9 @@ static Qwen38Status layer_batch(Q38DGpu *g, Q38CGpu *ops, Qwen38GpuCommand cmd,
             b.first=first; b.count=MIN(mat_step,t-first);
             Qwen38GpuSpan v[]={row(l->qr,0,t),row(l->gate,0,t),row(l->key_cache,0,pos0+t),row(l->value_cache,0,pos0+t),
                 l->bids,row(l->out,0,t)};
-            const MTLSize grids[3]={MTLSizeMake(sp/64u,j,b.count),MTLSizeMake(16,j,b.count),MTLSizeMake(d/64u,j,b.count)};
+            /* the batch's last token sees the most keys: at most min(id stride, visible) */
+            const uint32_t most=MIN(ids_stride,pos0+first+b.count), group=h/j;
+            const MTLSize grids[3]={MTLSizeMake((most+63u)/64u,j,b.count),MTLSizeMake(group,j,b.count),MTLSizeMake(d/64u,j,b.count)};
             for (size_t k=0;k<3;k++) {
                 [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)g->mat[k]];
                 for (size_t i=0;i<6;++i) [enc setBuffer:(__bridge id<MTLBuffer>)v[i].buffer offset:v[i].offset_bytes atIndex:i];
