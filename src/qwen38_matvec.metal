@@ -716,6 +716,12 @@ static inline void gemm(device const uchar *weights, device const float *x, devi
             const uint r = tid / 2, h = (tid % 2) * 16;
             device const uchar *q = weights + p.weight_offset + (n0 + r) * p.row_bytes + ulong(k0 / 32) * 34;
             const float d = r < nt ? q38_fp16(q) : 0.0f;
+            if (kc == GEMM_K && r < nt && !(p.weight_offset & 1)) { /* Prefill-gap: 2-byte aligned codes as char2, same products */
+                for (uint i = 0; i < 16; i += 2) {
+                    const char2 v = *(device const char2 *)(q + 2 + h + i);
+                    ws[r * GEMM_K + h + i] = d * float(v.x); ws[r * GEMM_K + h + i + 1] = d * float(v.y);
+                }
+            } else
             for (uint i = 0; i < 16; i++) {
                 const uint c = h + i;
                 ws[r * GEMM_K + c] = r < nt && c < kc ? d * float(as_type<char>(q[2 + c])) : 0.0f;
@@ -842,6 +848,12 @@ static inline void gemm_nax(device const uchar *weights, device const float *x, 
             const uint r = tid / 2, h = (tid % 2) * 16;
             device const uchar *q = weights + p.weight_offset + (n0 + r) * p.row_bytes + ulong(k0 / 32) * 34;
             const float d = r < nt ? q38_fp16(q) : 0.0f;
+            if (kc == NAX_K && r < nt && !(p.weight_offset & 1)) { /* Prefill-gap: 2-byte aligned codes as char2, same products */
+                for (uint i = 0; i < 16; i += 2) {
+                    const char2 v = *(device const char2 *)(q + 2 + h + i);
+                    ws[r * NAX_K + h + i] = half(d * float(v.x)); ws[r * NAX_K + h + i + 1] = half(d * float(v.y));
+                }
+            } else
             for (uint i = 0; i < 16; i++) {
                 const uint c = h + i;
                 ws[r * NAX_K + c] = r < nt && c < kc ? half(d * float(as_type<char>(q[2 + c]))) : 0.0h;
