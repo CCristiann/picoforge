@@ -57,7 +57,7 @@ static void usage(void) {
         "       [--temp T] [--top-k K] [--top-p P] [--min-p P] [--seed N] [--no-mtp]\n"
         "Chat (REPL, --chat): sampled (T 0.6, top-k 20, top-p 0.95) with MTP; --temp 0 is greedy.\n"
         "Measurements (bench, --tokens, --logits): greedy, no MTP unless asked.\n"
-        "Defaults: context 8192, chunk 2048, max-new 32.\n");
+        "Defaults: context 8192, chunk 1024 (2048: ~5%% faster long prefill, +1.2 GB; only with memory to spare), max-new 32.\n");
 }
 /* Greedy choice shared by ordinary and teacher-forced decode: first maximum wins. */
 static int32_t greedy(const float *logits,uint32_t n) {
@@ -486,7 +486,7 @@ int qwen38_cli(int argc,char **argv) {
     if (argc<3) { usage(); return 2; }
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
     const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
-    uint32_t capacity=8192,chunk=2048,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
+    uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
     bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false,no_mtp=false;
     float temp=-1,top_p=0.95f,min_p=0; uint32_t top_k=20; uint64_t seed=(uint64_t)time(NULL);
     uint32_t power=100;
