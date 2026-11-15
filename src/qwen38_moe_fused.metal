@@ -442,7 +442,7 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
     threadgroup float work[Q38F_ROUTE_MAX_EXPERTS];  /* p, then p with the chosen experts at -1 */
     threadgroup float sg_value[2][32];               /* per-simdgroup (max z | best p) */
     threadgroup uint sg_flag[2][32];                 /* per-simdgroup (nonfinite | best id) */
-    threadgroup float sum_all;
+    threadgroup float sum_all[1];                    /* written by thread 0 before the barrier */
     if (token >= a.t) return;
     if (a.e == 0 || a.e > Q38F_ROUTE_MAX_EXPERTS || a.k == 0 || a.k > a.e) {
         if (!tid) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
@@ -466,9 +466,9 @@ kernel void q38_moe_route_fast(device const float *logits [[buffer(0)]], device 
     }
     for (uint e = tid; e < a.e; e += tn) work[e] = exp(z[e] - maximum);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (!tid) { float sum = 0.0f; for (uint e = 0; e < a.e; e++) sum += work[e]; sum_all = sum; }
+    if (!tid) { float sum = 0.0f; for (uint e = 0; e < a.e; e++) sum += work[e]; sum_all[0] = sum; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    const float sum = sum_all;
+    const float sum = sum_all[0];
     for (uint e = tid; e < a.e; e += tn) { float v = work[e] / sum; work[e] = v; p[e] = v; }
     float selected = 0.0f;
     for (uint s = 0; s < a.k; s++) {
@@ -899,8 +899,8 @@ static inline void grouped_nax(device const uchar *gw, device const uchar *uw, d
     }
     if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
 }
-/* Prefill-gap: OT = float, the default FP32 prefill on the tensor units (20 KB of
- * FP32 staging, the result tile reuses it); OT = half, the R3.5 mode. */
+/* OT: the staged operand type. Only half is instantiated (the R3.5 mode): FP32 operands
+ * were slower than the simdgroup grouped kernel (the gathered x must be staged). */
 #define GROUPED_NAX_KERNEL(name, F, PAIR, OT) \
 kernel void name(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]], \
         device const float *x [[buffer(2)]], device float *y [[buffer(3)]], device atomic_uint *error [[buffer(4)]], \
@@ -917,11 +917,3 @@ GROUPED_NAX_KERNEL(q38_moe_grouped_nax_down_iq2_xxs, Q38Iq2Xxs, false, half)
 GROUPED_NAX_KERNEL(q38_moe_grouped_nax_down_q2_k, Q38Q2K, false, half)
 GROUPED_NAX_KERNEL(q38_moe_grouped_nax_down_q4_k, Q38Q4K, false, half)
 GROUPED_NAX_KERNEL(q38_moe_grouped_nax_down_mxfp4, Q38Mxfp4, false, half)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_gate_up_iq2_xxs, Q38Iq2Xxs, true, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_gate_up_q2_k, Q38Q2K, true, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_gate_up_q4_k, Q38Q4K, true, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_gate_up_mxfp4, Q38Mxfp4, true, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_down_iq2_xxs, Q38Iq2Xxs, false, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_down_q2_k, Q38Q2K, false, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_down_q4_k, Q38Q4K, false, float)
-GROUPED_NAX_KERNEL(q38_moe_grouped_naxf_down_mxfp4, Q38Mxfp4, false, float)

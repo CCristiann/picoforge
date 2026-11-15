@@ -896,11 +896,8 @@ static inline void gemm_nax(device const uchar *weights, device const float *x, 
         if (!isfinite(v)) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
     }
 }
-/* Prefill-gap: OT = float runs the same tile on the Neural Accelerators with FP32
- * operands (the probe measured 7.9 TFLOPS against 4.2 for the simdgroup GEMM, and
- * FP32-level error, 1.9e-6 scaled at K 4096): the default FP32 prefill, with only the
- * order of the sums changed against gemm<TYPE>. Staging is 16 KB, the result tile
- * reuses it. OT = half: the R3.5 reduced-precision mode, unchanged. */
+/* OT: the staged operand type. Only half is instantiated (the R3.5 mode); FP32 operands
+ * staged here were slower than gemm_naxd below, which reads x from device memory. */
 #define GEMM_NAX_KERNEL(name, TYPE, OT) \
 kernel void name(device const uchar *weights [[buffer(0)]], device const float *x [[buffer(1)]], \
         device float *y [[buffer(2)]], device atomic_uint *error [[buffer(3)]], \
@@ -915,14 +912,13 @@ kernel void name(device const uchar *weights [[buffer(0)]], device const float *
 GEMM_NAX_KERNEL(q38_gemm_nax_q8_0, 8, half)
 GEMM_NAX_KERNEL(q38_gemm_nax_f16, 1, half)
 GEMM_NAX_KERNEL(q38_gemm_nax_f32, 0, half)
-GEMM_NAX_KERNEL(q38_gemm_naxf_q8_0, 8, float)
-GEMM_NAX_KERNEL(q38_gemm_naxf_f16, 1, float)
-GEMM_NAX_KERNEL(q38_gemm_naxf_f32, 0, float)
-/* Prefill-gap: FP32 NAX GEMM with x read by the tensor unit straight from device
- * memory (FP32 rows, K a multiple of NAX_K) and the result stored straight to y; only
- * the decoded weight tile (64 x 32 floats, 8 KB) goes through threadgroup memory.
- * Same products and K order as q38_gemm_naxf_*, so the same bits. The finiteness
- * check runs on the destination elements in registers. */
+
+/* Prefill-gap: the default FP32 prefill GEMM on the Neural Accelerators. matmul2d takes
+ * FP32 operands at full precision (tools/probe: 7.9 TFLOPS against 4.2 for the simdgroup
+ * MMA, error 1.9e-6 scaled at K 4096) and sums in the simdgroup GEMM's order: the real
+ * logits are bit-identical. The unit reads x straight from device memory (K a multiple
+ * of NAX_K), only the decoded weight tile (64 x 32 floats, 8 KB) is staged, and the
+ * result goes straight to y with the finiteness check in registers. */
 template <uint TYPE>
 static inline void gemm_naxd(device const uchar *weights, device float *x, device float *y,
         device atomic_uint *error, constant PackedArgs &p, uint2 group, uint tid, threadgroup float *ws) {
