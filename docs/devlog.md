@@ -2,6 +2,31 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Prefill-gap II (2026-11-15): FP32 on the Neural Accelerators, bit-identical — 8K FP32 27.1 s
+
+FP32 stays the default (user's call; half stays `--prefill-precision half`), so the work moved
+to the FP32 path. **Finding:** a probe (`matmul2d` with FP32 operands, device tensors) runs at
+7.9 TFLOPS with FP32 error (1.9e-6 scaled at K 4096; half 2.6e-4, bf16 2.0e-3), against 4.2 for
+the simdgroup MMA. The dense prefill GEMMs now run there with the unit reading x straight from
+device memory and only the decoded weight tile staged (8 KB): **logits sha identical** to the
+simdgroup GEMM at N 1000 and on the 8K frontier (the unit sums in the same order). gdn qkv at 2048
+rows 19.2 -> 15.9 ms, HC down 3.84 -> 2.32 ms. `Q38_FP32_NAX=0` keeps the simdgroup GEMM.
+
+Grouped MoE (FP32, simdgroup): ablations showed it occupancy-bound (+8 KB of threadgroup memory:
+31-49% slower). 16-column K steps in padded rows, a 16-weight decode, hoisted addresses, one 8 KB
+result tile (gate through y) and skipped padding fragments: 20.5 -> 10.5 KB, gate+up 36.3 -> 33.5
+ms, down 20.9 -> 18.1 ms at 20480 pairs, same bits. The FP32 tensor-unit grouped variant is
+slower (the gathered x must be staged as FP32) and stays opt-in (`Q38_GROUPED_NAXF=1`).
+
+Attention, measured before redesigning it: the 2048-key selections of consecutive tokens overlap
+heavily at 8K (union of 8 tokens = 1.6-1.8x one list, of 16 = 1.8-2.1x), but putting tokens on
+the fastest grid axis (same keys in flight together) changed nothing (qsa.core 5.08 s, same bits):
+it is not bound by key/value reads. Reverted. qsa.core (~5 s) is compute and per-split latency;
+a union-tile kernel stays the open idea.
+
+8K prompt, chunk 2048, warm: FP32 27.1 s (session start 46.2), half 20.3 s at chunk 1024.
+Fast kernels 98/98 after each change.
+
 ## Prefill-gap I (2026-11-15): 8K prompt 26.4 -> 20.3 s half, 46.2 -> 32.7 s FP32
 
 Branch `perf/qwen38-prefill-gap`. Toolchain first: Xcode moved to the macOS 27.2 SDK and dropped the
