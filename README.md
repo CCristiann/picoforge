@@ -50,7 +50,7 @@ Measured on the Q2 file. DwarfStar `fc80bd6` ran on the same file and machine.
 |---|---:|---:|
 | Decode, short prompt | 32.2 tok/s | 33.2 tok/s |
 | Decode, 8K context | 29.5 tok/s | 32.0 tok/s |
-| Prefill, 8K prompt | 27.1 s FP32, ~20 s half | ~14 s |
+| Prefill, 8K prompt | 24.9 s FP32 (`--chunk 2048`), ~27 s at the default chunk | ~14 s |
 | MTP over plain decode | 1.09–1.65x | — |
 | Q4 file, experts streamed from SSD | ~18–19 tok/s | doesn't fit on 64 GB |
 

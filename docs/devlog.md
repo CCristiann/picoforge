@@ -2,6 +2,32 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Prefill-gap III (2026-11-15): materialized attention — 8K FP32 24.9 s at chunk 2048
+
+Attention for prefill batches now runs in three passes on the tensor units with FP32 operands
+(`q38d_mat_*`): S = Q K^T over the whole selection in 64-key chunks (Q read from device memory,
+gathered keys staged per quarter of d), one softmax per row, O = P V (P read from S) and
+out = O / l * gate; S lives in the split-partials buffer, 128 tokens per batch. Against an FP64
+reference (`tools/probe/qwen38_mat_attention_probe.m`): 1.5e-7 dense, 1.75e-6 with 2051 keys.
+8K FP32, chunk 2048, two alternating pairs: qsa.core 4.91 -> 2.57 s, wall 27.4 -> 24.9 s. The
+scores grid covers only the keys the batch's last token can see (a fixed 2112-key grid made
+short prompts slower; now N 300 1.14 vs 1.15 s). Real logits: 2.95e-6 scaled at N 300; from N 900
+a ~0.08 step whose route logs are identical for every layer of tokens 0..483, then token 484
+layer 5 swaps its 10th expert only (259 <-> 479): a top-10 near-tie. 8K: argmax 129/129, KL mean
+0.0065, NLL -0.012 nat. `Q38_QSA_MAT=0` keeps the MMA split. G3 2.76e-7 12/12 (full run).
+
+Negative, committed then reverted (0487d99): expert dedup in the MTP verify gate+up. Consecutive
+tokens share 24% / 35% / 42% of their (token, slot) pairs at 2 / 3 / 4 tokens, and a kernel that
+decodes each IQ2_XXS block once per expert kept every pair's bits (greedy MTP = plain, 256 tokens),
+but chat MTP fell from 40-41.5 to 36-38.6 tok/s: the shared part is small next to each pair's
+selects and FMAs, and the pairs lost the parallelism of separate threadgroups.
+
+Chunk 2048 is no longer the default: with an editor and a VM open, 8K runs at 2048 hit the memory
+guard while 1024 ran. `--chunk 2048` stays (~5% on long prompts, +1.2 GB). Also new: `--power N`
+(GPU duty cycle, bit-identical output) and the paired short decode, 32.15 vs 33.19 tok/s = 0.969x
+DwarfStar (`bench/qwen38/pg_20261115`). The MTP cost table re-measured 1.26/1.68/2.10 (draft 0.133,
+predictor 0.039) but the policy change stayed within noise: defaults kept.
+
 ## Prefill-gap II (2026-11-15): FP32 on the Neural Accelerators, bit-identical — 8K FP32 27.1 s
 
 FP32 stays the default (user's call; half stays `--prefill-precision half`), so the work moved
