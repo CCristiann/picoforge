@@ -8,6 +8,12 @@
 /* rms_fast, prep_fast: q38c_rms_fast, q38c_gdn_prepare_fast or NULL (no 32-wide
  * simdgroup / 256 threads: the oracle stays). ref_fuse: RMS and GDN_NORM run
  * check + q38c_rms (R1.6a), GDN_PREP check + q38c_gdn_prepare (R1.8). */
+/* Prefill-gap: the one-dispatch conv and the fused prepare + scan are decode kernels (one thread
+ * walks every token of its channel / head serially). From this many rows the prefill keeps the
+ * parallel P4 kernels: 8K half prefill gdn.conv 0.87 -> 0.73 s, prep + scan 1.61 -> 1.15 s. The
+ * conv is bit-identical either way; the prepare's L2 sums differ by its measured tolerance, as
+ * they already do between decode and the MTP verify. Same threshold as the GEMM admission. */
+enum { Q38C_FUSED_MAX_ROWS = 32 };
 struct Q38CGpu { void *device, *check, *history, *pipeline[Q38C_GPU_OPS], *rms_fast, *prep_fast, *scan_fast, *add_fast, *act_fast, *conv_fast, *prep_scan; bool ref_fuse; };
 void q38c_gpu_set_reference(Q38CGpu *g, bool fuse) { if (g) g->ref_fuse=fuse; }
 void q38c_gpu_destroy(Q38CGpu *g) {
@@ -260,7 +266,7 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
     for (size_t i=0;i<count;++i) for (size_t j=0;j<count && overlap;++j)
         if ((writes&(1u<<i)) && (a.read_mask&(1u<<j)) && gpu_overlap(v[i].span,span[i],v[j].span,span[j]))
             overlap=false;
-    if (op==Q38C_CONV && g->conv_fast && !g->ref_fuse) { /* Decode III: check, conv and history in one dispatch */
+    if (op==Q38C_CONV && g->conv_fast && !g->ref_fuse && a.v[0].dim[0]<Q38C_FUSED_MAX_ROWS) { /* Decode III: check, conv and history in one dispatch */
         const NSUInteger channels=a.v[0].dim[1];
         id<MTLComputePipelineState> cp=(__bridge id<MTLComputePipelineState>)g->conv_fast;
         [enc setComputePipelineState:cp];
@@ -299,7 +305,8 @@ Qwen38Status q38c_gpu_encode(Q38CGpu *g, Qwen38GpuCommand cmd, Q38CGpuOp op,
 typedef struct { Q38CGpuArgs pa, sa; size_t work; } Q38CPrepScan;
 static Qwen38Status gdn_prep_scan_plan(Q38CGpu *g, Qwen38GpuCommand cmd, const Q38CGpuSpec *spec,
         const Qwen38GpuF32 *pv, const Qwen38GpuF32 *sv, Q38CPrepScan *ps, Qwen38Error *e) {
-    if (!g->prep_scan || g->ref_fuse) return q38c_error(e,Q38_UNSUPPORTED,"no fused GDN prepare + scan");
+    if (!g->prep_scan || g->ref_fuse || pv[0].dim[0]>=Q38C_FUSED_MAX_ROWS)
+        return q38c_error(e,Q38_UNSUPPORTED,"no fused GDN prepare + scan");
     id<MTLDevice> dev=(__bridge id<MTLDevice>)cmd.device;
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
     if (!enc || g->device!=cmd.device || enc.device!=dev) return q38c_error(e,Q38_OWNER,"foreign GPU command");
