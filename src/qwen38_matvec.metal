@@ -689,6 +689,10 @@ static inline void gemm(device const uchar *weights, device const float *x, devi
     }
     /* Simdgroup sg: rows (sg/2)*16 .. +16, columns (sg%2)*32 .. +32 of the tile. */
     const uint sr = (sg / 2) * 16, sc = (sg % 2) * 32;
+    /* vector loads: x rows and the binding 16-byte aligned (p.reserved, set by the host),
+     * every weight row of the tile on a 16-byte boundary */
+    const bool vec = p.reserved == 1 && p.x_stride % 16 == 0;
+    const bool wvec = TYPE != 8 && p.weight_offset % 16 == 0 && p.row_bytes % 16 == 0;
     simdgroup_float8x8 acc[2][4];
     for (uint i = 0; i < 2; i++)
         for (uint j = 0; j < 4; j++) acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
@@ -696,9 +700,17 @@ static inline void gemm(device const uchar *weights, device const float *x, devi
         /* Columns past k_logical are read neither from x nor from the weights:
          * zeros in the tile. Rows past mt / nt are zeros as well. */
         const uint kc = min(uint(GEMM_K), p.k_logical - k0);
-        for (uint i = tid; i < GEMM_M * GEMM_K; i += GEMM_THREADS) {
-            const uint r = i / GEMM_K, c = i % GEMM_K;
-            xs[i] = r < mt && c < kc ? x[(m0 + r) * (p.x_stride / 4) + k0 + c] : 0.0f;
+        if (vec && kc == GEMM_K) { /* Prefill-gap: float4 x loads, the same values */
+            for (uint i = tid; i < GEMM_M * GEMM_K / 4; i += GEMM_THREADS) {
+                const uint r = i / (GEMM_K / 4), c = (i % (GEMM_K / 4)) * 4;
+                *(threadgroup float4 *)(xs + r * GEMM_K + c) =
+                    r < mt ? *(device const float4 *)(x + (m0 + r) * (p.x_stride / 4) + k0 + c) : float4(0.0f);
+            }
+        } else {
+            for (uint i = tid; i < GEMM_M * GEMM_K; i += GEMM_THREADS) {
+                const uint r = i / GEMM_K, c = i % GEMM_K;
+                xs[i] = r < mt && c < kc ? x[(m0 + r) * (p.x_stride / 4) + k0 + c] : 0.0f;
+            }
         }
         if (TYPE == 8) { /* one Q8_0 block per weight row; two threads per block */
             const uint r = tid / 2, h = (tid % 2) * 16;
@@ -707,6 +719,15 @@ static inline void gemm(device const uchar *weights, device const float *x, devi
             for (uint i = 0; i < 16; i++) {
                 const uint c = h + i;
                 ws[r * GEMM_K + c] = r < nt && c < kc ? d * float(as_type<char>(q[2 + c])) : 0.0f;
+            }
+        } else if (wvec && kc == GEMM_K) { /* Prefill-gap: 4 weights per item, the same values */
+            for (uint i = tid; i < GEMM_N * GEMM_K / 4; i += GEMM_THREADS) {
+                const uint r = i / (GEMM_K / 4), c = (i % (GEMM_K / 4)) * 4;
+                device const uchar *row = weights + p.weight_offset + (n0 + r) * p.row_bytes;
+                float4 v = float4(0.0f);
+                if (r < nt) v = TYPE == 1 ? float4(((device const half4 *)row)[(k0 + c) / 4])
+                                          : ((device const float4 *)row)[(k0 + c) / 4];
+                *(threadgroup float4 *)(ws + r * GEMM_K + c) = v;
             }
         } else {
             for (uint i = tid; i < GEMM_N * GEMM_K; i += GEMM_THREADS) {

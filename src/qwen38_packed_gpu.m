@@ -419,7 +419,8 @@ static Qwen38Status encode_linear(Q38PackedGpu *ctx, const Qwen38GpuCommand *com
     id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
     void *gemm=fast ? gemm_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
     void *nax=fast ? nax_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
-    if (nax) { gemm=nax; args.reserved=x.span.offset_bytes%16==0; } /* NAX: float4 x loads allowed */
+    if (nax) gemm=nax;
+    if (gemm) args.reserved=x.span.offset_bytes%16==0; /* GEMM and NAX: float4 x loads allowed */
     id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(gemm ? gemm : fast ? kernel : ctx->linear);
     [encoder setComputePipelineState:pipeline];
     bind(encoder,&a,x,y,command);
