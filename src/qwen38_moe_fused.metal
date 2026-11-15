@@ -219,6 +219,115 @@ kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], devic
     if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
 }
 
+/* Prefill-gap (MTP verify): expert dedup. A verify append of 2-4 tokens routes 20-40
+ * (token, slot) pairs and consecutive tokens share experts (24% of the pairs at 2 tokens,
+ * 35% at 3, 42% at 4 on the real Q2). q38_moe_dedup lists the distinct experts with
+ * their pairs (entry: expert, count, up to 4 pairs; word 0 = entries); then
+ * q38_moe_gate_up8d_iq2_xxs decodes each weight block once per expert and applies it to
+ * every pair's x. Each pair keeps gate_up8's arithmetic in the same order (the same
+ * part, fma and simd_sum), so act is bit-identical and verify rows still match decode. */
+#define DEDUP_MAX 2u
+kernel void q38_moe_dedup(device const uint *ids [[buffer(0)]], device uint *list [[buffer(1)]],
+        constant uint &pairs [[buffer(2)]], uint tid [[thread_position_in_grid]]) {
+    if (tid) return;
+    uint n = 0;
+    for (uint q = 0; q < pairs; q++) {
+        const uint e = ids[q];
+        uint i = 0;
+        while (i < n && (list[1 + 6 * i] != e || list[2 + 6 * i] >= DEDUP_MAX)) i++;
+        if (i == n) { list[1 + 6 * n] = e; list[2 + 6 * n] = 0; n++; }
+        device uint *entry = list + 1 + 6 * i;
+        entry[2 + entry[1]] = q; entry[1]++;
+    }
+    list[0] = n;
+}
+kernel void q38_moe_gate_up8d_iq2_xxs(device const uchar *gw [[buffer(0)]], device const uchar *uw [[buffer(1)]],
+        device const float *x [[buffer(2)]], device float *act [[buffer(3)]],
+        device atomic_uint *error [[buffer(4)]], constant GateUpArgs &a [[buffer(5)]],
+        device const uint *ids [[buffer(6)]], device const uint *list [[buffer(7)]],
+        uint2 group [[threadgroup_position_in_grid]],
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]]) {
+    threadgroup float4 gridf[512];
+    threadgroup uchar smask[128];
+    const uint tid = sg * 32 + lane, tgs = sgs * 32;
+    if (group.y >= list[0]) return;   /* uniform over the threadgroup */
+    for (uint i = tid; i < 512; i += tgs) {
+        const uint w = uint(q38_iq2_grid[i / 2] >> (32 * (i & 1)));
+        gridf[i] = float4(float(w & 255u), float((w >> 8) & 255u), float((w >> 16) & 255u), float(w >> 24));
+    }
+    for (uint i = tid; i < 128; i += tgs) smask[i] = uchar(i | ((popcount(i) & 1u) << 7));
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    constant PackedArgs &p = a.gate.base, &q = a.up.base;
+    const ulong n0 = (ulong(group.x) * sgs + sg) * GATE_UP8_ROWS;
+    if (n0 >= p.n_out) return;
+    device const uint *entry = list + 1 + 6 * group.y;
+    const uint expert = entry[0], np = min(entry[1], DEDUP_MAX);
+    ulong xi[DEDUP_MAX]; uint mm[DEDUP_MAX]; bool ok = expert < a.gate.experts && expert < a.up.experts && !(p.k_logical & 255u);
+    for (uint t = 0; t < DEDUP_MAX; t++) {
+        mm[t] = t < np ? entry[2 + t] : entry[2];
+        xi[t] = ulong(mm[t] / a.gate.x_divisor) * (p.x_stride / 4);
+        ok = ok && !(t < np && (mm[t] >= p.rows || ids[mm[t]] != expert || (xi[t] & 3) ||
+                                 xi[t] > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi[t]));
+    }
+    if (!ok) { if (!lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); return; }
+    device const uchar *rows[GATE_UP8_ROWS][2];
+    bool live[GATE_UP8_ROWS], outside = false;
+    for (uint k = 0; k < GATE_UP8_ROWS; k++) {
+        const ulong n = n0 + k;
+        const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
+        const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
+        bool bad = grow > p.weight_end || p.row_bytes > p.weight_end - grow || urow > q.weight_end || q.row_bytes > q.weight_end - urow;
+        for (uint t = 0; t < np; t++) bad = bad || ulong(mm[t]) * (p.y_stride / 4) + n >= p.y_bytes / 4;
+        live[k] = n < p.n_out && !bad;
+        outside = outside || (n < p.n_out && bad);
+        rows[k][0] = gw + (live[k] ? grow : 0); rows[k][1] = uw + (live[k] ? urow : 0);
+    }
+    if (outside && !lane) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+    const uint nb = p.k_logical / 256, grp = lane / 4, j = lane % 4;
+    float acc[DEDUP_MAX][GATE_UP8_ROWS][2];
+    for (uint t = 0; t < DEDUP_MAX; t++) for (uint k = 0; k < GATE_UP8_ROWS; k++) { acc[t][k][0] = 0.0f; acc[t][k][1] = 0.0f; }
+    for (uint b = 0; b < nb; b++) {
+        float4 x0[DEDUP_MAX], x1[DEDUP_MAX];
+        for (uint t = 0; t < DEDUP_MAX; t++) {
+            device const float4 *xv = (device const float4 *)(x + xi[t]) + 2 * lane;
+            x0[t] = xv[64 * b]; x1[t] = xv[64 * b + 1];
+        }
+        for (uint k = 0; k < GATE_UP8_ROWS; k++) {
+            for (uint r = 0; r < 2; r++) {
+                device const uchar *blk = rows[k][r] + 66 * ulong(b);
+                device const ushort *qp = (device const ushort *)(blk + 2) + 4 * grp;
+                const uint qg = uint(qp[0]) | (uint(qp[1]) << 16), qs = uint(qp[2]) | (uint(qp[3]) << 16);
+                const float dl = (float(*(device const half *)blk) * float(2 * (qs >> 28) + 1)) * 0.125f;
+                const uint sm = smask[(qs >> (7 * j)) & 127u], gi = (qg >> (8 * j)) & 255u;
+                const float4 g0 = gridf[2 * gi], g1 = gridf[2 * gi + 1];
+                const bool4 m0 = bool4(sm & 1u, sm & 2u, sm & 4u, sm & 8u), m1 = bool4(sm & 16u, sm & 32u, sm & 64u, sm & 128u);
+                for (uint t = 0; t < DEDUP_MAX; t++) {
+                    if (t >= np) break;
+                    const float4 s0 = select(x0[t], -x0[t], m0), s1 = select(x1[t], -x1[t], m1);
+                    float part = g0.x * s0.x;
+                    part = fma(g0.y, s0.y, part); part = fma(g0.z, s0.z, part); part = fma(g0.w, s0.w, part);
+                    part = fma(g1.x, s1.x, part); part = fma(g1.y, s1.y, part); part = fma(g1.z, s1.z, part);
+                    part = fma(g1.w, s1.w, part);
+                    acc[t][k][r] = fma(dl, part, acc[t][k][r]);
+                }
+            }
+        }
+    }
+    bool bad = false;
+    for (uint t = 0; t < DEDUP_MAX; t++) {
+        if (t >= np) break;
+        for (uint k = 0; k < GATE_UP8_ROWS; k++) {
+            const float g = simd_sum(acc[t][k][0]), u = simd_sum(acc[t][k][1]);
+            if (lane || !live[k]) continue;
+            const float sv = q38_silu(g), h = sv * u;
+            act[ulong(mm[t]) * (p.y_stride / 4) + n0 + k] = h;
+            bad = bad || !isfinite(g) || !isfinite(u) || !isfinite(sv) || !isfinite(h);
+        }
+    }
+    if (bad) atomic_fetch_or_explicit(error, 1u, memory_order_relaxed);
+}
+
 /* R1.5c: the routed down projection and q38f_reduce in one pass.
  * DownReduceArgs mirrors Q38DownReduceArgs (qwen38_b_internal.h): the down
  * projection as one indexed call over the tokens x slots pairs (x = act, its

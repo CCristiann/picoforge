@@ -13,7 +13,7 @@
  * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { Q38_INDEXED_FAST = 4 };
 struct Q38PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8,
+                      *indexed_fast[Q38_INDEXED_FAST], *gate_up[Q38_INDEXED_FAST], *down_reduce[Q38_INDEXED_FAST], *down_sp[Q38_INDEXED_FAST], *gate_up8, *gate_up8d, *dedup, *dedup_buf,
                       *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *gemm_naxf[3], *gemm_naxd[3], *grouped_gate_up[Q38_INDEXED_FAST], *grouped_down[Q38_INDEXED_FAST],
                       *grouped_nax_gate_up[Q38_INDEXED_FAST], *grouped_nax_down[Q38_INDEXED_FAST],
                       *grouped_naxf_gate_up[Q38_INDEXED_FAST], *grouped_naxf_down[Q38_INDEXED_FAST],
@@ -225,6 +225,16 @@ Qwen38Status q38_packed_gpu_create(void *device, void *library,
         id<MTLFunction> fn=[lib newFunctionWithName:@"q38_moe_gate_up8_iq2_xxs"];
         id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
         ctx->gate_up8=p ? fast_pipeline(p,Q38_GATE_UP8_SG) : NULL;
+        /* Prefill-gap: MTP verify expert dedup (bit-identical per pair), opt-in Q38_MOE_DEDUP=1: slower */
+        const char *dv=getenv("Q38_MOE_DEDUP");
+        id<MTLFunction> fd=[lib newFunctionWithName:@"q38_moe_gate_up8d_iq2_xxs"], fl=[lib newFunctionWithName:@"q38_moe_dedup"];
+        id<MTLComputePipelineState> pd=fd ? [dev newComputePipelineStateWithFunction:fd error:&failure] : nil;
+        id<MTLComputePipelineState> pl=fl ? [dev newComputePipelineStateWithFunction:fl error:&failure] : nil;
+        id<MTLBuffer> lb=[dev newBufferWithLength:4096 options:MTLResourceStorageModePrivate];
+        if (ctx->gate_up8 && pd && pl && lb && dv && *dv=='1') {
+            ctx->gate_up8d=fast_pipeline(pd,Q38_GATE_UP8_SG);
+            ctx->dedup=(__bridge_retained void *)pl; ctx->dedup_buf=(__bridge_retained void *)lb;
+        }
     }
     { /* Decode III: slots in parallel (bit-identical to down_reduce except the Q2_K chunk dot); optional */
         static NSString *const sp_names[Q38_INDEXED_FAST]={@"q38_moe_down_reduce_sp_iq2_xxs",
@@ -266,6 +276,9 @@ void q38_packed_gpu_free(Q38PackedGpu *ctx) {
     if (ctx->hc_down) CFRelease(ctx->hc_down);
     if (ctx->q8_add) CFRelease(ctx->q8_add);
     if (ctx->gate_up8) CFRelease(ctx->gate_up8);
+    if (ctx->gate_up8d) CFRelease(ctx->gate_up8d);
+    if (ctx->dedup) CFRelease(ctx->dedup);
+    if (ctx->dedup_buf) CFRelease(ctx->dedup_buf);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
@@ -588,6 +601,28 @@ Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand
         !(x.stride_bytes[0]%16);
     const size_t sgs=eight ? Q38_GATE_UP8_SG : Q38_GATE_UP_SG, per=eight ? sgs*Q38_GATE_UP8_ROWS : sgs;
     if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
+    /* Prefill-gap: an MTP verify (2..4 tokens of `divisor` slots) lists its distinct experts first */
+    if (eight && ctx->gate_up8d && divisor>1 && act.dim[0]>divisor && act.dim[0]<=4*divisor && act.dim[0]<=64) {
+        const uint32_t pairs=(uint32_t)act.dim[0];
+        id<MTLBuffer> lb=(__bridge id<MTLBuffer>)ctx->dedup_buf;
+        [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->dedup];
+        [encoder setBuffer:route offset:ids.offset_bytes atIndex:0];
+        [encoder setBuffer:lb offset:0 atIndex:1];
+        [encoder setBytes:&pairs length:4 atIndex:2];
+        [encoder dispatchThreads:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1,1,1)];
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8d];
+        [encoder setBuffer:a.weights offset:0 atIndex:0];
+        [encoder setBuffer:b.weights offset:0 atIndex:1];
+        [encoder setBuffer:a.input offset:x.span.offset_bytes atIndex:2];
+        [encoder setBuffer:a.output offset:act.span.offset_bytes atIndex:3];
+        [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:4];
+        [encoder setBytes:args length:sizeof args atIndex:5];
+        [encoder setBuffer:route offset:ids.offset_bytes atIndex:6];
+        [encoder setBuffer:lb offset:0 atIndex:7];
+        [encoder dispatchThreadgroups:MTLSizeMake((gl->n_out+per-1)/per,pairs,1) threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*sgs,1,1)];
+        return q38_b_result(err,Q38_OK,"");
+    }
     MTLSize groups=MTLSizeMake((gl->n_out+per-1)/per,act.dim[0],1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(Q38_SIMD*sgs,1,1)];
     return q38_b_result(err,Q38_OK,"");
