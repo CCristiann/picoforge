@@ -2,6 +2,36 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Prefill-gap I (2026-11-15): 8K prompt 26.4 -> 20.3 s half, 46.2 -> 32.7 s FP32
+
+Branch `perf/qwen38-prefill-gap`. Toolchain first: Xcode moved to the macOS 27.2 SDK and dropped the
+Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); a metallib that mixed old and new
+`.air` files failed 51 of 118 pipelines (`air.atomic.global.or.u.i32` unlowered), a full rebuild is
+clean and bit-identical to the Decode VII build (short logits sha equal).
+
+Negative first: keeping the F32-weight GEMMs (router, ssm_alpha/beta) in FP32 inside half mode does
+not tame half's drift (N 1000 KL max 0.148 vs 0.099, mean 0.031 vs 0.034): the near-ties flip on
+inputs already rounded by earlier layers, not in the router GEMM. Reverted.
+
+A regression found in the fresh 8K profile: the Decode IV/V one-dispatch conv and fused prepare +
+scan walk tokens serially, so the prefill lost ~0.6 s; from 32 rows the P4 kernels are back
+(gdn.conv 0.87 -> 0.73 s, prep + scan 1.61 -> 1.15 s). Then staging: the prefill GEMMs loaded
+operands one element at a time; F16/F32 weights as half4/float4, x as float4, Q8_0 codes as char2,
+grouped-MoE x rows as float4. Every one stages the same values: logits sha identical at N 1000 in
+FP32 and half (HC down bench 1954 -> 992 us half, 4820 -> 2895 us FP32; gdn qkv at 2048 rows
+33.6 -> 27.7 ms FP32, 13.0 -> 8.9 ms half). Last, chunks of 2048 tokens by default (the grouped
+MoE decodes each expert weight once per tile, so its decode work scales with the chunk count):
+half 23.3 -> 22.3 s, FP32 37.5 -> 35.7 s, against 1024-token chunks KL mean 0.0008 / max 0.017 in
+FP32 (reorder noise), graph buffers 1.7 -> 2.9 GiB, the Q4 stream still fits (51.1 of 55.7 GB).
+
+8K prompt (warm, single runs, AC): half 26.4 -> 20.3 s (GPU 25.4 -> 20.4), FP32 46.2 -> 32.7 s;
+DwarfStar ~14 s. Gates: fast kernels 98/98, cli, session, repl, g2-parts, mtp, speculative,
+compare, server green; G3 2.76e-7 12/12 (its chat step tripped the memory guard twice with other
+applications open; the numeric comparison passes). Now in half: qsa.core 4.86 s, moe.gate_up 3.72,
+moe.down 2.42, gdn.proj 1.74, gdn.scan 1.07.
+**Next:** attention on the Neural Accelerators in half mode (12 query heads share one key selection
+per token: a 16 x 64 x 256 matmul2d per KV head), then the IQ2/Q2_K tile decode.
+
 ## Decode VII (2026-11-12): MoE kernels, and what did not work
 
 Branch `perf/qwen38-decode7`. Encoding the next token ahead was dropped after a look: the PLE n-gram
