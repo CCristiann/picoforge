@@ -799,6 +799,8 @@ static inline void gemm_nax(device const uchar *weights, device const float *x, 
     /* float4 loads of x need 16-byte rows and a 16-byte aligned binding; the host sets
      * p.reserved = 1 for the NAX dispatch when the x offset is aligned (else 0). */
     const bool vec = p.reserved == 1 && p.x_stride % 16 == 0;
+    /* vector weight loads: every row of the tile starts on a 16-byte boundary */
+    const bool wvec = TYPE != 8 && p.weight_offset % 16 == 0 && p.row_bytes % 16 == 0;
     auto acc = mm.get_destination_cooperative_tensor<decltype(tx), decltype(tw), float>();
     for (uint16_t i = 0; i < acc.get_capacity(); i++) if (acc.is_valid_element(i)) acc[i] = 0.0f;
     for (uint k0 = 0; k0 < p.k_logical; k0 += NAX_K) {
@@ -822,6 +824,19 @@ static inline void gemm_nax(device const uchar *weights, device const float *x, 
             for (uint i = 0; i < 16; i++) {
                 const uint c = h + i;
                 ws[r * NAX_K + c] = r < nt && c < kc ? half(d * float(as_type<char>(q[2 + c]))) : 0.0h;
+            }
+        } else if (wvec && kc == NAX_K) {
+            /* Prefill-gap: 4 weights per item. half4 of F16 (or float4 of F32 rounded to
+             * half4) holds the same values as the scalar path below, so the tile and the
+             * result keep their bits; the scalar loop was ~6 us per K step on the HC down
+             * (N 320, K 10240), latency-bound on 2-byte loads. */
+            for (uint i = tid; i < NAX_N * NAX_K / 4; i += NAX_THREADS) {
+                const uint r = i / (NAX_K / 4), c = (i % (NAX_K / 4)) * 4;
+                device const uchar *row = weights + p.weight_offset + (n0 + r) * p.row_bytes;
+                half4 v = half4(0.0h);
+                if (r < nt) v = TYPE == 1 ? ((device const half4 *)row)[(k0 + c) / 4]
+                                          : half4(((device const float4 *)row)[(k0 + c) / 4]);
+                *(threadgroup half4 *)(ws + r * NAX_K + c) = v;
             }
         } else {
             for (uint i = tid; i < NAX_N * NAX_K; i += NAX_THREADS) {
