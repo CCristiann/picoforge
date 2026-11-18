@@ -125,9 +125,14 @@ build/test_sample: tests/test_qwen38_sample.c src/qwen38_sample.c src/qwen38_sam
 test-qwen38-sample: build/test_sample
 	@./build/test_sample
 
-# pf-agent tools and parser, offline (no model).
+# pf-agent tools and parser, offline (no model); the loop on the synthetic
+# checkpoint (GPU, under the lock) is test-pf-agent-model.
 test-pf-agent: pf-agent
 	@$(PYTHON) tests/test_pf_agent.py
+
+test-pf-agent-model: pf-agent build/qwen38-g2/cli.gguf
+	$(Q38_LOCK) env PF_AGENT_GGUF=build/qwen38-g2/cli.gguf $(Q38_TEST) tests/test_pf_agent.py -v
+.PHONY: test-pf-agent test-pf-agent-model
 
 clean:
 	rm -f src/*.o picoforge $(METALLIB) build/*.air

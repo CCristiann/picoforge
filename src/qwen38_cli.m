@@ -219,7 +219,13 @@ void q38_power_pause(const Q38Run *r,double *avg,double work) {
     struct timespec ts={(time_t)pause,(long)((pause-(double)(time_t)pause)*1e9)};
     while (nanosleep(&ts,&ts) && errno==EINTR && !q38_stopped) {}
 }
+static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t);
+/* Each turn drains its own autorelease pool: Metal hands out autoreleased
+ * command buffers, and a long chat or agent session must not keep them all. */
 void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
+    @autoreleasepool { turn(r,tokens,count,o,generated,t); }
+}
+static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
     const Qwen38ConfigView *c=r->c; Qwen38GpuForward *graph=r->graph; Qwen38Error e;
     float *logits=r->logits; Qwen38F32Mut *y=&r->y; *t=(Q38Turn){.reason="length"};
     size_t residual_offset=0,got=0;

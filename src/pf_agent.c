@@ -23,17 +23,20 @@
  * Sections: text buffers and hygiene · workspace paths · the pager and
  * approvals · file tools · the tool-call parser · tool table · main.
  */
+#include "model_select.h"
 #include "qwen38_run.h"
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <mach-o/dyld.h>
 #include <regex.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ------------------------------------------------------------ text buffers */
@@ -127,6 +130,16 @@ typedef struct {
     bool yes;              /* approve every side effect: --yes, or "a" at a prompt */
     bool ask;              /* stdin is a terminal we can ask on */
     Buf more;              /* the rest of the last truncated tool output */
+    /* The model and the conversation (absent in --run / --parse). */
+    Q38Run run;
+    int32_t *ids, *generated; size_t n;   /* the transcript is ids[0..n) */
+    int32_t im_end;        /* the end-of-turn token */
+    bool thinking;         /* reasoning before each reply */
+    uint32_t max_new;      /* tokens per reply, 0: the room left */
+    char *system;          /* the system prompt */
+    Qwen38Json tool_defs;  /* the tools, as the template wants them */
+    const char *script;    /* --script: the next canned reply (tests) */
+    const char *ids_path;  /* --token-ids: transcript dump after each reply (tests) */
 } Agent;
 
 static const char *arg(const Call *c, const char *key) {
@@ -502,10 +515,36 @@ static size_t parse_calls(const char *text, Call *calls, size_t max) {
 
 /* ------------------------------------------------------------ tool table */
 
-typedef struct { const char *name; void (*run)(Agent *, const Call *, Buf *); } Tool;
+/* Each tool with the description and parameters the model reads (they go
+ * into the system prompt once, as JSON schema, through the template). */
+typedef struct { const char *name, *type, *description; bool required; } Param;
+typedef struct {
+    const char *name; void (*run)(Agent *, const Call *, Buf *);
+    const char *description; Param params[4];
+} Tool;
 static const Tool tools[] = {
-    {"list", tool_list}, {"read", tool_read}, {"more", tool_more}, {"search", tool_search},
-    {"write", tool_write}, {"edit", tool_edit},
+    {"list", tool_list, "List one directory of the workspace: subdirectories end with '/', files show their size.",
+     {{"path", "string", "Directory, relative to the workspace root. Default: the root.", false}}},
+    {"read", tool_read, "Read a text file with line numbers. Long output is cut: call more to continue.",
+     {{"path", "string", "File, relative to the workspace root.", true},
+      {"start", "integer", "First line to show, 1-based. Default 1.", false},
+      {"end", "integer", "Last line to show, inclusive. Default: the end of the file.", false}}},
+    {"more", tool_more, "Continue the last output that was cut (read, search, bash, visit_page, ...).", {{0}}},
+    {"search", tool_search, "Search text in the workspace files, recursively (skips hidden directories, build "
+     "outputs and binary files). Prints file:line: text.",
+     {{"pattern", "string", "The text to find, or a POSIX extended regex when regex is true.", true},
+      {"path", "string", "File or directory to search. Default: the root.", false},
+      {"regex", "boolean", "Treat pattern as a regex. Default false.", false},
+      {"ignore_case", "boolean", "Case-insensitive match. Default false.", false}}},
+    {"write", tool_write, "Create a file or replace its whole content, atomically. The directory must exist. "
+     "For changes to an existing file prefer edit.",
+     {{"path", "string", "File, relative to the workspace root.", true},
+      {"content", "string", "The complete new content of the file.", true}}},
+    {"edit", tool_edit, "Replace one exact occurrence of old text with new text in a file. old must match "
+     "exactly once, whitespace included: read the file first.",
+     {{"path", "string", "File, relative to the workspace root.", true},
+      {"old", "string", "The exact text to replace (unique in the file).", true},
+      {"new", "string", "The replacement text.", true}}},
 };
 
 /* One call -> its result text, cleaned and paged. */
@@ -524,8 +563,358 @@ static void run_tool(Agent *a, const Call *c, Buf *out) {
 
 /* ------------------------------------------------------------ main */
 
+/* ------------------------------------------------------------ JSON for the template
+ * qwen38_chat_render takes borrowed JSON trees, not text. The tool
+ * definitions are built once and live as long as the process. */
+
+static Qwen38Json jstr(const char *s) {
+    return (Qwen38Json){.kind = Q38_JSON_STRING, .as.string = {(const uint8_t *)s, strlen(s)}};
+}
+static Qwen38Json jobject(size_t cap) {
+    Qwen38JsonMember *m = calloc(cap, sizeof *m);
+    if (!m) die("pf-agent: out of memory");
+    return (Qwen38Json){.kind = Q38_JSON_OBJECT, .as.object = {m, 0}};
+}
+static void jset(Qwen38Json *object, const char *key, Qwen38Json value) {
+    Qwen38Json *boxed = malloc(sizeof *boxed);
+    if (!boxed) die("pf-agent: out of memory");
+    *boxed = value;
+    Qwen38JsonMember *m = (Qwen38JsonMember *)object->as.object.items;   /* ours: built here */
+    m[object->as.object.count++] = (Qwen38JsonMember){{(const uint8_t *)key, strlen(key)}, boxed};
+}
+/* [{"type":"function","function":{"name","description","parameters":{JSON schema}}}, ...] */
+static Qwen38Json tool_definitions(void) {
+    size_t n = sizeof tools/sizeof *tools;
+    Qwen38Json *list = calloc(n, sizeof *list);
+    if (!list) die("pf-agent: out of memory");
+    for (size_t i = 0; i < n; i++) {
+        Qwen38Json props = jobject(4), *required = calloc(4, sizeof *required);
+        size_t nreq = 0;
+        if (!required) die("pf-agent: out of memory");
+        for (const Param *p = tools[i].params; p < tools[i].params+4 && p->name; p++) {
+            Qwen38Json prop = jobject(2);
+            jset(&prop, "type", jstr(p->type)); jset(&prop, "description", jstr(p->description));
+            jset(&props, p->name, prop);
+            if (p->required) required[nreq++] = jstr(p->name);
+        }
+        Qwen38Json schema = jobject(3), fn = jobject(3);
+        jset(&schema, "type", jstr("object")); jset(&schema, "properties", props);
+        jset(&schema, "required", (Qwen38Json){.kind = Q38_JSON_ARRAY, .as.array = {required, nreq}});
+        jset(&fn, "name", jstr(tools[i].name)); jset(&fn, "description", jstr(tools[i].description));
+        jset(&fn, "parameters", schema);
+        list[i] = jobject(2); jset(&list[i], "type", jstr("function")); jset(&list[i], "function", fn);
+    }
+    return (Qwen38Json){.kind = Q38_JSON_ARRAY, .as.array = {list, n}};
+}
+
+/* ------------------------------------------------------------ the conversation */
+
+#define MAX_CALLS 16       /* tool calls run from one reply */
+#define MAX_ROUNDS 64      /* tool rounds in one user turn before we stop and ask */
+
+static char *system_prompt(const Agent *a) {
+    char date[32]; time_t now = time(NULL); struct tm tm;
+    strftime(date, sizeof date, "%Y-%m-%d", localtime_r(&now, &tm));
+    Buf b = {0};
+    buf_fmt(&b, "You are pf-agent, a coding agent running locally on the user's Mac (macOS) through the "
+        "picoforge engine. You work in the workspace %s; tool paths are relative to it. Today is %s.\n\n"
+        "Work in small, verified steps: look before you change (list, search, read), make focused edits, "
+        "and check them with the project's own commands through bash. Read a file before editing it: edit "
+        "needs the exact current text. bash, write and edit need the user's approval; if they decline, ask "
+        "how to proceed. Never invent file contents, command output or web pages: use the tools. When the "
+        "task is done, reply with a short summary of what changed and how you verified it.", a->root, date);
+    char path[PATH_MAX]; Buf text = {0}, err = {0};
+    snprintf(path, sizeof path, "%s/AGENTS.md", a->root);
+    if (!access(path, R_OK) && load_text(a, path, &text, &err) && text.n <= 16384) {
+        clean_text(&text);
+        buf_str(&b, "\n\n# Project instructions (AGENTS.md)\n\n"); buf_add(&b, text.p, text.n);
+    }
+    buf_free(&text); buf_free(&err);
+    return b.p;
+}
+
+typedef struct { const char *role, *content; } Msg;
+
+static uint8_t *render(const Agent *a, const Qwen38Json *list, size_t n, bool with_tools, bool generation, size_t *len) {
+    Qwen38Json messages = {.kind = Q38_JSON_ARRAY, .as.array = {list, n}};
+    /* Effort "medium" adds no reasoning instruction to the system block (the
+     * template's default, xhigh, asks for long reasoning that eats the context). */
+    Qwen38ChatOptions o = {.enable_thinking = a->thinking ? Q38_TRUE : Q38_FALSE,
+        .reasoning_effort = Q38_EFFORT_MEDIUM, .add_generation_prompt = generation};
+    Qwen38Error e;
+    if (qwen38_chat_render(a->run.tok, &messages, with_tools ? &a->tool_defs : NULL, o, NULL, 0, len, &e)) {
+        fprintf(stderr, "pf-agent: %s\n", e.detail); return NULL;
+    }
+    uint8_t *out = malloc(*len+1);
+    if (!out) die("pf-agent: out of memory");
+    q38_check(qwen38_chat_render(a->run.tok, &messages, with_tools ? &a->tool_defs : NULL, o, out, *len, len, &e), &e);
+    return out;
+}
+
+/* Render msgs as the next turn and encode it after the transcript, at
+ * ids[n..); returns the number of new ids (0: error, already reported). The
+ * first turn carries the system prompt and the tool definitions. A later turn
+ * renders [placeholder user, msgs...] and drops the placeholder's bytes: the
+ * template refuses a list with no user query, and tool results are not one. */
+static size_t append_turn(Agent *a, const Msg *msgs, size_t n) {
+    Qwen38Json list[MAX_CALLS+1], values[MAX_CALLS+1][2]; Qwen38JsonMember fields[MAX_CALLS+1][2];
+    const bool first = !a->n;
+    for (size_t i = 0; i <= n; i++) {
+        Msg m = i ? msgs[i-1] : first ? (Msg){"system", a->system} : (Msg){"user", "."};
+        values[i][0] = jstr(m.role); values[i][1] = jstr(m.content);
+        fields[i][0] = (Qwen38JsonMember){{(const uint8_t *)"role", 4}, &values[i][0]};
+        fields[i][1] = (Qwen38JsonMember){{(const uint8_t *)"content", 7}, &values[i][1]};
+        list[i] = (Qwen38Json){.kind = Q38_JSON_OBJECT, .as.object = {fields[i], 2}};
+    }
+    size_t len, skip = 0, count = 0;
+    uint8_t *text = render(a, list, n+1, first, true, &len);
+    if (!text) return 0;
+    if (!first) {
+        uint8_t *prefix = render(a, list, 1, false, false, &skip);
+        if (!prefix || skip > len || memcmp(prefix, text, skip)) die("pf-agent: placeholder turn is not a prefix");
+        free(prefix);
+    }
+    /* Close the previous reply: it ends with <|im_end|> unless it was cut. */
+    Buf b = {0};
+    if (!first) buf_str(&b, a->ids[a->n-1] == a->im_end ? "\n" : "<|im_end|>\n");
+    buf_add(&b, text+skip, len-skip); free(text);
+    Qwen38Error e; uint32_t cap = a->run.capacity;
+    Qwen38Status rc = qwen38_encode(a->run.tok, (Qwen38Bytes){(const uint8_t *)b.p, b.n}, a->ids+a->n, cap-a->n, &count, &e);
+    buf_free(&b);
+    if (rc && rc != Q38_CAPACITY) { fprintf(stderr, "pf-agent: cannot encode the turn: %s\n", e.detail); return 0; }
+    if (rc || count >= cap-a->n) {
+        fprintf(stderr, "pf-agent: the context is full (%zu of %u tokens): /reset, or restart with a larger -c\n", a->n, cap);
+        return 0;
+    }
+    return count;
+}
+
+/* The reply streams through Q38Printer (grey reasoning), but the XML of a
+ * tool call is hidden: each call is shown as one line once the reply is
+ * done. A tag can arrive split across tokens, so a possible prefix waits. */
+typedef struct { Q38Printer out; Buf pend; bool hidden; } View;
+static void view_text(void *ctx, const uint8_t *s, size_t n) {
+    View *v = ctx;
+    buf_add(&v->pend, s, n);
+    for (;;) {
+        const char *tag = v->hidden ? "</tool_call>" : "<tool_call>";
+        char *hit = strstr(v->pend.p, tag);
+        size_t keep = hit ? (size_t)(hit-v->pend.p) : v->pend.n > 12 ? v->pend.n-12 : 0;
+        if (!v->hidden) q38_print_text(&v->out, (const uint8_t *)v->pend.p, keep);
+        size_t drop = hit ? keep+strlen(tag) : keep;
+        memmove(v->pend.p, v->pend.p+drop, v->pend.n-drop+1); v->pend.n -= drop;
+        if (!hit) return;
+        if (!v->hidden) q38_print_text(&v->out, (const uint8_t *)"\n...", 4);
+        v->hidden = !v->hidden;
+    }
+}
+static void view_end(View *v) {
+    if (!v->hidden) q38_print_text(&v->out, (const uint8_t *)v->pend.p, v->pend.n);
+    q38_print_end(&v->out); fputc('\n', stdout); buf_free(&v->pend);
+}
+
+/* The test oracle (--token-ids): transcript ids, its text, and the graph position. */
+static void dump_ids(const Agent *a) {
+    if (!a->ids_path) return;
+    FILE *f = fopen(a->ids_path, "w");
+    if (!f) die("pf-agent: cannot open %s", a->ids_path);
+    size_t len = 0; Qwen38Error e; Buf json = {0};
+    q38_check(qwen38_decode_utf8(a->run.tok, a->ids, a->n, false, NULL, 0, &len, &e), &e);
+    char *text = malloc(len+1);
+    if (!text) die("pf-agent: out of memory");
+    q38_check(qwen38_decode_utf8(a->run.tok, a->ids, a->n, false, (uint8_t *)text, len, &len, &e), &e);
+    text[len] = 0; json_escape(&json, text); free(text);
+    fputs("{\"ids\":[", f);
+    for (size_t i = 0; i < a->n; i++) fprintf(f, "%s%d", i ? "," : "", a->ids[i]);
+    fprintf(f, "],\"kv\":%llu,\"text\":\"%s\"}\n", (unsigned long long)qwen38_gpu_forward_info(a->run.graph).next_pos, json.p);
+    buf_free(&json);
+    if (fclose(f)) die("pf-agent: writing %s failed", a->ids_path);
+}
+
+/* --script (tests): the next canned reply, up to a line "=====", encoded and
+ * appended as if the model had generated it. NULL when the script is used up. */
+static char *scripted_reply(Agent *a, size_t total) {
+    if (!a->script || !*a->script) return NULL;
+    const char *end = strstr(a->script, "\n=====\n");
+    size_t len = end ? (size_t)(end-a->script) : strlen(a->script);
+    const char *start = a->script;
+    a->script += len + (end ? 7 : 0);
+    if (len && start[len-1] == '\n') len--;      /* the file's last newline is not part of the reply */
+    Buf b = {0}; buf_add(&b, start, len);
+    char *reply = strdup(b.p);
+    buf_str(&b, "<|im_end|>");
+    size_t count = 0; Qwen38Error e;
+    q38_check(qwen38_encode(a->run.tok, (Qwen38Bytes){(const uint8_t *)b.p, b.n}, a->ids+total, a->run.capacity-total, &count, &e), &e);
+    buf_free(&b);
+    a->n = total+count;
+    printf("%s\n", reply);
+    return reply;
+}
+
+/* The model's reply to the `added` ids just appended. The reply joins the
+ * transcript; returns its text (special tokens dropped), or NULL when the user
+ * stopped it before any tool could run. */
+static char *reply(Agent *a, size_t added) {
+    size_t total = a->n+added;
+    char *canned = scripted_reply(a, total);
+    if (canned) { dump_ids(a); return canned; }
+    View v = {.out = {.color = isatty(STDOUT_FILENO)}}; q38_printer_shade(&v.out, a->thinking);
+    Q38Turn t; bool replayed;
+    size_t prefilled = q38_chat_continue(&a->run, a->ids, a->n, total, a->max_new, view_text, &v, a->generated, &t, &replayed);
+    view_end(&v);
+    bool cancelled = !strcmp(t.reason, "cancelled");
+    memcpy(a->ids+total, a->generated, t.got*sizeof *a->ids);
+    if (t.got || !cancelled) a->n = total+t.got;   /* stopped before the first token: drop the turn (as the REPL) */
+    double prefill = t.prefill_end-t.prefill_start, decode = t.end-t.decode_start;
+    fprintf(stderr, "\x1b[90m[prefill %zu tokens %.1f t/s, reply %zu tokens %.1f t/s, context %zu/%u%s%s]\x1b[0m\n",
+        prefilled, prefill > 0 ? (double)prefilled/prefill : 0.0, t.got, decode > 0 && t.got > 1 ? (double)(t.got-1)/decode : 0.0,
+        a->n, a->run.capacity, replayed ? ", replayed" : "", cancelled ? ", interrupted" : "");
+    dump_ids(a);
+    if (cancelled) return NULL;
+    if (!strcmp(t.reason, "length")) fprintf(stderr, "pf-agent: the reply hit the token limit\n");
+    size_t len = 0; Qwen38Error e;
+    q38_check(qwen38_decode_utf8(a->run.tok, a->generated, t.got, true, NULL, 0, &len, &e), &e);
+    char *text = malloc(len+1);
+    if (!text) die("pf-agent: out of memory");
+    q38_check(qwen38_decode_utf8(a->run.tok, a->generated, t.got, true, (uint8_t *)text, len, &len, &e), &e);
+    text[len] = 0;
+    return text;
+}
+
+/* One line per call: "-> name key=value ...", long values summarized. */
+static void show_call(const Call *c) {
+    printf("\x1b[36m-> %s\x1b[0m", c->name);
+    for (size_t k = 0; k < c->n; k++) {
+        const char *v = c->value[k], *nl = strchr(v, '\n');
+        if (nl) printf(" %s=<%ld lines>", c->key[k], count_lines(v, strlen(v)));
+        else printf(" %s=%.*s%s", c->key[k], 80, v, strlen(v) > 80 ? "..." : "");
+    }
+    putchar('\n');
+}
+/* The first lines of a result, grey. */
+static void show_result(const Buf *out) {
+    const char *p = out->p; int shown = 0;
+    fputs("\x1b[90m", stdout);
+    for (; *p && shown < 6; shown++) {
+        const char *nl = strchr(p, '\n'); size_t len = nl ? (size_t)(nl-p) : strlen(p);
+        printf("   %.*s\n", (int)(len < 160 ? len : 160), p);
+        p += len + (nl != NULL);
+    }
+    if (*p) printf("   ... (%ld more lines)\n", count_lines(p, strlen(p)) - (out->p[out->n-1] == '\n'));
+    fputs("\x1b[0m", stdout); fflush(stdout);
+}
+
+/* The text after the reasoning: only there do tool calls count. */
+static const char *answer_part(const char *reply) {
+    const char *p = reply, *close;
+    while ((close = strstr(p, "</think>"))) p = close+8;
+    return p;
+}
+
+/* One user message, then reply -> tools -> results until the model answers
+ * without a tool call, the user interrupts, or MAX_ROUNDS is reached. */
+static void agent_turn(Agent *a, const char *text) {
+    Msg user = {"user", text};
+    size_t added = append_turn(a, &user, 1);
+    for (int round = 0; added && round < MAX_ROUNDS; round++) {
+        char *answer = reply(a, added);
+        if (!answer) return;
+        Call calls[MAX_CALLS];
+        size_t n = parse_calls(answer_part(answer), calls, MAX_CALLS);
+        free(answer);
+        if (!n || q38_stopped) { for (size_t i = 0; i < n; i++) call_free(&calls[i]); return; }
+        Buf outs[MAX_CALLS] = {{0}}; Msg results[MAX_CALLS];
+        for (size_t i = 0; i < n; i++) {
+            show_call(&calls[i]);
+            if (q38_stopped) buf_str(&outs[i], "Tool error: interrupted by the user before it ran.\n");
+            else run_tool(a, &calls[i], &outs[i]);
+            show_result(&outs[i]);
+            results[i] = (Msg){"tool", outs[i].p};
+            call_free(&calls[i]);
+        }
+        added = append_turn(a, results, n);
+        for (size_t i = 0; i < n; i++) buf_free(&outs[i]);
+        if (q38_stopped) { added = 0; fprintf(stderr, "pf-agent: interrupted; the results are kept for your next message\n"); }
+    }
+    if (added) fprintf(stderr, "pf-agent: %d tool rounds without an answer, stopping here\n", MAX_ROUNDS);
+}
+
+/* ------------------------------------------------------------ the prompt */
+
+static volatile sig_atomic_t at_prompt;
+static void interrupt(int signum) {
+    (void)signum; q38_stopped = 1;
+    if (at_prompt) { ssize_t ignored = write(STDOUT_FILENO, "\npf> ", 5); (void)ignored; }
+}
+static void help(void) {
+    puts("pf-agent: describe a task; the agent reads, edits and runs commands in this workspace.\n"
+         "  /auto          Approve every bash/write/edit for the rest of the session.\n"
+         "  /think, /nothink  Reasoning on or off.\n"
+         "  /reset         Start a new conversation.\n"
+         "  /help, /quit   This help; leave (Ctrl+D too).\n"
+         "  Ctrl+C         Stop the reply or the running tool.\n"
+         "End a line with \\ to continue the message on the next line.");
+}
+static char *trim(char *s) {
+    while (isspace((unsigned char)*s)) s++;
+    char *end = s+strlen(s);
+    while (end > s && isspace((unsigned char)end[-1])) *--end = 0;
+    return s;
+}
+static bool interactive(void) { return isatty(STDIN_FILENO) && isatty(STDOUT_FILENO); }
+/* One message from stdin; a line ending in '\' continues on the next. NULL at EOF. */
+static char *read_message(Buf *msg) {
+    char *line = NULL; size_t cap = 0; msg->n = 0; buf_add(msg, "", 0);
+    for (;;) {
+        if (interactive()) { fputs(msg->n ? "... " : "pf> ", stdout); fflush(stdout); }
+        at_prompt = 1; errno = 0;
+        ssize_t got = getline(&line, &cap, stdin);
+        at_prompt = 0;
+        if (got < 0 && errno == EINTR) { clearerr(stdin); msg->n = 0; msg->p[0] = 0; continue; }
+        if (got < 0) { free(line); return msg->n ? msg->p : NULL; }
+        size_t len = (size_t)got;
+        while (len && (line[len-1] == '\n' || line[len-1] == '\r')) len--;
+        bool more = len && line[len-1] == '\\';
+        buf_add(msg, line, more ? len-1 : len);
+        if (!more) { free(line); return msg->p; }
+        buf_add(msg, "\n", 1);
+    }
+}
+
+static void conversation(Agent *a) {
+    if (interactive()) help();
+    Buf msg = {0};
+    for (char *line; (line = read_message(&msg));) {
+        char *cmd = trim(line);
+        if (!*cmd) continue;
+        if (!strcmp(cmd, "/help")) help();
+        else if (!strcmp(cmd, "/quit") || !strcmp(cmd, "/exit")) break;
+        else if (!strcmp(cmd, "/auto")) { a->yes = true; puts("Every bash/write/edit is approved for this session."); }
+        else if (!strcmp(cmd, "/think") || !strcmp(cmd, "/nothink")) {
+            a->thinking = !strcmp(cmd, "/think"); printf("Thinking %s.\n", a->thinking ? "on" : "off");
+        }
+        else if (!strcmp(cmd, "/reset")) {
+            Qwen38Error e; q38_check(qwen38_gpu_forward_reset(a->run.graph, &e), &e);
+            a->n = 0; a->run.last_count = 0; buf_free(&a->more); dump_ids(a); puts("New conversation.");
+        }
+        else if (*cmd == '/' && !strchr(cmd, ' ') && !strchr(cmd, '\n')) fprintf(stderr, "pf-agent: unknown command %s (try /help)\n", cmd);
+        else agent_turn(a, cmd);
+        fflush(stdout);
+    }
+    buf_free(&msg);
+    if (interactive()) fputc('\n', stdout);
+}
+
 static void usage(void) {
-    fputs("usage: pf-agent --run [--yes] < TEXT    run the tool calls in TEXT, no model\n"
+    fputs("usage: pf-agent [-m MODEL] [-c CTX] [-n N] [-w DIR] [--yes] [--no-think] [--no-mtp] [--power N]\n"
+          "  -m MODEL    a .gguf path or a short name, as for picoforge\n"
+          "  -c CTX      context in tokens (default 32768)\n"
+          "  -n N        tokens per reply (default: the room left)\n"
+          "  -w DIR      the workspace (default: the current directory)\n"
+          "  --yes       approve every bash/write/edit\n"
+          "  --no-think  reply without reasoning\n"
+          "  --power N   GPU duty cycle in percent, as for picoforge\n"
+          "       pf-agent --run [--yes] < TEXT    run the tool calls in TEXT, no model\n"
           "       pf-agent --parse < TEXT          print the tool calls in TEXT as JSON lines\n", stderr);
 }
 
@@ -567,12 +956,79 @@ static int parse_stdin(void) {
     return 0;
 }
 
+static uint32_t number(const char *s, uint32_t lo, uint32_t hi, const char *what) {
+    char *end; errno = 0; unsigned long n = strtoul(s, &end, 10);
+    if (errno || end == s || *end || n < lo || n > hi) die("pf-agent: %s must be in [%u, %u]", what, lo, hi);
+    return (uint32_t)n;
+}
+/* picoforge.metallib beside the real binary, so the agent runs from any directory. */
+static void metallib_path(char out[PATH_MAX]) {
+    char exe[PATH_MAX], real[PATH_MAX]; uint32_t size = sizeof exe;
+    if (_NSGetExecutablePath(exe, &size) || !realpath(exe, real)) die("pf-agent: cannot find its own binary");
+    *strrchr(real, '/') = 0;
+    snprintf(out, PATH_MAX, "%s/picoforge.metallib", real);
+}
+static char *absolute(const char *path) {   /* before -w changes directory */
+    char cwd[PATH_MAX]; Buf b = {0};
+    if (path[0] != '/' && getcwd(cwd, sizeof cwd)) buf_fmt(&b, "%s/", cwd);
+    buf_str(&b, path); return b.p;
+}
+
 int main(int argc, char **argv) {
-    Agent a = {0};
-    if (!realpath(".", a.root)) die("pf-agent: cannot resolve the current directory");
-    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--yes")) a.yes = true;
-    if (argc > 1 && !strcmp(argv[1], "--parse")) return parse_stdin();
-    if (argc > 1 && !strcmp(argv[1], "--run")) { int rc = run_stdin(&a); buf_free(&a.more); return rc; }
-    usage();
-    return 2;
+    Agent a = {.thinking = true};
+    if (argc > 1 && (!strcmp(argv[1], "--parse") || !strcmp(argv[1], "--run"))) {
+        if (!realpath(".", a.root)) die("pf-agent: cannot resolve the current directory");
+        if (!strcmp(argv[1], "--parse")) return parse_stdin();
+        a.yes = argc > 2 && !strcmp(argv[2], "--yes");
+        int rc = run_stdin(&a); buf_free(&a.more); return rc;
+    }
+    const char *model = NULL, *workspace = NULL; char *script = NULL, *ids_path = NULL;
+    uint32_t ctx = 32768, power = 100; bool mtp = true;
+    for (int i = 1; i < argc; i++) {
+        const char *o = argv[i];
+        if (!strcmp(o, "--yes")) a.yes = true;
+        else if (!strcmp(o, "--no-think")) a.thinking = false;
+        else if (!strcmp(o, "--no-mtp")) mtp = false;
+        else if (!strcmp(o, "-h") || !strcmp(o, "--help")) { usage(); return 0; }
+        else if (i+1 == argc) { usage(); return 2; }
+        else if (!strcmp(o, "-m")) model = argv[++i];
+        else if (!strcmp(o, "-c")) ctx = number(argv[++i], 64, 32768, "-c");
+        else if (!strcmp(o, "-n")) a.max_new = number(argv[++i], 0, 1u << 20, "-n");
+        else if (!strcmp(o, "-w")) workspace = argv[++i];
+        else if (!strcmp(o, "--power")) power = number(argv[++i], 1, 100, "--power");
+        else if (!strcmp(o, "--script")) { size_t len; script = slurp(argv[++i], &len); }
+        else if (!strcmp(o, "--token-ids")) ids_path = absolute(argv[++i]);
+        else { usage(); return 2; }
+    }
+    char lib[PATH_MAX]; metallib_path(lib);
+    char *chosen = model_select(model, argv[0]), *path = absolute(chosen); free(chosen);
+    if (workspace && chdir(workspace)) die("pf-agent: cannot enter %s: %s", workspace, strerror(errno));
+    if (!realpath(".", a.root)) die("pf-agent: cannot resolve the workspace");
+    a.ask = isatty(STDIN_FILENO); a.script = script; a.ids_path = ids_path;
+    struct sigaction action = {0}, old; action.sa_handler = interrupt; action.sa_flags = SA_RESTART;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGINT, &action, &old)) die("pf-agent: cannot install the Ctrl+C handler");
+
+    Q38Run *r = &a.run; Qwen38Error e; size_t one = 0; int32_t probe[2];
+    r->chunk = 1024; r->mtp = mtp; r->power = (int)power;
+    q38_policy_init(&r->policy, getenv("PICOFORGE_MTP_DRAFT"), getenv("PICOFORGE_MTP_COST"));
+    q38_sampler_init(&r->sampler, 0.6f, 20, 0.95f, 0.0f, (uint64_t)time(NULL));   /* as the chat */
+    q38_run_open(r, path);
+    if (ctx > r->c->max_positions) die("pf-agent: -c %u exceeds the model's %u positions", ctx, r->c->max_positions);
+    if (qwen38_encode(r->tok, (Qwen38Bytes){(const uint8_t *)"<|im_end|>", 10}, probe, 2, &one, &e) || one != 1)
+        die("pf-agent: the model needs <|im_end|> as a single token");
+    a.im_end = probe[0];
+    q38_run_gpu(r, path, lib);
+    q38_run_graph(r, ctx);
+    a.ids = malloc((size_t)ctx*sizeof *a.ids); a.generated = malloc((size_t)ctx*sizeof *a.generated);
+    if (!a.ids || !a.generated) die("pf-agent: out of memory");
+    a.system = system_prompt(&a); a.tool_defs = tool_definitions();
+    fprintf(stderr, "pf-agent: %s, context %u tokens, workspace %s\n", path, ctx, a.root);
+
+    conversation(&a);
+
+    sigaction(SIGINT, &old, NULL);
+    q38_run_close(r); free(path); free(a.ids); free(a.generated); free(a.system);
+    free(script); free(ids_path); buf_free(&a.more);
+    return 0;
 }

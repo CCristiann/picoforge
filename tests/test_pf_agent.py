@@ -135,5 +135,53 @@ class AgentTools(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.ws.iterdir()), ['code.py', 'sub.txt'])
 
 
+GGUF = os.environ.get('PF_AGENT_GGUF')
+
+
+@unittest.skipUnless(GGUF, 'set PF_AGENT_GGUF to a synthetic checkpoint (make test-pf-agent-model)')
+class AgentLoop(unittest.TestCase):
+    """The loop on a synthetic checkpoint: canned replies (--script) go through
+    the real render/encode/tool path, then one real generation prefills the
+    whole transcript on the GPU."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name).resolve()
+        (self.dir / 'ws').mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def agent(self, replies, messages, *flags):
+        (self.dir / 'script.txt').write_text('\n=====\n'.join(replies) + '\n')
+        args = [str(AGENT), '-m', GGUF, '-w', str(self.dir / 'ws'), '--script', str(self.dir / 'script.txt'),
+                '--token-ids', str(self.dir / 'ids.json'), '-n', '4', '-c', '16384', *flags]
+        p = subprocess.run(args, input=''.join(m + '\n' for m in messages).encode(), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=300)
+        self.assertEqual(p.returncode, 0, p.stderr.decode()[-2000:])
+        return p.stdout.decode(), json.loads((self.dir / 'ids.json').read_text())
+
+    def test_tool_round_trip(self):
+        out, state = self.agent([call('write', path='a.txt', content='one\ntwo'),
+                                 'Reading it.\n' + call('read', path='a.txt'), 'Done.'],
+                                ['make a.txt', 'thanks'], '--yes', '--no-think')
+        self.assertEqual((self.dir / 'ws' / 'a.txt').read_text(), 'one\ntwo')
+        text = state['text']
+        self.assertEqual(text.count('<|im_start|>system'), 1)
+        self.assertIn('{"type": "function", "function": {"name": "edit"', text)   # tool definitions in the system block
+        self.assertIn('</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nWrote 7 bytes to a.txt.\n'
+                      '</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nReading it.', text)
+        self.assertIn('     2\ttwo\n</tool_response>', text)
+        self.assertIn('Done.<|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n', text)
+        self.assertEqual(state['kv'], len(state['ids']) - 1)   # the graph holds the transcript, minus the last token
+
+    def test_thinking_and_declined_write(self):
+        reasoning = 'Maybe ' + call('list') + 'no, write it.\n</think>\n\n'
+        out, state = self.agent([reasoning + call('write', path='b.txt', content='x'), 'Ok.'], ['write b'])
+        self.assertFalse((self.dir / 'ws' / 'b.txt').exists())       # stdin is not a terminal: declined
+        self.assertEqual(state['text'].count('<tool_response>'), 1)  # the call inside the reasoning did not run
+        self.assertIn('the user declined', state['text'])
+        self.assertIn('<|im_start|>assistant\n<think>\nMaybe', state['text'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=1)
