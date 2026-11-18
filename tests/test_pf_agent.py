@@ -134,6 +134,40 @@ class AgentTools(unittest.TestCase):
         self.assertIn('does not exist', out)
         self.assertEqual(sorted(p.name for p in self.ws.iterdir()), ['code.py', 'sub.txt'])
 
+    # ---------------------------------------------------------------- bash
+    def test_bash_basics(self):
+        out = self.run_calls(call('bash', command='echo out; echo err >&2; pwd; cat; exit 3'),
+                             call('bash', command='ls /dev/fd'), yes=True)
+        self.assertIn(f'out\nerr\n{self.ws}\n[exit code 3]', out)
+        fds = out.split('== bash\n')[2].split('[exit code 0]')[0].split()
+        alone = subprocess.run(['/bin/bash', '-c', 'ls /dev/fd'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, close_fds=True).stdout.decode().split()
+        self.assertEqual(fds, alone)   # what bash alone sees (ls opens two): nothing of ours leaks
+
+    def test_bash_needs_approval(self):
+        marker = self.ws / 'ran'
+        out = self.run_calls(call('bash', command=f'touch {marker}'))
+        self.assertIn('declined', out)
+        self.assertFalse(marker.exists())
+
+    def test_bash_jobs(self):
+        out = self.run_calls(call('bash', command='echo early; sleep 2; echo late', timeout='1'),
+                             call('bash_status'),
+                             call('bash', command='sleep 2.5'),
+                             call('bash_status', id='1'),
+                             call('bash', command='sleep 31.5 & sleep 31.5', timeout='1'),
+                             call('bash_stop', id='3'),
+                             call('bash', command='sleep 32.5', timeout='1'),
+                             call('bash_status', id='9'), yes=True)
+        parts = out.split('== ')[1:]
+        self.assertIn('early\n[still running after 1 s as job 1', parts[0])
+        self.assertIn('job 1: [job 1 running', parts[1])
+        self.assertTrue(parts[3].startswith('bash_status\nlate\n[exit code 0]'), parts[3])
+        self.assertIn('[killed by signal 15]', parts[5])
+        self.assertIn('no job 9', parts[7])
+        left = subprocess.run(['pgrep', '-f', 'sleep 3[12].5'], stdout=subprocess.PIPE).stdout
+        self.assertEqual(left, b'')   # bash_stop ended the group, the exit ended job 4
+
 
 GGUF = os.environ.get('PF_AGENT_GGUF')
 
@@ -173,6 +207,12 @@ class AgentLoop(unittest.TestCase):
         self.assertIn('     2\ttwo\n</tool_response>', text)
         self.assertIn('Done.<|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n', text)
         self.assertEqual(state['kv'], len(state['ids']) - 1)   # the graph holds the transcript, minus the last token
+
+    def test_bash_with_the_model_loaded(self):
+        out, state = self.agent([call('bash', command='ls /dev/fd'), 'Ok.'], ['fds?'], '--yes', '--no-think')
+        alone = subprocess.run(['/bin/bash', '-c', 'ls /dev/fd'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, close_fds=True).stdout.decode()
+        self.assertIn('<tool_response>\n' + alone + '[exit code 0]\n</tool_response>', state['text'])
 
     def test_thinking_and_declined_write(self):
         reasoning = 'Maybe ' + call('list') + 'no, write it.\n</think>\n\n'

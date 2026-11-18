@@ -21,7 +21,8 @@
  * Side effects (bash, write, edit) ask the user first.
  *
  * Sections: text buffers and hygiene · workspace paths · the pager and
- * approvals · file tools · the tool-call parser · tool table · main.
+ * approvals · file tools · shell jobs · the tool-call parser · tool table ·
+ * the conversation · main.
  */
 #include "model_select.h"
 #include "qwen38_run.h"
@@ -31,11 +32,14 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
+#include <poll.h>
 #include <regex.h>
+#include <spawn.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -125,11 +129,20 @@ static void json_escape(Buf *b, const char *s) {
 
 typedef struct { char *name; size_t n; char *key[MAX_PARAMS], *value[MAX_PARAMS]; } Call;
 
+#define MAX_JOBS 16
+typedef struct {
+    int id; pid_t pid; char *command;     /* id 0: a free slot */
+    char log[PATH_MAX]; off_t shown;      /* stdout+stderr, and how much the model has seen */
+    bool done; int status; double started;
+} Job;
+
 typedef struct {
     char root[PATH_MAX];   /* the workspace (realpath of the start directory) */
     bool yes;              /* approve every side effect: --yes, or "a" at a prompt */
     bool ask;              /* stdin is a terminal we can ask on */
     Buf more;              /* the rest of the last truncated tool output */
+    Job jobs[MAX_JOBS]; int last_job;     /* shell jobs; ids grow from 1 */
+    char job_dir[PATH_MAX];               /* their logs, a private temporary directory */
     /* The model and the conversation (absent in --run / --parse). */
     Q38Run run;
     int32_t *ids, *generated; size_t n;   /* the transcript is ids[0..n) */
@@ -461,6 +474,141 @@ static void tool_edit(Agent *a, const Call *c, Buf *out) {
     buf_free(&text); buf_free(&next); buf_free(&what);
 }
 
+/* ------------------------------------------------------------ shell jobs
+ * Children start with posix_spawn, not fork: this process maps tens of GB of
+ * weights and a fork would have to duplicate their page tables. Each child
+ * gets its own process group, so Ctrl+C reaches the agent and not the command,
+ * and bash_stop can end the whole tree. It inherits stdin (/dev/null), stdout
+ * and stderr only: every other descriptor of ours (the model file, the
+ * terminal) is closed in the child (POSIX_SPAWN_CLOEXEC_DEFAULT, Darwin). */
+
+extern char **environ;
+
+static pid_t spawn(char *const argv[], int out_fd, int err_fd) {
+    posix_spawn_file_actions_t files; posix_spawnattr_t attr; pid_t pid;
+    sigset_t none, defaults;
+    sigemptyset(&none); sigemptyset(&defaults); sigaddset(&defaults, SIGINT); sigaddset(&defaults, SIGPIPE);
+    posix_spawn_file_actions_init(&files);
+    posix_spawn_file_actions_addopen(&files, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_adddup2(&files, out_fd, STDOUT_FILENO);
+    if (err_fd >= 0) posix_spawn_file_actions_adddup2(&files, err_fd, STDERR_FILENO);
+    else posix_spawn_file_actions_addopen(&files, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setsigmask(&attr, &none); posix_spawnattr_setsigdefault(&attr, &defaults);
+    posix_spawnattr_setpgroup(&attr, 0);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK |
+                                    POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT);
+    int rc = posix_spawn(&pid, argv[0], &files, &attr, argv, environ);
+    posix_spawn_file_actions_destroy(&files); posix_spawnattr_destroy(&attr);
+    return rc ? -1 : pid;
+}
+static void pause_ms(long ms) { struct timespec t = {ms/1000, (ms%1000)*1000000}; nanosleep(&t, NULL); }
+
+static bool job_reap(Job *j) {
+    int status;
+    if (!j->done && waitpid(j->pid, &status, WNOHANG) == j->pid) { j->done = true; j->status = status; }
+    return j->done;
+}
+/* Wait up to `seconds` for the job to end; Ctrl+C stops waiting. */
+static bool job_wait(Job *j, double seconds) {
+    for (double end = q38_now()+seconds; !job_reap(j) && q38_now() < end && !q38_stopped;) pause_ms(20);
+    return j->done;
+}
+/* SIGTERM to the whole group, SIGKILL if it is still there after 2 s. */
+static void job_kill(Job *j) {
+    if (job_reap(j)) return;
+    killpg(j->pid, SIGTERM);
+    for (int i = 0; i < 100 && !job_reap(j); i++) pause_ms(20);
+    if (!j->done) { killpg(j->pid, SIGKILL); waitpid(j->pid, &j->status, 0); j->done = true; }
+}
+/* The log the model has not seen yet; past 1 MiB only the end. */
+static void job_output(Job *j, Buf *out) {
+    FILE *f = fopen(j->log, "rb"); struct stat st;
+    if (!f || fstat(fileno(f), &st)) { if (f) fclose(f); return; }
+    off_t from = j->shown, size = st.st_size;
+    if (size-from > (1 << 20)) { buf_fmt(out, "[%lld bytes skipped]\n", (long long)(size-from-(1 << 20))); from = size-(1 << 20); }
+    char chunk[65536]; size_t got;
+    if (!fseeko(f, from, SEEK_SET))
+        while (from < size && (got = fread(chunk, 1, sizeof chunk, f)) > 0) { buf_add(out, chunk, got); from += (off_t)got; }
+    fclose(f); j->shown = from;
+}
+static void job_state(const Job *j, Buf *out) {
+    if (!j->done) buf_fmt(out, "[job %d running for %.0f s: %s]\n", j->id, q38_now()-j->started, j->command);
+    else if (WIFEXITED(j->status)) buf_fmt(out, "[exit code %d]\n", WEXITSTATUS(j->status));
+    else buf_fmt(out, "[killed by signal %d]\n", WIFSIGNALED(j->status) ? WTERMSIG(j->status) : 0);
+}
+static void job_free(Job *j) { unlink(j->log); free(j->command); *j = (Job){0}; }
+static Job *job_find(Agent *a, const Call *c, Buf *out) {
+    long id;
+    if (!arg_long(c, "id", 0, 1, INT_MAX, &id, out)) return NULL;
+    for (int i = 0; i < MAX_JOBS; i++) if (a->jobs[i].id && a->jobs[i].id == id) return &a->jobs[i];
+    buf_fmt(out, "Tool error: no job %ld (bash_status with no id lists them)\n", id);
+    return NULL;
+}
+
+/* bash command [timeout=120] : run it; past the timeout it keeps running as a job. */
+static void tool_bash(Agent *a, const Call *c, Buf *out) {
+    const char *command = arg(c, "command"); long timeout; Job *j = NULL;
+    if (!command || !*command) { buf_str(out, "Tool error: missing command\n"); return; }
+    if (!arg_long(c, "timeout", 120, 1, 600, &timeout, out)) return;
+    for (int i = 0; i < MAX_JOBS && !j; i++) if (!a->jobs[i].id) j = &a->jobs[i];
+    if (!j) { buf_str(out, "Tool error: 16 jobs are running; stop one with bash_stop first\n"); return; }
+    Buf what = {0}; buf_fmt(&what, "bash: %s", command);
+    bool ok = approve(a, what.p); buf_free(&what);
+    if (!ok) { buf_str(out, declined); return; }
+    if (!a->job_dir[0]) {
+        const char *tmp = getenv("TMPDIR");
+        snprintf(a->job_dir, sizeof a->job_dir, "%s/pf-agent.XXXXXX", tmp && *tmp ? tmp : "/tmp");
+        if (!mkdtemp(a->job_dir)) { a->job_dir[0] = 0; buf_fmt(out, "Tool error: no temporary directory: %s\n", strerror(errno)); return; }
+    }
+    *j = (Job){.id = ++a->last_job, .started = q38_now()};
+    snprintf(j->log, sizeof j->log, "%s/job%d.log", a->job_dir, j->id);
+    int fd = open(j->log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    char *argv[] = {"/bin/bash", "-c", (char *)command, NULL};
+    j->pid = fd < 0 ? -1 : spawn(argv, fd, fd);
+    if (fd >= 0) close(fd);
+    if (j->pid < 0) { buf_fmt(out, "Tool error: cannot start bash: %s\n", strerror(errno)); job_free(j); return; }
+    if (!(j->command = strdup(command))) die("pf-agent: out of memory");
+    bool ended = job_wait(j, (double)timeout);
+    if (!ended && q38_stopped) { job_kill(j); ended = true; buf_str(out, "[interrupted by the user]\n"); }
+    job_output(j, out);
+    if (out->n && out->p[out->n-1] != '\n') buf_str(out, "\n");
+    if (ended) { job_state(j, out); job_free(j); return; }
+    buf_fmt(out, "[still running after %ld s as job %d: bash_status id=%d shows new output, bash_stop id=%d ends it]\n",
+            timeout, j->id, j->id, j->id);
+}
+
+/* bash_status [id] : one job's new output and state, or the list of jobs. */
+static void tool_bash_status(Agent *a, const Call *c, Buf *out) {
+    if (!arg(c, "id") || !*arg(c, "id")) {
+        size_t n = 0;
+        for (int i = 0; i < MAX_JOBS; i++) if (a->jobs[i].id) { job_reap(&a->jobs[i]); buf_fmt(out, "job %d: ", a->jobs[i].id); job_state(&a->jobs[i], out); n++; }
+        if (!n) buf_str(out, "No background jobs.\n");
+        return;
+    }
+    Job *j = job_find(a, c, out);
+    if (!j) return;
+    job_reap(j); job_output(j, out);
+    if (out->n && out->p[out->n-1] != '\n') buf_str(out, "\n");
+    job_state(j, out);
+    if (j->done) job_free(j);
+}
+
+/* bash_stop id : end a job and its children. */
+static void tool_bash_stop(Agent *a, const Call *c, Buf *out) {
+    Job *j = job_find(a, c, out);
+    if (!j) return;
+    job_kill(j); job_output(j, out);
+    if (out->n && out->p[out->n-1] != '\n') buf_str(out, "\n");
+    job_state(j, out); job_free(j);
+}
+
+/* At exit no job may outlive the agent, and the logs go. */
+static void jobs_cleanup(Agent *a) {
+    for (int i = 0; i < MAX_JOBS; i++) if (a->jobs[i].id) { job_kill(&a->jobs[i]); job_free(&a->jobs[i]); }
+    if (a->job_dir[0]) rmdir(a->job_dir);
+}
+
 /* ------------------------------------------------------------ tool-call parser
  * Inside <tool_call> ... </tool_call>:
  *   <function=NAME>
@@ -545,6 +693,15 @@ static const Tool tools[] = {
      {{"path", "string", "File, relative to the workspace root.", true},
       {"old", "string", "The exact text to replace (unique in the file).", true},
       {"new", "string", "The replacement text.", true}}},
+    {"bash", tool_bash, "Run a shell command with /bin/bash -c in the workspace root; returns stdout and stderr "
+     "with the exit code. A command still running after timeout seconds keeps running as a background job: "
+     "check it with bash_status, end it with bash_stop. Not interactive: stdin is empty.",
+     {{"command", "string", "The command line.", true},
+      {"timeout", "integer", "Seconds to wait before it becomes a background job (1-600, default 120).", false}}},
+    {"bash_status", tool_bash_status, "New output and state of a background job, or the list of jobs.",
+     {{"id", "integer", "The job id. Default: list all jobs.", false}}},
+    {"bash_stop", tool_bash_stop, "Stop a background job and its child processes.",
+     {{"id", "integer", "The job id.", true}}},
 };
 
 /* One call -> its result text, cleaned and paged. */
@@ -980,7 +1137,7 @@ int main(int argc, char **argv) {
         if (!realpath(".", a.root)) die("pf-agent: cannot resolve the current directory");
         if (!strcmp(argv[1], "--parse")) return parse_stdin();
         a.yes = argc > 2 && !strcmp(argv[2], "--yes");
-        int rc = run_stdin(&a); buf_free(&a.more); return rc;
+        int rc = run_stdin(&a); jobs_cleanup(&a); buf_free(&a.more); return rc;
     }
     const char *model = NULL, *workspace = NULL; char *script = NULL, *ids_path = NULL;
     uint32_t ctx = 32768, power = 100; bool mtp = true;
@@ -1027,6 +1184,7 @@ int main(int argc, char **argv) {
 
     conversation(&a);
 
+    jobs_cleanup(&a);
     sigaction(SIGINT, &old, NULL);
     q38_run_close(r); free(path); free(a.ids); free(a.generated); free(a.system);
     free(script); free(ids_path); buf_free(&a.more);
