@@ -1193,3 +1193,66 @@ Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *f,Qwen38GpuCheckpoi
     f->last_start=f->saved_start; f->last_count=f->saved_count; f->snapshot_serial++;
     f->valid=true; return fail(e,Q38_OK,NULL);
 }
+
+/* ------------------------------------------------------------ saved sessions
+ * File: a header, the length of every state buffer (a cheap check that the
+ * graph has the same shape), then the bytes: the state buffers in creation
+ * order, the trunk residual r, the predictor's mtp_r, each PLE layer's
+ * previous token ids. The GDN keep swaps buffers in place in `histories`, so
+ * the index of a buffer always names the same piece of state. */
+typedef struct {
+    char magic[8]; uint32_t version,buffers,mtp,pad;
+    uint64_t next_pos,mtp_pos,last_start,last_count,mtp_last_rows;
+} StateHeader;
+static bool state_io(FILE *file,void *data,size_t n,bool read) {
+    return (read ? fread(data,1,n,file) : fwrite(data,1,n,file))==n;
+}
+static bool state_bytes(Qwen38GpuForward *f,FILE *file,bool read) {
+    bool ok=true;
+    for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) ok=ok && state_io(file,b.contents,b.length,read);
+    ok=ok && state_io(file,contents(f->r),f->r.span.bytes,read);
+    if (f->mtp_enabled) ok=ok && state_io(file,contents(f->mtp_r),f->mtp_r.span.bytes,read);
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {
+        Qwen38NgramState *s=f->layer[i].estate;
+        ok=ok && state_io(file,s->previous,(s->store->config.order-1)*sizeof *s->previous,read);
+    }
+    return ok;
+}
+Qwen38Status qwen38_gpu_state_write(Qwen38GpuForward *f,FILE *out,Qwen38Error *e) {
+    if (!f || !out) return fail(e,Q38_INVALID_ARGUMENT,"state arguments");
+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);
+    if (info.busy) return fail(e,Q38_BUSY,"graph busy");
+    if (!info.valid || f->verify_rows) return fail(e,Q38_BAD_STATE,"state save needs a valid graph and no pending verify");
+    NSArray *histories=(__bridge NSArray *)f->histories;
+    StateHeader h={.magic="Q38STAT",.version=1,.buffers=(uint32_t)histories.count,.mtp=f->mtp_enabled,
+        .next_pos=f->next_pos,.mtp_pos=qwen38_gpu_mtp_info(f).next_pos,.last_start=f->last_start,
+        .last_count=f->last_count,.mtp_last_rows=f->mtp_last_rows};
+    bool ok=state_io(out,&h,sizeof h,false);
+    for (id<MTLBuffer> b in histories) { uint64_t n=b.length; ok=ok && state_io(out,&n,sizeof n,false); }
+    ok=ok && state_bytes(f,out,false);
+    return ok ? fail(e,Q38_OK,NULL) : fail(e,Q38_IO,"state write failed");
+}
+Qwen38Status qwen38_gpu_state_read(Qwen38GpuForward *f,FILE *in,Qwen38Error *e) {
+    if (!f || !in) return fail(e,Q38_INVALID_ARGUMENT,"state arguments");
+    NSArray *histories=(__bridge NSArray *)f->histories;
+    StateHeader h;
+    if (!state_io(in,&h,sizeof h,true) || memcmp(h.magic,"Q38STAT",8) || h.version!=1) return fail(e,Q38_FORMAT,"not a picoforge state file");
+    if (h.buffers!=histories.count || h.mtp!=f->mtp_enabled || h.next_pos>f->capacity || h.mtp_pos>h.next_pos ||
+        h.last_count>f->max_tokens || h.last_start+h.last_count>h.next_pos || h.mtp_last_rows>f->max_tokens)
+        return fail(e,Q38_SHAPE,"the state was saved with another context size, chunk or MTP setting");
+    for (id<MTLBuffer> b in histories) {
+        uint64_t n;
+        if (!state_io(in,&n,sizeof n,true)) return fail(e,Q38_EOF,"state file truncated");
+        if (n!=b.length) return fail(e,Q38_SHAPE,"the state was saved with another context size, chunk or MTP setting");
+    }
+    TRY(qwen38_gpu_forward_reset(f,e));               /* fresh ledgers and epoch, zeroed buffers */
+    if (!state_bytes(f,in,true)) { qwen38_gpu_forward_reset(f,NULL); return fail(e,Q38_EOF,"state file truncated"); }
+    f->valid=false;
+    Qwen38Status rc=q38g_session_seek(f->session,f->config,h.next_pos,e);
+    if (!rc && f->mtp_enabled) rc=q38g_session_seek(f->mtp_session,f->config,h.mtp_pos,e);
+    if (rc) { qwen38_gpu_forward_reset(f,NULL); return rc; }
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) f->layer[i].estate->info.next_pos=h.next_pos;
+    f->next_pos=h.next_pos; f->last_start=h.last_start; f->last_count=(size_t)h.last_count;
+    f->mtp_last_rows=(size_t)h.mtp_last_rows; f->snapshot_serial++; f->valid=true;
+    return fail(e,Q38_OK,NULL);
+}

@@ -553,6 +553,17 @@ Qwen38Status q38g_session_rewind(Qwen38GpuSession *g,const void *model,uint64_t 
     if (!rc) { l->next_pos=position; l->state=position ? Q38_SESSION_VALID : Q38_SESSION_IDLE; }
     return rc;
 }
+/* Saved sessions: a freshly reset, idle ledger jumps to `position`; the
+ * caller has just loaded the state of that position from a file. */
+Qwen38Status q38g_session_seek(Qwen38GpuSession *g,const void *model,uint64_t position,Qwen38Error *e) {
+    if (!g) return report(e,Q38_INVALID_ARGUMENT);
+    Qwen38GpuLedger *l=&g->ledger;
+    if (l->model!=model) return report(e,Q38_OWNER);
+    if (busy(l)) return report(e,Q38_BUSY);
+    if (l->state!=Q38_SESSION_IDLE || l->next_pos) return report(e,Q38_BAD_STATE);
+    l->next_pos=position; l->state=position ? Q38_SESSION_VALID : Q38_SESSION_IDLE;
+    return report(e,Q38_OK);
+}
 /* R0.2 profile mode only: end the current encoder and continue the SAME
  * command in a new one (from an MTLComputePassDescriptor, or plain if NULL).
  * Encoders of one command buffer keep Metal's order and hazard tracking. */

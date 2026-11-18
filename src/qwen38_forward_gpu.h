@@ -72,4 +72,15 @@ typedef struct { const void *owner; uint64_t epoch,serial,position,mtp_position;
 Qwen38Status qwen38_gpu_checkpoint_save(Qwen38GpuForward *,Qwen38GpuCheckpoint *,Qwen38Error *);
 Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *,Qwen38GpuCheckpoint,Qwen38Error *);
 size_t qwen38_gpu_checkpoint_bytes(const Qwen38GpuForward *);
+/* Saved sessions (pf-agent): the whole state to a file and back. Every state
+ * buffer (KV and indexer caches, recurrent and convolution states, PLE n-gram
+ * histories, the MTP predictor's), the residual rows of the last trunk append
+ * and the positions. Write needs an idle, valid graph with no pending verify.
+ * Read needs a graph created with the same model, capacity, chunk and MTP
+ * setting (checked against the buffer sizes, not the weights); it replaces
+ * the current state, and on failure leaves the graph reset. Continuing after a
+ * read equals continuing the graph that wrote the file, bit for bit. */
+#include <stdio.h>
+Qwen38Status qwen38_gpu_state_write(Qwen38GpuForward *,FILE *,Qwen38Error *);
+Qwen38Status qwen38_gpu_state_read(Qwen38GpuForward *,FILE *,Qwen38Error *);
 #endif
