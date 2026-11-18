@@ -1624,7 +1624,7 @@ int main(int argc, char **argv) {
     if (qwen38_encode(r->tok, (Qwen38Bytes){(const uint8_t *)"<|im_end|>", 10}, probe, 2, &one, &e) || one != 1)
         die("pf-agent: the model needs <|im_end|> as a single token");
     a.im_end = probe[0];
-    q38_run_gpu(r, path, lib);
+    q38_run_gpu(r, path, lib, ctx);
     q38_run_graph(r, ctx);
     a.ids = malloc((size_t)ctx*sizeof *a.ids); a.generated = malloc((size_t)ctx*sizeof *a.generated);
     if (!a.ids || !a.generated) die("pf-agent: out of memory");

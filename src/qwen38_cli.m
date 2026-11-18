@@ -375,7 +375,26 @@ static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,i
  * 90% of the GPU's recommended working set stays resident (the Q2: ~42 of 52 GiB), and one that does
  * not (the Q4: ~70 GiB) streams with a pool of 85% of that budget minus everything else. The sizes
  * come from the same plan the store will use, so what is counted is exactly what gets mapped. */
-static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget) {
+/* Graph bytes that grow with the context, from the config: per token, every QSA
+ * layer (trunk, and the MTP predictor when on) keeps its keys and values
+ * (2 x kv_heads x head_dim), its index keys and 1/ratio of a pooled block key,
+ * all FP32, and a prefill chunk scores and flags every block (2 x chunk/ratio
+ * words). Qwen3.8-Flash-Next: 56.8 KB per token without MTP, as measured from 1K
+ * to 4K tokens (devlog, pf-agent). */
+static uint64_t context_bytes(const Q38Run *r,uint32_t capacity) {
+    const Qwen38AttentionConfig *a=&r->c->attention; uint64_t per=0; uint32_t ratio=0;
+    const uint64_t index=(uint64_t)(a->index_kv_heads ? a->index_kv_heads : 1)*a->index_dim;
+    for (uint32_t i=0;i<r->c->trunk_blocks+(r->mtp ? r->c->mtp_blocks : 0);i++) {
+        const Qwen38Layer *l; Qwen38Error e;
+        if (qwen38_config_layer(r->config,i,&l,&e) || l->kind!=Q38_LAYER_QSA) continue;
+        ratio=l->compress_ratio ? l->compress_ratio : 1;
+        per+=4*(2ull*a->kv_heads*a->head_dim+index)+4*index/ratio;
+    }
+    if (ratio) per+=8ull*MIN(r->chunk,capacity)/ratio;
+    return per*capacity;
+}
+/* reserve: graph bytes beyond those the 15% margin below was measured to hold (32K tokens). */
+static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget,uint64_t reserve) {
     const char *v=getenv("PICOFORGE_STREAM_EXPERTS");
     if (v && *v) {
         char *end; unsigned long n=strtoul(v,&end,10);
@@ -389,7 +408,7 @@ static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget) {
     for (int m=0;m<3;m++) { const GgufTensor *t=gguf_plan_streamed(&plan,0,m); if (t) { first+=t->bytes; count=t->shape[2]; } }
     gguf_plan_free(&plan);
     if (!count || rest+experts<=budget/10*9) return 0;
-    const uint64_t pool=budget/20*17,per=first/count;
+    const uint64_t pool=budget/20*17-MIN(reserve,budget/20*17),per=first/count;
     if (pool<=rest+count*per) die("the model does not fit in GPU memory even with a minimal expert pool");
     const uint32_t slots=(uint32_t)MIN((pool-rest)/per,(uint64_t)trunk*count);
     fprintf(stderr,"expert streaming: automatic, %.1f GiB of weights > 90%% of %.1f GiB GPU budget "
@@ -438,14 +457,15 @@ void q38_run_open(Q38Run *r,const char *path) {
     q38_check(qwen38_tokenizer_load(&r->g,r->config,&r->tok,&e),&e);
     r->c=qwen38_config_view(r->config);
 }
-void q38_run_gpu(Q38Run *r,const char *path,const char *metallib) {
+void q38_run_gpu(Q38Run *r,const char *path,const char *metallib,uint32_t capacity) {
     Qwen38Error e; id<MTLDevice> device=MTLCreateSystemDefaultDevice();
     if (!device) die("Metal device unavailable");
     NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
     if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
     /* Retained here, released in q38_run_close: the pointers outlive any ARC scope. */
     r->device=(__bridge_retained void *)device; r->library=(__bridge_retained void *)lib;
-    const uint32_t slots=stream_slots(&r->g,r->c->trunk_blocks,device.recommendedMaxWorkingSetSize);
+    const uint64_t big=context_bytes(r,capacity),held=context_bytes(r,MIN(capacity,32768u));
+    const uint32_t slots=stream_slots(&r->g,r->c->trunk_blocks,device.recommendedMaxWorkingSetSize,big-held);
     r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? r->c->trunk_blocks : 0);
     if (slots) open_stream(r,path,slots);
     q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
@@ -464,6 +484,13 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
     Qwen38Error e; uint32_t chunk=MIN(r->chunk,capacity);
     if (r->graph) qwen38_gpu_forward_destroy(r->graph);
     free(r->logits); r->graph=NULL; r->capacity=capacity; r->last_count=0;
+    /* The graph's buffers are zeroed, so wired, as they are created: past Metal's
+     * budget the machine pages (it froze twice). Refuse before allocating. */
+    id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
+    const uint64_t need=context_bytes(r,capacity),have=device.currentAllocatedSize,budget=device.recommendedMaxWorkingSetSize;
+    if (have+need>budget-budget/20)
+        die("a context of %u tokens needs about %.1f GiB of graph state, %.1f GiB are in use and the GPU budget is %.1f GiB: "
+            "choose a smaller context",capacity,(double)need/1073741824.0,(double)have/1073741824.0,(double)budget/1073741824.0);
     q38_check(qwen38_gpu_forward_create(&r->g,r->config,r->weights,r->store,r->device,r->library,
         r->mtp ? MIN(MAX(chunk,(uint32_t)QWEN38_VERIFY_ROWS),capacity) : chunk,capacity,
         r->mtp ? MIN((uint32_t)QWEN38_VERIFY_ROWS,capacity) : 1,&r->graph,&e),&e);
@@ -652,7 +679,7 @@ int qwen38_cli(int argc,char **argv) {
             q38_run_close(r);
             free(tokens); free(generated); free(owned_input); if (runs) fclose(runs); if (profile_csv) fclose(profile_csv); return 0;
         }
-        q38_run_gpu(r,argv[2],metallib); id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
+        q38_run_gpu(r,argv[2],metallib,capacity); id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
         if (profile_csv) q38_check(q38_profile_create(r->device,profile_csv,&r->profile,&e),&e);
         q38_run_graph(r,capacity); Qwen38GpuForward *graph=r->graph;
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",

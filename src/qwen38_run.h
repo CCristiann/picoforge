@@ -90,9 +90,10 @@ void q38_turn(Q38Run *, const int32_t *tokens, size_t count, Q38TurnOptions,
 /* Load a model (src/qwen38_cli.m): open = GGUF, config, weights, tokenizer;
  * gpu = Metal device, kernels, weights (SSD streaming when needed); close frees all. */
 void q38_run_open(Q38Run *, const char *path);
-void q38_run_gpu(Q38Run *, const char *path, const char *metallib);
+void q38_run_gpu(Q38Run *, const char *path, const char *metallib, uint32_t capacity);   /* capacity: sizes the expert pool */
 void q38_run_close(Q38Run *);
-/* (Re)create graph, decoder and logits for a context size; the old ones go. */
+/* (Re)create graph, decoder and logits for a context size; the old ones go.
+ * Dies, before allocating, if the graph would not fit in the GPU budget. */
 void q38_run_graph(Q38Run *, uint32_t capacity);
 void q38_check(Qwen38Status, const Qwen38Error *);
 double q38_now(void);
