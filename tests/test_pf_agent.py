@@ -6,6 +6,7 @@ extracted. Run with `make test-pf-agent`.
 """
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -241,13 +242,18 @@ class AgentLoop(unittest.TestCase):
         self.tmp.cleanup()
 
     def agent(self, replies, messages, *flags):
-        (self.dir / 'script.txt').write_text('\n=====\n'.join(replies) + '\n')
+        (self.dir / 'script.txt').write_text('\n=====\n'.join(replies) + '\n' if replies else '')
         args = [str(AGENT), '-m', GGUF, '-w', str(self.dir / 'ws'), '--script', str(self.dir / 'script.txt'),
                 '--token-ids', str(self.dir / 'ids.json'), '-n', '4', '-c', '16384', *flags]
+        env = {**os.environ, 'PICOFORGE_SESSIONS': str(self.dir / 'sessions')}
         p = subprocess.run(args, input=''.join(m + '\n' for m in messages).encode(), stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=300)
+                           stderr=subprocess.PIPE, timeout=300, env=env)
         self.assertEqual(p.returncode, 0, p.stderr.decode()[-2000:])
+        self.stderr = p.stderr.decode(errors='replace')
         return p.stdout.decode(), json.loads((self.dir / 'ids.json').read_text())
+
+    def prefilled(self):
+        return [int(n) for n in re.findall(r'\[prefill (\d+) tokens', self.stderr)]
 
     def test_tool_round_trip(self):
         out, state = self.agent([call('write', path='a.txt', content='one\ntwo'),
@@ -268,6 +274,32 @@ class AgentLoop(unittest.TestCase):
         alone = subprocess.run(['/bin/bash', '-c', 'ls /dev/fd'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, close_fds=True).stdout.decode()
         self.assertIn('<tool_response>\n' + alone + '[exit code 0]\n</tool_response>', state['text'])
+
+    def test_saved_session_resumes_exactly(self):
+        for mtp in ((), ('--no-mtp',)):
+            g = ('--temp', '0', '-n', '6', *mtp)
+            _, whole = self.agent([], ['hello', 'again'], *g)
+            out, saved = self.agent([], ['hello', '/save s1', '/sessions'], *g)
+            self.assertIn('Saved session s1:', out)
+            self.assertRegex(out, r's1 +\d{4}-\d\d-\d\d \d\d:\d\d +\d+ tokens .*\n    hello\n')
+            self.assertTrue((self.dir / 'sessions' / 's1.txt').read_bytes().decode().endswith(saved['text']))
+            out, resumed = self.agent([], ['again'], '--resume', 's1', *g)
+            self.assertIn('Resumed session s1', out)
+            self.assertEqual(resumed['ids'], whole['ids'])      # the same tokens as never stopping
+            self.assertEqual(resumed['kv'], whole['kv'])
+            new_turn = len(whole['ids']) - len(saved['ids'])
+            self.assertLess(self.prefilled()[0], new_turn)        # loaded, not replayed: only the new turn
+            self.assertNotIn('replayed', self.stderr)
+            _, fresh = self.agent([], ['again'], *g)              # the test has power: context changes the reply
+            self.assertNotEqual(fresh['ids'][-6:], whole['ids'][-6:])
+            # /resume inside a session with another context size rebuilds the graph
+            out, rebuilt = self.agent([], ['/resume s1', 'again'], '-c', '8192', *g)
+            self.assertEqual(rebuilt['ids'], whole['ids'])
+            self.assertLess(self.prefilled()[0], new_turn)
+            (self.dir / 'sessions' / 's1.pfs').unlink()
+        self.agent([], ['hello', '/save s2'], '--temp', '0')
+        _, state = self.agent([], ['/resume s2'], '--temp', '0', '--no-mtp')
+        self.assertEqual(state['ids'], [])                         # refused: saved with MTP on
 
     def test_thinking_and_declined_write(self):
         reasoning = 'Maybe ' + call('list') + 'no, write it.\n</think>\n\n'

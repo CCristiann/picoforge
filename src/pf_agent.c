@@ -22,7 +22,7 @@
  *
  * Sections: text buffers and hygiene · workspace paths · the pager and
  * approvals · file tools · shell jobs · web · the tool-call parser · tool
- * table · the conversation · main.
+ * table · the conversation · saved sessions · main.
  */
 #include "model_select.h"
 #include "qwen38_run.h"
@@ -151,6 +151,10 @@ typedef struct {
     uint32_t max_new;      /* tokens per reply, 0: the room left */
     char *system;          /* the system prompt */
     Qwen38Json tool_defs;  /* the tools, as the template wants them */
+    char *model_path;      /* absolute, and its size: a saved session names its model */
+    uint64_t model_bytes;
+    char session[65];      /* the name of the saved session we continue, "" for a new one */
+    char title[120];       /* the first user message, cut: it names a session in /sessions */
     const char *script;    /* --script: the next canned reply (tests) */
     const char *ids_path;  /* --token-ids: transcript dump after each reply (tests) */
 } Agent;
@@ -1241,6 +1245,11 @@ static const char *answer_part(const char *reply) {
  * without a tool call, the user interrupts, or MAX_ROUNDS is reached. */
 static void agent_turn(Agent *a, const char *text) {
     Msg user = {"user", text};
+    if (!a->n) {                                    /* a session is named by its first request */
+        Buf t = {0}; size_t len = strcspn(text, "\n");
+        buf_add(&t, text, len < sizeof a->title-4 ? len : sizeof a->title-4); clean_text(&t);
+        snprintf(a->title, sizeof a->title, "%s", t.p); buf_free(&t);
+    }
     size_t added = append_turn(a, &user, 1);
     for (int round = 0; added && round < MAX_ROUNDS; round++) {
         char *answer = reply(a, added);
@@ -1272,11 +1281,161 @@ static void interrupt(int signum) {
     (void)signum; q38_stopped = 1;
     if (at_prompt) { ssize_t ignored = write(STDOUT_FILENO, "\npf> ", 5); (void)ignored; }
 }
+/* ------------------------------------------------------------ saved sessions
+ * A session file holds what it takes to continue exactly where we stopped:
+ * the transcript ids and the whole graph state (qwen38_gpu_state_write: KV
+ * caches, recurrent states, ...), so a resume costs one file read instead of
+ * a prefill of the whole conversation. Files live in $PICOFORGE_SESSIONS or
+ * ~/.picoforge/sessions: NAME.pfs, plus NAME.txt, the transcript as text for
+ * people to read (never loaded). They can hold private code and output. */
+
+typedef struct {
+    char magic[8];                      /* "PFAGENT" */
+    uint32_t version, capacity, thinking, mtp;
+    uint64_t n, model_bytes, last_count; int64_t saved;
+    char model[PATH_MAX], workspace[PATH_MAX], title[120];
+} SessionHeader;
+
+static bool session_dir(char out[PATH_MAX]) {
+    const char *dir = getenv("PICOFORGE_SESSIONS"), *home = getenv("HOME");
+    if (dir && *dir) snprintf(out, PATH_MAX, "%s", dir);
+    else if (home && *home) {
+        snprintf(out, PATH_MAX, "%s/.picoforge", home); mkdir(out, 0700);
+        snprintf(out, PATH_MAX, "%s/.picoforge/sessions", home);
+    } else return false;
+    return !mkdir(out, 0700) || errno == EEXIST;
+}
+/* NAME -> DIR/NAME.ext; names are [A-Za-z0-9._-], at most 64, not starting with '.'. */
+static bool session_path(const char *name, const char *ext, char out[PATH_MAX]) {
+    char dir[PATH_MAX]; size_t n = strlen(name);
+    if (!n || n > 64 || name[0] == '.' || strspn(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != n) {
+        fprintf(stderr, "pf-agent: a session name has 1-64 letters, digits, '.', '_' or '-'\n"); return false;
+    }
+    if (!session_dir(dir)) { fprintf(stderr, "pf-agent: cannot create the sessions directory\n"); return false; }
+    snprintf(out, PATH_MAX, "%s/%s.%s", dir, name, ext);
+    return true;
+}
+static FILE *session_open(const char *name, SessionHeader *h) {
+    char path[PATH_MAX]; FILE *f;
+    if (!session_path(name, "pfs", path)) return NULL;
+    if (!(f = fopen(path, "rb"))) { fprintf(stderr, "pf-agent: no session %s (/sessions lists them)\n", name); return NULL; }
+    if (fread(h, sizeof *h, 1, f) != 1 || memcmp(h->magic, "PFAGENT", 8) || h->version != 1 || h->n > h->capacity) {
+        fprintf(stderr, "pf-agent: %s is not a pf-agent session file\n", path); fclose(f); return NULL;
+    }
+    h->model[PATH_MAX-1] = h->workspace[PATH_MAX-1] = h->title[sizeof h->title-1] = 0;
+    return f;
+}
+
+/* /save [NAME]: the session we continue, else a new name from the clock. The
+ * file is written next to its final name and renamed: never half a session. */
+static void session_save(Agent *a, const char *name) {
+    char stamp[32], path[PATH_MAX], tmp[PATH_MAX+16], text[PATH_MAX];
+    time_t now = time(NULL); struct tm tm;
+    strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", localtime_r(&now, &tm));
+    if (!name || !*name) name = a->session[0] ? a->session : stamp;
+    if (!session_path(name, "pfs", path) || !session_path(name, "txt", text)) return;
+    if (!a->n) { fprintf(stderr, "pf-agent: nothing to save yet\n"); return; }
+    SessionHeader h = {.magic = "PFAGENT", .version = 1, .capacity = a->run.capacity, .thinking = a->thinking,
+        .mtp = a->run.mtp, .n = a->n, .model_bytes = a->model_bytes, .last_count = a->run.last_count, .saved = now};
+    snprintf(h.model, sizeof h.model, "%s", a->model_path); snprintf(h.workspace, sizeof h.workspace, "%s", a->root);
+    snprintf(h.title, sizeof h.title, "%s", a->title);
+    snprintf(tmp, sizeof tmp, "%s.XXXXXX", path);
+    int fd = mkstemp(tmp); FILE *f = fd < 0 ? NULL : fdopen(fd, "wb");
+    if (!f) { fprintf(stderr, "pf-agent: cannot write %s: %s\n", path, strerror(errno)); if (fd >= 0) { close(fd); unlink(tmp); } return; }
+    setvbuf(f, NULL, _IOFBF, 8u << 20);
+    double start = q38_now(); Qwen38Error e = {0};
+    bool ok = fwrite(&h, sizeof h, 1, f) == 1 && fwrite(a->ids, sizeof *a->ids, a->n, f) == a->n &&
+              !qwen38_gpu_state_write(a->run.graph, f, &e) && !fflush(f) && !fsync(fileno(f));
+    long long bytes = ftello(f);
+    ok = !fclose(f) && ok && !rename(tmp, path);
+    if (!ok) { fprintf(stderr, "pf-agent: saving failed: %s\n", e.detail[0] ? e.detail : strerror(errno)); unlink(tmp); return; }
+    size_t len = 0; FILE *t = fopen(text, "w");
+    if (t && !qwen38_decode_utf8(a->run.tok, a->ids, a->n, false, NULL, 0, &len, &e)) {
+        uint8_t *s = malloc(len+1);
+        if (s && !qwen38_decode_utf8(a->run.tok, a->ids, a->n, false, s, len, &len, &e)) fwrite(s, 1, len, t);
+        free(s);
+    }
+    if (t) fclose(t);
+    snprintf(a->session, sizeof a->session, "%s", name);
+    printf("Saved session %s: %zu tokens, %.1f MiB in %.1f s (%s).\n", name, a->n, (double)bytes/1048576.0, q38_now()-start, path);
+}
+
+/* /resume NAME: transcript and graph state back, in the session's workspace.
+ * The model must be the same file; a different context size rebuilds the graph. */
+static bool session_resume(Agent *a, const char *name) {
+    SessionHeader h; FILE *f = session_open(name, &h);
+    if (!f) return false;
+    bool ok = false; Qwen38Error e;
+    if (h.model_bytes != a->model_bytes) fprintf(stderr, "pf-agent: %s was saved with another model (%s)\n", name, h.model);
+    else if (h.mtp != (uint32_t)a->run.mtp) fprintf(stderr, "pf-agent: %s was saved with MTP %s: restart with%s --no-mtp\n", name, h.mtp ? "on" : "off", h.mtp ? "out" : "");
+    else {
+        if (h.capacity != a->run.capacity) {
+            q38_run_graph(&a->run, h.capacity);
+            int32_t *ids = realloc(a->ids, h.capacity*sizeof *ids), *gen = realloc(a->generated, h.capacity*sizeof *gen);
+            if (!ids || !gen) die("pf-agent: out of memory");
+            a->ids = ids; a->generated = gen;
+        }
+        setvbuf(f, NULL, _IOFBF, 8u << 20);
+        double start = q38_now();
+        ok = fread(a->ids, sizeof *a->ids, h.n, f) == h.n && !qwen38_gpu_state_read(a->run.graph, f, &e);
+        if (!ok) fprintf(stderr, "pf-agent: cannot load %s: %s\n", name, ferror(f) || feof(f) ? "file truncated" : e.detail);
+        else printf("Resumed session %s: %llu tokens in %.1f s.\n", name, (unsigned long long)h.n, q38_now()-start);
+    }
+    fclose(f);
+    if (!ok) {                                       /* never half a state: start clean */
+        q38_check(qwen38_gpu_forward_reset(a->run.graph, &e), &e); a->n = 0; a->run.last_count = 0;
+        return false;
+    }
+    a->n = (size_t)h.n; a->run.last_count = (size_t)h.last_count; a->thinking = h.thinking;
+    snprintf(a->session, sizeof a->session, "%s", name); snprintf(a->title, sizeof a->title, "%s", h.title);
+    buf_free(&a->more);
+    if (strcmp(h.workspace, a->root)) {
+        char root[PATH_MAX];
+        if (chdir(h.workspace) || !realpath(".", root)) fprintf(stderr, "pf-agent: the session's workspace %s is gone; staying in %s\n", h.workspace, a->root);
+        else { snprintf(a->root, sizeof a->root, "%s", root); free(a->system); a->system = system_prompt(a); }
+    }
+    printf("Workspace %s, thinking %s. First request: %s\n", a->root, a->thinking ? "on" : "off", a->title);
+    return true;
+}
+
+typedef struct { SessionHeader h; char name[65]; } Listed;
+static int by_saved(const void *x, const void *y) {
+    int64_t a = ((const Listed *)x)->h.saved, b = ((const Listed *)y)->h.saved;
+    return a < b ? 1 : a > b ? -1 : 0;
+}
+/* /sessions: newest first. A session's name is its file name. */
+static void session_list(void) {
+    char dir[PATH_MAX]; DIR *d = session_dir(dir) ? opendir(dir) : NULL; struct dirent *e;
+    Listed *all = NULL; size_t n = 0;
+    while (d && (e = readdir(d))) {
+        size_t len = strlen(e->d_name); Listed item; FILE *f;
+        if (len < 5 || len > 68 || strcmp(e->d_name+len-4, ".pfs")) continue;
+        snprintf(item.name, sizeof item.name, "%.*s", (int)(len-4), e->d_name);
+        if (!(f = session_open(item.name, &item.h))) continue;
+        fclose(f);
+        Listed *grown = realloc(all, (n+1)*sizeof *all);
+        if (!grown) die("pf-agent: out of memory");
+        all = grown; all[n++] = item;
+    }
+    if (d) closedir(d);
+    if (!n) printf("No saved sessions in %s.\n", dir);
+    if (n) qsort(all, n, sizeof *all, by_saved);
+    for (size_t i = 0; i < n; i++) {
+        char when[32]; struct tm tm; time_t t = (time_t)all[i].h.saved;
+        strftime(when, sizeof when, "%Y-%m-%d %H:%M", localtime_r(&t, &tm));
+        printf("%-24s %s  %6llu tokens  %s\n    %s\n", all[i].name, when, (unsigned long long)all[i].h.n,
+               all[i].h.workspace, all[i].h.title);
+    }
+    free(all);
+}
+
 static void help(void) {
     puts("pf-agent: describe a task; the agent reads, edits and runs commands in this workspace.\n"
          "  /auto          Approve every bash/write/edit for the rest of the session.\n"
          "  /think, /nothink  Reasoning on or off.\n"
          "  /reset         Start a new conversation.\n"
+         "  /save [NAME]   Save the session (transcript and model state) to resume it later.\n"
+         "  /sessions      List the saved sessions.  /resume NAME  Continue one.\n"
          "  /help, /quit   This help; leave (Ctrl+D too).\n"
          "  Ctrl+C         Stop the reply or the running tool.\n"
          "End a line with \\ to continue the message on the next line.");
@@ -1321,8 +1480,12 @@ static void conversation(Agent *a) {
         }
         else if (!strcmp(cmd, "/reset")) {
             Qwen38Error e; q38_check(qwen38_gpu_forward_reset(a->run.graph, &e), &e);
-            a->n = 0; a->run.last_count = 0; buf_free(&a->more); dump_ids(a); puts("New conversation.");
+            a->n = 0; a->run.last_count = 0; a->session[0] = a->title[0] = 0; buf_free(&a->more);
+            dump_ids(a); puts("New conversation.");
         }
+        else if (!strncmp(cmd, "/save", 5) && (!cmd[5] || cmd[5] == ' ')) session_save(a, trim(cmd+5));
+        else if (!strcmp(cmd, "/sessions")) session_list();
+        else if (!strncmp(cmd, "/resume ", 8)) { session_resume(a, trim(cmd+8)); dump_ids(a); }
         else if (*cmd == '/' && !strchr(cmd, ' ') && !strchr(cmd, '\n')) fprintf(stderr, "pf-agent: unknown command %s (try /help)\n", cmd);
         else agent_turn(a, cmd);
         fflush(stdout);
@@ -1340,6 +1503,8 @@ static void usage(void) {
           "  --yes       approve every bash/write/edit\n"
           "  --no-think  reply without reasoning\n"
           "  --power N   GPU duty cycle in percent, as for picoforge\n"
+          "  --temp T    sampling temperature (default 0.6; 0: greedy)\n"
+          "  --resume NAME  continue a saved session (its model, context and workspace)\n"
           "       pf-agent --run [--yes] < TEXT    run the tool calls in TEXT, no model\n"
           "       pf-agent --parse < TEXT          print the tool calls in TEXT as JSON lines\n", stderr);
 }
@@ -1408,8 +1573,8 @@ int main(int argc, char **argv) {
         a.yes = argc > 2 && !strcmp(argv[2], "--yes");
         int rc = run_stdin(&a); jobs_cleanup(&a); buf_free(&a.more); return rc;
     }
-    const char *model = NULL, *workspace = NULL; char *script = NULL, *ids_path = NULL;
-    uint32_t ctx = 32768, power = 100; bool mtp = true;
+    const char *model = NULL, *workspace = NULL, *resume = NULL; char *script = NULL, *ids_path = NULL;
+    uint32_t ctx = 32768, power = 100; bool mtp = true; float temp = 0.6f;
     for (int i = 1; i < argc; i++) {
         const char *o = argv[i];
         if (!strcmp(o, "--yes")) a.yes = true;
@@ -1422,12 +1587,27 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "-n")) a.max_new = number(argv[++i], 0, 1u << 20, "-n");
         else if (!strcmp(o, "-w")) workspace = argv[++i];
         else if (!strcmp(o, "--power")) power = number(argv[++i], 1, 100, "--power");
+        else if (!strcmp(o, "--temp")) {
+            char *end; temp = strtof(argv[++i], &end);
+            if (*end || !(temp >= 0 && temp <= 10)) die("pf-agent: --temp must be in [0, 10]");
+        }
         else if (!strcmp(o, "--script")) { size_t len; script = slurp(argv[++i], &len); }
         else if (!strcmp(o, "--token-ids")) ids_path = absolute(argv[++i]);
+        else if (!strcmp(o, "--resume")) resume = argv[++i];
         else { usage(); return 2; }
+    }
+    SessionHeader saved;                    /* --resume: the session's model, context and MTP setting */
+    if (resume) {
+        FILE *f = session_open(resume, &saved);
+        if (!f) return 1;
+        fclose(f);
+        if (!model) model = saved.model;
+        ctx = saved.capacity; mtp = saved.mtp;
     }
     char lib[PATH_MAX]; metallib_path(lib);
     char *chosen = model_select(model, argv[0]), *path = absolute(chosen); free(chosen);
+    struct stat st;
+    if (stat(path, &st)) die("pf-agent: %s: %s", path, strerror(errno));
     if (workspace && chdir(workspace)) die("pf-agent: cannot enter %s: %s", workspace, strerror(errno));
     if (!realpath(".", a.root)) die("pf-agent: cannot resolve the workspace");
     a.ask = isatty(STDIN_FILENO); a.script = script; a.ids_path = ids_path;
@@ -1438,7 +1618,7 @@ int main(int argc, char **argv) {
     Q38Run *r = &a.run; Qwen38Error e; size_t one = 0; int32_t probe[2];
     r->chunk = 1024; r->mtp = mtp; r->power = (int)power;
     q38_policy_init(&r->policy, getenv("PICOFORGE_MTP_DRAFT"), getenv("PICOFORGE_MTP_COST"));
-    q38_sampler_init(&r->sampler, 0.6f, 20, 0.95f, 0.0f, (uint64_t)time(NULL));   /* as the chat */
+    q38_sampler_init(&r->sampler, temp, 20, 0.95f, 0.0f, (uint64_t)time(NULL));   /* as the chat; 0: greedy */
     q38_run_open(r, path);
     if (ctx > r->c->max_positions) die("pf-agent: -c %u exceeds the model's %u positions", ctx, r->c->max_positions);
     if (qwen38_encode(r->tok, (Qwen38Bytes){(const uint8_t *)"<|im_end|>", 10}, probe, 2, &one, &e) || one != 1)
@@ -1449,6 +1629,8 @@ int main(int argc, char **argv) {
     a.ids = malloc((size_t)ctx*sizeof *a.ids); a.generated = malloc((size_t)ctx*sizeof *a.generated);
     if (!a.ids || !a.generated) die("pf-agent: out of memory");
     a.system = system_prompt(&a); a.tool_defs = tool_definitions();
+    a.model_path = path; a.model_bytes = (uint64_t)st.st_size;
+    if (resume && !session_resume(&a, resume)) return 1;
     fprintf(stderr, "pf-agent: %s, context %u tokens, workspace %s\n", path, ctx, a.root);
 
     conversation(&a);
