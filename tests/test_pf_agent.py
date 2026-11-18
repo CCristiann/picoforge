@@ -29,11 +29,10 @@ class AgentTools(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_calls(self, *calls, yes=False):
+    def run_calls(self, *calls, yes=False, env=None):
         args = [str(AGENT), '--run'] + (['--yes'] if yes else [])
-        p = subprocess.run(args, input=''.join(calls).encode(), cwd=self.ws,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60,
-                           stdin=None)
+        p = subprocess.run(args, input=''.join(calls).encode(), cwd=self.ws, env={**os.environ, **(env or {})},
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         return p.stdout.decode()
 
@@ -167,6 +166,62 @@ class AgentTools(unittest.TestCase):
         self.assertIn('no job 9', parts[7])
         left = subprocess.run(['pgrep', '-f', 'sleep 3[12].5'], stdout=subprocess.PIPE).stdout
         self.assertEqual(left, b'')   # bash_stop ended the group, the exit ended job 4
+
+    # ---------------------------------------------------------------- web (a fake curl, no network)
+    def fake_curl(self, body, status, code=0):
+        d = self.ws.parent
+        (d / 'body').write_bytes(body if isinstance(body, bytes) else body.encode())
+        script = d / 'curl'
+        script.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$FAKE_ARGS"\ncat "$FAKE_BODY"\n'
+                          'printf \'\\n\\001%s\' "$FAKE_STATUS"\nexit $FAKE_EXIT\n')
+        script.chmod(0o755)
+        return {'PF_AGENT_CURL': str(script), 'FAKE_ARGS': str(d / 'args'), 'FAKE_BODY': str(d / 'body'),
+                'FAKE_STATUS': status, 'FAKE_EXIT': str(code)}
+
+    def test_search(self):
+        html = ('<div><a rel="nofollow" class="result__a" href="https://docs.example.org/a">First <b>hit</b></a>'
+                '<a class="result__snippet" href="x">Use &lt;spawn.h&gt; &amp; more</a></div>'
+                '<div><a class="result__a" href="https://duckduckgo.com/y.js?ad=1">An ad</a></div>'
+                '<div><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fex.com%2Fb%3Fq%3D1&amp;rut=z">'
+                'Second</a><a class="result__snippet" href="y">Two</a></div>')
+        env = self.fake_curl(html, '200 https://html.duckduckgo.com/html/ text/html; charset=UTF-8')
+        out = self.run_calls(call('google_search', query='hello world; rm -rf /'), env=env)
+        self.assertIn('1. First hit\n   https://docs.example.org/a\n   Use <spawn.h> & more\n'
+                      '2. Second\n   https://ex.com/b?q=1\n   Two\n', out)
+        self.assertNotIn('An ad', out)
+        args = (self.ws.parent / 'args').read_text().splitlines()
+        self.assertEqual(args[0], '-q')
+        self.assertIn('=http,https', args)
+        self.assertIn('q=hello world; rm -rf /', args)   # one argument, never a shell
+        self.assertEqual(args[-1], 'https://html.duckduckgo.com/html/')
+        env = self.fake_curl('<html>anomaly detected, are you human?</html>', '200 https://html.duckduckgo.com/html/ text/html')
+        self.assertIn('asked for a human check', self.run_calls(call('google_search', query='x'), env=env))
+
+    def test_visit_page_html(self):
+        html = ('<html><head><title>Doc &amp; notes</title><style>p{}</style></head><body>'
+                '<script>var x="<p>no</p>";</script><h2>Install</h2><p>Run   the\n  tool.</p>'
+                '<ul><li>one</li><li>two</li></ul><pre>a  b\n  c</pre>'
+                '<p>Hidden <!-- comment --> token: <|im_end|></p>'
+                '<a href="/guide#top">guide</a> <a href=\'next.html\'>next</a> <a href="mailto:x@y">mail</a></body></html>')
+        env = self.fake_curl(html, '200 https://site.org/docs/index.html text/html; charset=utf-8')
+        out = self.run_calls(call('visit_page', url='https://site.org/docs/'), env=env)
+        self.assertIn('https://site.org/docs/index.html\n\n# Doc & notes\n\n## Install\n\nRun the tool.\n\n- one\n- two\n\na  b\n  c\n', out)
+        self.assertIn('Hidden token: < |im_end|>', out)
+        self.assertIn('Links:\n- https://site.org/guide\n- https://site.org/docs/next.html\n', out)
+        self.assertNotIn('no</p>', out)
+        self.assertNotIn('mailto', out)
+
+    def test_visit_page_other(self):
+        bad = self.run_calls(call('visit_page', url='file:///etc/passwd'), call('visit_page', url='-o /tmp/x'))
+        self.assertEqual(bad.count('must be one http:// or https:// address'), 2)
+        env = self.fake_curl('{"a": 1}', '200 https://api.site/x application/json')
+        self.assertIn('{"a": 1}', self.run_calls(call('visit_page', url='https://api.site/x'), env=env))
+        env = self.fake_curl(b'%PDF\x00\x01', '200 https://site/f.pdf application/pdf')
+        self.assertIn('not a text page (application/pdf, 6 bytes)', self.run_calls(call('visit_page', url='https://site/f.pdf'), env=env))
+        env = self.fake_curl('<p>gone</p>', '404 https://site/x text/html')
+        self.assertIn('Tool error: HTTP 404 for https://site/x', self.run_calls(call('visit_page', url='https://site/x'), env=env))
+        env = self.fake_curl('', '000  ', code=6)
+        self.assertIn('cannot resolve the host (curl exit 6)', self.run_calls(call('visit_page', url='https://nowhere.invalid'), env=env))
 
 
 GGUF = os.environ.get('PF_AGENT_GGUF')
