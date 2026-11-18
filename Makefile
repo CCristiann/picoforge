@@ -9,7 +9,7 @@ CFLAGS  := -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 LDFLAGS := -lm
 PYTHON  ?= ./tools/venv/bin/python
 
-SRC     := $(wildcard src/*.c)
+SRC     := $(filter-out src/pf_agent.c,$(wildcard src/*.c))
 OBJC    := $(wildcard src/*.m)
 OBJ     := $(SRC:.c=.o) $(OBJC:.m=.m.o)
 METALLIB := picoforge.metallib
@@ -19,6 +19,12 @@ FRAMEWORKS := -framework Metal -framework Foundation
 
 picoforge: $(OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
+
+# pf-agent: the coding agent (src/pf_agent.c) linked with the same engine
+# objects, minus picoforge's main.
+ENGINE_OBJ := $(filter-out src/main.o,$(OBJ))
+pf-agent: src/pf_agent.o $(ENGINE_OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 # Every object depends on every header: a constant changed only in a header (a
 # Metal wire struct, a tile size) must rebuild the host code that mirrors it.
@@ -62,7 +68,7 @@ microbench: build/microbench
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
 # is `make test-qwen38` (tools/qwen38.mk).
-test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts test-qwen38-expert-pool test-qwen38-sample
+test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts test-qwen38-expert-pool test-qwen38-sample test-pf-agent
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -118,6 +124,10 @@ build/test_sample: tests/test_qwen38_sample.c src/qwen38_sample.c src/qwen38_sam
 	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_qwen38_sample.c src/qwen38_sample.c -lm
 test-qwen38-sample: build/test_sample
 	@./build/test_sample
+
+# pf-agent tools and parser, offline (no model).
+test-pf-agent: pf-agent
+	@$(PYTHON) tests/test_pf_agent.py
 
 clean:
 	rm -f src/*.o picoforge $(METALLIB) build/*.air

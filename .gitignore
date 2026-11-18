@@ -22,6 +22,7 @@ tools/probe/metal4_probe
 
 # Compiled engine binary
 /picoforge
+/pf-agent
 /tests/test_ops
 /picoforge.metallib
 build/
