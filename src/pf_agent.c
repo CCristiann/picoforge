@@ -1497,7 +1497,7 @@ static void conversation(Agent *a) {
 static void usage(void) {
     fputs("usage: pf-agent [-m MODEL] [-c CTX] [-n N] [-w DIR] [--yes] [--no-think] [--no-mtp] [--power N]\n"
           "  -m MODEL    a .gguf path or a short name, as for picoforge\n"
-          "  -c CTX      context in tokens (default 32768)\n"
+          "  -c CTX      context in tokens (default 100000)\n"
           "  -n N        tokens per reply (default: the room left)\n"
           "  -w DIR      the workspace (default: the current directory)\n"
           "  --yes       approve every bash/write/edit\n"
@@ -1574,7 +1574,7 @@ int main(int argc, char **argv) {
         int rc = run_stdin(&a); jobs_cleanup(&a); buf_free(&a.more); return rc;
     }
     const char *model = NULL, *workspace = NULL, *resume = NULL; char *script = NULL, *ids_path = NULL;
-    uint32_t ctx = 32768, power = 100; bool mtp = true; float temp = 0.6f;
+    uint32_t ctx = 100000, power = 100; bool mtp = true; float temp = 0.6f;
     for (int i = 1; i < argc; i++) {
         const char *o = argv[i];
         if (!strcmp(o, "--yes")) a.yes = true;
