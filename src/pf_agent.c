@@ -1583,7 +1583,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(o, "-h") || !strcmp(o, "--help")) { usage(); return 0; }
         else if (i+1 == argc) { usage(); return 2; }
         else if (!strcmp(o, "-m")) model = argv[++i];
-        else if (!strcmp(o, "-c")) ctx = number(argv[++i], 64, 32768, "-c");
+        else if (!strcmp(o, "-c")) ctx = number(argv[++i], 64, QWEN38_MAX_CONTEXT, "-c");
         else if (!strcmp(o, "-n")) a.max_new = number(argv[++i], 0, 1u << 20, "-n");
         else if (!strcmp(o, "-w")) workspace = argv[++i];
         else if (!strcmp(o, "--power")) power = number(argv[++i], 1, 100, "--power");

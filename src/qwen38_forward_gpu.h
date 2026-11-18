@@ -11,7 +11,7 @@ typedef struct {
     size_t ngram_calls, ngram_bytes, ngram_rows;
 } Qwen38GpuForwardStats;
 Qwen38GpuForwardStats qwen38_gpu_forward_stats(const Qwen38GpuForward *);
-/* max_tokens <=1024, capacity <=32768; max_logits_rows<=max_tokens bounds
+/* max_tokens <=2048, capacity <=QWEN38_MAX_CONTEXT; max_logits_rows<=max_tokens bounds
  * readback/workspace independently from prefill. Optional traces have a
  * fixed 256 MiB per-append ceiling, checked before mutation. */
 Qwen38Status qwen38_gpu_forward_create(const Gguf *,const Qwen38Config *,const Qwen38Weights *,

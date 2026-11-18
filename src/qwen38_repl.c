@@ -172,7 +172,7 @@ static void forget(Chat *ch) {
  * double; the model weights stay mapped. */
 static void resize(Chat *ch, const char *arg) {
     char *end; errno=0; unsigned long n=strtoul(arg,&end,10);
-    uint32_t top=ch->r->c->max_positions<32768 ? ch->r->c->max_positions : 32768;
+    uint32_t top=ch->r->c->max_positions<QWEN38_MAX_CONTEXT ? ch->r->c->max_positions : QWEN38_MAX_CONTEXT;
     if (errno || end==arg || *end || n<2 || n>top) { fprintf(stderr,"picoforge: /ctx needs N in [2,%u]\n",top); return; }
     q38_run_graph(ch->r,(uint32_t)n);
     int32_t *ids=realloc(ch->ids,n*sizeof *ids); if (!ids) die("transcript allocation"); ch->ids=ids;

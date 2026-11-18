@@ -546,8 +546,8 @@ int qwen38_cli(int argc,char **argv) {
         if (!strcmp(opt,"--chat") || !strcmp(opt,"--complete") || !strcmp(opt,"--tokens") ||
             !strcmp(opt,"--chat-file") || !strcmp(opt,"--complete-file")) {
             if (mode) die("choose one prompt mode"); mode=opt; input=value;
-        } else if (!strcmp(opt,"--max-new")) { max_new=number(value,0,32768,opt); max_new_given=true; }
-        else if (!strcmp(opt,"--context")) capacity=number(value,1,32768,opt);
+        } else if (!strcmp(opt,"--max-new")) { max_new=number(value,0,QWEN38_MAX_CONTEXT,opt); max_new_given=true; }
+        else if (!strcmp(opt,"--context")) capacity=number(value,1,QWEN38_MAX_CONTEXT,opt);
         else if (!strcmp(opt,"--prefill-precision")) {
             /* R3.5: one switch for flag and environment; the packed context
              * reads PICOFORGE_PREFILL_PRECISION when the graph is built. */
@@ -567,10 +567,10 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--repeat")) repeat=number(value,1,1000,opt);
         else if (!strcmp(opt,"--warmup")) warmup=number(value,0,1000,opt);
         else if (!strcmp(opt,"--replay-chunk")) replay_chunk=number(value,1,2048,opt);
-        else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,32768,opt);
+        else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,QWEN38_MAX_CONTEXT,opt);
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
         else if (!strcmp(opt,"--profile")) profile_path=value;
-        else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,32768,opt);
+        else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,QWEN38_MAX_CONTEXT,opt);
         else if (!strcmp(opt,"--bench-csv")) bench_csv=value;
         else if (!strcmp(opt,"--weight-mb")) {
             char *end; errno=0; weight_mb=strtod(value,&end);
