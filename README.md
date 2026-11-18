@@ -42,6 +42,25 @@ decode greedily. Context is 8K tokens, thinking is off (`--thinking`, `/think`).
 
 Run one process at a time: wired GPU memory takes ~1.5 s to be released after exit.
 
+### Coding agent
+
+`pf-agent` (`src/pf_agent.c`) runs the same engine as a coding agent in the terminal. The model calls
+tools in its native format: `list`, `read`, `more`, `search`, `write`, `edit` on the files of the
+workspace (the current directory, or `-w DIR`; nothing outside it), `bash` with background jobs
+(`bash_status`, `bash_stop`), `google_search` (DuckDuckGo's HTML results) and `visit_page`, both
+through `/usr/bin/curl`. `bash`, `write` and `edit` ask before they run (`--yes` or `/auto` to skip).
+
+```sh
+make pf-agent
+./pf-agent -m q2                  # in the directory to work on; /help for commands
+./pf-agent --resume NAME          # continue a saved session
+```
+
+`/save [NAME]` stores the transcript and the whole model state (KV caches, recurrent states) in
+`~/.picoforge/sessions`, so `/resume NAME` continues without prefilling the conversation again; the
+files grow with the conversation and can hold private code. Context is 32K tokens (`-c`), thinking
+is on (`--no-think`, `/nothink`), and an `AGENTS.md` in the workspace joins the system prompt.
+
 ## Results
 
 Qwen3.8-Flash-Next Q2 on a MacBook Pro 14" (M5 Pro, 64 GB, 307 GB/s), against

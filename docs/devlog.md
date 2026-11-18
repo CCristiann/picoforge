@@ -2,6 +2,27 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## pf-agent (2026-11-18): a coding agent on the engine, saved sessions
+
+`src/pf_agent.c`: the model calls tools in Qwen3.8's XML format, rendered by our chat template with
+the tool definitions; the transcript only grows, as in the REPL, so each turn prefills its own suffix
+(a turn of tool results alone is no user query for the template: we render it after a placeholder
+user message and drop the placeholder's bytes). Tools: files confined to the workspace with realpath,
+atomic writes, output cleaned of invalid UTF-8 and of `<|` (the tokenizer would read `<|im_end|>` in
+a file as the real end of turn); bash through posix_spawn in its own process group with only
+stdin/stdout/stderr inherited, background jobs past a timeout; web through curl without a shell.
+Engine: `qwen38_gpu_state_write/read` save every state buffer, the residual rows and the positions;
+a resumed session gives the same greedy tokens as an uninterrupted one, with and without MTP, and
+prefills only the new turn (a mutation that drops the position makes the test fail). Zero blocks are
+elided, so a file grows with the conversation. Tests: `make test-pf-agent` (offline, a fake curl),
+`make test-pf-agent-model` (synthetic checkpoint).
+
+**Next:** 100K context. The admission caps (32768) are conservative, but the indexer's top-k
+selection (`rank_fast`) compares every block with every other: n^2 per row, about 625M compares per
+row and layer at 100K, hours of prefill. It needs an exact O(n) selection (radix threshold, same keep
+set and ties). Memory: about 57 KB of graph state per token (measured 1K vs 4K), so 100K is about
+6.7 GB of graph buffers, past the graph's own 4 GiB cap, and about 51.5 GB of Metal memory on Q2.
+
 ## Prefill-gap III (2026-11-15): materialized attention — 8K FP32 24.9 s at chunk 2048
 
 Attention for prefill batches now runs in three passes on the tensor units with FP32 operands
