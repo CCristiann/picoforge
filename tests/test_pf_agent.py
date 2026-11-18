@@ -297,6 +297,11 @@ class AgentLoop(unittest.TestCase):
             self.assertEqual(rebuilt['ids'], whole['ids'])
             self.assertLess(self.prefilled()[0], new_turn)
             (self.dir / 'sessions' / 's1.pfs').unlink()
+        # the file grows with the conversation, not with the context size (zero blocks elided)
+        self.agent([], ['hello', '/save small'], '--temp', '0', '-c', '8192')
+        self.agent([], ['hello', '/save large'], '--temp', '0', '-c', '16384')
+        small, large = ((self.dir / 'sessions' / f'{n}.pfs').stat().st_size for n in ('small', 'large'))
+        self.assertLess(large, small * 1.25)
         self.agent([], ['hello', '/save s2'], '--temp', '0')
         _, state = self.agent([], ['/resume s2'], '--temp', '0', '--no-mtp')
         self.assertEqual(state['ids'], [])                         # refused: saved with MTP on

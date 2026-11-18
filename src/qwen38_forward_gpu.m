@@ -1197,7 +1197,7 @@ Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *f,Qwen38GpuCheckpoi
 /* ------------------------------------------------------------ saved sessions
  * File: a header, the length of every state buffer (a cheap check that the
  * graph has the same shape), then the bytes: the state buffers in creation
- * order, the trunk residual r, the predictor's mtp_r, each PLE layer's
+ * order (zero blocks elided, state_buffer), the trunk residual r, the predictor's mtp_r, each PLE layer's
  * previous token ids. The GDN keep swaps buffers in place in `histories`, so
  * the index of a buffer always names the same piece of state. */
 typedef struct {
@@ -1207,9 +1207,25 @@ typedef struct {
 static bool state_io(FILE *file,void *data,size_t n,bool read) {
     return (read ? fread(data,1,n,file) : fwrite(data,1,n,file))==n;
 }
+/* The state buffers are sized for the whole context and zeroed at reset, so a
+ * short conversation leaves most of them zero: a 64 KiB block of zeros is
+ * written as one flag byte 0, any other block as 1 and its bytes. Exact, and
+ * the file grows with the conversation, not with the context size. */
+enum { STATE_BLOCK=65536 };
+static bool state_buffer(FILE *file,uint8_t *p,size_t n,bool read) {
+    static const uint8_t zero[STATE_BLOCK];
+    for (size_t at=0;at<n;at+=STATE_BLOCK) {
+        size_t len=MIN((size_t)STATE_BLOCK,n-at); uint8_t flag=1;
+        if (!read) flag=memcmp(p+at,zero,len)!=0;
+        if (!state_io(file,&flag,1,read) || flag>1) return false;
+        if (flag && !state_io(file,p+at,len,read)) return false;
+        if (!flag && read) memset(p+at,0,len);
+    }
+    return true;
+}
 static bool state_bytes(Qwen38GpuForward *f,FILE *file,bool read) {
     bool ok=true;
-    for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) ok=ok && state_io(file,b.contents,b.length,read);
+    for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) ok=ok && state_buffer(file,b.contents,b.length,read);
     ok=ok && state_io(file,contents(f->r),f->r.span.bytes,read);
     if (f->mtp_enabled) ok=ok && state_io(file,contents(f->mtp_r),f->mtp_r.span.bytes,read);
     for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {
@@ -1224,7 +1240,7 @@ Qwen38Status qwen38_gpu_state_write(Qwen38GpuForward *f,FILE *out,Qwen38Error *e
     if (info.busy) return fail(e,Q38_BUSY,"graph busy");
     if (!info.valid || f->verify_rows) return fail(e,Q38_BAD_STATE,"state save needs a valid graph and no pending verify");
     NSArray *histories=(__bridge NSArray *)f->histories;
-    StateHeader h={.magic="Q38STAT",.version=1,.buffers=(uint32_t)histories.count,.mtp=f->mtp_enabled,
+    StateHeader h={.magic="Q38STAT",.version=2,.buffers=(uint32_t)histories.count,.mtp=f->mtp_enabled,
         .next_pos=f->next_pos,.mtp_pos=qwen38_gpu_mtp_info(f).next_pos,.last_start=f->last_start,
         .last_count=f->last_count,.mtp_last_rows=f->mtp_last_rows};
     bool ok=state_io(out,&h,sizeof h,false);
@@ -1236,7 +1252,7 @@ Qwen38Status qwen38_gpu_state_read(Qwen38GpuForward *f,FILE *in,Qwen38Error *e) 
     if (!f || !in) return fail(e,Q38_INVALID_ARGUMENT,"state arguments");
     NSArray *histories=(__bridge NSArray *)f->histories;
     StateHeader h;
-    if (!state_io(in,&h,sizeof h,true) || memcmp(h.magic,"Q38STAT",8) || h.version!=1) return fail(e,Q38_FORMAT,"not a picoforge state file");
+    if (!state_io(in,&h,sizeof h,true) || memcmp(h.magic,"Q38STAT",8) || h.version!=2) return fail(e,Q38_FORMAT,"not a picoforge state file");
     if (h.buffers!=histories.count || h.mtp!=f->mtp_enabled || h.next_pos>f->capacity || h.mtp_pos>h.next_pos ||
         h.last_count>f->max_tokens || h.last_start+h.last_count>h.next_pos || h.mtp_last_rows>f->max_tokens)
         return fail(e,Q38_SHAPE,"the state was saved with another context size, chunk or MTP setting");
