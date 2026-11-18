@@ -422,6 +422,38 @@ static void close_stream(Q38Run *r) {
         (unsigned long long)s.evictions,(double)s.bytes_read/1073741824.0,(double)s.acquire_ns*1e-9);
     q38_pool_destroy(r->pool); close(r->pool_fd); r->pool=NULL;
 }
+/* Model loading shared by the CLI and pf-agent. open: the CPU side (GGUF,
+ * config, tokenizer); gpu: device, kernels and weights, with SSD expert
+ * streaming when they do not fit. The graph comes later (q38_run_graph). */
+void q38_run_open(Q38Run *r,const char *path) {
+    Qwen38Error e; gguf_open(path,&r->g);
+    q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
+    q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);
+    q38_check(qwen38_tokenizer_load(&r->g,r->config,&r->tok,&e),&e);
+    r->c=qwen38_config_view(r->config);
+}
+void q38_run_gpu(Q38Run *r,const char *path,const char *metallib) {
+    Qwen38Error e; id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+    if (!device) die("Metal device unavailable");
+    NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
+    if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
+    /* Retained here, released in q38_run_close: the pointers outlive any ARC scope. */
+    r->device=(__bridge_retained void *)device; r->library=(__bridge_retained void *)lib;
+    const uint32_t slots=stream_slots(&r->g,r->c->trunk_blocks,device.recommendedMaxWorkingSetSize);
+    r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? r->c->trunk_blocks : 0);
+    if (slots) open_stream(r,path,slots);
+    q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
+}
+void q38_run_close(Q38Run *r) {
+    if (r->decoder) qwen38_decoder_free(r->decoder);
+    if (r->graph) qwen38_gpu_forward_destroy(r->graph);
+    qwen38_tokenizer_free(r->tok); qwen38_weights_free(r->weights);
+    if (r->store) gpu_weights_close(r->store);
+    close_stream(r); qwen38_config_free(r->config); gguf_close(&r->g); free(r->logits);
+    if (r->library) CFRelease(r->library);
+    if (r->device) CFRelease(r->device);
+    *r=(Q38Run){0};
+}
 void q38_run_graph(Q38Run *r,uint32_t capacity) {
     Qwen38Error e; uint32_t chunk=MIN(r->chunk,capacity);
     if (r->graph) qwen38_gpu_forward_destroy(r->graph);
@@ -580,11 +612,8 @@ int qwen38_cli(int argc,char **argv) {
         Q38Run run={.chunk=chunk_request,.mtp=mtp,.power=(int)power}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
         q38_policy_init(&r->policy,mtp_draft,getenv("PICOFORGE_MTP_COST"));
         q38_sampler_init(&r->sampler,temp,top_k,top_p,min_p,seed);
-        gguf_open(argv[2],&r->g);
-        q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
-        q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);
-        q38_check(qwen38_tokenizer_load(&r->g,r->config,&r->tok,&e),&e);
-        const Qwen38ConfigView *c=r->c=qwen38_config_view(r->config); Qwen38Tokenizer *tok=r->tok;
+        q38_run_open(r,argv[2]);
+        const Qwen38ConfigView *c=r->c; Qwen38Tokenizer *tok=r->tok;
         if (capacity>c->max_positions) die("context exceeds model maximum");
         int32_t *tokens=malloc((size_t)capacity*4),*generated=malloc((size_t)capacity*4);
         if (!tokens || !generated) die("token allocation");
@@ -614,18 +643,10 @@ int qwen38_cli(int argc,char **argv) {
         if (encode_only) {
             fputs("{\"prompt_ids\":",stdout); ids_json(stdout,tokens,count);
             fprintf(stdout,",\"prompt_tokens\":%zu,\"context\":%u}\n",count,capacity);
-            qwen38_tokenizer_free(tok); qwen38_weights_free(r->weights); qwen38_config_free(r->config); gguf_close(&r->g);
+            q38_run_close(r);
             free(tokens); free(generated); free(owned_input); if (runs) fclose(runs); if (profile_csv) fclose(profile_csv); return 0;
         }
-        id<MTLDevice> device=MTLCreateSystemDefaultDevice();
-        if (!device) die("Metal device unavailable");
-        NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
-        if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
-        r->device=(__bridge void *)device; r->library=(__bridge void *)lib;
-        const uint32_t slots=stream_slots(&r->g,c->trunk_blocks,device.recommendedMaxWorkingSetSize);
-        r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? c->trunk_blocks : 0);
-        if (slots) open_stream(r,argv[2],slots);
-        q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
+        q38_run_gpu(r,argv[2],metallib); id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
         if (profile_csv) q38_check(q38_profile_create(r->device,profile_csv,&r->profile,&e),&e);
         q38_run_graph(r,capacity); Qwen38GpuForward *graph=r->graph;
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
@@ -708,10 +729,9 @@ int qwen38_cli(int argc,char **argv) {
             if (bench_out) { q38_bench_csv(bench_out,bench_rows,bench_n); if (fclose(bench_out)) die("bench CSV write failed"); }
             free(bench_rows);
         }
-        qwen38_decoder_free(r->decoder); qwen38_gpu_forward_destroy(r->graph); qwen38_tokenizer_free(tok);
         if (!q38_profile_close(r->profile)) die("profile write failed");
-        qwen38_weights_free(r->weights); gpu_weights_close(r->store); close_stream(r); qwen38_config_free(r->config); gguf_close(&r->g);
-        free(tokens); free(generated); free(r->logits);
+        r->profile=NULL; q38_run_close(r);
+        free(tokens); free(generated);
     }
     free(owned_input); if (runs && runs!=stdout && fclose(runs)) die("runs close failed");
     return 0;

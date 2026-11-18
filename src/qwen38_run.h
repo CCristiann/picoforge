@@ -41,7 +41,7 @@ static inline __attribute__((unused)) const char *q38_system_prompt(void) {
 typedef struct {
     Gguf g; Qwen38Config *config; Qwen38Weights *weights; Qwen38Tokenizer *tok;
     const Qwen38ConfigView *c; GpuWeightStore *store;
-    void *device, *library;                 /* borrowed from the CLI's ARC scope */
+    void *device, *library;                 /* retained by q38_run_gpu, released by q38_run_close */
     Qwen38GpuForward *graph; Qwen38Decoder *decoder; Q38Profile *profile;
     float *logits; Qwen38F32Mut y;          /* one row, two with MTP */
     uint32_t capacity, chunk; bool mtp;
@@ -87,6 +87,11 @@ typedef struct {
  * REPL: only on rollback). With MTP the predictor must already be caught up. */
 void q38_turn(Q38Run *, const int32_t *tokens, size_t count, Q38TurnOptions,
               int32_t *generated, Q38Turn *);
+/* Load a model (src/qwen38_cli.m): open = GGUF, config, weights, tokenizer;
+ * gpu = Metal device, kernels, weights (SSD streaming when needed); close frees all. */
+void q38_run_open(Q38Run *, const char *path);
+void q38_run_gpu(Q38Run *, const char *path, const char *metallib);
+void q38_run_close(Q38Run *);
 /* (Re)create graph, decoder and logits for a context size; the old ones go. */
 void q38_run_graph(Q38Run *, uint32_t capacity);
 void q38_check(Qwen38Status, const Qwen38Error *);
