@@ -378,6 +378,52 @@ class AgentLoop(unittest.TestCase):
         self.assertIn('Understood; continuing from this summary.<|im_end|>\n<|im_start|>user\nhello<|im_end|>', text[summary:])
         self.assertTrue(text.endswith('<|im_start|>user\nafter<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nLater answer.<|im_end|>'))
 
+    def test_terminal_interface(self):
+        """The two-thread interface in a pseudo-terminal: the footer with the context bar, an approval
+        answered in the input line, a real reply's speeds in the footer, /history, /quit."""
+        import fcntl, pty, select, struct, termios
+        (self.dir / 'script.txt').write_text(call('bash', command='echo from-the-ui > made.txt') + '=====\nAll done.')
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.environ['PICOFORGE_SESSIONS'] = str(self.dir / 'sessions')
+            os.execv(str(AGENT), [str(AGENT), '-m', GGUF, '-w', str(self.dir / 'ws'), '-c', '16384', '--temp', '0',
+                                  '-n', '8', '--no-think', '--script', str(self.dir / 'script.txt')])
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 140, 0, 0))
+        seen = b''
+        def expect(pattern, timeout=60):
+            nonlocal seen
+            end = time.time() + timeout
+            while time.time() < end:
+                if select.select([fd], [], [], 0.05)[0]:
+                    try:
+                        seen += os.read(fd, 65536)
+                    except OSError:
+                        break
+                if re.search(pattern, seen):
+                    return
+            self.fail(f'{pattern!r} not on the screen: {seen[-800:]!r}')
+        try:
+            expect(rb'ready')
+            os.write(fd, b'make a file\r'); expect(rb'Allow\? \[y\]es')
+            os.write(fd, b'y\r'); expect(rb'All done')
+            os.write(fd, b'and now?\r'); expect(rb'last.{0,40}prefill \d+ t/s .{0,8}decode [\d.]+ t/s')
+            os.write(fd, b'/history\r'); expect(rb'1\. make a file.*\n.*2\. and now\?')
+            os.write(fd, b'/quit\r')
+        finally:                       # never wait forever on an agent that did not quit
+            for _ in range(50):
+                done, status = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    break
+                time.sleep(0.1)
+            else:
+                os.kill(pid, 9); _, status = os.waitpid(pid, 0)
+            os.close(fd)
+        self.assertEqual(status, 0)
+        self.assertEqual((self.dir / 'ws' / 'made.txt').read_text(), 'from-the-ui\n')
+        text = seen.decode(errors='replace')
+        self.assertRegex(text, '\u2595[\u2588\u2591\x1b\\[0-9;m]+\u258f.{0,40}/16\\.4K')   # the context bar
+        self.assertIn('\x1b[r', text)                                               # the terminal restored
+
     def test_thinking_and_declined_write(self):
         reasoning = 'Maybe ' + call('list') + 'no, write it.\n</think>\n\n'
         out, state = self.agent([reasoning + call('write', path='b.txt', content='x'), 'Ok.'], ['write b'])

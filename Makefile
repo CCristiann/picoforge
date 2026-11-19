@@ -24,7 +24,7 @@ picoforge: $(OBJ) $(METALLIB)
 # picoforge's main. pf_session/pf_tools/pf_web/pf_util are meant for a future
 # pf-server too; pf_agent.c is only the terminal interface.
 ENGINE_OBJ := $(filter-out src/main.o,$(OBJ))
-PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o
+PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o src/pf_term.o
 pf-agent: src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
