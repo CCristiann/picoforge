@@ -75,6 +75,23 @@ test-qwen38-cli: pf build/qwen38-g1/test_forward build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_cli.py -v
 .PHONY: test-qwen38-cli
 
+# Upstream defaults that Flash-Next overrides (no PLE, SiLU GDN gate, QSA off the
+# every-4th pattern), on the same tiny graph: CPU and GPU graph against the oracle,
+# the GPU parts and state gates, and the CLI against the CPU graph.
+build/qwen38-g1/variant.gguf: tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_small.py tools/oracle/qwen38_config.py
+	$(Q38_ENV) $(PYTHON) -B $< --variant --output $@
+
+build/qwen38-g2/cli-variant.gguf: tools/synth/make_qwen38_cli.py tools/synth/make_qwen38_graph.py tools/oracle/qwen38_config.py tests/fixtures/qwen38/text/manifest.json
+	$(Q38_ENV) $(PYTHON) -B $< --reference-root "$(Q38_REFERENCE_ROOT)" --variant --output $@
+
+test-qwen38-variants: pf build/qwen38-g1/test_forward build/qwen38-g2/test_forward build/qwen38-g2/test_parts build/qwen38-g1/variant.gguf build/qwen38-g2/cli-variant.gguf $(METALLIB)
+	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_forward.py --native build/qwen38-g1/test_forward --gguf build/qwen38-g1/variant.gguf -v
+	$(Q38_LOCK) env MTL_DEBUG_LAYER=1 $(Q38_TEST) tests/test_qwen38_forward.py --native build/qwen38-g2/test_forward --gguf build/qwen38-g1/variant.gguf -v
+	$(Q38_LOCK) env MTL_DEBUG_LAYER=1 $(Q38_TEST) tests/test_qwen38_forward_gpu.py --native build/qwen38-g2/test_forward --gguf build/qwen38-g1/variant.gguf -v
+	$(Q38_LOCK) $(Q38_ENV) MTL_DEBUG_LAYER=1 ./build/qwen38-g2/test_parts build/qwen38-g1/variant.gguf "$(abspath $(METALLIB))"
+	$(Q38_LOCK) env Q38_CLI_GGUF="$(abspath build/qwen38-g2/cli-variant.gguf)" $(Q38_TEST) tests/test_qwen38_cli.py -v
+.PHONY: test-qwen38-variants
+
 test-qwen38-repl: pf build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_repl.py -v
 .PHONY: test-qwen38-repl

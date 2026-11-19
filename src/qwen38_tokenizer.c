@@ -89,7 +89,8 @@ Qwen38Status qwen38_tokenizer_load(const Gguf *g, const Qwen38Config *c,
         Qwen38Bytes b; s = q38a_meta(g,"tokenizer.ggml.add_bos_token",7,&b,e);
         if (!s && (b.len != 1 || b.data[0])) s = q38a_error(e,Q38_UNSUPPORTED,"BOS","implicit BOS unsupported");
     }
-    if (!s && c->ngram.eos_id != (uint32_t)t->pad) s = q38a_error(e,Q38_SHAPE,"PLE EOS","tokenizer mismatch");
+    /* The PLE n-gram history resets on this token; no PLE, nothing to agree with. */
+    if (!s && c->has_ple && c->ngram.eos_id != (uint32_t)t->pad) s = q38a_error(e,Q38_SHAPE,"PLE EOS","tokenizer mismatch");
     if (s) { qwen38_tokenizer_free(t); return s; }
     *out = t; return q38a_error(e,Q38_OK,NULL,NULL);
 }

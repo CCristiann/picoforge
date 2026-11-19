@@ -35,6 +35,17 @@ def graph_config():
     return hf
 
 
+def variant_config():
+    """The upstream defaults Flash-Next overrides, on the same tiny graph: no PLE
+    (ple_layer_ids empty), the SiLU GDN gate (output_gate_type unset) and an
+    explicit layer_types list with the QSA layer second, off the every-4th pattern."""
+    hf = graph_config()
+    c = hf["text_config"]
+    c.update(ple_layer_ids=[], layer_types=["linear_attention", "full_attention"] + ["linear_attention"] * 2)
+    c.pop("output_gate_type"); c.pop("full_attention_interval")
+    return hf
+
+
 def scale_for(name, shape):
     """Typical magnitude per role: norms near 1, products near unit variance."""
     if name.endswith("_norm.weight") or "norm_" in name:
@@ -99,15 +110,17 @@ def payload(rng, name, shape, fmt, domain, enable_mtp=False):
 
 def write_graph(path, hf, seed, text_meta=None, enable_mtp=False):
     meta = ref.reference_metadata(hf)
+    ple = bool(hf["text_config"]["ple_layer_ids"])
     meta.update({"general.architecture": "qwen4exp", "general.alignment": ALIGN,
-                 ref.PREFIX + "ple.row_count": 128,
-                 ref.PREFIX + "ple.layer_multipliers": [17, 31, 43],
-                 ref.PREFIX + "ple.head_offsets": [0, 7, 14, 21],
-                 ref.PREFIX + "ple.head_vocab_sizes": [7] * 4,
                  "ds4.qwen4.down.logical_input": 64, "ds4.qwen4.down.physical_input": 256})
+    if ple:
+        meta.update({ref.PREFIX + "ple.row_count": 128,
+                     ref.PREFIX + "ple.layer_multipliers": [17, 31, 43],
+                     ref.PREFIX + "ple.head_offsets": [0, 7, 14, 21],
+                     ref.PREFIX + "ple.head_vocab_sizes": [7] * 4})
     ref.check_metadata(hf, meta)
     meta.update(text_meta or {})
-    tensors = ref.reference_tensors(hf, 128)
+    tensors = ref.reference_tensors(hf, 128 if ple else 0)
     header = bytearray(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta)))
     for key, value in meta.items():
         if isinstance(value, str): kind, data = 8, string(value)
@@ -148,6 +161,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "build/qwen38-g1/graph.gguf")
     parser.add_argument("--seed", type=int, default=3811)
+    parser.add_argument("--variant", action="store_true", help="upstream defaults: no PLE, SiLU gate, QSA second")
     args = parser.parse_args()
-    records = write_graph(args.output, graph_config(), args.seed)
+    records = write_graph(args.output, variant_config() if args.variant else graph_config(), args.seed)
     print(f"{args.output}: {len(records)} tensors, {args.output.stat().st_size} bytes")

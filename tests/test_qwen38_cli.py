@@ -8,7 +8,7 @@ import unittest
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-GGUF = ROOT / 'build/qwen38-g2/cli.gguf'
+GGUF = Path(os.environ.get('Q38_CLI_GGUF', ROOT / 'build/qwen38-g2/cli.gguf'))  # the variant run overrides it
 PROMPT = [5, 17, 300]
 
 class CliTests(unittest.TestCase):
