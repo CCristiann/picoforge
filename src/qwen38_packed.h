@@ -41,7 +41,7 @@ Qwen38Status q38_packed_encode_indexed(Q38PackedGpu *, const Qwen38GpuCommand *,
 Qwen38Status q38_packed_lookup(Q38PackedGpu *, const Qwen38GpuCommand *,
     const GpuWeightStore *, const GgufBinding *, const Q38PackedLayout *,
     Qwen38GpuSpan ids, Qwen38GpuF32 y, Qwen38Error *);
-/* Weight storage bridge: coordinator implementation in gpu_weights.m.
+/* Weight storage bridge, implemented in gpu_weights.m.
  * Borrowed read-only mapped bytes, no new mmap/copy and no disk PLE span. */
 Qwen38Status qwen38_weights_cpu_span(const GpuWeightStore *,
     const GgufBinding *, Qwen38CpuSpan *, Qwen38Error *);

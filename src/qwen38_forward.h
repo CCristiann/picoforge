@@ -1,5 +1,5 @@
-/* G1: the ordinary Qwen3.8 graph on the CPU. Coordinator-owned contract.
- * Composition only: every operator is A/B/C/D/E/F's public (or C's private
+/* G1: the ordinary Qwen3.8 graph on the CPU.
+ * Composition only: every operator is a layer's public code (or the CPU ops' private
  * composition) code. Order mirrors Qwen4ExpTextModel/DecoderLayer.forward:
  *   embed -> repeat H -> per layer [PLE R+=Delta] -> HC-attn -> GDN|QSA
  *   -> inject -> HC-ffn -> MoE -> inject  ...  -> output HC mixer -> LM head.

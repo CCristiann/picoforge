@@ -1,6 +1,6 @@
 """Explicit bounded fixture preparation, under the common repository lock.
 
-An existing fixture is accepted only against its coordinator hash receipt.
+An existing fixture is accepted only against its recorded hash receipt.
 No download, full checkpoint mapping, or full checkpoint checksum occurs here.
 """
 import argparse

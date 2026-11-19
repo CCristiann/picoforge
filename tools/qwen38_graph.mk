@@ -1,4 +1,43 @@
-# G2, ordinary graph on the GPU over the G0 session. Coordinator-owned.
+# The model graph, end to end: the GPU session lifecycle (G0), the graph on the
+# CPU (G1) and on the GPU (G2), the CLI/REPL/MTP tests and the real-checkpoint G3
+# gate. Included by tools/qwen38.mk.
+
+# G0: GPU session lifecycle.
+# The binary opens a Metal device, so it runs under the common GPU lock.
+build/qwen38-g/test_gpu_lifecycle: tests/test_qwen38_gpu_lifecycle.m src/qwen38_gpu.m $(Q38_HEADERS)
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.m,$^) $(FRAMEWORKS) -o $@
+
+test-qwen38-g0: build/qwen38-g/test_gpu_lifecycle
+	$(Q38_LOCK) $(Q38_ENV) MTL_DEBUG_LAYER=1 ./$<
+
+.PHONY: test-qwen38-g0
+
+# G1: ordinary graph on the CPU.
+# The harness maps weights through the existing Metal store (no GPU work),
+# so it runs under the common lock like the other device-opening tests.
+Q38_G1_CPU := src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c \
+ src/qwen38_moe.c $(Q38_RECURRENT)
+
+build/qwen38-g1/graph.gguf: tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_a.py tools/oracle/qwen38_config.py
+	$(Q38_ENV) $(PYTHON) -B $<
+
+build/qwen38-g1/test_forward: tests/test_qwen38_forward.c $(Q38_G1_CPU) src/gpu_weights.m tests/metal_device.m $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
+
+test-qwen38-g1: build/qwen38-g1/test_forward build/qwen38-g1/graph.gguf $(METALLIB)
+	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_forward.py --native $< --gguf build/qwen38-g1/graph.gguf -v
+
+.PHONY: test-qwen38-g1
+
+# Unsanitized build of the same harness, for bounded smoke runs on the real
+# checkpoint (the sanitized one remains the correctness gate).
+build/qwen38-g1/forward_real: tests/test_qwen38_forward.c $(Q38_G1_CPU) src/gpu_weights.m tests/metal_device.m $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+	@mkdir -p $(@D)
+	$(CC) $(Q38_FLAGS) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
+
+# G2: ordinary graph on the GPU over the G0 session.
 Q38_G2_GPU := src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m \
  src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/qwen38_profile.m src/gpu_weights.m src/qwen38_expert_pool.c
 

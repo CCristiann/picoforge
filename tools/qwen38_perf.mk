@@ -1,4 +1,5 @@
-# R0/R1 measurement and decode-speed targets. Included by tools/qwen38.mk.
+# Measurement (R0) and decode speed (R1): probes, profiles, the fast kernels
+# and their isolated benchmarks. Included by tools/qwen38.mk.
 
 # Metal capability probe (R0.1): plain ObjC like build/memory_budget, no engine code.
 build/qwen38-capabilities: tools/probe/qwen38_capabilities.m

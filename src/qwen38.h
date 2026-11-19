@@ -1,4 +1,4 @@
-/* A owns implementations; coordinator owns this shared contract. */
+/* The shared Qwen3.8 contract: config read from the GGUF metadata and the weight catalog (roles, spans). */
 #ifndef PICOFORGE_QWEN38_H
 #define PICOFORGE_QWEN38_H
 #include "gguf.h"

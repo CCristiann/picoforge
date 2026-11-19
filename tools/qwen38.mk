@@ -1,4 +1,4 @@
-# Coordinator-owned integration targets. Preparation is explicit; tests are offline.
+# Qwen3.8 integration targets. Preparation is explicit; tests are offline.
 Q38_REFERENCE_ROOT ?= $(abspath ../picoforge)
 Q38_CHECKPOINT ?= $(Q38_REFERENCE_ROOT)/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
 Q38_DWARFSTAR ?= $(abspath ../ds4-qwen38-baseline)
@@ -138,12 +138,8 @@ test-qwen38:
  test-qwen38-a test-qwen38-b-cpu test-qwen38-c-cpu test-qwen38-d-cpu \
  test-qwen38-e-cpu test-qwen38-f-cpu test-qwen38-a-gpu test-qwen38-b-gpu test-qwen38-c-gpu
 
-include tools/qwen38_v2.mk
+include tools/qwen38_components.mk
 
-include tools/qwen38_g0.mk
+include tools/qwen38_graph.mk
 
-include tools/qwen38_g1.mk
-
-include tools/qwen38_g2.mk
-
-include tools/qwen38_r1.mk
+include tools/qwen38_perf.mk
