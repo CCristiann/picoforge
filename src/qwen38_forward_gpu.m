@@ -2,11 +2,11 @@
  * graph order, bounded observations and the one G0 transaction per append. */
 #import <Metal/Metal.h>
 #include "qwen38_forward_gpu.h"
-#include "qwen38_g_internal.h"
-#include "qwen38_e_internal.h"
-#include "qwen38_d_internal.h"
-#include "qwen38_f_internal.h"
-#include "qwen38_b_internal.h"
+#include "qwen38_graph_internal.h"
+#include "qwen38_ple_internal.h"
+#include "qwen38_attention_internal.h"
+#include "qwen38_moe_internal.h"
+#include "qwen38_packed_internal.h"
 #include "qwen38_ngram_internal.h"
 #include "qwen38_ref.h"
 #include "qwen38_expert_pool.h"

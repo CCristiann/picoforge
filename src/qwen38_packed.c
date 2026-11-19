@@ -1,5 +1,5 @@
 /* Native C11 packed rows. No file I/O, allocation, upstream decoder or GPU. */
-#include "qwen38_b_internal.h"
+#include "qwen38_packed_internal.h"
 #pragma STDC FP_CONTRACT OFF
 static const uint64_t q38_iq2_grid[256] = {
 #include "qwen38_iq2_grid.inc"

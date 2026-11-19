@@ -1,4 +1,4 @@
-/* Private E reader and test seams; public contracts are in qwen38_ngram.h. */
+/* Private n-gram (PLE) reader and test seams; public contracts are in qwen38_ngram.h. */
 #ifndef QWEN38_NGRAM_INTERNAL_H
 #define QWEN38_NGRAM_INTERNAL_H
 #include "qwen38_ngram.h"

@@ -1,8 +1,8 @@
 /* Private F post-routing composition. B owns products, C owns activations. */
 #import <Metal/Metal.h>
-#include "qwen38_f_internal.h"
-#include "qwen38_c_internal.h"
-#include "qwen38_b_internal.h"
+#include "qwen38_moe_internal.h"
+#include "qwen38_cpu_internal.h"
+#include "qwen38_packed_internal.h"
 #include "qwen38_ref.h"
 #include "qwen38_profile.h"   /* only the format sentinels, for the R1.9a sub-group marks */
 #include <stdlib.h>

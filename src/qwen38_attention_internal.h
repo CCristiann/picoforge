@@ -1,6 +1,6 @@
-/* Private D test/core boundary. Not a second public attention ABI. */
-#ifndef PICOFORGE_QWEN38_D_INTERNAL_H
-#define PICOFORGE_QWEN38_D_INTERNAL_H
+/* Private attention test/core boundary. Not a second public attention ABI. */
+#ifndef PICOFORGE_QWEN38_ATTENTION_INTERNAL_H
+#define PICOFORGE_QWEN38_ATTENTION_INTERNAL_H
 /* R2.8: threads per block of the fast index scores (one per head, h <= 8). */
 #define Q38D_SCORE_LANES 8u
 #ifndef __METAL_VERSION__
@@ -8,7 +8,7 @@
 #include "qwen38_gpu.h"
 
 /* All arrays below contiguous and disjoint. Caller owns capacities/lifetime.
- * Failure after writes makes output unusable. No normalization here: C owns it. */
+ * Failure after writes makes output unusable. No normalization here: the CPU ops own it. */
 Qwen38Status q38d_rope(float *, uint32_t heads, uint32_t dim,
     uint32_t rotary_dim, uint32_t pos, float theta);
 /* Immutable default-RoPE constant, shared by CPU and Metal parameter setup.
@@ -27,7 +27,7 @@ Qwen38Status q38d_select(const float *scores, uint32_t count, uint32_t budget,
 Qwen38Status q38d_attend(const Qwen38AttentionConfig *, const float *q,
     const float *gate_factor, const float *k, const float *v, uint32_t visible,
     const uint32_t *ids, uint32_t count, float *out, float *scratch);
-/* Test/core boundary after C normalization/activation and D RoPE. blocks
+/* Test/core boundary after normalization/activation (CPU ops) and RoPE (above). blocks
  * contains ONLY newly completed normalized/rotated blocks, in time order.
  * ik is raw and persists across appends. No approximation of missing C2. */
 typedef struct {
@@ -99,9 +99,9 @@ void q38d_gpu_set_reference(Q38DGpu *, bool reference);
 Qwen38Status q38d_select_encode(Q38DGpu *, Qwen38GpuCommand,
     uint32_t visible, uint32_t ratio, uint32_t budget, Qwen38GpuSpan scores,
     Qwen38GpuSpan keep, Qwen38GpuSpan ids, Qwen38Error *);
-/* G2 layer composition on device, no ID readback: C norms/sigmoid in batch,
- * then per token D RoPE -> cache, block pool+norm+RoPE, scores, device
- * selection and attention. Projections and Wout stay with the caller (B).
+/* G2 layer composition on device, no ID readback: norms/sigmoid in batch,
+ * then per token RoPE -> cache, block pool+norm+RoPE, scores, device
+ * selection and attention. Projections and Wout stay with the caller (packed layer).
  * Cache rows [0, pos0) must hold earlier appends; rows pos0..pos0+T-1 and
  * completed blocks are written here and become history only if the whole
  * command succeeds (the caller's session decides). Views are dense, with

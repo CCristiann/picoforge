@@ -1,4 +1,4 @@
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 
 struct Qwen38GdnState { Q38CState base; Qwen38GdnShape shape; size_t elements; };
 static Qwen38Status gdn_shape(const Qwen38GdnShape *s, size_t *channels, size_t *elements, Qwen38Error *e) {

@@ -1,4 +1,4 @@
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 
 const Qwen38Role q38c_layer_roles[Q38CW_COUNT]={Q38_HC_ATTN_NORM,Q38_HC_ATTN_DOWN,
     Q38_HC_ATTN_UP,Q38_HC_ATTN_INJECT,Q38_GDN_QKV,Q38_GDN_GATE,Q38_GDN_ALPHA,Q38_GDN_BETA,

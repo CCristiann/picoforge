@@ -1,5 +1,5 @@
 /* QSA CPU core, FP32 and no fast-math. See integration.md and spec D. */
-#include "qwen38_d_internal.h"
+#include "qwen38_attention_internal.h"
 #include "qwen38_ops.h"
 #include <math.h>
 #include <stdlib.h>

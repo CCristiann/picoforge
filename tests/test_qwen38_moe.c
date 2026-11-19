@@ -1,5 +1,5 @@
 /* Isolated F harness: clang + qwen38_moe.c, no B/C or GPU dependencies. */
-#include "qwen38_f_internal.h"
+#include "qwen38_moe_internal.h"
 #include "qwen38.h"
 #include <sys/mman.h>
 #include <unistd.h>

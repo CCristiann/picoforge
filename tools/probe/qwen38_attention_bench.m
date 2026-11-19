@@ -1,6 +1,6 @@
 /* Bounded QSA attend benchmark, fixed FP32 inputs; run under the common lock. */
 #import <Metal/Metal.h>
-#include "qwen38_d_internal.h"
+#include "qwen38_attention_internal.h"
 #include <assert.h>
 #include <math.h>
 #include <time.h>

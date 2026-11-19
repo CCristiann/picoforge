@@ -1,12 +1,12 @@
-/* Private F CPU helpers; not a second public ABI. */
-#ifndef PICOFORGE_QWEN38_F_INTERNAL_H
-#define PICOFORGE_QWEN38_F_INTERNAL_H
+/* Private MoE CPU helpers; not a second public ABI. */
+#ifndef PICOFORGE_QWEN38_MOE_INTERNAL_H
+#define PICOFORGE_QWEN38_MOE_INTERNAL_H
 #include "qwen38_moe.h"
 #ifndef __METAL_VERSION__
 typedef struct Q38CGpu Q38CGpu;
 #endif
 
-/* Optional synchronous diagnostics, private to F tests. Never substitutes an
+/* Optional synchronous diagnostics, private to the MoE tests. Never substitutes an
  * operator. Views are borrowed only during the call; observers must not mutate
  * data or reenter/destroy the workspace. Projection stages are weight indices
  * 0..7; stage 8=SiLU, 9=product, 10=sigmoid, 11=routed, 12=Y. */
@@ -15,7 +15,7 @@ typedef void (*Q38MoeObserver)(void *, size_t stage, size_t expert, size_t token
 void q38_moe_observe(Qwen38MoeWork *, Q38MoeObserver, void *);
 
 /* Private post-routing GPU experiment. CPU route IDs/weights are frozen before
- * encode; B's expert index is host-side. No GPU-dependent dispatch, lifecycle
+ * encode; the packed expert index is host-side. No GPU-dependent dispatch, lifecycle
  * ABI, commit or wait here. Caller serializes reuse and keeps store/bindings,
  * context and all resources alive and unchanged until command completion. */
 typedef struct Q38FMoeGpu Q38FMoeGpu;

@@ -1,8 +1,8 @@
 /* Binary, bounded stage harness. Submission/lifetime live here, never in D. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "qwen38_d_internal.h"
-#include "qwen38_c_internal.h"
+#include "qwen38_attention_internal.h"
+#include "qwen38_cpu_internal.h"
 #include <assert.h>
 #include <unistd.h>
 static id<MTLDevice> device;

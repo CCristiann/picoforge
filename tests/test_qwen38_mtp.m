@@ -2,7 +2,7 @@
  * is shared with the independent CPU oracle. Run under the common GPU lock. */
 #import <Metal/Metal.h>
 #include "common.h"
-#include "qwen38_g_internal.h"
+#include "qwen38_graph_internal.h"
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>

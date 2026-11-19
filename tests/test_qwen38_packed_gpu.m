@@ -1,7 +1,7 @@
 /* Bounded Metal transport and ABI tests. Run only through qwen38_gpu_lock.py. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "qwen38_b_internal.h"
+#include "qwen38_packed_internal.h"
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>

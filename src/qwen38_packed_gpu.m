@@ -1,7 +1,7 @@
 /* Metal interface only: admission, retained pipelines, and command encoding. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "qwen38_b_internal.h"
+#include "qwen38_packed_internal.h"
 #include "qwen38_ref.h"
 #include <stdlib.h>
 
@@ -535,7 +535,7 @@ Qwen38Status q38_packed_encode_indexed_fast(Q38PackedGpu *ctx, const Qwen38GpuCo
         Qwen38GpuSpan ids, size_t divisor, Qwen38GpuF32 x, Qwen38GpuF32 y, Qwen38Error *err) {
     return encode_indexed(ctx,command,store,binding,layout,ids,divisor,x,y,true,err);
 }
-/* R1.5b fused gate+up+SwiGLU (qwen38_b_internal.h): each projection admitted
+/* R1.5b fused gate+up+SwiGLU (qwen38_packed_internal.h): each projection admitted
  * as q38_packed_encode_indexed with act as its output, then the choice. */
 Qwen38Status q38_packed_encode_gate_up(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *gate, const Q38PackedLayout *gl,
@@ -674,7 +674,7 @@ static Qwen38Status dense_operand(id<MTLDevice> dev, Qwen38GpuF32 v, size_t rows
     if (v.stride_bytes[0]!=cols*4) return Q38_STRIDE;
     return gpu_span(dev,v.span,*bytes,out);
 }
-/* R1.5c fused down+reduce (qwen38_b_internal.h): the down projection admitted
+/* R1.5c fused down+reduce (qwen38_packed_internal.h): the down projection admitted
  * as q38_packed_encode with x = act and y, then the dense operands, the IDs and
  * the aliases of the two outputs, then the choice. */
 Qwen38Status q38_packed_encode_down_reduce(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,
@@ -864,7 +864,7 @@ Qwen38Status q38_packed_encode_multi(Q38PackedGpu *ctx, const Qwen38GpuCommand *
     return q38_b_result(err,Q38_OK,"");
 }
 
-/* Decode III Q8_0 linear + HC_ADD (qwen38_b_internal.h). */
+/* Decode III Q8_0 linear + HC_ADD (qwen38_packed_internal.h). */
 bool q38_packed_add_ready(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t n_out) {
     return ctx && ctx->q8_add && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==8 && !gemm_kernel(ctx,8,rows,n_out);
 }
@@ -903,7 +903,7 @@ Qwen38Status q38_packed_encode_add(Q38PackedGpu *ctx, const Qwen38GpuCommand *co
     return q38_b_result(err,Q38_OK,"");
 }
 
-/* Decode III HC down with the RMSNorm folded in (qwen38_b_internal.h). */
+/* Decode III HC down with the RMSNorm folded in (qwen38_packed_internal.h). */
 bool q38_packed_hc_down_rms_ready(const Q38PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t k, size_t streams) {
     return ctx && ctx->hc_down && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==1 &&
         !gemm_kernel(ctx,1,rows,SIZE_MAX) && streams && streams<=4 && !(k%streams) && !((k/streams)%8) &&
@@ -961,7 +961,7 @@ Qwen38Status q38_packed_encode_hc_down_rms(Q38PackedGpu *ctx, const Qwen38GpuCom
     return q38_b_result(err,Q38_OK,"");
 }
 
-/* R2.6 fused HC read tail (qwen38_b_internal.h): up admitted as
+/* R2.6 fused HC read tail (qwen38_packed_internal.h): up admitted as
  * q38_packed_encode (x = act, y = gate), then the choice, then the other
  * views and the aliases of the four outputs. */
 Qwen38Status q38_packed_encode_hc_tail(Q38PackedGpu *ctx, const Qwen38GpuCommand *command,

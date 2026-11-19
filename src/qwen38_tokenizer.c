@@ -1,5 +1,5 @@
 /* Binary-safe Qwen3.8 facade over tokenizer.c's shared BPE. */
-#include "qwen38_a_internal.h"
+#include "qwen38_text_internal.h"
 
 static Qwen38Status strings(const Gguf *g, const char *key, Qwen38Bytes **out,
                             size_t *n, Qwen38Error *e) {

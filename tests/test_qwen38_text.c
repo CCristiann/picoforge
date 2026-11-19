@@ -1,4 +1,4 @@
-#include "qwen38_a_internal.h"
+#include "qwen38_text_internal.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

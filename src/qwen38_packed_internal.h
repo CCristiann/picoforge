@@ -1,6 +1,6 @@
-/* Private B helpers; the public ABI remains in qwen38_packed.h. */
-#ifndef PICOFORGE_QWEN38_B_INTERNAL_H
-#define PICOFORGE_QWEN38_B_INTERNAL_H
+/* Private helpers of the packed (quantized) layer; the public ABI remains in qwen38_packed.h. */
+#ifndef PICOFORGE_QWEN38_PACKED_INTERNAL_H
+#define PICOFORGE_QWEN38_PACKED_INTERNAL_H
 #include "qwen38_packed.h"
 #include <math.h>
 #include <stdio.h>

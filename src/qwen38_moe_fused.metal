@@ -7,7 +7,7 @@
 using namespace metal;
 #pragma METAL fp contract(off)
 
-/* Wire records mirrored from qwen38_b_internal.h (Q38PackedArgs,
+/* Wire records mirrored from qwen38_packed_internal.h (Q38PackedArgs,
  * Q38PackedIndexedArgs), as in qwen38_matvec.metal. */
 struct PackedArgs {
     uint type, k_storage, k_logical, n_out, rows, reserved;
@@ -220,7 +220,7 @@ kernel void q38_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], devic
 }
 
 /* R1.5c: the routed down projection and q38f_reduce in one pass.
- * DownReduceArgs mirrors Q38DownReduceArgs (qwen38_b_internal.h): the down
+ * DownReduceArgs mirrors Q38DownReduceArgs (qwen38_packed_internal.h): the down
  * projection as one indexed call over the tokens x slots pairs (x = act, its
  * y extent and pitch are y's), then the token and slot counts. */
 struct DownReduceArgs { IndexedArgs down; uint tokens, slots; };
@@ -429,7 +429,7 @@ DOWN_REDUCE_SP_KERNEL(q38_moe_down_reduce_sp_mxfp4, Q38Mxfp4)
  * owns it, so no used-id rescan and no barrier for the mask. The threadgroup
  * width is the host's (a multiple of 32, at most 1024). (Idea of a parallel
  * router top-k: ds4 fc80bd6, MIT, metal/qwen4.metal: kernel_qwen4_router_topk.)
- * Capacity Q38F_ROUTE_MAX_EXPERTS mirrors qwen38_f_internal.h; beyond it, or
+ * Capacity Q38F_ROUTE_MAX_EXPERTS mirrors qwen38_moe_internal.h; beyond it, or
  * k > e, the host keeps q38f_route and this kernel only sets bit 2. */
 #define Q38F_ROUTE_MAX_EXPERTS 1024
 struct RouteArgs { uint t, e, k, norm, pitch; };

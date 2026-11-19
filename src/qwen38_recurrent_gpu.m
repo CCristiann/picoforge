@@ -1,7 +1,7 @@
 /* Private per-stage harness glue. No submission, waits or numerical CPU path. */
 #import <Metal/Metal.h>
-#include "qwen38_c_internal.h"
-#include "qwen38_b_internal.h"
+#include "qwen38_cpu_internal.h"
+#include "qwen38_packed_internal.h"
 #include "qwen38_ref.h"
 #include "qwen38_profile.h"   /* only the format sentinels, for the R1.8 sub-group marks */
 #include <stdlib.h>

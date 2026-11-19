@@ -1,6 +1,6 @@
 /* PLE GPU composition; G0 is the only command completion authority. */
 #import <Metal/Metal.h>
-#include "qwen38_e_internal.h"
+#include "qwen38_ple_internal.h"
 #include <stdlib.h>
 struct Q38EGpu { void *device, *gate, *add; };
 static Qwen38Status fail(Qwen38Error *e,Qwen38Status code,const char *s) { return q38e_error(e,code,s); }

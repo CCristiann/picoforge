@@ -1,5 +1,5 @@
 /* F v1: routing on caller-owned projected logits. Packed products belong to B. */
-#include "qwen38_f_internal.h"
+#include "qwen38_moe_internal.h"
 #include "qwen38_ops.h"
 #include <math.h>
 #include <stdio.h>

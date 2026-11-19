@@ -1,8 +1,8 @@
-/* Private G2 PLE composition. B owns projections, C owns norms and conv. */
-#ifndef PICOFORGE_QWEN38_E_INTERNAL_H
-#define PICOFORGE_QWEN38_E_INTERNAL_H
+/* Private PLE composition on the GPU graph. The packed layer owns projections, the CPU ops own norms and conv. */
+#ifndef PICOFORGE_QWEN38_PLE_INTERNAL_H
+#define PICOFORGE_QWEN38_PLE_INTERNAL_H
 #include "qwen38_ngram_internal.h"
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 typedef struct Q38EGpu Q38EGpu;
 typedef struct {
     Qwen38GpuF32 rows, residual;             /* [T,heads*head_dim], [T,H,D] */

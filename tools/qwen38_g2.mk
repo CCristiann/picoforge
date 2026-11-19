@@ -58,7 +58,7 @@ ui-qwen38: pf
 test-qwen38-server: pf build/qwen38-g2/cli.gguf build/qwen38-mtp/cli.gguf
 	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_server.py -v
 
-build/qwen38-attention-bench: tools/probe/qwen38_attention_bench.m src/qwen38_d_internal.h
+build/qwen38-attention-bench: tools/probe/qwen38_attention_bench.m src/qwen38_attention_internal.h
 	@mkdir -p $(@D)
 	$(CC) $(Q38_FLAGS) -fobjc-arc $< $(FRAMEWORKS) -lm -o $@
 

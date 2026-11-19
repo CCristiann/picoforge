@@ -1,5 +1,5 @@
 # Coordinator-owned v2 compositions. CPU selection does not run Metal classes.
-build/qwen38-d/attention.air: src/qwen38_attention.metal src/qwen38_d_internal.h
+build/qwen38-d/attention.air: src/qwen38_attention.metal src/qwen38_attention_internal.h
 	@mkdir -p $(@D)
 	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -Isrc -c $< -o $@
 

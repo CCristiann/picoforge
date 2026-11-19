@@ -505,7 +505,7 @@ if __name__ == "__main__":
                 report["gpu_lock"] = oracle.os.environ["PICOFORGE_GPU_LOCK_PATH"]
                 report["metal_api_validation"] = True
             report["source_sha256"].update({str(p.relative_to(ROOT)): oracle.digest(p.read_bytes())
-                for p in [ROOT / "src/qwen38_packed.c", ROOT / "src/qwen38_b_internal.h",
+                for p in [ROOT / "src/qwen38_packed.c", ROOT / "src/qwen38_packed_internal.h",
                           ROOT / "tests/test_qwen38_packed.c", ROOT / "src/qwen38_packed.h"]})
             report["source_sha256"]["src/qwen38_iq2_grid.inc"] = oracle.digest((ROOT / "src/qwen38_iq2_grid.inc").read_bytes())
             if METAL:

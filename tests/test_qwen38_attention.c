@@ -1,5 +1,5 @@
 /* Bounded binary fixture transport; compiled with ASan/UBSan. CPU only. */
-#include "qwen38_d_internal.h"
+#include "qwen38_attention_internal.h"
 #include "qwen38.h"
 #include "qwen38_packed.h"
 #include <assert.h>

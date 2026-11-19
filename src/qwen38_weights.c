@@ -1,5 +1,5 @@
 /* Semantic catalog only. Packed arithmetic belongs to B; mapping to storage. */
-#include "qwen38_a_internal.h"
+#include "qwen38_text_internal.h"
 
 struct Qwen38Weights {
     const Gguf *source;

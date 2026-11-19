@@ -1,4 +1,4 @@
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <float.h>

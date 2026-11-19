@@ -1,7 +1,7 @@
 /* Private D Metal stage glue; caller retains buffers and owns submission. */
 #import <Metal/Metal.h>
-#include "qwen38_d_internal.h"
-#include "qwen38_c_internal.h"
+#include "qwen38_attention_internal.h"
+#include "qwen38_cpu_internal.h"
 #include "qwen38_ref.h"
 #include <math.h>
 #include <stdlib.h>

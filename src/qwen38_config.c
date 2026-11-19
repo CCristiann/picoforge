@@ -1,6 +1,6 @@
 /* GGUF dimensions plus the explicit qwen38-q2-text-f32-v1 semantic profile.
  * No model payload, defaults from Qwen3, or borrowed metadata arrays. */
-#include "qwen38_a_internal.h"
+#include "qwen38_text_internal.h"
 #include <math.h>
 
 Qwen38Status q38a_meta(const Gguf *g, const char *name, uint32_t type,

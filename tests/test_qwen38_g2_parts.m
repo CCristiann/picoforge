@@ -4,11 +4,11 @@
  * Prints one JSON line per check; exits nonzero on any gate failure. */
 #import <Metal/Metal.h>
 #include "common.h"
-#include "qwen38_c_internal.h"
-#include "qwen38_f_internal.h"
+#include "qwen38_cpu_internal.h"
+#include "qwen38_moe_internal.h"
 #include "qwen38_moe.h"
-#include "qwen38_d_internal.h"
-#include "qwen38_e_internal.h"
+#include "qwen38_attention_internal.h"
+#include "qwen38_ple_internal.h"
 #include <assert.h>
 #include <stdlib.h>
 

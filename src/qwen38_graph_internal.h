@@ -1,7 +1,7 @@
 /* Bounded diagnostic/fault seam, not a public inference ABI. Borrowed views
  * exist only while the graph is idle; tests must never change live weights. */
-#ifndef PICOFORGE_QWEN38_G_INTERNAL_H
-#define PICOFORGE_QWEN38_G_INTERNAL_H
+#ifndef PICOFORGE_QWEN38_GRAPH_INTERNAL_H
+#define PICOFORGE_QWEN38_GRAPH_INTERNAL_H
 #include "qwen38_forward_gpu.h"
 #include "qwen38_profile.h"
 enum { Q38GS_CONV,Q38GS_GDN,Q38GS_KEY,Q38GS_VALUE,Q38GS_INDEX,Q38GS_BLOCK,Q38GS_PLE,Q38GS_COUNT };

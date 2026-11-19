@@ -5,7 +5,7 @@
  * All operators run on GPU, with one completion per append.
  * Run under the common lock (tools/qwen38_gpu_lock.py). */
 #include "common.h"
-#include "qwen38_g_internal.h"
+#include "qwen38_graph_internal.h"
 #include <math.h>
 #import <Metal/Metal.h>
 #include <assert.h>

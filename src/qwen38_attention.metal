@@ -1,7 +1,7 @@
 /* Conservative FP32 stages. No half cache, fast math or per-tile normalization. */
 #include <metal_stdlib>
 using namespace metal;
-#include "qwen38_d_internal.h"
+#include "qwen38_attention_internal.h"
 static void fail(device atomic_uint *e, uint bit) {
     atomic_fetch_or_explicit(e,bit,memory_order_relaxed);
 }
@@ -462,7 +462,7 @@ kernel void q38d_copy_gpu(device const float *x [[buffer(0)]], device float *y [
  * tail exactly as the host loop does, then runs the same inline body as the
  * per-token kernel: the bits are the loop's. Causality holds because a token
  * reads only keys <= p and blocks < (p+1)/ratio, all written by earlier stages. */
-#define Q38D_MAX_SPLITS 64u /* mirror of qwen38_d_internal.h */
+#define Q38D_MAX_SPLITS 64u /* mirror of qwen38_attention_internal.h */
 struct Q38DBatch { uint pos0, step, x_stride, y_stride, ratio, budget, scores_stride, ids_stride, first, count; };
 static inline uint q38d_visible_blocks(constant Q38DBatch &b, uint z) { return (b.pos0+z+1)/b.ratio; }
 static inline uint q38d_selected(constant Q38DBatch &b, uint z) {
@@ -593,7 +593,7 @@ kernel void q38d_merge_batch_gpu(device const float *gate [[buffer(1)]], device 
  * slower than attend_split: one threadgroup per core). Same partials (max, sum, acc),
  * split layout and error bits as attend_split; the sums run in another order (8-term
  * MMA steps, four quarters), so the gate is the attend_fast tolerance, not its bits.
- * Q38D_MMA_D (256) and Q38D_MMA_KEYS (40 = 5 chunks of 8) come from qwen38_d_internal.h. */
+ * Q38D_MMA_D (256) and Q38D_MMA_KEYS (40 = 5 chunks of 8) come from qwen38_attention_internal.h. */
 /* P5.2: one threadgroup now covers Q38D_MMA_GROUP (2) consecutive R2.1 splits, one
  * sub-block of r keys at a time with an online softmax: per sub-block the row max M
  * grows, O is rescaled by exp(M_old - M) with an MMA against a diagonal tile, then

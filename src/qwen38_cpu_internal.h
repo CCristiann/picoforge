@@ -1,6 +1,6 @@
-/* Private CPU plumbing for component C; public contracts stay in qwen38_ops.h. */
-#ifndef PICOFORGE_QWEN38_C_INTERNAL_H
-#define PICOFORGE_QWEN38_C_INTERNAL_H
+/* Private plumbing of the CPU ops (norms, conv, Gated DeltaNet); public contracts stay in qwen38_ops.h. */
+#ifndef PICOFORGE_QWEN38_CPU_INTERNAL_H
+#define PICOFORGE_QWEN38_CPU_INTERNAL_H
 #ifndef __METAL_VERSION__
 #include "qwen38_ops.h"
 #include "qwen38_gpu.h"
@@ -166,7 +166,7 @@ static inline Qwen38Status q38c_state_reset(Q38CState *s, uint64_t magic, uint64
     s->info.key.epoch=epoch; s->info.next_pos=0; s->info.valid=true;
     return q38c_error(e, Q38_OK, NULL);
 }
-/* C4 private composition. A resolves roles; B owns every decode and product.
+/* Private layer composition. The text layer resolves roles; the packed layer owns every decode and product.
  * Catalog/config, packed spans and all backings remain borrowed by the caller. */
 typedef enum { Q38CW_HN, Q38CW_HD, Q38CW_HU, Q38CW_HI, Q38CW_QKV, Q38CW_Z,
     Q38CW_AP, Q38CW_BP, Q38CW_A, Q38CW_DT, Q38CW_CONV, Q38CW_GN, Q38CW_OUT, Q38CW_COUNT } Q38CWeight;

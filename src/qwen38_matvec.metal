@@ -5,7 +5,7 @@
 using namespace metal;
 #pragma METAL fp contract(off)
 
-/* Same wire record as q38_packed_linear (mirrored from qwen38_b_internal.h). */
+/* Same wire record as q38_packed_linear (mirrored from qwen38_packed_internal.h). */
 struct PackedArgs {
     uint type, k_storage, k_logical, n_out, rows, reserved;
     ulong row_bytes, weight_offset, weight_end, x_stride, y_stride, x_bytes, y_bytes;
@@ -403,7 +403,7 @@ INDEXED_KERNEL(q38_matvec_indexed_mxfp4, Q38Mxfp4)
  * are written as in the sequence (threadgroup 0 writes act). A nonfinite
  * low, act, il, inject, gate, normed or sum sets bit 1; outputs are then
  * unspecified (the sequence's checks stop at the first failing op). Wire
- * record HcTailArgs mirrors Q38HcTailArgs (qwen38_b_internal.h); row pitches
+ * record HcTailArgs mirrors Q38HcTailArgs (qwen38_packed_internal.h); row pitches
  * in floats. (Idea of one up + gate + mix kernel per HC read: ds4 fc80bd6,
  * MIT, metal/qwen4.metal: kernel_qwen4_hc_gate_mix.) */
 #define HC_TAIL_MAX_K 1024

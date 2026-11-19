@@ -3,7 +3,7 @@
  * Build: clang -fobjc-arc -Isrc -framework Metal -framework Foundation tools/probe/qwen38_mat_attention_probe.m -o build/pg/matprobe
  * Run:   build/pg/matprobe picoforge.metallib POS0 TOKENS   (prints max scaled error and GPU ms) */
 #import <Metal/Metal.h>
-#include "qwen38_d_internal.h"
+#include "qwen38_attention_internal.h"
 #include <math.h>
 #include <stdlib.h>
 typedef struct { uint32_t pos0, step, x_stride, y_stride, ratio, budget, scores_stride, ids_stride, first, count; } Batch;

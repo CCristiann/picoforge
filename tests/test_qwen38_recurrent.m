@@ -1,7 +1,7 @@
 /* Isolated per-stage Metal harness; caller submits, waits, checks and retains. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 #include "qwen38_ref.h"
 #include <assert.h>
 #include <stdlib.h>

@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include "common.h"
 #include "qwen38_forward_gpu.h"
-#include "qwen38_g_internal.h"
+#include "qwen38_graph_internal.h"
 #include "qwen38_text.h"
 #include <signal.h>
 #include <stdio.h>

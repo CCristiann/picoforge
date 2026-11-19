@@ -1,6 +1,6 @@
 /* Pinned HF template, revision de4b8e4d43b917e7706784d8bb445c9af86a3540.
  * Used only to admit the specialized renderer; never interpreted at runtime. */
-#include "qwen38_a_internal.h"
+#include "qwen38_text_internal.h"
 #include <math.h>
 #include <locale.h>
 #include <xlocale.h>

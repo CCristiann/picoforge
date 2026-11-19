@@ -2,7 +2,7 @@
  * Compile this ObjC harness separately; never add it to the engine entrypoint. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "qwen38_f_internal.h"
+#include "qwen38_moe_internal.h"
 #include <errno.h>
 #include <fcntl.h>
 static Qwen38Status metal_forward(const Qwen38MoeConfig *,const Qwen38MoeWeights *,

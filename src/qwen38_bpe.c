@@ -14,7 +14,7 @@
  * byte is wrong in ways that only show up on non-ASCII input.
  */
 #include "common.h"
-#include "qwen38_a_internal.h"
+#include "qwen38_text_internal.h"
 
 #include <ctype.h>
 #include <stdlib.h>

@@ -2,7 +2,7 @@
  * Roles are resolved once at create (A); every product is B's; norms,
  * activations and HC are C's primitives. See qwen38_forward.h for the order. */
 #include "qwen38_forward.h"
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 #include "qwen38_moe.h"
 #include "qwen38_ngram.h"
 #include "qwen38_attention.h"

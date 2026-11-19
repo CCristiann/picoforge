@@ -1,13 +1,13 @@
-/* Private to A. Public contracts remain owned by the coordinator. */
-#ifndef QWEN38_A_INTERNAL_H
-#define QWEN38_A_INTERNAL_H
+/* Private helpers of the text layer (config, tokenizer, chat template); the public contracts are in qwen38_text.h. */
+#ifndef PICOFORGE_QWEN38_TEXT_INTERNAL_H
+#define PICOFORGE_QWEN38_TEXT_INTERNAL_H
 #include "qwen38_text.h"
 #include "common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* The coordinator's header gate compiles private headers as translation
+/* The header gate compiles private headers as translation
  * units too. Keep header-only helpers without unused-function diagnostics. */
 #if defined(__clang__) || defined(__GNUC__)
 #define Q38A_INLINE static inline __attribute__((unused))

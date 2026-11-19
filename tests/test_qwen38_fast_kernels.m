@@ -19,9 +19,9 @@
  * the decode graph) and reports the time per encode. */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "qwen38_b_internal.h"
-#include "qwen38_c_internal.h"
-#include "qwen38_d_internal.h"
+#include "qwen38_packed_internal.h"
+#include "qwen38_cpu_internal.h"
+#include "qwen38_attention_internal.h"
 #include "qwen38_ref.h"
 #include <assert.h>
 #include <errno.h>
@@ -731,7 +731,7 @@ static int down_main(int argc,char **argv,const char *library) {
  * simd = q38_moe_route_simd (Decode III), one 32-thread simdgroup per token.
  *   rtbench <fast|oracle|simd> experts slots tokens reps
  * the same dispatch on synthetic logits, 20 timed per command buffer (rbench's). */
-#define ROUTE_THREADS 256 /* Q38F_ROUTE_THREADS of qwen38_f_internal.h */
+#define ROUTE_THREADS 256 /* Q38F_ROUTE_THREADS of qwen38_moe_internal.h */
 static int route_main(int argc,char **argv,const char *library) {
     bool timing=!strcmp(argv[1],"rtbench");
     assert(argc==(timing ? 7 : 8) &&(!strcmp(argv[2],"fast") || !strcmp(argv[2],"oracle") || !strcmp(argv[2],"simd")));

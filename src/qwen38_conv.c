@@ -1,4 +1,4 @@
-#include "qwen38_c_internal.h"
+#include "qwen38_cpu_internal.h"
 
 struct Qwen38ConvState { Q38CState base; Qwen38ConvShape shape; size_t history, elements; };
 static Qwen38Status conv_shape(const Qwen38ConvShape *s, size_t *history, size_t *elements, Qwen38Error *e) {
