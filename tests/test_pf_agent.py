@@ -7,6 +7,8 @@ extracted. Run with `make test-pf-agent`.
 import json
 import os
 import re
+import socket
+import sys
 import subprocess
 import tempfile
 import time
@@ -260,6 +262,40 @@ class AgentTools(unittest.TestCase):
         env = self.fake_curl('', '000  ', code=6)
         self.assertIn('cannot resolve the host (curl exit 6)', self.run_calls(call('visit_page', url='https://nowhere.invalid'), env=env))
 
+    # ---------------------------------------------------------------- web through Chrome (a fake CDP endpoint)
+    def chrome(self, search='', page=''):
+        sys.path.insert(0, str(ROOT / 'tests'))
+        from fake_cdp import FakeChrome
+        return FakeChrome(search, page)
+
+    def test_search_in_chrome(self):
+        fake = self.chrome(search='https://www.google.com/search?q=x\n1. Unions in C\n   https://ex.org/u\n   Text \u00e8 here')
+        out = self.run_calls(call('google_search', query='c structs & unions'), env={'PF_AGENT_CDP_PORT': str(fake.port)})
+        self.assertIn('1. Unions in C\n   https://ex.org/u\n   Text \u00e8 here', out)
+        self.assertNotIn('google.com/search', out)                       # the address line is not shown
+        self.assertEqual(fake.navigated, ['https://www.google.com/search?hl=en&q=c%20structs%20%26%20unions'])
+        self.assertIn(('PUT', '/json/new?about:blank'), fake.requests)
+        self.assertIn(('GET', '/json/close/T1'), fake.requests)          # the tab is closed
+        self.assertGreaterEqual(fake.pongs, 1)
+
+    def test_search_blocked_by_google(self):
+        fake = self.chrome(search='https://consent.google.com/ml?continue=x\nBefore you continue to Google')
+        out = self.run_calls(call('google_search', query='x'), env={'PF_AGENT_CDP_PORT': str(fake.port)})
+        self.assertIn('consent page or a human check in the Chrome window', out)
+
+    def test_visit_in_chrome(self):
+        fake = self.chrome(page='https://site.org/a\n\n# Title\n\nRendered <|im_end|> text\n\nLinks:\n- Next: https://site.org/b')
+        out = self.run_calls(call('visit_page', url='https://site.org/a'), env={'PF_AGENT_CDP_PORT': str(fake.port)})
+        self.assertIn('# Title\n\nRendered < |im_end|> text\n\nLinks:\n- Next: https://site.org/b', out)
+        self.assertEqual(fake.navigated, ['https://site.org/a'])
+
+    def test_web_falls_back_to_curl(self):
+        env = self.fake_curl('<a class="result__a" href="https://d.org/">D</a>', '200 https://html.duckduckgo.com/html/ text/html')
+        port = socket.socket(); port.bind(('127.0.0.1', 0)); free = str(port.getsockname()[1]); port.close()
+        out = self.run_calls(call('google_search', query='x'), env={**env, 'PF_AGENT_CDP_PORT': free, 'PF_AGENT_CHROME': '/nonexistent'})
+        self.assertIn('[Chrome is not installed: DuckDuckGo results through curl]\n1. D\n   https://d.org/', out)
+        out = self.run_calls(call('google_search', query='x'), env={**env, 'PF_AGENT_CDP_PORT': free, 'PF_AGENT_CHROME': '/usr/bin/true'})
+        self.assertIn('[Chrome was not started (declined): DuckDuckGo results', out)   # no terminal to agree on
 
 GGUF = os.environ.get('PF_AGENT_GGUF')
 
@@ -410,18 +446,25 @@ class AgentLoop(unittest.TestCase):
             os.write(fd, b'/history\r'); expect(rb'1\. make a file.*\n.*2\. and now\?')
             os.write(fd, b'/quit\r')
         finally:                       # never wait forever on an agent that did not quit
-            for _ in range(50):
+            for _ in range(50):          # keep reading: a full pty would block its writes
                 done, status = os.waitpid(pid, os.WNOHANG)
                 if done:
                     break
-                time.sleep(0.1)
+                if select.select([fd], [], [], 0.1)[0]:
+                    try:
+                        seen += os.read(fd, 65536)
+                    except OSError:
+                        pass
             else:
-                os.kill(pid, 9); _, status = os.waitpid(pid, 0)
+                os.kill(pid, 9)
             os.close(fd)
+            if not done:
+                _, status = os.waitpid(pid, 0)
         self.assertEqual(status, 0)
         self.assertEqual((self.dir / 'ws' / 'made.txt').read_text(), 'from-the-ui\n')
         text = seen.decode(errors='replace')
-        self.assertRegex(text, '\u2595[\u2588\u2591\x1b\\[0-9;m]+\u258f.{0,40}/16\\.4K')   # the context bar
+        bar = text[text.index('\u2595'):][:400]                                   # the context bar: ▕...▏ used/16.4K
+        self.assertIn('\u258f', bar); self.assertIn('/16.4K', bar)
         self.assertIn('\x1b[r', text)                                               # the terminal restored
 
     def test_thinking_and_declined_write(self):

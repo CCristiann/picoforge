@@ -1,14 +1,26 @@
-/* pf_web.c — the web tools through /usr/bin/curl (part of macOS), run with an
- * argument vector, never through a shell, so a query or a URL cannot become a
- * command. curl reads no config file (-q), speaks only http(s), also across
- * redirects, and has a time and size limit. Search reads DuckDuckGo's HTML
- * page: no key, no account. PF_AGENT_CURL replaces curl in the tests. */
+/* pf_web.c — see pf_web.h. Sections: curl (the fallback) · HTML to text ·
+ * HTTP and WebSocket to Chrome · CDP · Chrome · the tools.
+ *
+ * curl (/usr/bin/curl, part of macOS) runs with an argument vector, never
+ * through a shell, so a query or a URL cannot become a command. It reads no
+ * config file (-q), speaks only http(s), also across redirects, and has a time
+ * and size limit. Its search reads DuckDuckGo's HTML page: no key, no account.
+ * PF_AGENT_CURL replaces curl in the tests. */
 #include "pf_web.h"
 #include "common.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "qwen38_run.h"     /* q38_now, q38_stopped */
 
 typedef struct { int code; char url[2048], type[256]; } Fetched;
 /* curl with the common safety flags, then args. The body goes to out; the
@@ -163,7 +175,7 @@ static char *ddg_url(const char *href) {
     buf_free(&raw); buf_add(&url, "", 0);
     return url.p;
 }
-void pf_web_search(const char *query, Buf *out) {
+static void curl_search(const char *query, Buf *out) {
     if (!query || !*query) { buf_str(out, "Tool error: missing query\n"); return; }
     Buf form = {0}, html = {0}; Fetched f; size_t n = 0;
     buf_fmt(&form, "q=%s", query);
@@ -197,7 +209,7 @@ void pf_web_search(const char *query, Buf *out) {
     buf_free(&form); buf_free(&html);
 }
 /* The page as text, or the raw body for text, JSON, XML. */
-void pf_web_visit(const char *url, Buf *out) {
+static void curl_visit(const char *url, Buf *out) {
     if (!url || (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)) || strpbrk(url, " \t\r\n")) {
         buf_str(out, "Tool error: url must be one http:// or https:// address\n"); return;
     }
@@ -214,4 +226,367 @@ void pf_web_visit(const char *url, Buf *out) {
         else buf_add(out, body.p ? body.p : "", body.n);
     }
     buf_free(&body);
+}
+
+/* ------------------------------------------------------------ HTTP and WebSocket to Chrome
+ * Only to 127.0.0.1, only to the port we started Chrome on. */
+
+#define CDP_TIMEOUT 25.0           /* seconds for one page: navigation, rendering, extraction */
+#define CDP_MAX_MESSAGE (16u<<20)
+
+static int tcp_connect(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_in addr = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int one = 1; setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr)) { close(fd); return -1; }
+    return fd;
+}
+static bool send_all(int fd, const void *data, size_t n) {
+    const char *p = data;
+    while (n) { ssize_t w = send(fd, p, n, 0); if (w < 0 && errno == EINTR) continue; if (w <= 0) return false; p += w; n -= (size_t)w; }
+    return true;
+}
+/* Wait until fd is readable or the deadline passes (or the user interrupts). */
+static bool readable(int fd, double deadline) {
+    for (;;) {
+        double left = deadline-q38_now();
+        if (left <= 0 || q38_stopped) return false;
+        struct pollfd p = {fd, POLLIN, 0};
+        int r = poll(&p, 1, left > 0.2 ? 200 : (int)(left*1000)+1);
+        if (r > 0) return true;
+        if (r < 0 && errno != EINTR) return false;
+    }
+}
+/* One HTTP request to Chrome's endpoint; the body, NULL if it does not answer. */
+static char *http(int port, const char *method, const char *path) {
+    int fd = tcp_connect(port);
+    if (fd < 0) return NULL;
+    Buf req = {0}, resp = {0};
+    buf_fmt(&req, "%s %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port);
+    bool ok = send_all(fd, req.p, req.n); char chunk[65536]; double deadline = q38_now()+5;
+    while (ok && readable(fd, deadline)) {
+        ssize_t got = recv(fd, chunk, sizeof chunk, 0);
+        if (got <= 0) break;
+        buf_add(&resp, chunk, (size_t)got);
+    }
+    close(fd); buf_free(&req);
+    char *body = resp.p ? strstr(resp.p, "\r\n\r\n") : NULL;
+    char *out = body && !strncmp(resp.p, "HTTP/1.1 200", 12) ? strdup(body+4) : NULL;
+    buf_free(&resp);
+    return out;
+}
+
+/* The string value of "key" in a JSON text (first occurrence), unescaped. */
+static bool json_get(const char *json, const char *key, Buf *out) {
+    char pattern[64]; snprintf(pattern, sizeof pattern, "\"%s\":", key);
+    const char *p = json ? strstr(json, pattern) : NULL;
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ') p++;
+    if (*p != '"') return false;
+    for (p++; *p && *p != '"'; p++) {
+        if (*p != '\\') { buf_add(out, p, 1); continue; }
+        char c = *++p;
+        if (c == 'n') buf_add(out, "\n", 1); else if (c == 't') buf_add(out, "\t", 1);
+        else if (c == 'r') buf_add(out, "\r", 1); else if (c == 'b' || c == 'f') {}
+        else if (c == 'u') {
+            unsigned cp = 0, lo = 0;
+            if (sscanf(p+1, "%4x", &cp) != 1) return false;
+            p += 4;
+            if (cp >= 0xD800 && cp < 0xDC00 && p[1] == '\\' && p[2] == 'u' && sscanf(p+3, "%4x", &lo) == 1 && lo >= 0xDC00 && lo < 0xE000) {
+                cp = 0x10000+((cp-0xD800) << 10)+(lo-0xDC00); p += 6;
+            }
+            utf8_put(out, cp);
+        }
+        else if (c) buf_add(out, &c, 1);
+        else return false;
+    }
+    buf_add(out, "", 0);
+    return *p == '"';
+}
+
+/* A WebSocket client, enough for CDP (RFC 6455): one text message per frame
+ * or continued frames, client frames masked, ping answered. The server's
+ * accept key is not checked: the peer is the Chrome we started on 127.0.0.1. */
+typedef struct { int fd; Buf in; int next_id; } Ws;
+
+static bool ws_open(Ws *ws, const char *url) {
+    int port = 0; char path[512];
+    if (sscanf(url, "ws://127.0.0.1:%d%511s", &port, path) != 2 && sscanf(url, "ws://localhost:%d%511s", &port, path) != 2) return false;
+    *ws = (Ws){.fd = tcp_connect(port), .next_id = 1};
+    if (ws->fd < 0) return false;
+    unsigned char key[16]; arc4random_buf(key, sizeof key);
+    static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char k64[25] = {0};
+    for (int i = 0, o = 0; i < 16; i += 3) {
+        unsigned v = (unsigned)key[i] << 16 | (i+1 < 16 ? (unsigned)key[i+1] << 8 : 0) | (i+2 < 16 ? key[i+2] : 0);
+        k64[o++] = b64[v >> 18 & 63]; k64[o++] = b64[v >> 12 & 63];
+        k64[o++] = i+1 < 16 ? b64[v >> 6 & 63] : '='; k64[o++] = i+2 < 16 ? b64[v & 63] : '=';
+    }
+    Buf req = {0}, resp = {0}; char chunk[4096];
+    buf_fmt(&req, "GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, port, k64);
+    bool ok = send_all(ws->fd, req.p, req.n); double deadline = q38_now()+5;
+    while (ok && !(resp.p && strstr(resp.p, "\r\n\r\n")) && readable(ws->fd, deadline)) {
+        ssize_t got = recv(ws->fd, chunk, sizeof chunk, 0);
+        if (got <= 0) break;
+        buf_add(&resp, chunk, (size_t)got);
+    }
+    char *end = resp.p ? strstr(resp.p, "\r\n\r\n") : NULL;
+    ok = end && !strncmp(resp.p, "HTTP/1.1 101", 12);
+    if (ok) buf_add(&ws->in, end+4, resp.n-(size_t)(end+4-resp.p));   /* a frame may follow at once */
+    buf_free(&req); buf_free(&resp);
+    if (!ok) { close(ws->fd); ws->fd = -1; }
+    return ok;
+}
+static void ws_close(Ws *ws) { if (ws->fd >= 0) close(ws->fd); ws->fd = -1; buf_free(&ws->in); }
+static bool ws_send(Ws *ws, int opcode, const char *data, size_t n) {
+    unsigned char head[14]; size_t h = 0; unsigned char mask[4]; arc4random_buf(mask, 4);
+    head[h++] = (unsigned char)(0x80 | opcode);
+    if (n < 126) head[h++] = (unsigned char)(0x80 | n);
+    else if (n < 65536) { head[h++] = 0x80 | 126; head[h++] = (unsigned char)(n >> 8); head[h++] = (unsigned char)n; }
+    else { head[h++] = 0x80 | 127; for (int i = 7; i >= 0; i--) head[h++] = (unsigned char)((uint64_t)n >> (8*i)); }
+    memcpy(head+h, mask, 4); h += 4;
+    char *masked = malloc(n ? n : 1);
+    if (!masked) die("pf-agent: out of memory");
+    for (size_t i = 0; i < n; i++) masked[i] = (char)(data[i] ^ mask[i & 3]);
+    bool ok = send_all(ws->fd, head, h) && send_all(ws->fd, masked, n);
+    free(masked);
+    return ok;
+}
+/* Bytes until ws->in holds at least n, or false at the deadline. */
+static bool ws_fill(Ws *ws, size_t n, double deadline) {
+    char chunk[65536];
+    while (ws->in.n < n) {
+        if (!readable(ws->fd, deadline)) return false;
+        ssize_t got = recv(ws->fd, chunk, sizeof chunk, 0);
+        if (got <= 0) return false;
+        buf_add(&ws->in, chunk, (size_t)got);
+    }
+    return true;
+}
+/* The next complete text message. */
+static bool ws_read(Ws *ws, Buf *msg, double deadline) {
+    msg->n = 0;
+    for (;;) {
+        if (!ws_fill(ws, 2, deadline)) return false;
+        const unsigned char *b = (const unsigned char *)ws->in.p;
+        bool fin = b[0] & 0x80; int op = b[0] & 15; uint64_t len = b[1] & 127; size_t h = 2;
+        if (len == 126) { if (!ws_fill(ws, 4, deadline)) return false; b = (const unsigned char *)ws->in.p; len = (uint64_t)b[2] << 8 | b[3]; h = 4; }
+        else if (len == 127) {
+            if (!ws_fill(ws, 10, deadline)) return false;
+            b = (const unsigned char *)ws->in.p; len = 0; for (int i = 2; i < 10; i++) len = len << 8 | b[i]; h = 10;
+        }
+        if (b[1] & 0x80 || len > CDP_MAX_MESSAGE || !ws_fill(ws, h+(size_t)len, deadline)) return false;   /* servers never mask */
+        const char *payload = ws->in.p+h;
+        if (op == 9) ws_send(ws, 10, payload, (size_t)len);                 /* ping -> pong */
+        else if (op == 8) return false;                                     /* closed */
+        else if (op == 1 || op == 0) buf_add(msg, payload, (size_t)len);
+        size_t used = h+(size_t)len;
+        memmove(ws->in.p, ws->in.p+used, ws->in.n-used+1); ws->in.n -= used;
+        if ((op == 1 || op == 0) && fin) { buf_add(msg, "", 0); return true; }
+    }
+}
+
+/* ------------------------------------------------------------ CDP
+ * A command is {"id":N,"method":...,"params":{...}}; its answer starts with the
+ * same id. Events (no id) arriving meanwhile are skipped. */
+
+/* The id an answer starts with ({"id": N, ...}), -1 for an event. */
+static long answer_id(const char *msg) {
+    const char *p = msg;
+    while (*p == ' ' || *p == '{') p++;
+    if (strncmp(p, "\"id\"", 4)) return -1;
+    for (p += 4; *p == ' ' || *p == ':'; p++) {}
+    return isdigit((unsigned char)*p) ? strtol(p, NULL, 10) : -1;
+}
+static bool cdp(Ws *ws, const char *method, const char *params, Buf *answer, double deadline) {
+    Buf req = {0}, msg = {0}; int id = ws->next_id++;
+    buf_fmt(&req, "{\"id\":%d,\"method\":\"%s\",\"params\":%s}", id, method, params ? params : "{}");
+    bool ok = ws_send(ws, 1, req.p, req.n);
+    while (ok && (ok = ws_read(ws, &msg, deadline))) if (answer_id(msg.p) == id) break;
+    /* A quote inside a JSON string is escaped, so "error":{ can only be the key. */
+    if (ok && strstr(msg.p, "\"error\":{")) ok = false;
+    if (ok && answer) { buf_free(answer); *answer = msg; msg = (Buf){0}; }
+    buf_free(&req); buf_free(&msg);
+    return ok;
+}
+/* Runtime.evaluate of a JavaScript expression (a promise is awaited); its string value. */
+static bool evaluate(Ws *ws, const char *expression, Buf *value, double deadline) {
+    Buf params = {0}, answer = {0};
+    buf_str(&params, "{\"expression\":\""); json_escape(&params, expression);
+    buf_str(&params, "\",\"returnByValue\":true,\"awaitPromise\":true}");
+    bool ok = cdp(ws, "Runtime.evaluate", params.p, &answer, deadline) && !strstr(answer.p, "\"exceptionDetails\"");
+    value->n = 0;
+    ok = ok && json_get(answer.p, "value", value);
+    buf_free(&params); buf_free(&answer);
+    return ok;
+}
+
+/* ------------------------------------------------------------ Chrome */
+
+struct PfWeb {
+    PfWebAsk ask; void *ask_ctx;
+    int port;
+    enum { CHROME_UNKNOWN, CHROME_READY, CHROME_NO } chrome;   /* NO: missing or declined, curl from now on */
+    char why[160];                                             /* why not, for the fallback note */
+};
+
+static const char *chrome_binary(void) {
+    static const char *const candidates[] = {
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", NULL};
+    const char *env = getenv("PF_AGENT_CHROME");
+    if (env && *env) return access(env, X_OK) ? NULL : env;
+    for (size_t i = 0; candidates[i]; i++) if (!access(candidates[i], X_OK)) return candidates[i];
+    return NULL;
+}
+static bool chrome_answers(const PfWeb *w) {
+    char *version = http(w->port, "GET", "/json/version");
+    bool ok = version && strstr(version, "webSocketDebuggerUrl");
+    free(version);
+    return ok;
+}
+/* Chrome on our port: already running (an earlier start), or started now
+ * after the user agreed. False (with w->why) means: use curl. */
+static bool chrome_ready(PfWeb *w) {
+    if (w->chrome == CHROME_READY && chrome_answers(w)) return true;
+    if (w->chrome == CHROME_NO) return false;
+    if (chrome_answers(w)) { w->chrome = CHROME_READY; return true; }
+    const char *exe = chrome_binary(); const char *home = getenv("HOME");
+    if (!exe || !home) { w->chrome = CHROME_NO; snprintf(w->why, sizeof w->why, "Chrome is not installed"); return false; }
+    char profile[1024], port[48], dir[1100];
+    snprintf(profile, sizeof profile, "%s/.picoforge", home); mkdir(profile, 0700);
+    snprintf(profile, sizeof profile, "%s/.picoforge/browser", home); mkdir(profile, 0700);
+    Buf what = {0};
+    buf_fmt(&what, "start Chrome for the web tools (a visible window, its own profile in %s; it stays open)", profile);
+    bool yes = w->ask && w->ask(w->ask_ctx, what.p);
+    buf_free(&what);
+    if (!yes) { w->chrome = CHROME_NO; snprintf(w->why, sizeof w->why, "Chrome was not started (declined)"); return false; }
+    snprintf(port, sizeof port, "--remote-debugging-port=%d", w->port);
+    snprintf(dir, sizeof dir, "--user-data-dir=%s", profile);
+    char *argv[] = {(char *)exe, port, dir, "--no-first-run", "--no-default-browser-check", "about:blank", NULL};
+    int null = open("/dev/null", O_WRONLY);
+    pid_t pid = null < 0 ? -1 : pf_spawn(argv, null, null);
+    if (null >= 0) close(null);
+    for (double end = q38_now()+15; pid > 0 && q38_now() < end && !q38_stopped; pause_ms(200))
+        if (chrome_answers(w)) { w->chrome = CHROME_READY; return true; }
+    w->chrome = CHROME_NO; snprintf(w->why, sizeof w->why, "Chrome did not start");
+    return false;
+}
+
+PfWeb *pf_web_create(PfWebAsk ask, void *ask_ctx) {
+    PfWeb *w = calloc(1, sizeof *w);
+    if (!w) die("pf-agent: out of memory");
+    const char *port = getenv("PF_AGENT_CDP_PORT");
+    w->ask = ask; w->ask_ctx = ask_ctx; w->port = port && *port ? atoi(port) : 9334;
+    return w;
+}
+void pf_web_destroy(PfWeb *w) { free(w); }
+
+/* Open a tab, load url, run the extractor `js` once the page is ready, close
+ * the tab. The text the extractor returns, or "Tool error: ..." in out. */
+static bool in_chrome(PfWeb *w, const char *url, const char *js, Buf *text, Buf *out) {
+    double deadline = q38_now()+CDP_TIMEOUT;
+    Buf target = {0}, ws_url = {0}, id = {0}, params = {0}, state = {0};
+    char *tab = http(w->port, "PUT", "/json/new?about:blank");
+    bool ok = tab && json_get(tab, "webSocketDebuggerUrl", &ws_url) && json_get(tab, "id", &id);
+    free(tab);
+    Ws ws = {.fd = -1};
+    ok = ok && ws_open(&ws, ws_url.p) && cdp(&ws, "Page.enable", NULL, NULL, deadline) && cdp(&ws, "Runtime.enable", NULL, NULL, deadline);
+    buf_str(&params, "{\"url\":\""); json_escape(&params, url); buf_str(&params, "\"}");
+    ok = ok && cdp(&ws, "Page.navigate", params.p, NULL, deadline);
+    /* Ready: the document loaded, then a moment for scripts that render after load. */
+    while (ok && (ok = evaluate(&ws, "document.readyState", &state, deadline)) && strcmp(state.p, "complete")) pause_ms(150);
+    if (ok) pause_ms(600);
+    ok = ok && evaluate(&ws, js, text, deadline);
+    if (!ok) buf_str(out, q38_stopped ? "Tool error: interrupted by the user\n" : "Tool error: Chrome did not load the page in time\n");
+    ws_close(&ws);
+    if (id.n) { char path[600]; snprintf(path, sizeof path, "/json/close/%s", id.p); free(http(w->port, "GET", path)); }
+    buf_free(&target); buf_free(&ws_url); buf_free(&id); buf_free(&params); buf_free(&state);
+    return ok;
+}
+
+/* ------------------------------------------------------------ the tools */
+
+/* Google's results: each title (h3) inside a link, its URL (Google's /url
+ * redirect unwrapped) and the text around it. The first line is the address
+ * the page ended on, to tell results from a consent page or a human check. */
+static const char search_js[] =
+    "(() => {"
+    " const lines = [location.href], seen = new Set();"
+    " const real = h => { try { const u = new URL(h); return u.pathname === '/url' && u.searchParams.get('q') ? u.searchParams.get('q') : u.href; } catch (e) { return ''; } };"
+    " for (const h3 of document.querySelectorAll('a h3')) {"
+    "  const link = h3.closest('a'), url = real(link.href);"
+    "  if (!/^https?:/.test(url) || seen.has(url) || /(^|\\.)google\\./.test(new URL(url).hostname)) continue;"
+    "  seen.add(url);"
+    "  let box = link;"
+    "  for (let i = 0; i < 6 && box.parentElement && box.innerText.length < 160; i++) box = box.parentElement;"
+    "  const title = h3.innerText.trim(), around = box.innerText.replace(title, '').replace(/\\s+/g, ' ').trim();"
+    "  lines.push(seen.size + '. ' + title + '\\n   ' + url + '\\n   ' + around.slice(0, 320));"
+    "  if (seen.size >= 10) break;"
+    " }"
+    " if (lines.length === 1) lines.push('', (document.body ? document.body.innerText : '').slice(0, 800));"
+    " return lines.join('\\n');"
+    "})()";
+
+/* A page's rendered text (the main part when the page marks one), after
+ * scrolling to the end so lazy content loads, then its links. */
+static const char page_js[] =
+    "(async () => {"
+    " for (let i = 0, h = 0; i < 12; i++) {"
+    "  const H = document.documentElement.scrollHeight; if (H === h) break; h = H;"
+    "  window.scrollTo(0, H); await new Promise(r => setTimeout(r, 250));"
+    " }"
+    " window.scrollTo(0, 0);"
+    " const root = document.querySelector('main, article, [role=main]') || document.body;"
+    " const text = (root ? root.innerText : '').replace(/\\n{3,}/g, '\\n\\n').slice(0, 900000);"
+    " const links = [], seen = new Set();"
+    " for (const a of document.querySelectorAll('a[href]')) {"
+    "  const t = a.innerText.replace(/\\s+/g, ' ').trim();"
+    "  if (t.length < 2 || !/^https?:/.test(a.href) || seen.has(a.href)) continue;"
+    "  seen.add(a.href); links.push('- ' + t.slice(0, 100) + ': ' + a.href.split('#')[0]);"
+    "  if (links.length >= 60) break;"
+    " }"
+    " return location.href + '\\n\\n# ' + (document.title || location.href) + '\\n\\n' + text + (links.length ? '\\n\\nLinks:\\n' + links.join('\\n') : '');"
+    "})()";
+
+/* Google answers automated-looking traffic with a consent page or a human
+ * check. We neither click nor solve them: the user can, in the visible window. */
+static bool blocked(const char *page) {
+    return strstr(page, "consent.google.") || strstr(page, "/sorry/") || strstr(page, "unusual traffic") ||
+           strstr(page, "Before you continue to Google") || strstr(page, "Prima di continuare");
+}
+
+void pf_web_search(PfWeb *w, const char *query, Buf *out) {
+    if (!query || !*query) { buf_str(out, "Tool error: missing query\n"); return; }
+    if (!chrome_ready(w)) {
+        buf_fmt(out, "[%s: DuckDuckGo results through curl]\n", w->why);
+        curl_search(query, out); return;
+    }
+    Buf url = {0}, text = {0};
+    buf_str(&url, "https://www.google.com/search?hl=en&q=");
+    for (const unsigned char *q = (const unsigned char *)query; *q; q++) {   /* percent-encode */
+        if (isalnum(*q) || strchr("-_.~", *q)) buf_add(&url, q, 1); else buf_fmt(&url, "%%%02X", *q);
+    }
+    if (in_chrome(w, url.p, search_js, &text, out)) {
+        if (blocked(text.p)) buf_str(out, "Tool error: Google is showing a consent page or a human check in the Chrome window. "
+                                          "Ask the user to complete it there, then search again.\n");
+        else { const char *nl = strchr(text.p, '\n'); buf_str(out, nl ? nl+1 : ""); }
+    }
+    buf_free(&url); buf_free(&text);
+}
+
+void pf_web_visit(PfWeb *w, const char *url, Buf *out) {
+    if (!url || (strncmp(url, "http://", 7) && strncmp(url, "https://", 8)) || strpbrk(url, " \t\r\n")) {
+        buf_str(out, "Tool error: url must be one http:// or https:// address\n"); return;
+    }
+    if (!chrome_ready(w)) { buf_fmt(out, "[%s: the page through curl, without JavaScript]\n", w->why); curl_visit(url, out); return; }
+    Buf text = {0};
+    if (in_chrome(w, url, page_js, &text, out)) buf_add(out, text.p, text.n);
+    buf_free(&text);
 }

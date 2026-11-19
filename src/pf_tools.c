@@ -38,6 +38,7 @@ struct PfTools {
     Buf more;              /* the rest of the last truncated tool output */
     Job jobs[MAX_JOBS]; int last_job;     /* shell jobs; ids grow from 1 */
     char job_dir[PATH_MAX];               /* their logs, a private temporary directory */
+    PfWeb *web;                           /* the browser behind the web tools, from the first use */
 };
 
 #define FILE_LIMIT (32u<<20)   /* read/edit refuse larger files */
@@ -618,8 +619,11 @@ size_t pf_parse_calls(const char *text, PfCall *calls, size_t max) {
 
 /* ------------------------------------------------------------ web tools */
 
-static void tool_google_search(PfTools *a, const PfCall *c, Buf *out) { (void)a; pf_web_search(arg(c, "query"), out); }
-static void tool_visit_page(PfTools *a, const PfCall *c, Buf *out) { (void)a; pf_web_visit(arg(c, "url"), out); }
+/* The browser starts on the first web call, asking through the same approval. */
+static bool web_ask(void *ctx, const char *what) { return approve(ctx, what); }
+static PfWeb *web(PfTools *a) { if (!a->web) a->web = pf_web_create(web_ask, a); return a->web; }
+static void tool_google_search(PfTools *a, const PfCall *c, Buf *out) { pf_web_search(web(a), arg(c, "query"), out); }
+static void tool_visit_page(PfTools *a, const PfCall *c, Buf *out) { pf_web_visit(web(a), arg(c, "url"), out); }
 
 /* ------------------------------------------------------------ tool table */
 
@@ -662,11 +666,11 @@ static const Tool tools[] = {
        {"refresh_sec", "integer", "Seconds to wait for the job to finish first (0-3600, default 0).", false}}}, tool_bash_status},
     {{"bash_stop", "Stop a background job and its child processes.",
       {{"id", "integer", "The job id.", true}}}, tool_bash_stop},
-    {{"google_search", "Search the web (DuckDuckGo). Returns titles, URLs and snippets; "
+    {{"google_search", "Search the web with Google (in a Chrome window). Returns titles, URLs and snippets; "
       "read a result with visit_page.",
       {{"query", "string", "The search query.", true}}}, tool_google_search},
-    {{"visit_page", "Fetch a web page (http or https) and return it as text, with its links: "
-      "documentation, issues, READMEs, changelogs. Pages that need JavaScript come back nearly empty.",
+    {{"visit_page", "Open a web page (http or https) in Chrome and return its rendered text, with its links: "
+      "documentation, issues, READMEs, changelogs.",
       {{"url", "string", "The full URL, starting with http:// or https://.", true}}}, tool_visit_page},
 };
 size_t pf_tool_count(void) { return sizeof tools/sizeof *tools; }
@@ -694,7 +698,7 @@ PfTools *pf_tools_create(const char *root, bool yes, PfAsk ask, void *ask_ctx) {
 }
 void pf_tools_destroy(PfTools *a) {
     if (!a) return;
-    jobs_cleanup(a); buf_free(&a->more); free(a);
+    jobs_cleanup(a); pf_web_destroy(a->web); buf_free(&a->more); free(a);
 }
 const char *pf_tools_root(const PfTools *a) { return a->root; }
 bool pf_tools_set_root(PfTools *a, const char *dir) {
