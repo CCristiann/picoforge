@@ -20,8 +20,8 @@ def read_rows(path):
         return [dict(zip(HEADER, r, strict=True)) for r in reader]
 
 class ProfileTests(unittest.TestCase):
-    def run_cli(self, extra):
-        done = subprocess.run(BASE+extra, cwd=ROOT, capture_output=True)
+    def run_cli(self, extra, env=None):
+        done = subprocess.run(BASE+extra, cwd=ROOT, capture_output=True, env={**os.environ, **(env or {})})
         self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
         return done
 
@@ -33,9 +33,16 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual((p/'plain.f32').read_bytes(), (p/'profiled.f32').read_bytes())
 
     def test_profile_csv_covers_every_layer(self):
-        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
+        """Every layer and op group shows up. Decode III/V fused three groups into their neighbours
+        (gdn.prep into gdn.scan, gdn.add into gdn.out, hc_add into moe.down): they appear only on the
+        unfused path, which Q38_REF_KERNELS=fuse forces."""
+        self.check_profile({}, ())
+        self.check_profile({'Q38_REF_KERNELS': 'fuse'}, ('gdn.prep', 'gdn.add', 'hc_add'))
+
+    def check_profile(self, env, unfused):
+        with self.subTest(env=env), tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
             path = Path(directory)/'profile.csv'
-            done = self.run_cli(['--profile', str(path)])
+            done = self.run_cli(['--profile', str(path)], env)
             layers = int(re.search(rb'Qwen3\.8: (\d+) layers', done.stderr).group(1))
             rows = read_rows(path)
             # Two prefill chunks (positions 0 and 3), then three decode appends.
@@ -46,9 +53,9 @@ class ProfileTests(unittest.TestCase):
             ops = {r['op'] for r in rows}
             self.assertNotIn('gdn', ops)   # R1.8: the group is split into gdn.* sub-groups
             self.assertNotIn('moe', ops)   # R1.9a: likewise moe.*
-            for op in ('embed', 'gdn.hc_pre', 'gdn.proj', 'gdn.conv', 'gdn.prep', 'gdn.scan', 'gdn.norm', 'gdn.out',
-                       'gdn.add', 'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.up',
-                       'moe.shared_in', 'moe.route', 'moe.gate_up', 'moe.shared', 'moe.down', 'hc_add', 'final.up', 'lm_head'):
+            for op in ('embed', 'gdn.hc_pre', 'gdn.proj', 'gdn.conv', 'gdn.scan', 'gdn.norm', 'gdn.out',
+                       'qsa.proj', 'qsa.core', 'qsa.out', 'hc_attn.down', 'hc_ffn.up',
+                       'moe.shared_in', 'moe.route', 'moe.gate_up', 'moe.shared', 'moe.down', 'final.up', 'lm_head', *unfused):
                 self.assertIn(op, ops)
             for r in rows:
                 self.assertGreater(float(r['gpu_us']), 0, r)
