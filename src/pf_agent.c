@@ -125,15 +125,24 @@ static char *reply(Agent *a, size_t added) {
     return text;
 }
 
+static void compact(Agent *a) {
+    View v = {.out = {.color = isatty(STDOUT_FILENO)}};
+    PfStream stream = {view_text, NULL, &v};
+    puts("\x1b[90m[compacting the context: the model summarizes the work so far]\x1b[0m");
+    pf_session_compact(&a->s, &stream);
+    view_end(&v);
+}
+
 /* One user message, then reply -> tools -> results until the model answers
  * without a tool call, the user interrupts, or MAX_ROUNDS is reached. */
 static void agent_turn(Agent *a, const char *text) {
     PfMsg user = {"user", text};
-    if (!a->s.n) {                                  /* a session is named by its first request */
+    if (a->s.n == a->s.primed_n) {                  /* a session is named by its first request */
         Buf t = {0}; size_t len = strcspn(text, "\n");
         buf_add(&t, text, len < sizeof a->s.title-4 ? len : sizeof a->s.title-4); clean_text(&t);
         snprintf(a->s.title, sizeof a->s.title, "%s", t.p); buf_free(&t);
     }
+    if (pf_session_should_compact(&a->s, strlen(text)/2+1024)) compact(a);
     size_t added = pf_session_append(&a->s, &user, 1);
     for (int round = 0; added && round < MAX_ROUNDS; round++) {
         char *answer = reply(a, added);
@@ -151,6 +160,9 @@ static void agent_turn(Agent *a, const char *text) {
             results[i] = (PfMsg){"tool", outs[i].p};
             pf_call_free(&calls[i]);
         }
+        size_t bytes = 0;
+        for (size_t i = 0; i < n; i++) bytes += outs[i].n;
+        if (pf_session_should_compact(&a->s, bytes/2+1024)) compact(a);   /* tokens are rarely fewer than bytes/3 */
         added = pf_session_append(&a->s, results, n);
         for (size_t i = 0; i < n; i++) buf_free(&outs[i]);
         if (q38_stopped) { added = 0; fprintf(stderr, "pf-agent: interrupted; the results are kept for your next message\n"); }
@@ -182,9 +194,12 @@ static void help(void) {
     puts("pf-agent: describe a task; the agent reads, edits and runs commands in this workspace.\n"
          "  /auto          Approve every bash/write/edit for the rest of the session.\n"
          "  /think, /nothink  Reasoning on or off.\n"
-         "  /reset         Start a new conversation.\n"
+         "  /new, /reset   Start a new conversation.\n"
+         "  /compact       Summarize the conversation now to free context.\n"
+         "  /history [N]   Your last N requests (default 10).\n"
          "  /save [NAME]   Save the session (transcript and model state) to resume it later.\n"
          "  /sessions      List the saved sessions.  /resume NAME  Continue one.\n"
+         "  /del NAME      Delete a saved session.  /strip NAME  Keep only its transcript.\n"
          "  /help, /quit   This help; leave (Ctrl+D too).\n"
          "  Ctrl+C         Stop the reply or the running tool.\n"
          "End a line with \\ to continue the message on the next line.");
@@ -227,7 +242,14 @@ static void conversation(Agent *a) {
         else if (!strcmp(cmd, "/think") || !strcmp(cmd, "/nothink")) {
             a->s.thinking = !strcmp(cmd, "/think"); printf("Thinking %s.\n", a->s.thinking ? "on" : "off");
         }
-        else if (!strcmp(cmd, "/reset")) { pf_session_reset(&a->s); pf_session_dump(&a->s); puts("New conversation."); }
+        else if (!strcmp(cmd, "/reset") || !strcmp(cmd, "/new")) { pf_session_prime(&a->s, NULL); pf_session_dump(&a->s); puts("New conversation."); }
+        else if (!strcmp(cmd, "/compact")) compact(a);
+        else if (!strncmp(cmd, "/history", 8) && (!cmd[8] || cmd[8] == ' ')) {
+            Buf h = {0}; long n = cmd[8] ? strtol(cmd+9, NULL, 10) : 10;
+            pf_session_history(&a->s, n > 0 ? (size_t)n : 10, &h); fputs(h.p, stdout); buf_free(&h);
+        }
+        else if (!strncmp(cmd, "/del ", 5)) pf_session_delete(&a->s, trim(cmd+5));
+        else if (!strncmp(cmd, "/strip ", 7)) pf_session_strip(&a->s, trim(cmd+7));
         else if (!strncmp(cmd, "/save", 5) && (!cmd[5] || cmd[5] == ' ')) pf_session_save(&a->s, trim(cmd+5));
         else if (!strcmp(cmd, "/sessions")) { Buf list = {0}; pf_session_list(&list); fputs(list.p, stdout); buf_free(&list); }
         else if (!strncmp(cmd, "/resume ", 8)) { if (pf_session_resume(&a->s, trim(cmd+8))) resumed(a); pf_session_dump(&a->s); }
@@ -365,6 +387,7 @@ int main(int argc, char **argv) {
     pf_session_set_tools(&a.s, pf_tool_spec, pf_tool_count());
     fprintf(stderr, "pf-agent: %s, context %u tokens, workspace %s\n", path, o.context, root);
     if (resume) { if (!pf_session_resume(&a.s, resume)) return 1; resumed(&a); }
+    else pf_session_prime(&a.s, NULL);
 
     conversation(&a);
 

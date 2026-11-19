@@ -37,12 +37,13 @@ typedef struct {
 typedef struct {
     Q38Run run;
     int32_t *ids, *generated; size_t n;   /* the transcript is ids[0..n) */
-    int32_t im_end;                       /* the end-of-turn token */
+    int32_t im_end, newline;              /* the end-of-turn token; "\n" */
     bool thinking;                        /* reasoning before each reply */
     uint32_t max_new;                     /* tokens per reply, 0: the room left */
     char *system;                         /* the system prompt of the first turn (owned) */
     Qwen38Json tools; bool has_tools;     /* tool definitions for the template */
     char *model_path; uint64_t model_bytes;
+    size_t primed_n; Buf prefix;          /* ids and bytes of the system block in the graph (pf_session_prime) */
     char workspace[PATH_MAX];             /* stored with a saved session */
     char name[65], title[120];            /* the saved session we continue; its first request */
     const char *script;                   /* --script: canned replies (tests) */
@@ -54,7 +55,11 @@ void pf_session_open(PfSession *, const PfSessionOptions *);   /* dies if the mo
 void pf_session_close(PfSession *);
 void pf_session_set_system(PfSession *, const char *text);
 void pf_session_set_tools(PfSession *, const PfToolSpec *(*spec)(size_t), size_t count);
-void pf_session_reset(PfSession *);       /* a new conversation */
+void pf_session_reset(PfSession *);       /* a new conversation, empty graph */
+/* A new conversation with the system block already in the graph: loaded from
+ * its checkpoint when the ids match, else prefilled (stream: progress) and
+ * saved. False (and an empty graph) if stopped or impossible. */
+bool pf_session_prime(PfSession *, const PfStream *);
 
 /* Render msgs as the next turn and encode it after the transcript; returns the
  * number of new ids, 0 on error (noted: does not fit, bad text). */
@@ -68,6 +73,15 @@ const char *pf_session_answer(const char *reply);   /* the text after the reason
 bool pf_session_save(PfSession *, const char *name);       /* NULL/"": the current name, else a timestamp */
 bool pf_session_resume(PfSession *, const char *name);     /* also sets workspace, title, thinking */
 void pf_session_list(Buf *out);
+bool pf_session_delete(const PfSession *, const char *name);
+bool pf_session_strip(const PfSession *, const char *name);   /* drop the graph state, keep the transcript */
+void pf_session_history(const PfSession *, size_t count, Buf *out);   /* the last user requests */
+
+/* Compaction: when the context is nearly full (reserve: tokens about to be
+ * appended), the model summarizes the work; the transcript becomes the system
+ * block + summary + a recent verbatim tail. */
+bool pf_session_should_compact(const PfSession *, size_t reserve);
+bool pf_session_compact(PfSession *, const PfStream *);
 /* A saved session's model, context and MTP setting, before anything is loaded. */
 bool pf_session_peek(const char *name, char model[PATH_MAX], uint32_t *context, bool *mtp);
 void pf_session_dump(const PfSession *);   /* --token-ids */

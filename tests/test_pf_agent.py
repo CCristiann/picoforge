@@ -342,6 +342,42 @@ class AgentLoop(unittest.TestCase):
         _, state = self.agent([], ['/resume s2'], '--temp', '0', '--no-mtp')
         self.assertEqual(state['ids'], [])                         # refused: saved with MTP on
 
+    def test_system_checkpoint(self):
+        out, first = self.agent([], ['hello'], '--temp', '0', '--no-think')
+        self.assertRegex(out, r'System prompt: (\d+) tokens prefilled in .* checkpoint saved')
+        system = int(re.search(r'System prompt: (\d+) tokens', out).group(1))
+        self.assertTrue((self.dir / 'sessions' / '.system.pfs').exists())
+        out, again = self.agent([], ['hello'], '--temp', '0', '--no-think')
+        self.assertIn(f'System prompt: {system} tokens from the checkpoint', out)
+        self.assertLess(self.prefilled()[0], len(again['ids']) - system)   # only the turn after the system block
+        self.assertEqual(again['ids'], first['ids'])                        # greedy: the same reply as from scratch
+        out, _ = self.agent([], ['/sessions'], '--temp', '0')
+        self.assertNotIn('.system', out)
+
+    def test_history_strip_delete(self):
+        g = ('--temp', '0', '--no-think')
+        out, saved = self.agent([], ['first request', 'second one', '/history', '/history 1', '/save h1', '/strip h1'], *g)
+        self.assertIn('  1. first request\n  2. second one\n  2. second one\n', out)
+        self.assertIn('Stripped session h1', out)
+        out, resumed = self.agent([], ['third'], '--resume', 'h1', *g)
+        self.assertIn('(stripped: the next reply prefills it)', out)
+        self.assertEqual(resumed['ids'][:len(saved['ids'])], saved['ids'])
+        self.assertGreaterEqual(self.prefilled()[0], len(saved['ids']))    # nothing loaded: the whole transcript again
+        self.agent([], ['/del h1'], *g)
+        self.assertFalse((self.dir / 'sessions' / 'h1.pfs').exists() or (self.dir / 'sessions' / 'h1.txt').exists())
+
+    def test_compaction(self):
+        out, state = self.agent(['A first answer. ' * 8 + 'Done.', 'SUMMARY: the user greeted us.', 'Later answer.'],
+                                ['hello', '/compact', 'after'], '--no-think')
+        text = state['text']
+        self.assertIn('Compacted the context:', out)
+        self.assertNotIn('context compaction request', text)        # the request is not kept
+        self.assertEqual(text.count('<|im_start|>system'), 1)
+        summary = text.index('[Summary of the earlier part of this session')
+        self.assertIn('SUMMARY: the user greeted us.<|im_end|>\n<|im_start|>assistant\n', text)
+        self.assertIn('Understood; continuing from this summary.<|im_end|>\n<|im_start|>user\nhello<|im_end|>', text[summary:])
+        self.assertTrue(text.endswith('<|im_start|>user\nafter<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nLater answer.<|im_end|>'))
+
     def test_thinking_and_declined_write(self):
         reasoning = 'Maybe ' + call('list') + 'no, write it.\n</think>\n\n'
         out, state = self.agent([reasoning + call('write', path='b.txt', content='x'), 'Ok.'], ['write b'])
