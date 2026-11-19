@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -62,6 +63,8 @@ class AgentTools(unittest.TestCase):
         self.assertIn('src/\n', out)
         self.assertIn('a.txt  19 bytes', out)
         self.assertIn('a.txt (4 lines)\n     2\ttwo\n     3\tthree\n==', out + '==')
+        raw = self.run_calls(call('read', path='a.txt', start='4', raw='true'))
+        self.assertIn('a.txt (4 lines)\nfour\n', raw)
         self.assertNotIn('four', out)
 
     def test_paths_stay_in_workspace(self):
@@ -100,15 +103,23 @@ class AgentTools(unittest.TestCase):
         (self.ws / 'src' / 'm.c').write_text('int main(void) {\n  return Foo(1);\n}\n')
         (self.ws / '.git').mkdir()
         (self.ws / '.git' / 'x').write_text('Foo(\n')
+        (self.ws / 'src' / 'blob.bin').write_bytes(b'Foo(\x00')
+        (self.ws / 'many.txt').write_text(''.join(f'x{i}\n' for i in range(20)))
         out = self.run_calls(call('search', pattern='Foo('),
                              call('search', pattern='^int [a-z]+', regex='true'),
-                             call('search', pattern='foo', ignore_case='true', path='src'),
-                             call('search', pattern='nothing here'))
-        self.assertIn('src/m.c:2:   return Foo(1);', out)
-        self.assertIn('src/m.c:1: int main(void) {', out)
-        self.assertNotIn('.git', out)
-        self.assertEqual(out.count('src/m.c:2:'), 2)
-        self.assertIn('No matches in 1 files.', out)
+                             call('search', pattern='foo', case_sensitive='false', path='src'),
+                             call('search', pattern='foo', path='src'),
+                             call('search', pattern='return', context='1', path='src'),
+                             call('search', pattern='x', path='many.txt', max_results='3'))
+        parts = out.split('== search\n')[1:]
+        self.assertIn('src/m.c:2:   return Foo(1);', parts[0])
+        self.assertNotIn('.git', parts[0])
+        self.assertIn('[1 files or directories skipped', parts[0])          # the binary file
+        self.assertIn('src/m.c:1: int main(void) {', parts[1])
+        self.assertIn('src/m.c:2:', parts[2])
+        self.assertIn('No matches in 1 files.', parts[3])                 # case sensitive by default
+        self.assertTrue(parts[4].startswith('src/m.c-1- int main(void) {\nsrc/m.c:2:   return Foo(1);\nsrc/m.c-3- }\n'), parts[4])
+        self.assertTrue(parts[5].startswith('many.txt:1: x0\nmany.txt:2: x1\nmany.txt:3: x2\n[stopped at 3 matches'), parts[5])
 
     # ---------------------------------------------------------------- write/edit
     def test_write_needs_approval(self):
@@ -133,13 +144,17 @@ class AgentTools(unittest.TestCase):
         self.assertEqual((self.ws / 'sub.txt').read_text(), 'first\nsecond\n')
         self.assertIn('does not exist', out)
         self.assertEqual(sorted(p.name for p in self.ws.iterdir()), ['code.py', 'sub.txt'])
+        os.link(self.ws / 'sub.txt', self.ws / 'twin.txt')                # hard links: left alone
+        out = self.run_calls(call('edit', path='sub.txt', old='first', new='1st'), call('write', path='twin.txt', content='x'), yes=True)
+        self.assertEqual(out.count('has 2 hard links'), 2)
+        self.assertEqual((self.ws / 'twin.txt').read_text(), 'first\nsecond\n')
 
     # ---------------------------------------------------------------- bash
     def test_bash_basics(self):
         out = self.run_calls(call('bash', command='echo out; echo err >&2; pwd; cat; exit 3'),
                              call('bash', command='ls /dev/fd'), yes=True)
-        self.assertIn(f'out\nerr\n{self.ws}\n[exit code 3]', out)
-        fds = out.split('== bash\n')[2].split('[exit code 0]')[0].split()
+        self.assertIn(f'out\nerr\n{self.ws}\n[exit code 3 after', out)
+        fds = out.split('== bash\n')[2].split('[exit code 0')[0].split()
         alone = subprocess.run(['/bin/bash', '-c', 'ls /dev/fd'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, close_fds=True).stdout.decode().split()
         self.assertEqual(fds, alone)   # what bash alone sees (ls opens two): nothing of ours leaks
@@ -151,22 +166,43 @@ class AgentTools(unittest.TestCase):
         self.assertFalse(marker.exists())
 
     def test_bash_jobs(self):
-        out = self.run_calls(call('bash', command='echo early; sleep 2; echo late', timeout='1'),
+        out = self.run_calls(call('bash', command='echo early; sleep 2; echo late', refresh_sec='1'),
                              call('bash_status'),
                              call('bash', command='sleep 2.5'),
                              call('bash_status', id='1'),
-                             call('bash', command='sleep 31.5 & sleep 31.5', timeout='1'),
+                             call('bash', command='sleep 31.5 & sleep 31.5', refresh_sec='1'),
                              call('bash_stop', id='3'),
-                             call('bash', command='sleep 32.5', timeout='1'),
+                             call('bash', command='sleep 30', timeout_sec='1', refresh_sec='10'),
+                             call('bash', command='sleep 32.5', refresh_sec='1'),
                              call('bash_status', id='9'), yes=True)
         parts = out.split('== ')[1:]
-        self.assertIn('early\n[still running after 1 s as job 1', parts[0])
+        self.assertRegex(parts[0], r'^bash\nearly\n\[job 1 running for 1 s: .*\]\n\[still running as job 1')
         self.assertIn('job 1: [job 1 running', parts[1])
-        self.assertTrue(parts[3].startswith('bash_status\nlate\n[exit code 0]'), parts[3])
-        self.assertIn('[killed by signal 15]', parts[5])
-        self.assertIn('no job 9', parts[7])
-        left = subprocess.run(['pgrep', '-f', 'sleep 3[12].5'], stdout=subprocess.PIPE).stdout
-        self.assertEqual(left, b'')   # bash_stop ended the group, the exit ended job 4
+        self.assertRegex(parts[3], r'^bash_status\nearly\nlate\n\[exit code 0 after 2\.\d s\]\n$')
+        self.assertIn('[killed by signal 15', parts[5])
+        self.assertIn('[stopped by its timeout after 1 s]', parts[6])
+        self.assertIn('no job 9', parts[8])
+        for _ in range(20):            # the group got SIGTERM; give its last members a moment to go
+            left = subprocess.run(['pgrep', '-f', 'sleep 3[012].5|sleep 30$'], stdout=subprocess.PIPE).stdout
+            if not left:
+                break
+            time.sleep(0.05)
+        self.assertEqual(left, b'')   # bash_stop and the timeout ended their groups, the exit ended job 5
+
+    def test_bash_long_output(self):
+        script = 'for i in $(seq 1 300); do echo line $i; done'
+        out = self.run_calls(call('bash', command=script), call('bash', command=f'{script}; sleep 3', refresh_sec='1'),
+                             call('bash_status', id='2', refresh_sec='1'), call('bash_status', id='2', refresh_sec='5'), yes=True)
+        parts = out.split('== ')[1:]
+        self.assertIn('line 100\n[... ', parts[0])               # head: 100 lines
+        self.assertNotIn('line 101\n', parts[0].split('not shown')[0])
+        self.assertIn('[... 1800 bytes not shown ...]\nline 281\n', parts[0])   # then the last 20
+        self.assertIn('line 300\n[exit code 0', parts[0])
+        self.assertNotIn('line 280\n', parts[0])
+        self.assertRegex(parts[0], r'\[full output: /.*/job1\.log \(2592 bytes\), readable with read\]')
+        self.assertIn('line 100\n[... ', parts[1])               # still running: its head first
+        self.assertIn('[no new output]', parts[2])                # nothing new while it sleeps
+        self.assertIn('line 300\n[exit code 0', parts[3])
 
     # ---------------------------------------------------------------- web (a fake curl, no network)
     def fake_curl(self, body, status, code=0):
@@ -273,7 +309,7 @@ class AgentLoop(unittest.TestCase):
         out, state = self.agent([call('bash', command='ls /dev/fd'), 'Ok.'], ['fds?'], '--yes', '--no-think')
         alone = subprocess.run(['/bin/bash', '-c', 'ls /dev/fd'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, close_fds=True).stdout.decode()
-        self.assertIn('<tool_response>\n' + alone + '[exit code 0]\n</tool_response>', state['text'])
+        self.assertRegex(state['text'], '<tool_response>\n' + re.escape(alone) + r'\[exit code 0 after \d+\.\d s\]\n</tool_response>')
 
     def test_saved_session_resumes_exactly(self):
         for mtp in ((), ('--no-mtp',)):
