@@ -1,4 +1,4 @@
-/* `picoforge bench`: the measured repetitions of an ordinary run, reduced to
+/* `pf-bench` (`pf bench`): the measured repetitions of an ordinary run, reduced to
  * median and p10/p90 (docs/BENCHMARKS.md protocol: >= 3 warm-up, >= 20
  * measured). Raw rows go to an optional CSV so nothing is only a summary. */
 #include "qwen38_run.h"

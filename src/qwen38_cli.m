@@ -36,10 +36,10 @@ static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what
     return (uint32_t)n;
 }
 static void usage(void) {
-    fprintf(stderr,"usage: picoforge --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
+    fprintf(stderr,"usage: pf --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
         "       (no prompt: interactive chat; /help inside)\n"
         "   or: picoforge [-m FILE] [-p TEXT] [-c CONTEXT] [-n MAX_NEW] [--mtp] [--thinking] ...\n"
-        "       (MODEL: a path or a short name such as q4, see `picoforge models`; -p is --chat, no -p is the chat)\n"
+        "       (MODEL: a path or a short name such as q4, see `pf models`; -p is --chat, no -p is the chat)\n"
         "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
@@ -510,7 +510,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
 /* ds4-style short form (`./ds4 -p ...`): -m MODEL, -p TEXT, -c N, -n N, the rest
  * as in the long form. MODEL is a path or a short name ("q4"); without -m the
  * model comes from $PICOFORGE_MODEL, the only model in models/, or a prompt
- * (model_select.c). A bare ./picoforge is the chat. */
+ * (model_select.c). A bare ./pf is the chat. */
 bool qwen38_short_form(int argc,char **argv) {
     static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision","--power",NULL};
     if (argc==1) return true;
@@ -531,7 +531,7 @@ int qwen38_short(int argc,char **argv) {
     out[0]=argv[0]; out[1]="--qwen38"; out[2]=path;
     int rc=qwen38_cli(n,out); free(path); free(out); return rc;
 }
-/* `picoforge bench [short-form options]`: protocol defaults (3 warm-up, 20
+/* `pf bench` / `pf-bench` [short-form options]: protocol defaults (3 warm-up, 20
  * measured, 128 new tokens), a fixed prompt unless one is given; generated
  * text is discarded, the summary goes to stdout. Later options win. */
 static void discard(void *ctx,const uint8_t *s,size_t n) { (void)ctx; (void)s; (void)n; }

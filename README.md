@@ -23,12 +23,12 @@ into `models/` and check it against the pinned hashes:
 
 ```sh
 cd models && shasum -a 256 -c --ignore-missing ../docs/weights.lock && cd ..
-make
-./picoforge                                   # interactive chat (/help for commands)
-./picoforge -m q2 -p "What is 2 + 2?" -n 32   # one answer, then exit
-./picoforge bench -m q2                       # 3 warm-up + 20 runs, median and p10/p90
-./picoforge models                            # models found and their short names
-make pf-agent && ./pf-agent -m q2             # coding agent in the current directory (/help)
+make                                   # builds pf, pf-bench and pf-agent
+./pf                                   # interactive chat (/help for commands)
+./pf -m q2 -p "What is 2 + 2?" -n 32   # one answer, then exit
+./pf-bench -m q2                       # 3 warm-up + 20 runs, median and p10/p90
+./pf models                            # models found and their short names
+./pf-agent -m q2                       # coding agent in the current directory (/help)
 ```
 
 The chat samples (temperature 0.6, top-k 20, top-p 0.95) and drafts with

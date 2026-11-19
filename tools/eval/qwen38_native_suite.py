@@ -15,7 +15,7 @@ import sys
 from run_observed import run as observe
 
 ROOT = Path(__file__).resolve().parents[2]
-ENGINE = ROOT/'picoforge'
+ENGINE = ROOT/'pf'
 CHECKPOINT = ROOT/'models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf'
 
 

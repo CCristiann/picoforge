@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-ENGINE=Path(os.environ.get('Q38_CLI_BINARY',str(ROOT/'picoforge')))
+ENGINE=Path(os.environ.get('Q38_CLI_BINARY',str(ROOT/'pf')))
 GGUF=ROOT/'build/qwen38-g2/cli.gguf'
 
 class Session(unittest.TestCase):

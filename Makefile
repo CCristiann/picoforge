@@ -17,16 +17,22 @@ METALLIB := picoforge.metallib
 # Objective-C contains Metal glue and links the platform frameworks.
 FRAMEWORKS := -framework Metal -framework Foundation
 
-picoforge: $(OBJ) $(METALLIB)
+# The commands are pf (chat, one answer, models), pf-bench and pf-agent; the
+# kernels stay in picoforge.metallib.
+all: pf pf-bench pf-agent
+
+pf: $(OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 # pf-agent: the coding agent, linked with the same engine objects minus
-# picoforge's main. pf_session/pf_tools/pf_web/pf_util are meant for a future
+# pf's main. pf_session/pf_tools/pf_web/pf_util are meant for a future
 # pf-server too; pf_agent.c is only the terminal interface.
 ENGINE_OBJ := $(filter-out src/main.o,$(OBJ))
 PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o src/pf_term.o
 pf-agent: src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
+pf-bench: src/pf_bench.o $(ENGINE_OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ src/pf_bench.o $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 # Every object depends on every header: a constant changed only in a header (a
 # Metal wire struct, a tile size) must rebuild the host code that mirrors it.
@@ -137,7 +143,7 @@ test-pf-agent-model: pf-agent build/qwen38-g2/cli.gguf
 .PHONY: test-pf-agent test-pf-agent-model
 
 clean:
-	rm -f src/*.o picoforge $(METALLIB) build/*.air
+	rm -f src/*.o pf pf-bench pf-agent $(METALLIB) build/*.air
 
 .PHONY: clean microbench test-qwen38-expert-pool test-qwen38-sample test-all test-qwen38-tools test-gguf test-gpu-weights
 

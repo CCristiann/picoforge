@@ -117,7 +117,7 @@ size_t q38_chat_continue(Q38Run *, const int32_t *ids, size_t held, size_t total
                          int32_t *generated, Q38Turn *, bool *replayed);
 /* Interactive chat on stdin (src/qwen38_repl.c). max_new 0 = until stop or full context. */
 int q38_repl(Q38Run *, bool thinking, uint32_t max_new, const char *ids_path);
-/* One measured repetition of `picoforge bench` (src/qwen38_bench.c). */
+/* One measured repetition of `pf-bench` (src/qwen38_bench.c). */
 typedef struct { size_t prompt_tokens, decode_tokens; double prefill_s, decode_s, ttft_s; } Q38BenchRow;
 /* Median and p10/p90 of prefill tok/s, decode tok/s and TTFT on stdout;
  * weight_mb > 0 (measured bytes/token, in MB) adds GB/s against 307. */

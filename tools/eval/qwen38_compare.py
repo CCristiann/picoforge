@@ -303,9 +303,14 @@ def thermal():
     return json.loads(done.stdout)['thermal_state'] if done and done.returncode == 0 else None
 
 
+def bin_file(bin_dir):
+    """The engine binary in a build directory: pf, or picoforge in builds from before the rename."""
+    return bin_dir/'pf' if (bin_dir/'pf').is_file() or not (bin_dir/'picoforge').is_file() else bin_dir/'picoforge'
+
+
 def check_bin(bin_dir):
     """--picoforge-bin DIR (a saved older build) must hold the binary and its metallib."""
-    missing = [n for n in ('picoforge', 'picoforge.metallib') if not (bin_dir/n).is_file()]
+    missing = [n for n, f in (('pf', bin_file(bin_dir)), ('picoforge.metallib', bin_dir/'picoforge.metallib')) if not f.is_file()]
     if missing:
         raise ValueError(f'--picoforge-bin {bin_dir}: missing {", ".join(missing)}')
 
@@ -313,7 +318,7 @@ def check_bin(bin_dir):
 def provenance(revision, bin_dir=None):
     def git(*a):
         return subprocess.check_output(['git', *a], cwd=ROOT, text=True)
-    binaries = {'picoforge': bin_dir/'picoforge' if bin_dir else ENGINE,
+    binaries = {'picoforge': bin_file(bin_dir) if bin_dir else ENGINE,
                 'picoforge.metallib': (bin_dir or ROOT)/'picoforge.metallib',
                 'ds4-bench': DWARFSTAR/'ds4-bench', 'ds4': DWARFSTAR/'ds4', 'tool': Path(__file__)}
     return dict(revision=git('rev-parse', 'HEAD').strip(), diff=git('diff', '--', 'src', 'tools', 'tests'),
@@ -326,7 +331,7 @@ def command(engine, f, text, d, bin_dir=None):
     """One teacher-forced sample. Never --logits: picoforge writes its rows inside decode_s."""
     n = str(len(f['prompt_ids']))
     if engine == 'picoforge':
-        return [str(bin_dir/'picoforge' if bin_dir else ENGINE), '--qwen38', str(CHECKPOINT), '--tokens',
+        return [str(bin_file(bin_dir) if bin_dir else ENGINE), '--qwen38', str(CHECKPOINT), '--tokens',
                 ','.join(map(str, f['prompt_ids'] + f['forced_ids'])),
                 '--teacher-forced', str(FORCED), '--context', str(CONTEXT), '--chunk', str(CHUNK),
                 '--runs-jsonl', str(d/'runs.jsonl'), '--token-ids', str(d/'ids.json'),

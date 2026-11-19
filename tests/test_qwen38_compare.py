@@ -97,7 +97,7 @@ def bench_launch(calls):
         name = Path(command[0]).name
         calls.append((name, command))
         (directory/'process').mkdir(parents=True)
-        if name == 'picoforge':
+        if name in ('pf', 'picoforge'):   # picoforge: a build from before the rename
             ids, n = [int(t) for t in arg('--tokens').split(',')], int(arg('--teacher-forced'))
             Path(arg('--runs-jsonl')).write_text(json.dumps(dict(mode='teacher-forced', decode_tokens=n,
                                                  stop_reason='length', decode_s=n/1.25, prefill_s=2.0)) + '\n')
@@ -197,8 +197,8 @@ class CompareTests(unittest.TestCase):
             launches = [c for c in calls if c[0] == 'launch']
             # Tokenizers needing no model run go first; the short text only after greedy.
             self.assertEqual([(c[1], c[2]) for c in launches],
-                             [('tokenize', 'picoforge'), ('tokenize', 'ds4')]*2 + [('greedy', 'picoforge')] +
-                             [('tokenize', 'picoforge'), ('tokenize', 'ds4')])
+                             [('tokenize', 'pf'), ('tokenize', 'ds4')]*2 + [('greedy', 'pf')] +
+                             [('tokenize', 'pf'), ('tokenize', 'ds4')])
             self.assertTrue(all(c[3] == qc.TOKENIZE_TIMEOUT == 60 for c in launches if c[1] == 'tokenize'))
             self.assertTrue(all(c[4] == .25 and c[5] == qc.GUARD for c in launches))
             self.assertEqual(json.loads((d/'suite/suite.json').read_text())['frontiers']['short']['forced_ids'], [99]*128)
@@ -388,7 +388,7 @@ class CompareTests(unittest.TestCase):
             with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
                     patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
                 qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 10, bench_launch(calls), AWAKE)
-            self.assertEqual([c[0] for c in calls], ['picoforge', 'ds4-bench']*3)
+            self.assertEqual([c[0] for c in calls], ['pf', 'ds4-bench']*3)
             pico, bench = calls[0][1], calls[1][1]
             self.assertNotIn('--logits', pico)  # its fwrite would be timed inside decode_s
             self.assertEqual(pico[pico.index('--tokens') + 1], ','.join(map(str, [97, 98] + [99]*128)))
@@ -414,7 +414,7 @@ class CompareTests(unittest.TestCase):
             with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
                     patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
                 qc.run(d/'suite', d/'out', 'short', {'picoforge': (1, 2), 'dwarfstar': (0, 0)}, 2, 10, bench_launch(calls), AWAKE)
-            self.assertEqual([c[0] for c in calls], ['picoforge']*3)  # ds4-bench never starts
+            self.assertEqual([c[0] for c in calls], ['pf']*3)  # ds4-bench never starts
             self.assertEqual(sorted(p.name for p in (d/'out').glob('0*')), ['000-picoforge-warmup', '001-picoforge', '002-picoforge'])
             summary = json.loads((d/'out/summary.json').read_text())
             self.assertEqual(summary['picoforge']['median'], 1.25)
@@ -436,7 +436,7 @@ class CompareTests(unittest.TestCase):
         self.assertNotIn('--metallib', default)
         with tempfile.TemporaryDirectory(dir=qc.ROOT) as directory:
             old = Path(directory)
-            with self.assertRaisesRegex(ValueError, 'picoforge, picoforge.metallib'):
+            with self.assertRaisesRegex(ValueError, 'pf, picoforge.metallib'):
                 qc.check_bin(old)
             (old/'picoforge').write_bytes(b'bin')
             with self.assertRaisesRegex(ValueError, 'missing picoforge.metallib'):
@@ -474,7 +474,7 @@ class MtpCompareTests(unittest.TestCase):
             calls.append(cmd); (d/'process').mkdir(parents=True)
             dump = lambda p, x: p.write_text(json.dumps(x))  # noqa: E731
             dump(d/'conditions.json', dict(before=dict(ac_power=True), after=dict(ac_power=True)))
-            if cmd[0].endswith('picoforge'):
+            if cmd[0].endswith(('/pf', '/picoforge')):
                 (d/'runs.jsonl').write_text(json.dumps(dict(decode_tokens=127, decode_s=127/25, generated_ids=[1],
                     mtp=dict(proposed=10, accepted=8, depth=[0, 10, 0, 0]))) + '\n')
             else:
@@ -486,7 +486,7 @@ class MtpCompareTests(unittest.TestCase):
             with patch.object(qc, 'bounded', lambda: (None, 'pinned')), patch.object(qc, 'provenance', lambda r: {}), \
                     patch.object(qc, 'conditions', dict), patch.object(qc, 'thermal', lambda: None):
                 qc.mtp_run(out, ['count'], {'picoforge': (1, 2), 'dwarfstar': (1, 2)}, 1, 'auto', 10, launch, AWAKE)
-            self.assertEqual([c[0].split('/')[-1] for c in calls], ['picoforge', 'ds4']*3)
+            self.assertEqual([c[0].split('/')[-1] for c in calls], ['pf', 'ds4']*3)
             pico, ds4 = calls[0], calls[1]
             self.assertEqual(pico[pico.index('--mtp-draft') + 1], 'auto')
             self.assertEqual(pico[pico.index('--chat') + 1], qc.MTP_PROMPTS['count'])

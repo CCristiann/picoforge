@@ -566,7 +566,7 @@ static void lines(Agent *a, const char *first, bool once) {
 
 static void usage(void) {
     fputs("usage: pf-agent [-m MODEL] [-c CTX] [-n N] [-w DIR] [options]\n"
-          "  -m MODEL          a .gguf path or a short name, as for picoforge\n"
+          "  -m MODEL          a .gguf path or a short name, as for pf\n"
           "  -c CTX            context in tokens (default 100000)\n"
           "  -n N              tokens per reply (default: the room left)\n"
           "  -w DIR            the workspace (default: the current directory)\n"

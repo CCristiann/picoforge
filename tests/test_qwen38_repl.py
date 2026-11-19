@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 GGUF = ROOT / 'build/qwen38-g2/cli.gguf'
-ENGINE = str(ROOT / 'picoforge')
+ENGINE = str(ROOT/'pf')
 # The chat now samples and drafts by default; these tests pin the greedy, plain chat.
 os.environ['PICOFORGE_NO_MTP'] = '1'
 

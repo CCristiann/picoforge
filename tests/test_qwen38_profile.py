@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 GGUF = ROOT / 'build/qwen38-g2/cli.gguf'
 HEADER = ['phase', 'token', 'layer', 'op', 'format', 'weight_bytes', 'dispatches', 'barriers', 'gpu_us', 'gbps']
-BASE = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--tokens', '5,17,300,9,44',
+BASE = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', '5,17,300,9,44',
         '--context', '32', '--chunk', '3', '--max-new', '4']
 
 def read_rows(path):
