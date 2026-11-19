@@ -9,7 +9,7 @@ CFLAGS  := -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 LDFLAGS := -lm
 PYTHON  ?= ./tools/venv/bin/python
 
-SRC     := $(filter-out src/pf_agent.c,$(wildcard src/*.c))
+SRC     := $(filter-out src/pf_%.c,$(wildcard src/*.c))
 OBJC    := $(wildcard src/*.m)
 OBJ     := $(SRC:.c=.o) $(OBJC:.m=.m.o)
 METALLIB := picoforge.metallib
@@ -20,11 +20,13 @@ FRAMEWORKS := -framework Metal -framework Foundation
 picoforge: $(OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
-# pf-agent: the coding agent (src/pf_agent.c) linked with the same engine
-# objects, minus picoforge's main.
+# pf-agent: the coding agent, linked with the same engine objects minus
+# picoforge's main. pf_session/pf_tools/pf_web/pf_util are meant for a future
+# pf-server too; pf_agent.c is only the terminal interface.
 ENGINE_OBJ := $(filter-out src/main.o,$(OBJ))
-pf-agent: src/pf_agent.o $(ENGINE_OBJ) $(METALLIB)
-	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
+PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o
+pf-agent: src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 # Every object depends on every header: a constant changed only in a header (a
 # Metal wire struct, a tile size) must rebuild the host code that mirrors it.
