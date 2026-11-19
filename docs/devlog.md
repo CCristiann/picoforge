@@ -2,6 +2,26 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## pf-agent II (2026-11-19): modules, ds4-style tools, a terminal UI, Chrome
+
+pf-agent is split for a future pf-server: `pf_session` (model, transcript, replies, saved sessions,
+system checkpoint, compaction; output through callbacks), `pf_tools` (tool calls and tools, approvals
+through a callback), `pf_web`, `pf_util`, and `pf_term` + `pf_agent.c` for the terminal. After
+reading ds4-agent (ds4 b3f5018): bash jobs with a monitor thread (refresh_sec, timeout_sec, head then
+tail, the full log readable), edit/write refusing hard links and files changed since they were read,
+search with context and limits; the system block prefilled once and kept in `.system.pfs`;
+compaction to system + summary + a verbatim tail; /history, /del, /strip, /hints, /power. Two
+threads on a terminal: the worker owns model and tools, the UI owns an ANSI scroll region, an
+editable input line and a footer with the context bar and prefill/decode speeds. Web: a visible
+Chrome with its own profile, driven over CDP by a small HTTP + WebSocket client (Google results,
+rendered pages); consent pages and human checks are left to the user; curl as the fallback. Tests:
+offline with a fake curl and a fake CDP endpoint; on the synthetic checkpoint, including the UI in a
+pseudo-terminal. Two test bugs worth remembering: a regex over the whole terminal output backtracked
+for minutes, and a pty nobody reads blocks the child's writes, so it never exits.
+
+**Next:** real-model checks (tool use with Qwen3.8, the footer's speeds, Chrome on Google), then the
+100K stage's real runs.
+
 ## pf-agent (2026-11-18): a coding agent on the engine, saved sessions
 
 `src/pf_agent.c`: the model calls tools in Qwen3.8's XML format, rendered by our chat template with

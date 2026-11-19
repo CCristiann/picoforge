@@ -28,6 +28,7 @@ make
 ./picoforge -m q2 -p "What is 2 + 2?" -n 32   # one answer, then exit
 ./picoforge bench -m q2                       # 3 warm-up + 20 runs, median and p10/p90
 ./picoforge models                            # models found and their short names
+make pf-agent && ./pf-agent -m q2             # coding agent in the current directory (/help)
 ```
 
 The chat samples (temperature 0.6, top-k 20, top-p 0.95) and drafts with
@@ -44,22 +45,10 @@ Run one process at a time: wired GPU memory takes ~1.5 s to be released after ex
 
 ### Coding agent
 
-`pf-agent` (`src/pf_agent.c`) runs the same engine as a coding agent in the terminal. The model calls
-tools in its native format: `list`, `read`, `more`, `search`, `write`, `edit` on the files of the
-workspace (the current directory, or `-w DIR`; nothing outside it), `bash` with background jobs
-(`bash_status`, `bash_stop`), `google_search` (DuckDuckGo's HTML results) and `visit_page`, both
-through `/usr/bin/curl`. `bash`, `write` and `edit` ask before they run (`--yes` or `/auto` to skip).
-
-```sh
-make pf-agent
-./pf-agent -m q2                  # in the directory to work on; /help for commands
-./pf-agent --resume NAME          # continue a saved session
-```
-
-`/save [NAME]` stores the transcript and the whole model state (KV caches, recurrent states) in
-`~/.picoforge/sessions`, so `/resume NAME` continues without prefilling the conversation again; the
-files grow with the conversation and can hold private code. Context is 32K tokens (`-c`), thinking
-is on (`--no-think`, `/nothink`), and an `AGENTS.md` in the workspace joins the system prompt.
+`pf-agent` runs the same engine as a coding agent in the terminal: it reads, searches and edits the
+files of the directory it starts in, runs commands and looks things up on the web, asking before
+anything that changes files or runs a command. A status line shows the context used and the speeds;
+sessions can be saved and resumed.
 
 ## Results
 
