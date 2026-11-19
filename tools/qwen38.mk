@@ -64,14 +64,14 @@ build/qwen38-integration/test_links: tests/test_qwen38_integration.c src/qwen38_
 	@mkdir -p $(@D)
 	$(CC) $(Q38_FLAGS) $(Q38_SAN) $(filter %.c,$^) -lm -o $@
 
-build/qwen38-a/small.gguf: tools/synth/make_qwen38_a.py tools/oracle/qwen38_config.py tests/fixtures/qwen38/a/config.json
-	$(Q38_ENV) $(PYTHON) -B tools/synth/make_qwen38_a.py
+build/qwen38-a/small.gguf: tools/synth/make_qwen38_small.py tools/oracle/qwen38_config.py tests/fixtures/qwen38/text/config.json
+	$(Q38_ENV) $(PYTHON) -B tools/synth/make_qwen38_small.py
 
 test-qwen38-links: build/qwen38-integration/test_links build/qwen38-a/small.gguf
 	$(Q38_ENV) ./build/qwen38-integration/test_links build/qwen38-a/small.gguf
 
 test-qwen38-a:
-	$(Q38_ENV) $(PYTHON) -B tools/synth/make_qwen38_a.py --verify --checkpoint "$(Q38_CHECKPOINT)" --reference-root "$(Q38_REFERENCE_ROOT)"
+	$(Q38_ENV) $(PYTHON) -B tools/synth/make_qwen38_small.py --verify --checkpoint "$(Q38_CHECKPOINT)" --reference-root "$(Q38_REFERENCE_ROOT)"
 
 test-qwen38-b-cpu: build/qwen38-b/test_packed
 	@mkdir -p build/qwen38-integration
@@ -94,7 +94,7 @@ test-qwen38-f-cpu: build/qwen38-f/test_moe
 	$(Q38_LOCK) env Q38_F_NATIVE="$(abspath $<)" Q38_F_PACKED_REFERENCE="$(abspath $(Q38_REF))" Q38_F_REPORT="$$(mktemp -d build/qwen38-integration/f-cpu.XXXXXX)/report.json" $(Q38_TEST) tests/test_qwen38_moe.py -v
 
 test-qwen38-a-gpu: $(METALLIB)
-	$(Q38_ENV) $(PYTHON) -B tools/synth/make_qwen38_a.py --verify --gpu --checkpoint "$(Q38_CHECKPOINT)" --reference-root "$(Q38_REFERENCE_ROOT)"
+	$(Q38_ENV) $(PYTHON) -B tools/synth/make_qwen38_small.py --verify --gpu --checkpoint "$(Q38_CHECKPOINT)" --reference-root "$(Q38_REFERENCE_ROOT)"
 
 test-qwen38-b-gpu: build/qwen38-b/test_packed_gpu $(METALLIB)
 	@mkdir -p build/qwen38-integration

@@ -19,7 +19,7 @@ test-qwen38-g0: build/qwen38-g/test_gpu_lifecycle
 Q38_G1_CPU := src/qwen38_forward.c src/qwen38_attention.c src/qwen38_ngram.c src/qwen38_ple.c \
  src/qwen38_moe.c $(Q38_RECURRENT)
 
-build/qwen38-g1/graph.gguf: tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_a.py tools/oracle/qwen38_config.py
+build/qwen38-g1/graph.gguf: tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_small.py tools/oracle/qwen38_config.py
 	$(Q38_ENV) $(PYTHON) -B $<
 
 build/qwen38-g1/test_forward: tests/test_qwen38_forward.c $(Q38_G1_CPU) src/gpu_weights.m tests/metal_device.m $(Q38_HEADERS) src/qwen38_iq2_grid.inc
@@ -41,7 +41,7 @@ build/qwen38-g1/forward_real: tests/test_qwen38_forward.c $(Q38_G1_CPU) src/gpu_
 Q38_G2_GPU := src/qwen38_gpu.m src/qwen38_packed_gpu.m src/qwen38_recurrent_gpu.m src/qwen38_moe.m \
  src/qwen38_attention_gpu.m src/qwen38_ple_gpu.m src/qwen38_forward_gpu.m src/qwen38_profile.m src/gpu_weights.m src/qwen38_expert_pool.c
 
-build/qwen38-g2/test_parts: tests/test_qwen38_g2_parts.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
+build/qwen38-g2/test_parts: tests/test_qwen38_gpu_parts.m $(Q38_G1_CPU) $(Q38_G2_GPU) $(Q38_HEADERS) src/qwen38_iq2_grid.inc
 	@mkdir -p $(@D)
 	$(CC) $(Q38_FLAGS) $(Q38_SAN) -fobjc-arc $(filter %.c %.m,$^) $(FRAMEWORKS) -lm -o $@
 
@@ -68,7 +68,7 @@ test-qwen38-g2-state: build/qwen38-g2/test_forward build/qwen38-g1/graph.gguf $(
 	$(Q38_LOCK) env MTL_DEBUG_LAYER=1 $(Q38_TEST) tests/test_qwen38_forward_gpu.py --native $< --gguf build/qwen38-g1/graph.gguf -v
 .PHONY: test-qwen38-g2-state
 
-build/qwen38-g2/cli.gguf: tools/synth/make_qwen38_cli.py tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_a.py tools/oracle/qwen38_config.py tests/fixtures/qwen38/a/manifest.json
+build/qwen38-g2/cli.gguf: tools/synth/make_qwen38_cli.py tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_small.py tools/oracle/qwen38_config.py tests/fixtures/qwen38/text/manifest.json
 	$(Q38_ENV) $(PYTHON) -B $< --reference-root "$(Q38_REFERENCE_ROOT)"
 
 test-qwen38-cli: pf build/qwen38-g1/test_forward build/qwen38-g2/cli.gguf

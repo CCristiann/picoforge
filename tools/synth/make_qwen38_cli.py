@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--output', type=Path, default=ROOT/'build/qwen38-g2/cli.gguf')
     parser.add_argument('--mtp', action='store_true')
     args = parser.parse_args()
-    item = json.loads((ROOT/'tests/fixtures/qwen38/a/manifest.json').read_text())['tokenizer_config']
+    item = json.loads((ROOT/'tests/fixtures/qwen38/text/manifest.json').read_text())['tokenizer_config']
     raw = (args.reference_root/item['relative_to_reference_root']).read_bytes()
     if hashlib.sha256(raw).hexdigest() != item['sha256']:
         raise ValueError('pinned tokenizer config changed')

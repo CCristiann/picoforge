@@ -1,6 +1,6 @@
 /* G2 adapter checks on the G1 graph fixture: each GPU composition against
  * its verified CPU counterpart, through the real G0 session lifecycle.
- *   test_qwen38_g2_parts GGUF METALLIB
+ *   test_qwen38_gpu_parts GGUF METALLIB
  * Prints one JSON line per check; exits nonzero on any gate failure. */
 #import <Metal/Metal.h>
 #include "common.h"

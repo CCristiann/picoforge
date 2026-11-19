@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "tools/oracle"))
 import qwen38_recurrent as oracle
 
 SOURCE = ROOT / oracle.UPSTREAM_DEFAULT
-FIXTURES = ROOT / "tests/fixtures/qwen38/c"
+FIXTURES = ROOT / "tests/fixtures/qwen38/recurrent"
 CPU_LIB = None
 
 

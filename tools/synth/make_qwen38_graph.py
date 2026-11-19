@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/oracle"))
 sys.path.insert(0, str(ROOT / "tools/synth"))
 import qwen38_config as ref
-from make_qwen38_a import small_config, string
+from make_qwen38_small import small_config, string
 
 ALIGN = 16384
 

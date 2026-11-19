@@ -15,7 +15,7 @@ import struct
 from functools import lru_cache
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURES = ROOT / "tests/fixtures/qwen38/a"
+FIXTURES = ROOT / "tests/fixtures/qwen38/text"
 
 
 @lru_cache(maxsize=1)

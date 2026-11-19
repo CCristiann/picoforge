@@ -24,7 +24,7 @@ UPSTREAM_URL = (f"https://raw.githubusercontent.com/huggingface/transformers/{UP
 UPSTREAM_DEFAULT = Path("build/qwen38-c/upstream/modeling_qwen4_exp.py")
 SOURCE_LIMIT = 512 * 1024
 EXPORT_LIMIT = 32 * 1024 * 1024
-FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "tests/fixtures/qwen38/c"
+FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "tests/fixtures/qwen38/recurrent"
 NODES = (
     "l2norm", "causal_conv1d_update", "causal_conv1d_fn",
     "torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule",
@@ -479,7 +479,7 @@ def prepare_composition(native, reference, directory, *, checkpoint=None, layer=
         raise ValueError("composition output must stay in this worktree's build")
     directory.mkdir(parents=True, exist_ok=False)
     if checkpoint is None:
-        spec = importlib.util.spec_from_file_location("c4_synthetic_a", root / "tools/synth/make_qwen38_a.py")
+        spec = importlib.util.spec_from_file_location("c4_synthetic_small", root / "tools/synth/make_qwen38_small.py")
         synth = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(synth)
         hf = synth.small_config()

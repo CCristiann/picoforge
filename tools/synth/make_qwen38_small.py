@@ -18,7 +18,7 @@ import qwen38_config as ref
 
 
 def small_config():
-    hf = json.loads((ROOT / "tests/fixtures/qwen38/a/config.json").read_text())
+    hf = json.loads((ROOT / "tests/fixtures/qwen38/text/config.json").read_text())
     c = hf["text_config"]
     c.update(hidden_size=256, vocab_size=512, hc_count=2, hc_lowrank=32,
              num_hidden_layers=2, layer_types=["linear_attention", "full_attention"],
@@ -77,8 +77,8 @@ def write_fixture(path, hf):
 
 def text_cases():
     """Embed the frozen independent oracle as C data, not C algorithms."""
-    cases = json.loads((ROOT / "tests/fixtures/qwen38/a/text.json").read_text())
-    extra_path = ROOT / "tests/fixtures/qwen38/a/text_extended.json"
+    cases = json.loads((ROOT / "tests/fixtures/qwen38/text/text.json").read_text())
+    extra_path = ROOT / "tests/fixtures/qwen38/text/text_extended.json"
     if extra_path.exists():
         extra = json.loads(extra_path.read_text())
         for group in ("encodes", "decodes"): cases[group] += extra[group]
@@ -108,8 +108,8 @@ def text_cases():
 
 
 def chat_cases():
-    cases = json.loads((ROOT / "tests/fixtures/qwen38/a/text.json").read_text())["templates"]
-    extra = ROOT / "tests/fixtures/qwen38/a/chat_extended.json"
+    cases = json.loads((ROOT / "tests/fixtures/qwen38/text/text.json").read_text())["templates"]
+    extra = ROOT / "tests/fixtures/qwen38/text/chat_extended.json"
     if extra.exists(): cases += json.loads(extra.read_text())
     lines, records = [], []
 
@@ -153,7 +153,7 @@ def chat_cases():
 
 
 def verify(args):
-    """Build the A harnesses used by the coordinator Makefile targets."""
+    """Build the text-layer harnesses used by the Makefile targets."""
     build = ROOT / "build/qwen38-a"
     flags = ["clang","-std=c11","-O1","-g","-Wall","-Wextra","-Wpedantic","-Wshadow",
              "-Wconversion","-Werror","-ffp-contract=off","-fsanitize=address,undefined","-fno-sanitize-recover=all","-Isrc"]
@@ -173,15 +173,15 @@ def verify(args):
             subprocess.run(command,cwd=ROOT,check=True)
     if args.reference_root:
         env = {**os.environ,"PYTHONDONTWRITEBYTECODE":"1","HF_HUB_OFFLINE":"1",
-               "QWEN38_A_REFERENCE_ROOT":str(args.reference_root),"QWEN38_A_TEXT_EXE":str(build/"test_text")}
+               "QWEN38_TEXT_REFERENCE_ROOT":str(args.reference_root),"QWEN38_TEXT_TEXT_EXE":str(build/"test_text")}
         if args.checkpoint:
-            env["QWEN38_A_NATIVE_CONFIG"] = str(build/"native-config.json")
-            env["QWEN38_A_GGUF"] = str(args.checkpoint)
+            env["QWEN38_TEXT_NATIVE_CONFIG"] = str(build/"native-config.json")
+            env["QWEN38_TEXT_GGUF"] = str(args.checkpoint)
             subprocess.run(flags+["tests/gguf_inspect.c"]+common[1:]+["-lm","-o",str(build/"inspect")],cwd=ROOT,check=True)
             path = build/"native-inventory.json"
             with path.open("w") as f: subprocess.run([str(build/"inspect"),str(args.checkpoint)],stdout=f,check=True)
-            env["QWEN38_A_NATIVE_INVENTORY"] = str(path)
-        subprocess.run([sys.executable,"-B","tools/qwen38_test.py","tests/test_qwen38_a.py"],cwd=ROOT,env=env,check=True)
+            env["QWEN38_TEXT_NATIVE_INVENTORY"] = str(path)
+        subprocess.run([sys.executable,"-B","tools/qwen38_test.py","tests/test_qwen38_text.py"],cwd=ROOT,env=env,check=True)
     if args.gpu:
         sources = groups["bindings"]+["src/gpu_weights.m","tests/metal_device.m"]
         exe = build/"test_storage"

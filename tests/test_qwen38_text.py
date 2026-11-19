@@ -1,6 +1,7 @@
-"""Independent CPU references for A. Does not test a native Qwen3.8 graph.
+"""Independent CPU references for the text layer (config, tokenizer, chat
+template). Does not test a native Qwen3.8 graph.
 
-Run with the existing venv. QWEN38_A_NATIVE_INVENTORY optionally supplies a
+Run with the existing venv. QWEN38_TEXT_NATIVE_INVENTORY optionally supplies a
 fresh dump of tests/gguf_inspect.c for comparison with the Python inventory.
 """
 import copy
@@ -15,7 +16,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = ROOT / "tests/fixtures/qwen38/a"
+FIXTURES = ROOT / "tests/fixtures/qwen38/text"
 sys.path.insert(0, str(ROOT / "tools/oracle"))
 import qwen38_config as oracle
 import qwen38_text as text_oracle
@@ -95,17 +96,17 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(any(n.startswith("blk.48.") for n in ts))
         self.assertFalse(any(v[1] in ("Q4_K", "MXFP4") for v in ts.values()))
 
-    @unittest.skipUnless(os.environ.get("QWEN38_A_NATIVE_INVENTORY"), "native dump not supplied")
+    @unittest.skipUnless(os.environ.get("QWEN38_TEXT_NATIVE_INVENTORY"), "native dump not supplied")
     def test_native_header_inventory(self):
-        native = json.loads(Path(os.environ["QWEN38_A_NATIVE_INVENTORY"]).read_text())
+        native = json.loads(Path(os.environ["QWEN38_TEXT_NATIVE_INVENTORY"]).read_text())
         self.assertFalse(native["payload_verified"])
         fields = ("name", "shape", "type_id", "format", "size_bytes", "file_offset")
         normalized = lambda ts: sorted(({k: t[k] for k in fields} for t in ts), key=lambda t: t["name"])
         self.assertEqual(normalized(native["tensors"]), normalized(self.inventory["tensors"]))
 
-    @unittest.skipUnless(os.environ.get("QWEN38_A_NATIVE_CONFIG"), "native config not supplied")
+    @unittest.skipUnless(os.environ.get("QWEN38_TEXT_NATIVE_CONFIG"), "native config not supplied")
     def test_native_config_accessors(self):
-        got = json.loads(Path(os.environ["QWEN38_A_NATIVE_CONFIG"]).read_text())
+        got = json.loads(Path(os.environ["QWEN38_TEXT_NATIVE_CONFIG"]).read_text())
         c = self.hf["text_config"]
         pick = lambda *keys: [c[k] for k in keys]
         eps = c["rms_norm_eps"]
@@ -154,11 +155,11 @@ class TextFixtureTests(unittest.TestCase):
                 if group != "sha256": self.assertEqual(len(data[group]), count)
 
 
-@unittest.skipUnless(os.environ.get("QWEN38_A_REFERENCE_ROOT"), "HF reference root not supplied")
+@unittest.skipUnless(os.environ.get("QWEN38_TEXT_REFERENCE_ROOT"), "HF reference root not supplied")
 class TextReferenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.reference_root = Path(os.environ["QWEN38_A_REFERENCE_ROOT"])
+        cls.reference_root = Path(os.environ["QWEN38_TEXT_REFERENCE_ROOT"])
         cls.actual = text_oracle.generate(cls.reference_root)
         cls.templates = {c["name"]: c["expected"] for c in cls.actual["templates"]}
 
@@ -171,7 +172,7 @@ class TextReferenceTests(unittest.TestCase):
         self.assertEqual(text_oracle.extended_chat_cases(self.reference_root),
                          json.loads((FIXTURES / "chat_extended.json").read_text()))
 
-    @unittest.skipUnless(os.environ.get("QWEN38_A_TEXT_EXE"), "native text harness not supplied")
+    @unittest.skipUnless(os.environ.get("QWEN38_TEXT_TEXT_EXE"), "native text harness not supplied")
     def test_native_nfc_all_unicode_scalars(self):
         tokenizer, _ = text_oracle.load_reference(self.reference_root)
         directory = ROOT / "build/qwen38-a"
@@ -181,7 +182,7 @@ class TextReferenceTests(unittest.TestCase):
                            if not 0xD800 <= cp < 0xE000)
             source, result = directory / f"nfc-{part}.in", directory / f"nfc-{part}.out"
             source.write_bytes(text.encode())
-            subprocess.run([os.environ["QWEN38_A_TEXT_EXE"], "--nfc", str(source), str(result)], check=True)
+            subprocess.run([os.environ["QWEN38_TEXT_TEXT_EXE"], "--nfc", str(source), str(result)], check=True)
             self.assertEqual(result.read_bytes(), tokenizer.normalizer.normalize_str(text).encode())
 
     def test_nul_unicode_and_special_semantics(self):
@@ -227,9 +228,9 @@ class TextReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source hash changed"):
                 text_oracle.load_reference(root)
 
-    @unittest.skipUnless(os.environ.get("QWEN38_A_GGUF"), "GGUF path not supplied")
+    @unittest.skipUnless(os.environ.get("QWEN38_TEXT_GGUF"), "GGUF path not supplied")
     def test_full_gguf_tokenizer_tables(self):
-        result = text_oracle.check_gguf_tables(os.environ["QWEN38_A_GGUF"], self.reference_root)
+        result = text_oracle.check_gguf_tables(os.environ["QWEN38_TEXT_GGUF"], self.reference_root)
         self.assertEqual((result["base_tokens"], result["merges"], result["added_tokens"]), (248044, 247587, 33))
         self.assertEqual(result["unused_tokens"], 243)
         self.assertLess(result["metadata_bytes_read"], 12*1024**2)
