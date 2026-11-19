@@ -46,16 +46,16 @@ src/%.m.o: src/%.m $(HEADERS)
 
 # Kernels compile to AIR, then link into a library loaded at runtime. Keeping
 # them out of the binary means a kernel can be edited and re-tested without
-# relinking the engine. The per-stage rules live in tools/qwen38*.mk.
+# relinking the engine. The per-stage rules live in tools/qwen4*.mk.
 # -std=metal4.0: TensorOps and the tensor types live in Metal 4.
-$(METALLIB): build/qwen38-b/packed.air build/qwen38-c/recurrent.air build/qwen38-d/attention.air build/qwen38-f/moe.air build/qwen38-e/ple.air build/qwen38-g2/forward.air build/qwen38-r1/matvec.air build/qwen38-r1/moe_fused.air
+$(METALLIB): build/qwen4-b/packed.air build/qwen4-c/recurrent.air build/qwen4-d/attention.air build/qwen4-f/moe.air build/qwen4-e/ple.air build/qwen4-g2/forward.air build/qwen4-r1/matvec.air build/qwen4-r1/moe_fused.air
 	xcrun -sdk macosx metallib $^ -o $@
 
-build/qwen38-e/ple.air: src/qwen38_ple.metal
+build/qwen4-e/ple.air: src/qwen4_ple.metal
 	@mkdir -p $(@D)
 	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -c $< -o $@
 
-build/qwen38-g2/forward.air: src/qwen38_forward.metal
+build/qwen4-g2/forward.air: src/qwen4_forward.metal
 	@mkdir -p $(@D)
 	xcrun -sdk macosx metal -std=metal4.0 -fno-fast-math -ffp-contract=off -c $< -o $@
 
@@ -75,8 +75,8 @@ microbench: build/microbench
 
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
-# is `make test-qwen38` (tools/qwen38.mk).
-test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts test-qwen38-expert-pool test-qwen38-sample test-pf-agent
+# is `make test-qwen4` (tools/qwen4.mk).
+test-all: test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-pf-agent
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -87,15 +87,15 @@ build/memory_budget: tools/probe/memory_budget.m
 	@mkdir -p build
 	$(CC) $(CFLAGS) -fobjc-arc -o $@ $< $(FRAMEWORKS)
 
-test-qwen38-tools: build/process_memory build/memory_budget
-	@$(PYTHON) tests/test_qwen38_inventory.py
+test-qwen4-tools: build/process_memory build/memory_budget
+	@$(PYTHON) tests/test_qwen4_inventory.py
 	@$(PYTHON) tests/test_run_observed.py
-	@$(PYTHON) tests/test_qwen38_grading.py
-	@$(PYTHON) tests/test_qwen38_evidence.py
+	@$(PYTHON) tests/test_qwen4_grading.py
+	@$(PYTHON) tests/test_qwen4_evidence.py
 
 src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.m.o src/main.o: src/gguf.h
-src/main.o: src/qwen38_cli.h
-src/qwen38_cli.m.o src/qwen38_repl.o src/qwen38_bench.o: src/qwen38_run.h src/qwen38_cli.h src/qwen38_forward_gpu.h src/qwen38_graph_internal.h src/qwen38_text.h
+src/main.o: src/qwen4_cli.h
+src/qwen4_cli.m.o src/qwen4_repl.o src/qwen4_bench.o: src/qwen4_run.h src/qwen4_cli.h src/qwen4_forward_gpu.h src/qwen4_graph_internal.h src/qwen4_text.h
 
 build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/util.c src/gguf.h src/common.h
 	@mkdir -p build
@@ -120,17 +120,17 @@ test-gpu-weights: build/test_gpu_weights
 	@MTL_DEBUG_LAYER=1 ./build/test_gpu_weights
 	@$(PYTHON) tests/test_gpu_weights.py
 
-build/test_expert_pool: tests/test_qwen38_expert_pool.c src/qwen38_expert_pool.c src/qwen38_expert_pool.h
+build/test_expert_pool: tests/test_qwen4_expert_pool.c src/qwen4_expert_pool.c src/qwen4_expert_pool.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_qwen38_expert_pool.c src/qwen38_expert_pool.c
+	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_qwen4_expert_pool.c src/qwen4_expert_pool.c
 
-test-qwen38-expert-pool: build/test_expert_pool
+test-qwen4-expert-pool: build/test_expert_pool
 	@./build/test_expert_pool
 
-build/test_sample: tests/test_qwen38_sample.c src/qwen38_sample.c src/qwen38_sample.h
+build/test_sample: tests/test_qwen4_sample.c src/qwen4_sample.c src/qwen4_sample.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_qwen38_sample.c src/qwen38_sample.c -lm
-test-qwen38-sample: build/test_sample
+	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_qwen4_sample.c src/qwen4_sample.c -lm
+test-qwen4-sample: build/test_sample
 	@./build/test_sample
 
 # pf-agent tools and parser, offline (no model); the loop on the synthetic
@@ -138,26 +138,26 @@ test-qwen38-sample: build/test_sample
 test-pf-agent: pf-agent
 	@$(PYTHON) tests/test_pf_agent.py
 
-test-pf-agent-model: pf-agent build/qwen38-g2/cli.gguf
-	$(Q38_LOCK) env PF_AGENT_GGUF=build/qwen38-g2/cli.gguf $(Q38_TEST) tests/test_pf_agent.py -v
+test-pf-agent-model: pf-agent build/qwen4-g2/cli.gguf
+	$(QW4_LOCK) env PF_AGENT_GGUF=build/qwen4-g2/cli.gguf $(QW4_TEST) tests/test_pf_agent.py -v
 .PHONY: test-pf-agent test-pf-agent-model
 
 clean:
 	rm -f src/*.o pf pf-bench pf-agent $(METALLIB) build/*.air
 
-.PHONY: clean microbench test-qwen38-expert-pool test-qwen38-sample test-all test-qwen38-tools test-gguf test-gpu-weights
+.PHONY: clean microbench test-qwen4-expert-pool test-qwen4-sample test-all test-qwen4-tools test-gguf test-gpu-weights
 
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
 # Metal-only headers (ruling R3: decode helpers of the fast kernels) are not C
 # contracts; their .air rules list them as prerequisites instead.
-Q38_METAL_HEADERS := src/qwen38_quant_decode.h
-Q38_HEADERS := $(filter-out $(Q38_METAL_HEADERS),$(wildcard src/qwen38*.h))
-Q38_PUBLIC_HEADERS := $(filter-out %_internal.h,$(Q38_HEADERS))
-src/gpu_weights.m.o build/test_gpu_weights: $(Q38_HEADERS)
-test-qwen38-contracts:
-	@for header in $(Q38_PUBLIC_HEADERS); do $(CC) $(CFLAGS) -Werror -x c -fsyntax-only $$header || exit; done
-	@printf '%s\n' $(foreach h,$(notdir $(Q38_PUBLIC_HEADERS)),'#include "$(h)"') | $(CC) $(CFLAGS) -Werror -Isrc -x objective-c -fsyntax-only -
-	@$(PYTHON) tests/test_qwen38_gpu_lock.py
-.PHONY: test-qwen38-contracts
+QW4_METAL_HEADERS := src/qwen4_quant_decode.h
+QW4_HEADERS := $(filter-out $(QW4_METAL_HEADERS),$(wildcard src/qwen4*.h))
+QW4_PUBLIC_HEADERS := $(filter-out %_internal.h,$(QW4_HEADERS))
+src/gpu_weights.m.o build/test_gpu_weights: $(QW4_HEADERS)
+test-qwen4-contracts:
+	@for header in $(QW4_PUBLIC_HEADERS); do $(CC) $(CFLAGS) -Werror -x c -fsyntax-only $$header || exit; done
+	@printf '%s\n' $(foreach h,$(notdir $(QW4_PUBLIC_HEADERS)),'#include "$(h)"') | $(CC) $(CFLAGS) -Werror -Isrc -x objective-c -fsyntax-only -
+	@$(PYTHON) tests/test_qwen4_gpu_lock.py
+.PHONY: test-qwen4-contracts
 
-include tools/qwen38.mk
+include tools/qwen4.mk

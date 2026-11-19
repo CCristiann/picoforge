@@ -6,7 +6,7 @@ import struct
 import tempfile
 import unittest
 
-from test_qwen38_inventory import fixture, inventory, string
+from test_qwen4_inventory import fixture, inventory, string
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "build/test_gguf_inspect"

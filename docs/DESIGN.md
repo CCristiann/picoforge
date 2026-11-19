@@ -91,15 +91,15 @@ which is why checkpoints larger than that run quantised.
 
 | path | contents |
 |---|---|
-| `src/` | engine C sources, Objective-C Metal glue, `.metal` kernels (`qwen38_*`), GGUF reader |
+| `src/` | engine C sources, Objective-C Metal glue, `.metal` kernels (`qwen4_*`), GGUF reader |
 | `tools/oracle/` | independent reference implementations of the Qwen3.8 operators |
 | `tools/synth/` | synthetic GGUF checkpoints for tests |
 | `tools/eval/` | benchmark runners, grading and reports |
 | `tools/probe/` | standalone Metal 4 API probes |
 | `tools/microbench/` | the model-agnostic matmul and dispatch-cost benchmark |
-| `tools/ui/qwen38/` | a local web chat in front of the engine (secondary to the terminal) |
-| `tests/` | correctness harnesses (`make test-all`, `make test-qwen38`) |
-| `bench/` | measured data by stage (`qwen38/`), microbenchmark CSVs, the Qwen3 archive |
+| `tools/ui/qwen4/` | a local web chat in front of the engine (secondary to the terminal) |
+| `tests/` | correctness harnesses (`make test-all`, `make test-qwen4`) |
+| `bench/` | measured data by stage (`qwen4/`), microbenchmark CSVs, the Qwen3 archive |
 | `docs/` | this file, the benchmark protocol, the development log, the project history, weight and corpus locks |
 
 ## Conventions

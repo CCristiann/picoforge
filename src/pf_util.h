@@ -27,6 +27,6 @@ void pause_ms(long ms);
  * out_fd, stderr to err_fd (-1: /dev/null); nothing else of ours inherited. */
 pid_t pf_spawn(char *const argv[], int out_fd, int err_fd);
 /* Run argv, up to `limit` bytes of stdout into out; exit code, -1 if it could
- * not start, ran past `seconds` or q38_stopped was raised (then it is killed). */
+ * not start, ran past `seconds` or qw4_stopped was raised (then it is killed). */
 int pf_capture(char *const argv[], size_t limit, double seconds, Buf *out);
 #endif

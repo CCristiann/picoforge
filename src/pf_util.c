@@ -1,7 +1,7 @@
 /* pf_util.c — see pf_util.h. */
 #include "pf_util.h"
 #include "common.h"
-#include "qwen38_run.h"     /* q38_now, q38_stopped */
+#include "qwen4_run.h"     /* qw4_now, qw4_stopped */
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -143,9 +143,9 @@ int pf_capture(char *const argv[], size_t limit, double seconds, Buf *out) {
     close(fds[1]);
     if (pid < 0) { close(fds[0]); return -1; }
     bool killed = false; char chunk[65536];
-    for (double end = q38_now()+seconds;;) {
-        int left = (int)((end-q38_now())*1000);
-        if (left <= 0 || q38_stopped) { killpg(pid, SIGKILL); killed = true; break; }
+    for (double end = qw4_now()+seconds;;) {
+        int left = (int)((end-qw4_now())*1000);
+        if (left <= 0 || qw4_stopped) { killpg(pid, SIGKILL); killed = true; break; }
         struct pollfd p = {fds[0], POLLIN, 0};
         if (poll(&p, 1, left < 100 ? left : 100) <= 0) continue;
         ssize_t got = read(fds[0], chunk, sizeof chunk);

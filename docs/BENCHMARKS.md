@@ -101,7 +101,7 @@ Both are followed by 128 teacher-forced decode tokens, as `ds4-bench` does.
 Forcing the IDs removes any dependence on which tokens each engine would
 choose, so tok/s compares the same work.
 
-**Against DwarfStar.** `tools/eval/qwen38_compare.py` prepares token IDs that
+**Against DwarfStar.** `tools/eval/qwen4_compare.py` prepares token IDs that
 both tokenizers agree on, then alternates the engines (`fc80bd6` for
 DwarfStar), one process per sample: ≥ 3 warm-ups, then 20 measured samples.
 Decode throughput is `(generated − 1) / decode_s`, because the first token
@@ -114,14 +114,14 @@ and p10/p90. `--bench-csv FILE` keeps the raw rows.
 **Profiles.** `--profile FILE.csv` splits the command buffer into one encoder per
 operation. That changes the cost, so per-operation rows locate the bottleneck,
 and the unsplit total remains the baseline.
-`tools/eval/qwen38_profile_summary.py` reduces a profile.
+`tools/eval/qwen4_profile_summary.py` reduces a profile.
 
 **Quality.** Teacher-forced FP32 logits of two files on a frozen corpus, reduced
-in FP64 by `tools/eval/qwen38_r7_quality.py`: KL, top-1 agreement and ΔNLL with
+in FP64 by `tools/eval/qwen4_r7_quality.py`: KL, top-1 agreement and ΔNLL with
 confidence intervals. The corpus window IDs are pinned in
 [`corpus.lock`](corpus.lock).
 
-**Safety.** Real runs go through `tools/qwen38_gpu_lock.py`: one process at a
+**Safety.** Real runs go through `tools/qwen4_gpu_lock.py`: one process at a
 time, waiting for the previous process's wired pages to be released. A
 memory-pressure guard stops a child that pushes the system into swap. Mapping
 the file again within ~1.5 s of an exit froze this Mac twice.

@@ -1,6 +1,6 @@
 /* metal_device.m — the system Metal device, for tests written in plain C.
  *
- * The engine itself opens its device inside the qwen38_*.m files; a C test
+ * The engine itself opens its device inside the qwen4_*.m files; a C test
  * that only needs "a device to hand to the weight store" uses this instead of
  * pulling in Objective-C. The library path is accepted and ignored: these
  * tests never launch a kernel through this context. */

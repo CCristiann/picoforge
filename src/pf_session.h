@@ -4,14 +4,14 @@
  * The conversation is a token transcript that only grows: each turn renders
  * through the chat template and appends only its own suffix, so the model
  * always sees exactly what it generated and a turn prefills only what is new
- * (src/qwen38_repl.c). Nothing here prints: the reply streams through a
+ * (src/qwen4_repl.c). Nothing here prints: the reply streams through a
  * callback and messages go to `note`. Saved sessions hold the transcript and
  * the whole graph state, so a resume reads a file instead of prefilling. */
 #ifndef PICOFORGE_PF_SESSION_H
 #define PICOFORGE_PF_SESSION_H
 #include "pf_util.h"
 #include "pf_tools.h"
-#include "qwen38_run.h"
+#include "qwen4_run.h"
 #include <limits.h>
 
 typedef struct { const char *role, *content; } PfMsg;     /* "user", "assistant", "tool" */
@@ -35,13 +35,13 @@ typedef struct {
 } PfSessionOptions;
 
 typedef struct {
-    Q38Run run;
+    QW4Run run;
     int32_t *ids, *generated; size_t n;   /* the transcript is ids[0..n) */
     int32_t im_end, newline;              /* the end-of-turn token; "\n" */
     bool thinking;                        /* reasoning before each reply */
     uint32_t max_new;                     /* tokens per reply, 0: the room left */
     char *system;                         /* the system prompt of the first turn (owned) */
-    Qwen38Json tools; bool has_tools;     /* tool definitions for the template */
+    Qwen4Json tools; bool has_tools;     /* tool definitions for the template */
     char *model_path; uint64_t model_bytes;
     size_t primed_n; Buf prefix;          /* ids and bytes of the system block in the graph (pf_session_prime) */
     char workspace[PATH_MAX];             /* stored with a saved session */

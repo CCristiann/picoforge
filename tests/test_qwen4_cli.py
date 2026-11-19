@@ -1,0 +1,264 @@
+"""Qwen3.8 ordinary CLI against the independent CPU graph at each greedy step."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+GGUF = Path(os.environ.get('QW4_CLI_GGUF', ROOT / 'build/qwen4-g2/cli.gguf'))  # the variant run overrides it
+PROMPT = [5, 17, 300]
+
+class CliTests(unittest.TestCase):
+    def run_cli(self, command):
+        done = subprocess.run(command, cwd=ROOT, capture_output=True)
+        self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+        return done
+
+    def test_greedy_and_last_logits(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen4-g2') as directory:
+            path = Path(directory)
+            cmd = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                   '--context', '32', '--chunk', '3', '--max-new', '5', '--logits', str(path/'gpu.f32'),
+                   '--token-ids', str(path/'ids.json')]
+            self.run_cli(cmd)
+            info = json.loads((path/'ids.json').read_text())
+            self.assertEqual(info['prompt_ids'], PROMPT)
+            ids = info['generated_ids']
+            self.assertGreater(len(ids), 0)
+            cpu = path/'cpu'; cpu.mkdir()
+            subprocess.run([str(ROOT/'build/qwen4-g1/test_forward'), str(GGUF), str(cpu), '4', '3',
+                            *map(str, PROMPT+ids[:-1])], cwd=ROOT, check=True, capture_output=True)
+            reference = np.fromfile(cpu/'logits.f32', '<f4').reshape(-1, 512)[len(PROMPT)-1:]
+            actual = np.fromfile(path/'gpu.f32', '<f4').reshape(-1, 512)
+            self.assertTrue(np.isfinite(actual).all())
+            self.assertLessEqual(np.abs(actual-reference).max()/max(1, np.abs(reference).max()), 1e-3)
+            np.testing.assert_array_equal(reference.argmax(1), ids)
+            # Zero requested output still supplies the last prefill logit row.
+            cmd[cmd.index('--max-new')+1] = '0'
+            self.run_cli(cmd)
+            info = json.loads((path/'ids.json').read_text())
+            self.assertEqual(info['generated_ids'], [])
+            last = np.fromfile(path/'gpu.f32', '<f4')
+            np.testing.assert_array_equal(last, actual[0])
+
+    def test_command_split_is_bit_identical(self):
+        """D1: a decode token split into several command buffers (PICOFORGE_CMD_SPLIT) gives the same
+        ids and the same last-row logits, bit for bit, as one command buffer; so does the default
+        (Decode VI: doubling cuts)."""
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen4-g2') as directory:
+            path = Path(directory)
+            results = {}
+            for split in ('1', '3', '8', 'default'):
+                cmd = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                       '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{split}.f32'),
+                       '--token-ids', str(path/f'{split}.json')]
+                env = {k: v for k, v in os.environ.items() if k != 'PICOFORGE_CMD_SPLIT'}
+                done = subprocess.run(cmd, cwd=ROOT, capture_output=True,
+                                      env=env if split == 'default' else {**env, 'PICOFORGE_CMD_SPLIT': split})
+                self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                results[split] = ((path/f'{split}.f32').read_bytes(), json.loads((path/f'{split}.json').read_text())['generated_ids'])
+            self.assertGreater(len(results['1'][1]), 4)
+            self.assertEqual(results['3'], results['1'])
+            self.assertEqual(results['8'], results['1'])
+            self.assertEqual(results['default'], results['1'])
+
+    def test_fused_shared_expert_matches_moe_oracle(self):
+        """D1.2: the shared expert's SILU, MUL and SIGMOID in one dispatch (qw4f_shared_act) gives the same
+        ids and last-row logits, bit for bit, as the three separate ops that QW4_REF_KERNELS=moe selects
+        (both under `exact`: Decode III's default router and kernels reorder sums)."""
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen4-g2') as directory:
+            path = Path(directory)
+            results = {}
+            for mode in ('exact', 'exact,moe'):
+                tag = 'fast' if mode == 'exact' else 'moe'
+                cmd = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                       '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{tag}.f32'),
+                       '--token-ids', str(path/f'{tag}.json')]
+                done = subprocess.run(cmd, cwd=ROOT, capture_output=True, env={**os.environ, 'QW4_REF_KERNELS': mode})
+                self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                results[tag] = ((path/f'{tag}.f32').read_bytes(), json.loads((path/f'{tag}.json').read_text())['generated_ids'])
+            self.assertGreater(len(results['fast'][1]), 4)
+            self.assertEqual(results['fast'], results['moe'])
+
+    def test_half_prefill_mode(self):
+        """R3.5: --prefill-precision half changes a 40-row prefill (GEMM rows) within its reduced-precision
+        bound, never a 3-row one (decode-sized appends stay FP32 bit for bit)."""
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen4-g2') as directory:
+            path = Path(directory)
+            def logits(prompt, chunk, mode):
+                out = path/f'{mode}-{len(prompt)}.f32'
+                self.run_cli([str(ROOT/'pf'), '--qwen4', str(GGUF), '--tokens', ','.join(map(str, prompt)),
+                              '--context', '64', '--chunk', str(chunk), '--max-new', '0', '--logits', str(out),
+                              '--prefill-precision', mode])
+                return np.fromfile(out, '<f4')
+            short = [5, 17, 300]
+            np.testing.assert_array_equal(logits(short, 3, 'half').view('<u4'), logits(short, 3, 'fp32').view('<u4'))
+            long = [(7 * i + 5) % 500 for i in range(40)]
+            half, fp32 = logits(long, 40, 'half'), logits(long, 40, 'fp32')
+            self.assertTrue(np.isfinite(half).all())
+            self.assertFalse(np.array_equal(half.view('<u4'), fp32.view('<u4')), 'the half GEMMs did not run')
+            self.assertLessEqual(np.abs(half-fp32).max()/max(1, np.abs(fp32).max()), 1e-2)  # measured 5.0e-4
+
+    def test_text_modes(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen4-g2') as directory:
+            ids = Path(directory)/'ids.json'
+            base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '512',
+                    '--chunk', '7', '--max-new', '0', '--token-ids', str(ids)]
+            self.run_cli(base+['--complete', 'caffè'])
+            self.assertEqual(json.loads(ids.read_text())['prompt_ids'], list('caffè'.encode()))
+            self.run_cli(base+['--chat', 'hi'])
+            expected = [257, *b'user\nhi', 258, 10, 257, *b'assistant\n', 280, 10, 10, 281, 10, 10]
+            self.assertEqual(json.loads(ids.read_text())['prompt_ids'], expected)
+
+    def test_power_duty_cycle(self):
+        """--power N only spaces the steps: the same ids and logits bit for bit, a longer run; out of
+        range values and measurements (bench, teacher forcing) are refused."""
+        import time
+        with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen4-g2') as directory:
+            path = Path(directory)
+            seconds = {}
+            for power in ('100', '25'):
+                cmd = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--tokens', ','.join(map(str, PROMPT*4)),
+                       '--context', '64', '--chunk', '4', '--max-new', '12', '--power', power,
+                       '--logits', str(path/f'{power}.f32'), '--token-ids', str(path/f'{power}.json')]
+                start = time.monotonic(); self.run_cli(cmd); seconds[power] = time.monotonic() - start
+            self.assertEqual(json.loads((path/'100.json').read_text())['generated_ids'],
+                             json.loads((path/'25.json').read_text())['generated_ids'])
+            self.assertEqual((path/'100.f32').read_bytes(), (path/'25.f32').read_bytes())
+            self.assertGreater(seconds['25'], seconds['100'])
+        base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--tokens', '5,17,300']
+        for args in (['--power', '0'], ['--power', '101'], ['--power', '50', '--bench'],
+                     ['--power', '50', '--teacher-forced', '1']):
+            with self.subTest(args=args):
+                done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
+                self.assertNotEqual(done.returncode, 0)
+
+    def test_admission(self):
+        base = [str(ROOT/'pf'), '--qwen4', str(GGUF)]
+        for args in (['--tokens', '5,', '--max-new', '0'], ['--tokens', '512'],
+                     ['--tokens', '5,17,300', '--context', '2'], ['--chunk', '2049', '--tokens', '5'],
+                     ['--tokens', '5', '--thinking']):
+            with self.subTest(args=args):
+                done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
+                self.assertNotEqual(done.returncode, 0)
+        # R3.5: the precision switch takes fp32 or half, as flag or environment
+        for args, env in ((['--prefill-precision', 'bf16'], {}), ([], {'PICOFORGE_PREFILL_PRECISION': 'fp16'})):
+            with self.subTest(args=args, env=env):
+                done = subprocess.run(base+['--tokens', '5', '--max-new', '0', *args], cwd=ROOT, capture_output=True,
+                                      env=os.environ | env)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(b'fp32 or half', done.stderr)
+        # the short form also starts with the switch ($PICOFORGE_MODEL names the model)
+        done = subprocess.run([str(ROOT/'pf'), '--prefill-precision', 'half', '--tokens', '5', '--max-new', '0'],
+                              cwd=ROOT, capture_output=True, env=os.environ | {'PICOFORGE_MODEL': str(GGUF)})
+        self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+        self.assertEqual(subprocess.run([str(ROOT/'pf'), '--qwen4', '--help'],
+                         cwd=ROOT, capture_output=True).returncode, 0)
+
+    def test_repeat_cancel_files_and_measurement(self):
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen4-g2') as directory:
+            p = Path(directory)
+            (p/'prompt.txt').write_text('caffè')
+            base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '64',
+                    '--chunk', '6', '--max-new', '5']
+            encoded = self.run_cli(base+['--complete-file', str(p/'prompt.txt'), '--encode-only'])
+            self.assertEqual(json.loads(encoded.stdout)['prompt_ids'], list('caffè'.encode()))
+            self.run_cli(base+['--tokens', '5,17,300', '--warmup', '1', '--repeat', '2',
+                              '--replay-chunk', '1', '--runs-jsonl', str(p/'runs.jsonl')])
+            rows = [json.loads(x) for x in (p/'runs.jsonl').read_text().splitlines()]
+            self.assertEqual([r['warmup'] for r in rows], [True, False, False])
+            self.assertEqual([r['chunk'] for r in rows], [6, 1, 1])
+            self.assertTrue(all(r['generated_ids']==rows[0]['generated_ids'] for r in rows))
+            for r in rows:
+                self.assertEqual(r['decode_tokens'], r['generated_tokens']-1)
+                self.assertGreater(r['load_s'], 0)
+                self.assertGreater(r['prefill_s'], 0)
+                self.assertGreaterEqual(r['request_s'], r['prefill_s']+r['decode_s'])
+                self.assertLessEqual(r['ttft_request_s'], r['request_s'])
+                self.assertGreater(r['metal_allocated_bytes'], r['graph_buffer_bytes'])
+            self.run_cli(base+['--tokens', '5,17,300', '--stop-after', '2', '--repeat', '2',
+                              '--runs-jsonl', str(p/'stop.jsonl')])
+            stop = [json.loads(x) for x in (p/'stop.jsonl').read_text().splitlines()]
+            self.assertEqual(stop[0]['generated_ids'], rows[0]['generated_ids'][:2])
+            self.assertEqual(stop[0]['generated_ids'], stop[1]['generated_ids'])
+            self.assertEqual(stop[0]['stop_reason'], 'cancelled')
+            self.assertEqual(stop[0]['position'], 4)
+            done = subprocess.run(base+['--tokens', '5', '--runs-jsonl', str(p/'runs.jsonl')],
+                                  cwd=ROOT, capture_output=True)
+            self.assertNotEqual(done.returncode, 0)
+
+    def test_teacher_forced_matches_plain_appends(self):
+        # R0.4a: forcing the plain greedy continuation must redo exactly the same
+        # appends, so its logits are the plain ones bit for bit (ds4-bench parity).
+        prompt, k = [5, 17, 300, 9, 44], 6
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen4-g2') as directory:
+            p = Path(directory)
+            base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '32', '--chunk', '3']
+            self.run_cli(base+['--tokens', ','.join(map(str, prompt)), '--max-new', str(k),
+                               '--logits', str(p/'plain.f32'), '--token-ids', str(p/'plain.json')])
+            ids = json.loads((p/'plain.json').read_text())['generated_ids']
+            self.assertEqual(len(ids), k, 'prompt must not reach a stop token')
+            self.run_cli(base+['--tokens', ','.join(map(str, prompt+ids[:k-1])), '--teacher-forced', str(k-1),
+                               '--logits', str(p/'forced.f32'), '--token-ids', str(p/'forced.json'),
+                               '--warmup', '1', '--repeat', '2', '--runs-jsonl', str(p/'runs.jsonl')])
+            plain = np.fromfile(p/'plain.f32', '<f4').reshape(-1, 512)
+            forced = np.fromfile(p/'forced.f32', '<f4').reshape(-1, 512)
+            self.assertEqual(plain.shape, (k, 512))
+            self.assertEqual(forced.shape, (k, 512))
+            self.assertEqual(plain.tobytes(), forced[:k].tobytes())
+            info = json.loads((p/'forced.json').read_text())
+            self.assertEqual(info['prompt_ids'], prompt)
+            self.assertEqual(info['forced_ids'], ids[:k-1])
+            self.assertEqual(info['generated_ids'], ids[1:])
+            rows = [json.loads(x) for x in (p/'runs.jsonl').read_text().splitlines()]
+            self.assertEqual([r['warmup'] for r in rows], [True, False, False])
+            for r in rows:
+                self.assertEqual((r['mode'], r['forced_tokens'], r['decode_tokens']), ('teacher-forced', k-1, k-1))
+                self.assertEqual((r['generated_tokens'], r['generated_ids']), (k-1, ids[1:]))
+                self.assertEqual((r['prompt_tokens'], r['position'], r['stop_reason']), (len(prompt), len(prompt)+k-1, 'length'))
+                self.assertGreater(r['decode_s'], 0)
+                self.assertGreaterEqual(r['request_s'], r['prefill_s']+r['decode_s'])
+
+    def test_id_only_greedy_matches_logits_path(self):
+        # T15c: without --logits/--mtp only the GPU argmax id is read back. It must give the
+        # ids of the logits path (CPU scan) in default mode and with QW4_REF_KERNELS=argmax,
+        # for chunked prefill, decode and teacher-forced runs.
+        prompt, k = [5, 17, 300, 9, 44], 6
+        with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen4-g2') as directory:
+            p = Path(directory)
+            for chunk in ('1', '2', '5'):
+                base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '32', '--chunk', chunk,
+                        '--tokens', ','.join(map(str, prompt)), '--max-new', str(k)]
+                self.run_cli(base+['--logits', str(p/'l.f32'), '--token-ids', str(p/'logits.json')])
+                want = json.loads((p/'logits.json').read_text())['generated_ids']
+                self.assertEqual(len(want), k)
+                for mode in ('', 'argmax'):
+                    env = {**os.environ, 'QW4_REF_KERNELS': mode}
+                    done = subprocess.run(base+['--token-ids', str(p/'ids.json')], cwd=ROOT, capture_output=True, env=env)
+                    self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                    self.assertEqual(json.loads((p/'ids.json').read_text())['generated_ids'], want, f'{chunk=} {mode=}')
+                    forced = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '32', '--chunk', chunk,
+                              '--tokens', ','.join(map(str, prompt+want[:k-1])), '--teacher-forced', str(k-1),
+                              '--token-ids', str(p/'forced.json')]
+                    done = subprocess.run(forced, cwd=ROOT, capture_output=True, env=env)
+                    self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
+                    self.assertEqual(json.loads((p/'forced.json').read_text())['generated_ids'], want[1:], f'{chunk=} {mode=}')
+
+    def test_teacher_forced_admission(self):
+        base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '32']
+        for args in (['--complete', 'abc', '--teacher-forced', '1'], ['--tokens', '5,17', '--teacher-forced', '0'],
+                     ['--tokens', '5,17', '--teacher-forced', '2'], ['--session', '--teacher-forced', '1'],
+                     ['--tokens', '5,17', '--teacher-forced', '1', '--mtp'],
+                     ['--tokens', '5,17', '--teacher-forced', '1', '--stop-after', '1'],
+                     ['--tokens', '5,17', '--teacher-forced', '1', '--max-new', '1']):
+            with self.subTest(args=args):
+                done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn(b'teacher-forced', done.stderr)
+                self.assertNotIn(b'unknown', done.stderr)
+
+if __name__ == '__main__':
+    unittest.main()

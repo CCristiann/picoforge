@@ -98,7 +98,7 @@ static PfAnswer ask_user(void *ctx, const char *what) {
         a->question = strdup(what); a->answer = -1; a->state = ST_ASK;
         pthread_mutex_unlock(&a->mu); wake(a);
         pthread_mutex_lock(&a->mu);
-        while (a->answer < 0 && !q38_stopped && !a->quit) pthread_cond_wait(&a->cond, &a->mu);
+        while (a->answer < 0 && !qw4_stopped && !a->quit) pthread_cond_wait(&a->cond, &a->mu);
         answer = a->answer < 0 ? 'n' : a->answer;
         free(a->question); a->question = NULL; a->state = ST_TOOL;
         pthread_mutex_unlock(&a->mu); wake(a);
@@ -181,7 +181,7 @@ static void view_end(View *v) {
 
 /* Prefill and decode counters for the footer. */
 static void progress(void *ctx, size_t prefilled, size_t prompt, size_t generated) {
-    View *v = ctx; Agent *a = v->a; double now = q38_now();
+    View *v = ctx; Agent *a = v->a; double now = qw4_now();
     pthread_mutex_lock(&a->mu);
     if (!generated) {
         a->state = a->state == ST_LOADING ? ST_LOADING : ST_PREFILL; a->prefilled = prefilled; a->prompt = prompt;
@@ -224,7 +224,7 @@ static void show_result(Agent *a, const Buf *out) {
 
 static char *reply(Agent *a, size_t added) {
     pthread_mutex_lock(&a->mu);
-    a->state = ST_PREFILL; a->prefilled = a->generated = 0; a->prompt = added; a->t0 = q38_now();
+    a->state = ST_PREFILL; a->prefilled = a->generated = 0; a->prompt = added; a->t0 = qw4_now();
     a->prefill_tps = a->decode_tps = 0;
     pthread_mutex_unlock(&a->mu); wake(a);
     View v = {.a = a, .newline = true};
@@ -280,7 +280,7 @@ static void agent_turn(Agent *a, const char *text) {
         PfCall calls[MAX_CALLS];
         size_t n = pf_parse_calls(pf_session_answer(answer), calls, MAX_CALLS);
         free(answer);
-        if (!n || q38_stopped) { for (size_t i = 0; i < n; i++) pf_call_free(&calls[i]); return; }
+        if (!n || qw4_stopped) { for (size_t i = 0; i < n; i++) pf_call_free(&calls[i]); return; }
         Buf outs[MAX_CALLS] = {{0}}; PfMsg results[MAX_CALLS]; size_t bytes = 0;
         for (size_t i = 0; i < n; i++) {
             show_call(a, &calls[i]);
@@ -288,7 +288,7 @@ static void agent_turn(Agent *a, const char *text) {
             Buf args = {0};
             for (size_t k = 0; k < calls[i].n; k++) buf_fmt(&args, "%s=%s\n", calls[i].key[k], calls[i].value[k]);
             trace(a, calls[i].name, args.p); buf_free(&args);
-            if (q38_stopped) buf_str(&outs[i], "Tool error: interrupted by the user before it ran.\n");
+            if (qw4_stopped) buf_str(&outs[i], "Tool error: interrupted by the user before it ran.\n");
             else pf_tools_run(a->tools, &calls[i], &outs[i]);
             trace(a, "result", outs[i].p);
             show_result(a, &outs[i]);
@@ -298,7 +298,7 @@ static void agent_turn(Agent *a, const char *text) {
         if (pf_session_should_compact(&a->s, bytes/2+1024)) compact(a);   /* tokens are rarely fewer than bytes/3 */
         added = pf_session_append(&a->s, results, n);
         for (size_t i = 0; i < n; i++) buf_free(&outs[i]);
-        if (q38_stopped) { added = 0; emitf(a, "pf-agent: interrupted; the results are kept for your next message\n"); }
+        if (qw4_stopped) { added = 0; emitf(a, "pf-agent: interrupted; the results are kept for your next message\n"); }
     }
     if (added) emitf(a, "pf-agent: %d tool rounds without an answer, stopping here\n", MAX_ROUNDS);
 }
@@ -348,7 +348,7 @@ static void prime(Agent *a) {
     set_state(a, ST_LOADING, NULL);
     View v = {.a = a, .newline = true};
     PfStream stream = {NULL, progress, &v};
-    pthread_mutex_lock(&a->mu); a->t0 = q38_now(); pthread_mutex_unlock(&a->mu);
+    pthread_mutex_lock(&a->mu); a->t0 = qw4_now(); pthread_mutex_unlock(&a->mu);
     pf_session_prime(&a->s, &stream);
     pf_session_dump(&a->s);
 }
@@ -401,7 +401,7 @@ static void *worker(void *arg) {
         if (!a->cmd) { pthread_mutex_unlock(&a->mu); return NULL; }
         char *cmd = a->cmd; a->cmd = NULL; a->busy = true;
         pthread_mutex_unlock(&a->mu);
-        q38_stopped = 0;
+        qw4_stopped = 0;
         if (!strcmp(cmd, "\x01prime")) prime(a); else run(a, cmd);
         free(cmd);
         pthread_mutex_lock(&a->mu); a->busy = false; a->state = ST_IDLE; a->used = a->s.n; pthread_mutex_unlock(&a->mu);
@@ -496,7 +496,7 @@ static void ui(Agent *a, const char *first, bool resumed_session) {
             pthread_cond_broadcast(&a->cond); pthread_mutex_unlock(&a->mu);
         } else if (ev == PF_TERM_SUBMIT) {
             char *cmd = trim(line);
-            if (!strcmp(cmd, "/quit") || !strcmp(cmd, "/exit")) { quitting = true; if (busy) q38_stopped = 1; }
+            if (!strcmp(cmd, "/quit") || !strcmp(cmd, "/exit")) { quitting = true; if (busy) qw4_stopped = 1; }
             else if (!*cmd) {}
             else if (busy && is_cmd(cmd, "/power")) {
                 long n = strtol(cmd+6, NULL, 10);
@@ -510,10 +510,10 @@ static void ui(Agent *a, const char *first, bool resumed_session) {
             }
         } else if (ev == PF_TERM_INTERRUPT) {
             if (asking || busy) {
-                q38_stopped = 1;
+                qw4_stopped = 1;
                 pthread_mutex_lock(&a->mu); if (asking) a->answer = 'n'; pthread_cond_broadcast(&a->cond); pthread_mutex_unlock(&a->mu);
             } else pf_term_clear(a->term);
-        } else if (ev == PF_TERM_EOF) { quitting = true; if (busy) q38_stopped = 1; }
+        } else if (ev == PF_TERM_EOF) { quitting = true; if (busy) qw4_stopped = 1; }
         free(line);
     }
     pthread_mutex_lock(&a->mu); a->quit = true; pthread_cond_broadcast(&a->cond); pthread_mutex_unlock(&a->mu);
@@ -527,7 +527,7 @@ static void ui(Agent *a, const char *first, bool resumed_session) {
 
 static volatile sig_atomic_t at_prompt;
 static void interrupt(int signum) {
-    (void)signum; q38_stopped = 1;
+    (void)signum; qw4_stopped = 1;
     if (at_prompt) { ssize_t ignored = write(STDOUT_FILENO, "\npf> ", 5); (void)ignored; }
 }
 /* One message from stdin; a line ending in '\' continues on the next. NULL at EOF. */
@@ -552,12 +552,12 @@ static char *read_message(Buf *msg) {
 static void lines(Agent *a, const char *first, bool once) {
     struct sigaction action = {0}, old; action.sa_handler = interrupt; action.sa_flags = SA_RESTART;
     sigemptyset(&action.sa_mask); sigaction(SIGINT, &action, &old);
-    if (first) { char *f = strdup(first); q38_stopped = 0; run(a, f); free(f); }
+    if (first) { char *f = strdup(first); qw4_stopped = 0; run(a, f); free(f); }
     Buf msg = {0};
     for (char *line; !once && (line = read_message(&msg));) {
         char *cmd = trim(line);
         if (!strcmp(cmd, "/quit") || !strcmp(cmd, "/exit")) break;
-        q38_stopped = 0; run(a, cmd);
+        qw4_stopped = 0; run(a, cmd);
     }
     buf_free(&msg); sigaction(SIGINT, &old, NULL);
 }
@@ -656,7 +656,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(opt, "-h") || !strcmp(opt, "--help")) { usage(); return 0; }
         else if (i+1 == argc) { usage(); return 2; }
         else if (!strcmp(opt, "-m")) model = argv[++i];
-        else if (!strcmp(opt, "-c")) o.context = number(argv[++i], 64, QWEN38_MAX_CONTEXT, "-c");
+        else if (!strcmp(opt, "-c")) o.context = number(argv[++i], 64, QWEN4_MAX_CONTEXT, "-c");
         else if (!strcmp(opt, "-n")) a.s.max_new = number(argv[++i], 0, 1u << 20, "-n");
         else if (!strcmp(opt, "-w")) workspace = argv[++i];
         else if (!strcmp(opt, "-p")) { free(first); first = strdup(argv[++i]); }

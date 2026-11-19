@@ -20,7 +20,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include "qwen38_run.h"     /* q38_now, q38_stopped */
+#include "qwen4_run.h"     /* qw4_now, qw4_stopped */
 
 typedef struct { int code; char url[2048], type[256]; } Fetched;
 /* curl with the common safety flags, then args. The body goes to out; the
@@ -251,8 +251,8 @@ static bool send_all(int fd, const void *data, size_t n) {
 /* Wait until fd is readable or the deadline passes (or the user interrupts). */
 static bool readable(int fd, double deadline) {
     for (;;) {
-        double left = deadline-q38_now();
-        if (left <= 0 || q38_stopped) return false;
+        double left = deadline-qw4_now();
+        if (left <= 0 || qw4_stopped) return false;
         struct pollfd p = {fd, POLLIN, 0};
         int r = poll(&p, 1, left > 0.2 ? 200 : (int)(left*1000)+1);
         if (r > 0) return true;
@@ -265,7 +265,7 @@ static char *http(int port, const char *method, const char *path) {
     if (fd < 0) return NULL;
     Buf req = {0}, resp = {0};
     buf_fmt(&req, "%s %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", method, path, port);
-    bool ok = send_all(fd, req.p, req.n); char chunk[65536]; double deadline = q38_now()+5;
+    bool ok = send_all(fd, req.p, req.n); char chunk[65536]; double deadline = qw4_now()+5;
     while (ok && readable(fd, deadline)) {
         ssize_t got = recv(fd, chunk, sizeof chunk, 0);
         if (got <= 0) break;
@@ -328,7 +328,7 @@ static bool ws_open(Ws *ws, const char *url) {
     Buf req = {0}, resp = {0}; char chunk[4096];
     buf_fmt(&req, "GET %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                   "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n", path, port, k64);
-    bool ok = send_all(ws->fd, req.p, req.n); double deadline = q38_now()+5;
+    bool ok = send_all(ws->fd, req.p, req.n); double deadline = qw4_now()+5;
     while (ok && !(resp.p && strstr(resp.p, "\r\n\r\n")) && readable(ws->fd, deadline)) {
         ssize_t got = recv(ws->fd, chunk, sizeof chunk, 0);
         if (got <= 0) break;
@@ -473,7 +473,7 @@ static bool chrome_ready(PfWeb *w) {
     int null = open("/dev/null", O_WRONLY);
     pid_t pid = null < 0 ? -1 : pf_spawn(argv, null, null);
     if (null >= 0) close(null);
-    for (double end = q38_now()+15; pid > 0 && q38_now() < end && !q38_stopped; pause_ms(200))
+    for (double end = qw4_now()+15; pid > 0 && qw4_now() < end && !qw4_stopped; pause_ms(200))
         if (chrome_answers(w)) { w->chrome = CHROME_READY; return true; }
     w->chrome = CHROME_NO; snprintf(w->why, sizeof w->why, "Chrome did not start");
     return false;
@@ -491,7 +491,7 @@ void pf_web_destroy(PfWeb *w) { free(w); }
 /* Open a tab, load url, run the extractor `js` once the page is ready, close
  * the tab. The text the extractor returns, or "Tool error: ..." in out. */
 static bool in_chrome(PfWeb *w, const char *url, const char *js, Buf *text, Buf *out) {
-    double deadline = q38_now()+CDP_TIMEOUT;
+    double deadline = qw4_now()+CDP_TIMEOUT;
     Buf target = {0}, ws_url = {0}, id = {0}, params = {0}, state = {0};
     char *tab = http(w->port, "PUT", "/json/new?about:blank");
     bool ok = tab && json_get(tab, "webSocketDebuggerUrl", &ws_url) && json_get(tab, "id", &id);
@@ -504,7 +504,7 @@ static bool in_chrome(PfWeb *w, const char *url, const char *js, Buf *text, Buf 
     while (ok && (ok = evaluate(&ws, "document.readyState", &state, deadline)) && strcmp(state.p, "complete")) pause_ms(150);
     if (ok) pause_ms(600);
     ok = ok && evaluate(&ws, js, text, deadline);
-    if (!ok) buf_str(out, q38_stopped ? "Tool error: interrupted by the user\n" : "Tool error: Chrome did not load the page in time\n");
+    if (!ok) buf_str(out, qw4_stopped ? "Tool error: interrupted by the user\n" : "Tool error: Chrome did not load the page in time\n");
     ws_close(&ws);
     if (id.n) { char path[600]; snprintf(path, sizeof path, "/json/close/%s", id.p); free(http(w->port, "GET", path)); }
     buf_free(&target); buf_free(&ws_url); buf_free(&id); buf_free(&params); buf_free(&state);

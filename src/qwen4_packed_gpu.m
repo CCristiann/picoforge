@@ -1,0 +1,1023 @@
+/* Metal interface only: admission, retained pipelines, and command encoding. */
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include "qwen4_packed_internal.h"
+#include "qwen4_ref.h"
+#include <stdlib.h>
+
+/* ref_*: run the oracle kernel for that family (qwen4_ref.h), fixed at creation.
+ * q8_0, f16, f32: the cooperative matvecs of qwen4_matvec.metal, one per
+ * format (q8_0 is the default linear path for Q8_0); multi: their multi-GEMV
+ * entry points (Q8_0, F16, F32); indexed_fast: the indexed expert matvecs
+ * (IQ2_XXS, Q2_K, Q4_K, MXFP4), gate_up and down_reduce the fused MoE kernels
+ * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
+enum { QW4_INDEXED_FAST = 4 };
+struct QW4PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
+                      *indexed_fast[QW4_INDEXED_FAST], *gate_up[QW4_INDEXED_FAST], *down_reduce[QW4_INDEXED_FAST], *down_sp[QW4_INDEXED_FAST], *gate_up8,
+                      *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *gemm_naxd[3], *grouped_gate_up[QW4_INDEXED_FAST], *grouped_down[QW4_INDEXED_FAST],
+                      *grouped_nax_gate_up[QW4_INDEXED_FAST], *grouped_nax_down[QW4_INDEXED_FAST],
+                      *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half, fp32_nax;
+                      size_t gemm_min_rows, gemm_min_tiles, grouped_min_pairs; };
+/* The fast kernels' tile (Q8_T, DENSE_T in the kernel): a threadgroup computes
+ * one output row for that many rows of x, with one 32-lane simdgroup (Q8_0)
+ * or dense_split(K) of them (F16, F32; at most QW4_DENSE_S). */
+enum { QW4_Q8_T = 4, QW4_DENSE_T = 4, QW4_DENSE_S = 8, QW4_SIMD = 32 };
+/* R2.3: F16/F32 rows per threadgroup when one simdgroup owns a row (dense_split 1). */
+enum { QW4_DENSE_ROWS = 8 };
+/* Indexed matvecs: IDX_SG in the kernel, simdgroups (one output each) per threadgroup. */
+enum { QW4_IDX_SG = 4 };
+/* R3.1 prefill GEMM (qwen4_matvec.metal): GEMM_M x GEMM_N tile, 4 simdgroups,
+ * used from QW4_GEMM_MIN_ROWS rows of x (below: the matvecs, bit for bit). */
+enum { QW4_GEMM_M = 32, QW4_GEMM_N = 64, QW4_GEMM_SG = 4, QW4_GEMM_MIN_ROWS = 32 };
+/* R3.5 reduced-precision GEMM on the tensor units: NAX_M x NAX_N tile, 4 simdgroups. */
+enum { QW4_NAX_M = 64, QW4_NAX_N = 64 };
+enum { QW4_GEMM_MIN_TILES = 32, QW4_GROUPED_MIN_PAIRS = 2560 };
+static size_t gemm_min_rows(void);
+static size_t env_size(const char *name, size_t fallback);
+/* Fused gate+up and down+reduce (qwen4_moe_fused.metal): simdgroups (one
+ * output each) per threadgroup; the kernels read the count from the dispatch. */
+enum { QW4_GATE_UP_SG = 4, QW4_DOWN_REDUCE_SG = 4, QW4_GATE_UP8_SG = 8, QW4_GATE_UP8_ROWS = 2 /* GATE_UP8_ROWS */ };
+/* R2.7: down+reduce output rows per simdgroup (DOWN_ROWS in the kernel). */
+enum { QW4_DOWN_REDUCE_ROWS = 4, QW4_DOWN_SP_MAX_SLOTS = 32 /* DOWN_SP_MAX_SLOTS */ };
+/* R2.6 fused HC tail: simdgroups (one d each) per threadgroup, and the
+ * kernel's HC_TAIL_MAX_K and HC_TAIL_MAX_H. */
+/* Decode VI: the K-320 tail8 kernel with 16 simdgroups per threadgroup (each simdgroup owns one output
+ * column, so the bits do not change): half the threadgroups repeat the HC_LOW prologue and its barrier
+ * (A/B -0.2 ms/token against 8; 32 and 4 slower). */
+enum { QW4_HC_TAIL8_SG = 16 };
+enum { QW4_HC_TAIL_SG = 8, QW4_HC_TAIL_MAX_K = 1024, QW4_HC_TAIL_MAX_H = 4 };
+static const uint32_t qw4_indexed_types[QW4_INDEXED_FAST]={16,10,12,39};
+/* Mirror of dense_split in qwen4_matvec.metal (the kernel checks the match):
+ * simdgroups per output row from K alone, doubling while each lane keeps at
+ * least 5 chunks of 8 columns. */
+static size_t dense_split(size_t k) {
+    size_t s=1;
+    while (s<QW4_DENSE_S && k>=2*s*QW4_SIMD*8*5) s*=2;
+    return s;
+}
+
+/* The fast kernels' simd_sum and lane-to-column map assume 32-wide
+ * simdgroups; elsewhere the slot stays NULL, the fast path answers
+ * UNSUPPORTED and qw4_packed_encode runs the oracle. */
+static void *fast_pipeline(id<MTLComputePipelineState> pipeline, size_t simdgroups) {
+    if (pipeline.threadExecutionWidth!=QW4_SIMD || pipeline.maxTotalThreadsPerThreadgroup<QW4_SIMD*simdgroups)
+        return NULL;
+    return (__bridge_retained void *)pipeline;
+}
+
+Qwen4Status qw4_packed_gpu_create(void *device, void *library,
+                                  QW4PackedGpu **out, Qwen4Error *err) {
+    if (out) *out=NULL;
+    if (!out || !device || !library) return qw4_b_result(err,QW4_INVALID_ARGUMENT,"missing Metal context");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)device;
+    id<MTLLibrary> lib=(__bridge id<MTLLibrary>)library;
+    if (lib.device != dev) return qw4_b_result(err,QW4_OWNER,"library device differs");
+    id<MTLFunction> function=[lib newFunctionWithName:@"qw4_packed_linear"];
+    id<MTLFunction> gather=[lib newFunctionWithName:@"qw4_packed_linear_indexed"];
+    id<MTLFunction> lookup=[lib newFunctionWithName:@"qw4_packed_lookup"];
+    /* Decode III: the _dec Q8_0 kernels (reordered dot) unless `exact`; an older library lacks them */
+    const bool q8_dec=!qw4_ref_kernels("exact") && [lib newFunctionWithName:@"qw4_matvec_q8_0_dec"] &&
+        [lib newFunctionWithName:@"qw4_matvec_multi_q8_0_dec"];
+    id<MTLFunction> q8=[lib newFunctionWithName:q8_dec ? @"qw4_matvec_q8_0_dec" : @"qw4_matvec_q8_0"];
+    id<MTLFunction> f16=[lib newFunctionWithName:@"qw4_matvec_f16"];
+    id<MTLFunction> f32=[lib newFunctionWithName:@"qw4_matvec_f32"];
+    id<MTLFunction> tail=[lib newFunctionWithName:@"qw4_hc_tail_f16"];
+    static NSString *const gemm_names[3]={@"qw4_gemm_q8_0",@"qw4_gemm_f16",@"qw4_gemm_f32"};
+    id<MTLFunction> gemm_fn[3];
+    for (size_t i=0;i<3;i++) gemm_fn[i]=[lib newFunctionWithName:gemm_names[i]];
+    static NSString *const nax_names[3]={@"qw4_gemm_nax_q8_0",@"qw4_gemm_nax_f16",@"qw4_gemm_nax_f32"};
+    id<MTLFunction> nax_fn[3];
+    for (size_t i=0;i<3;i++) nax_fn[i]=[lib newFunctionWithName:nax_names[i]];
+    static NSString *const naxd_names[3]={@"qw4_gemm_naxd_q8_0",@"qw4_gemm_naxd_f16",@"qw4_gemm_naxd_f32"};
+    id<MTLFunction> naxd_fn[3];
+    for (size_t i=0;i<3;i++) naxd_fn[i]=[lib newFunctionWithName:naxd_names[i]];
+    static NSString *const gg_names[QW4_INDEXED_FAST]={@"qw4_moe_grouped_gate_up_iq2_xxs",@"qw4_moe_grouped_gate_up_q2_k",
+        @"qw4_moe_grouped_gate_up_q4_k",@"qw4_moe_grouped_gate_up_mxfp4"};
+    static NSString *const gd_names[QW4_INDEXED_FAST]={@"qw4_moe_grouped_down_iq2_xxs",@"qw4_moe_grouped_down_q2_k",
+        @"qw4_moe_grouped_down_q4_k",@"qw4_moe_grouped_down_mxfp4"};
+    static NSString *const group_names[4]={@"qw4_moe_group_clear",@"qw4_moe_group_count",@"qw4_moe_group_scan",
+        @"qw4_moe_group_scatter"};
+    id<MTLComputePipelineState> grouped[2][QW4_INDEXED_FAST], group_ps[4];
+    bool grouped_ok=true; /* R3.2: optional, a missing kernel keeps the per-pair kernels */
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) for (size_t j=0;j<2;j++) {
+        id<MTLFunction> fn=[lib newFunctionWithName:(j ? gd_names : gg_names)[i]];
+        grouped_ok=(grouped[j][i]=fn ? [dev newComputePipelineStateWithFunction:fn error:nil] : nil)!=nil && grouped_ok;
+    }
+    /* R3.5: tensor-unit variants, optional like the mode (nil: FP32 grouped). */
+    static NSString *const gn_names[2][QW4_INDEXED_FAST]={
+        {@"qw4_moe_grouped_nax_gate_up_iq2_xxs",@"qw4_moe_grouped_nax_gate_up_q2_k",@"qw4_moe_grouped_nax_gate_up_q4_k",
+         @"qw4_moe_grouped_nax_gate_up_mxfp4"},
+        {@"qw4_moe_grouped_nax_down_iq2_xxs",@"qw4_moe_grouped_nax_down_q2_k",@"qw4_moe_grouped_nax_down_q4_k",
+         @"qw4_moe_grouped_nax_down_mxfp4"}};
+    id<MTLComputePipelineState> grouped_nax[2][QW4_INDEXED_FAST];
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) for (size_t j=0;j<2;j++) {
+        id<MTLFunction> fn=[lib newFunctionWithName:gn_names[j][i]];
+        grouped_nax[j][i]=fn ? [dev newComputePipelineStateWithFunction:fn error:nil] : nil;
+    }
+    for (size_t i=0;i<4;i++) {
+        id<MTLFunction> fn=[lib newFunctionWithName:group_names[i]];
+        grouped_ok=(group_ps[i]=fn ? [dev newComputePipelineStateWithFunction:fn error:nil] : nil)!=nil && grouped_ok;
+    }
+    static NSString *const multi_names[3]={@"qw4_matvec_multi_q8_0",@"qw4_matvec_multi_f16",@"qw4_matvec_multi_f32"};
+    id<MTLFunction> multi[3];
+    for (size_t i=0;i<3;i++) multi[i]=[lib newFunctionWithName:multi_names[i]];
+    if (q8_dec) multi[0]=[lib newFunctionWithName:@"qw4_matvec_multi_q8_0_dec"];
+    static NSString *const indexed_names[QW4_INDEXED_FAST]={@"qw4_matvec_indexed_iq2_xxs",@"qw4_matvec_indexed_q2_k",
+        @"qw4_matvec_indexed_q4_k",@"qw4_matvec_indexed_mxfp4"};
+    static NSString *const gate_up_names[QW4_INDEXED_FAST]={@"qw4_moe_gate_up_iq2_xxs",@"qw4_moe_gate_up_q2_k",
+        @"qw4_moe_gate_up_q4_k",@"qw4_moe_gate_up_mxfp4"};
+    static NSString *const down_names[QW4_INDEXED_FAST]={@"qw4_moe_down_reduce_iq2_xxs",@"qw4_moe_down_reduce_q2_k",
+        @"qw4_moe_down_reduce_q4_k",@"qw4_moe_down_reduce_mxfp4"};
+    id<MTLFunction> indexed_fn[QW4_INDEXED_FAST], gate_up_fn[QW4_INDEXED_FAST], down_fn[QW4_INDEXED_FAST];
+    bool present=true;
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) {
+        present=(indexed_fn[i]=[lib newFunctionWithName:indexed_names[i]])!=nil && present;
+        present=(gate_up_fn[i]=[lib newFunctionWithName:gate_up_names[i]])!=nil && present;
+        present=(down_fn[i]=[lib newFunctionWithName:down_names[i]])!=nil && present;
+    }
+    if (!function || !gather || !lookup || !q8 || !f16 || !f32 || !tail || !multi[0] || !multi[1] || !multi[2] || !present ||
+        !gemm_fn[0] || !gemm_fn[1] || !gemm_fn[2])
+        return qw4_b_result(err,QW4_MISSING,"packed kernel absent from library");
+    NSError *failure=nil;
+    id<MTLComputePipelineState> pipeline=[dev newComputePipelineStateWithFunction:function error:&failure];
+    id<MTLComputePipelineState> indexed=[dev newComputePipelineStateWithFunction:gather error:&failure];
+    id<MTLComputePipelineState> embedding=[dev newComputePipelineStateWithFunction:lookup error:&failure];
+    id<MTLComputePipelineState> matvec_q8=[dev newComputePipelineStateWithFunction:q8 error:&failure];
+    id<MTLComputePipelineState> matvec_f16=[dev newComputePipelineStateWithFunction:f16 error:&failure];
+    id<MTLComputePipelineState> matvec_f32=[dev newComputePipelineStateWithFunction:f32 error:&failure];
+    id<MTLComputePipelineState> hc_tail=[dev newComputePipelineStateWithFunction:tail error:&failure];
+    id<MTLComputePipelineState> matvec_multi[3];
+    for (size_t i=0;i<3;i++) matvec_multi[i]=[dev newComputePipelineStateWithFunction:multi[i] error:&failure];
+    id<MTLComputePipelineState> gemm[3];
+    for (size_t i=0;i<3;i++) present=(gemm[i]=[dev newComputePipelineStateWithFunction:gemm_fn[i] error:&failure])!=nil && present;
+    /* R3.5: absent from an older library or unsupported by the GPU: the mode
+     * stays off (nil pipeline), it never fails creation. */
+    id<MTLComputePipelineState> nax[3];
+    for (size_t i=0;i<3;i++) nax[i]=nax_fn[i] ? [dev newComputePipelineStateWithFunction:nax_fn[i] error:&failure] : nil;
+    id<MTLComputePipelineState> naxd[3];
+    for (size_t i=0;i<3;i++) naxd[i]=naxd_fn[i] ? [dev newComputePipelineStateWithFunction:naxd_fn[i] error:&failure] : nil;
+    id<MTLComputePipelineState> matvec_indexed[QW4_INDEXED_FAST], gate_up[QW4_INDEXED_FAST], down[QW4_INDEXED_FAST];
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) {
+        present=(matvec_indexed[i]=[dev newComputePipelineStateWithFunction:indexed_fn[i] error:&failure])!=nil && present;
+        present=(gate_up[i]=[dev newComputePipelineStateWithFunction:gate_up_fn[i] error:&failure])!=nil && present;
+        present=(down[i]=[dev newComputePipelineStateWithFunction:down_fn[i] error:&failure])!=nil && present;
+    }
+    if (!pipeline || !indexed || !embedding || !matvec_q8 || !matvec_f16 || !matvec_f32 || !hc_tail ||
+        !matvec_multi[0] || !matvec_multi[1] || !matvec_multi[2] || !present)
+        return qw4_b_result(err,QW4_GPU_ERROR,"cannot create packed pipeline");
+    QW4PackedGpu *ctx=calloc(1,sizeof *ctx);
+    if (!ctx) return qw4_b_result(err,QW4_OOM,"cannot allocate packed context");
+    ctx->device=(__bridge_retained void *)dev;
+    ctx->linear=(__bridge_retained void *)pipeline;
+    ctx->indexed=(__bridge_retained void *)indexed;
+    ctx->lookup=(__bridge_retained void *)embedding;
+    ctx->q8_0=fast_pipeline(matvec_q8,1);
+    ctx->f16=fast_pipeline(matvec_f16,QW4_DENSE_S);
+    ctx->f32=fast_pipeline(matvec_f32,QW4_DENSE_S);
+    ctx->hc_tail=fast_pipeline(hc_tail,QW4_HC_TAIL_SG);
+    if (!qw4_ref_kernels("exact") && !qw4_ref_kernels("fuse")) { /* Decode III: Q8_0 linear + HC_ADD; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"qw4_matvec_q8_0_add"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->q8_add=p ? fast_pipeline(p,1) : NULL;
+    }
+    if (!qw4_ref_kernels("exact") && !qw4_ref_kernels("fuse")) { /* Decode III: RMS folded into the HC down; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"qw4_hc_down_rms_f16"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->hc_down=p ? fast_pipeline(p,QW4_DENSE_S) : NULL;
+    }
+    if (!qw4_ref_kernels("exact")) { /* Decode III: optional; absent -> the R2.6 kernel */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"qw4_hc_tail8_f16"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->hc_tail8=p ? fast_pipeline(p,QW4_HC_TAIL8_SG) : NULL;
+    }
+    for (size_t i=0;i<3;i++) ctx->multi[i]=fast_pipeline(matvec_multi[i],i ? QW4_DENSE_S : 1);
+    for (size_t i=0;i<3;i++) ctx->gemm[i]=fast_pipeline(gemm[i],QW4_GEMM_SG);
+    for (size_t i=0;i<3;i++) ctx->gemm_nax[i]=nax[i] ? fast_pipeline(nax[i],QW4_GEMM_SG) : NULL;
+    for (size_t i=0;i<3;i++) ctx->gemm_naxd[i]=naxd[i] ? fast_pipeline(naxd[i],QW4_GEMM_SG) : NULL;
+    if (grouped_ok) {
+        for (size_t i=0;i<QW4_INDEXED_FAST;i++) {
+            ctx->grouped_gate_up[i]=fast_pipeline(grouped[0][i],QW4_GEMM_SG);
+            ctx->grouped_down[i]=fast_pipeline(grouped[1][i],QW4_GEMM_SG);
+            ctx->grouped_nax_gate_up[i]=grouped_nax[0][i] ? fast_pipeline(grouped_nax[0][i],QW4_GEMM_SG) : NULL;
+            ctx->grouped_nax_down[i]=grouped_nax[1][i] ? fast_pipeline(grouped_nax[1][i],QW4_GEMM_SG) : NULL;
+        }
+        for (size_t i=0;i<4;i++) ctx->group[i]=(__bridge_retained void *)group_ps[i];
+    }
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) {
+        ctx->indexed_fast[i]=fast_pipeline(matvec_indexed[i],QW4_IDX_SG);
+        ctx->gate_up[i]=fast_pipeline(gate_up[i],QW4_GATE_UP_SG);
+        ctx->down_reduce[i]=fast_pipeline(down[i],QW4_DOWN_REDUCE_SG);
+    }
+    if (!qw4_ref_kernels("exact")) { /* Decode III: IQ2_XXS gate+up, reordered dot; optional */
+        id<MTLFunction> fn=[lib newFunctionWithName:@"qw4_moe_gate_up8_iq2_xxs"];
+        id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+        ctx->gate_up8=p ? fast_pipeline(p,QW4_GATE_UP8_SG) : NULL;
+    }
+    { /* Decode III: slots in parallel (bit-identical to down_reduce except the Q2_K chunk dot); optional */
+        static NSString *const sp_names[QW4_INDEXED_FAST]={@"qw4_moe_down_reduce_sp_iq2_xxs",
+            @"qw4_moe_down_reduce_sp_q2_k",@"qw4_moe_down_reduce_sp_q4_k",@"qw4_moe_down_reduce_sp_mxfp4"};
+        for (size_t i=0;i<QW4_INDEXED_FAST && !getenv("PICOFORGE_DOWN_SERIAL") && !qw4_ref_kernels("exact");i++) {
+            id<MTLFunction> fn=[lib newFunctionWithName:sp_names[i]];
+            id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+            ctx->down_sp[i]=p ? (__bridge_retained void *)p : NULL;
+        }
+    }
+    ctx->ref_linear=qw4_ref_kernels("linear");
+    ctx->ref_indexed=qw4_ref_kernels("indexed");
+    ctx->ref_fuse=qw4_ref_kernels("fuse");
+    ctx->ref_gemm=qw4_ref_kernels("gemm");
+    ctx->prefill_half=qw4_prefill_half();
+    /* Prefill-gap: FP32 GEMMs on the tensor units with FP32 operands, x read from device
+     * memory (same bits as the simdgroup GEMM). QW4_FP32_NAX=0 or QW4_REF_KERNELS=exact keep
+     * the simdgroup GEMM. */
+    { const char *v=getenv("QW4_FP32_NAX"); ctx->fp32_nax=!(v && *v=='0') && !qw4_ref_kernels("exact"); }
+    ctx->gemm_min_rows=gemm_min_rows();
+    /* Measured on the real Q2 (bench/qwen38/p3_20261108): a 60-token chat prefill
+     * 1294 -> 671 ms with both, 417 tokens 3601 -> 3563 ms; 1024-row chunks are unchanged
+     * (every shape has >= 160 tiles there). The grouped MoE ran 64-row tiles per expert then
+     * (32 rows since P4.2), wasting most of the work below ~2.5 rows per expert: crossover
+     * ~250-280 tokens. */
+    ctx->gemm_min_tiles=env_size("PICOFORGE_GEMM_MIN_TILES",QW4_GEMM_MIN_TILES);
+    ctx->grouped_min_pairs=env_size("PICOFORGE_GROUPED_MIN_PAIRS",QW4_GROUPED_MIN_PAIRS);
+    *out=ctx;
+    return qw4_b_result(err,QW4_OK,"");
+}
+void qw4_packed_gpu_free(QW4PackedGpu *ctx) {
+    if (!ctx) return;
+    CFRelease(ctx->linear); CFRelease(ctx->indexed); CFRelease(ctx->lookup);
+    if (ctx->q8_0) CFRelease(ctx->q8_0);
+    if (ctx->f16) CFRelease(ctx->f16);
+    if (ctx->f32) CFRelease(ctx->f32);
+    if (ctx->hc_tail) CFRelease(ctx->hc_tail);
+    if (ctx->hc_tail8) CFRelease(ctx->hc_tail8);
+    if (ctx->hc_down) CFRelease(ctx->hc_down);
+    if (ctx->q8_add) CFRelease(ctx->q8_add);
+    if (ctx->gate_up8) CFRelease(ctx->gate_up8);
+    for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
+    for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
+    for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
+    for (size_t i=0;i<3;i++) if (ctx->gemm_naxd[i]) CFRelease(ctx->gemm_naxd[i]);
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) {
+        if (ctx->grouped_gate_up[i]) CFRelease(ctx->grouped_gate_up[i]);
+        if (ctx->grouped_down[i]) CFRelease(ctx->grouped_down[i]);
+        if (ctx->grouped_nax_gate_up[i]) CFRelease(ctx->grouped_nax_gate_up[i]);
+        if (ctx->grouped_nax_down[i]) CFRelease(ctx->grouped_nax_down[i]);
+    }
+    for (size_t i=0;i<4;i++) if (ctx->group[i]) CFRelease(ctx->group[i]);
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) {
+        if (ctx->indexed_fast[i]) CFRelease(ctx->indexed_fast[i]);
+        if (ctx->gate_up[i]) CFRelease(ctx->gate_up[i]);
+        if (ctx->down_reduce[i]) CFRelease(ctx->down_reduce[i]);
+        if (ctx->down_sp[i]) CFRelease(ctx->down_sp[i]);
+    }
+    CFRelease(ctx->device); free(ctx);
+}
+/* Tests force the choice regardless of the environment read at creation. */
+void qw4_packed_gpu_set_reference(QW4PackedGpu *ctx, bool linear, bool indexed) {
+    if (ctx) { ctx->ref_linear=linear; ctx->ref_indexed=indexed; }
+}
+
+static Qwen4Status gpu_span(id<MTLDevice> dev, Qwen4GpuSpan span, size_t needed,
+                             id<MTLBuffer> __strong *out) {
+    *out=(__bridge id<MTLBuffer>)span.buffer;
+    if (!*out) return !needed && !span.bytes && !span.offset_bytes ? QW4_OK : QW4_INVALID_ARGUMENT;
+    if ((*out).device != dev) return QW4_OWNER;
+    if (span.offset_bytes%4) return QW4_STRIDE;
+    if (span.offset_bytes > (*out).length || span.bytes > (*out).length-span.offset_bytes)
+        return QW4_RANGE;
+    return needed > span.bytes ? QW4_CAPACITY : QW4_OK;
+}
+static bool gpu_alias(id<MTLBuffer> a, size_t oa, size_t na,
+                      id<MTLBuffer> b, size_t ob, size_t nb) {
+    if (!na || !nb) return false;
+    if (a==b) return oa < ob+nb && ob < oa+na;
+    /* Also catch overlapping Shared no-copy allocations represented by different objects. */
+    if (a.storageMode==MTLStorageModeShared && b.storageMode==MTLStorageModeShared) {
+        const unsigned char *pa=a.contents, *pb=b.contents;
+        return qw4_b_overlap(pa+oa,na,pb+ob,nb);
+    }
+    return false;
+}
+
+/* Shared admission of both entry points; rows_x is the reachable input rows. */
+typedef struct { id<MTLBuffer> input, output, word, weights; size_t xb, yb; } Admitted;
+static Qwen4Status admit(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuF32 x, Qwen4GpuF32 y, size_t rows_x, Admitted *a, Qwen4Error *err) {
+    if (!ctx || !command || !store || !binding || !layout || !command->compute_encoder)
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"missing encode argument");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    if (command->device != ctx->device || encoder.device != dev)
+        return qw4_b_result(err,QW4_OWNER,"command device differs");
+    Qwen4CpuSpan resident;
+    Qwen4Status status=qwen4_weights_cpu_span(store,binding,&resident,err);
+    if (status) return status; /* Includes exact live-catalog identity; never calls fatal storage on a forgery. */
+    QW4PackedLayout expected;
+    status=qw4_packed_layout_init(&binding->tensor,layout->k_logical,&expected,err);
+    if (status) return status;
+    if (!qw4_b_same_layout(layout,&expected)) return qw4_b_result(err,QW4_FORMAT,"binding/layout mismatch");
+    status=qw4_b_matrix(x.rank,x.dim,x.stride_bytes,x.span.bytes,&a->xb);
+    if (status) return qw4_b_result(err,status,"invalid GPU input view");
+    status=qw4_b_matrix(y.rank,y.dim,y.stride_bytes,y.span.bytes,&a->yb);
+    if (status) return qw4_b_result(err,status,"invalid GPU output view");
+    if (x.dim[0]!=rows_x || x.dim[1]!=layout->k_logical || y.dim[1]!=layout->n_out)
+        return qw4_b_result(err,QW4_SHAPE,"GPU matrix dimensions differ");
+    if (layout->k_storage>UINT32_MAX || layout->n_out>UINT32_MAX || y.dim[0]>UINT32_MAX ||
+        layout->n_experts>UINT32_MAX)
+        return qw4_b_result(err,QW4_RANGE,"kernel dimensions exceed uint32");
+    status=gpu_span(dev,x.span,a->xb,&a->input);
+    if (status) return qw4_b_result(err,status,"invalid GPU input span");
+    status=gpu_span(dev,y.span,a->yb,&a->output);
+    if (status) return qw4_b_result(err,status,"invalid GPU output span");
+    status=gpu_span(dev,command->error_word,4,&a->word);
+    if (status) return qw4_b_result(err,status,"invalid GPU error word");
+    if (a->word.storageMode!=MTLStorageModeShared)
+        return qw4_b_result(err,QW4_TYPE,"error word must use Shared storage");
+    a->weights=(__bridge id<MTLBuffer>)gpu_weights_buffer(store,binding);
+    if (a->weights.device!=dev) return qw4_b_result(err,QW4_OWNER,"weight device differs");
+    size_t wo=binding->offset, wn=layout->tensor_bytes, xo=x.span.offset_bytes, yo=y.span.offset_bytes;
+    size_t eo=command->error_word.offset_bytes, xb=a->xb, yb=a->yb;
+    if (gpu_alias(a->input,xo,xb,a->output,yo,yb) || gpu_alias(a->weights,wo,wn,a->input,xo,xb) ||
+        gpu_alias(a->weights,wo,wn,a->output,yo,yb) || gpu_alias(a->word,eo,4,a->input,xo,xb) ||
+        gpu_alias(a->word,eo,4,a->output,yo,yb) || gpu_alias(a->word,eo,4,a->weights,wo,wn))
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"aliased GPU resources");
+    return QW4_OK;
+}
+static QW4PackedArgs wire(const QW4PackedLayout *layout, size_t offset, size_t end, size_t rows,
+        Qwen4GpuF32 x, Qwen4GpuF32 y, const Admitted *a) {
+    return (QW4PackedArgs){.type=layout->gguf_type,.k_storage=(uint32_t)layout->k_storage,
+        .k_logical=(uint32_t)layout->k_logical,.n_out=(uint32_t)layout->n_out,.rows=(uint32_t)rows,
+        .row_bytes=layout->row_bytes,.weight_offset=offset,.weight_end=end,
+        .x_stride=x.stride_bytes[0],.y_stride=y.stride_bytes[0],.x_bytes=a->xb,.y_bytes=a->yb};
+}
+static void bind(id<MTLComputeCommandEncoder> encoder, const Admitted *a, Qwen4GpuF32 x,
+        Qwen4GpuF32 y, const Qwen4GpuCommand *command) {
+    [encoder setBuffer:a->weights offset:0 atIndex:0];
+    [encoder setBuffer:a->input offset:x.span.offset_bytes atIndex:1];
+    [encoder setBuffer:a->output offset:y.span.offset_bytes atIndex:2];
+    [encoder setBuffer:a->word offset:command->error_word.offset_bytes atIndex:3];
+}
+
+/* Perf III: the GEMM admission threshold, PICOFORGE_GEMM_MIN_ROWS (default
+ * QW4_GEMM_MIN_ROWS). Below it the matvecs reread every matrix once per 4 rows
+ * of x, so a 25-token chat prompt paid ~7 full weight passes per linear. The
+ * floor stays above the MTP verify (1+3 rows) and decode (1 row), whose cost
+ * tables were calibrated on the matvecs. Grouped MoE admission is 8x this. */
+static size_t gemm_min_rows(void) {
+    const char *v=getenv("PICOFORGE_GEMM_MIN_ROWS");
+    long n=v && *v ? strtol(v,NULL,10) : QW4_GEMM_MIN_ROWS;
+    return n<8 ? 8 : n>4096 ? 4096 : (size_t)n;
+}
+
+static size_t env_size(const char *name, size_t fallback) {
+    const char *v=getenv(name);
+    return v && *v ? (size_t)strtoull(v,NULL,10) : fallback;
+}
+
+/* The fast kernel of a format and its rows of x per threadgroup; NULL: none. */
+static void *fast_kernel(const QW4PackedGpu *ctx, uint32_t type, size_t *tile) {
+    *tile=type==8 ? QW4_Q8_T : QW4_DENSE_T;
+    return type==8 ? ctx->q8_0 : type==1 ? ctx->f16 : type==0 ? ctx->f32 : NULL;
+}
+
+/* R3.1: the GEMM of a fast format for this many rows of x; NULL: the matvec
+ * (fewer rows, QW4_REF_KERNELS=gemm, no pipeline, or no fast format). */
+/* Perf III: shape matters too. A K-large, N-small linear (HC down: 10240 -> 320)
+ * gives the GEMM ceil(N/64)*ceil(rows/32) threadgroups, about ten for a chat
+ * prompt on a 20-core GPU, so the matvec wins until the tiles fill the machine
+ * (PICOFORGE_GEMM_MIN_TILES). n_out SIZE_MAX: callers that only know rows. */
+static void *gemm_kernel(const QW4PackedGpu *ctx, uint32_t type, size_t rows, size_t n_out) {
+    if (ctx->ref_gemm || rows<ctx->gemm_min_rows) return NULL;
+    if (n_out!=SIZE_MAX && ((n_out+QW4_GEMM_N-1)/QW4_GEMM_N)*((rows+QW4_GEMM_M-1)/QW4_GEMM_M)<ctx->gemm_min_tiles) return NULL;
+    return type==8 ? ctx->gemm[0] : type==1 ? ctx->gemm[1] : type==0 ? ctx->gemm[2] : NULL;
+}
+/* R3.5: the tensor-unit GEMM that replaces gemm_kernel's in half mode (NULL:
+ * FP32 GEMM). Admission is gemm_kernel's, so the mode only ever touches rows
+ * that already run a GEMM: never decode, never the REF oracle. */
+static void *nax_kernel(const QW4PackedGpu *ctx, uint32_t type, size_t rows, size_t n_out, size_t k_logical) {
+    if (!gemm_kernel(ctx,type,rows,n_out)) return NULL;
+    void *const *k=ctx->prefill_half ? ctx->gemm_nax : ctx->fp32_nax && k_logical%32==0 ? ctx->gemm_naxd : NULL;
+    if (!k) return NULL;
+    return type==8 ? k[0] : type==1 ? k[1] : type==0 ? k[2] : NULL;
+}
+
+bool qw4_packed_gemm_rows(const QW4PackedGpu *ctx, uint32_t gguf_type, size_t rows) {
+    return ctx && gemm_kernel(ctx,gguf_type,rows,SIZE_MAX)!=NULL;
+}
+
+/* One linear encode, shared by both entry points so validation is identical:
+ * admit() and the expert check come FIRST, a bad call fails the same way on
+ * either path. Fast today: Q8_0 (R1.2), F16 and F32 (R1.3), for any number of
+ * rows (each measured faster than the oracle at 1..1024 rows). Not
+ * bit-identical to the oracle: QW4_REF_KERNELS=linear (or 1) restores the
+ * oracle, bit for bit as 360acf0. A format without a fast kernel, or a GPU
+ * without 32-wide simdgroups (NULL pipeline), runs the oracle.
+ * force_fast: qw4_packed_encode_fast, which never falls back to the oracle and
+ * reports UNSUPPORTED for a format with no fast kernel. */
+static Qwen4Status encode_linear(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        size_t expert, Qwen4GpuF32 x, Qwen4GpuF32 y, bool force_fast, Qwen4Error *err) {
+    Admitted a;
+    Qwen4Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
+    if (status) return status;
+    if (expert>=layout->n_experts) return qw4_b_result(err,QW4_RANGE,"expert outside tensor");
+    size_t tile;
+    void *kernel=fast_kernel(ctx,layout->gguf_type,&tile);
+    bool fast=kernel && (force_fast || !ctx->ref_linear);
+    if (force_fast && !fast) return qw4_b_result(err,QW4_UNSUPPORTED,"no fast kernel for this format");
+    if (!x.dim[0]) return qw4_b_result(err,QW4_OK,"");
+    size_t offset=binding->offset+expert*layout->expert_bytes;
+    QW4PackedArgs args=wire(layout,offset,offset+layout->expert_bytes,x.dim[0],x,y,&a);
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    void *gemm=fast ? gemm_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out) : NULL;
+    void *nax=fast ? nax_kernel(ctx,layout->gguf_type,x.dim[0],layout->n_out,layout->k_logical) : NULL;
+    if (nax) gemm=nax;
+    if (gemm) args.reserved=x.span.offset_bytes%16==0; /* GEMM and NAX: float4 x loads allowed */
+    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(gemm ? gemm : fast ? kernel : ctx->linear);
+    [encoder setComputePipelineState:pipeline];
+    bind(encoder,&a,x,y,command);
+    [encoder setBytes:&args length:sizeof args atIndex:4];
+    if (gemm) {
+        const size_t tm=nax ? QW4_NAX_M : QW4_GEMM_M, tn=nax ? QW4_NAX_N : QW4_GEMM_N;
+        MTLSize groups=MTLSizeMake((layout->n_out+tn-1)/tn,(x.dim[0]+tm-1)/tm,1);
+        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*QW4_GEMM_SG,1,1)];
+    } else if (fast) {
+        size_t simdgroups=layout->gguf_type==8 ? 1 : dense_split(layout->k_logical), rows=1;
+        if (layout->gguf_type!=8 && simdgroups==1) simdgroups=rows=QW4_DENSE_ROWS; /* R2.3: rows per threadgroup */
+        MTLSize groups=MTLSizeMake((layout->n_out+rows-1)/rows,(x.dim[0]+tile-1)/tile,1);
+        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*simdgroups,1,1)];
+    } else {
+        NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
+        [encoder dispatchThreads:MTLSizeMake(layout->n_out,x.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    }
+    return qw4_b_result(err,QW4_OK,"");
+}
+Qwen4Status qw4_packed_encode(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        size_t expert, Qwen4GpuF32 x, Qwen4GpuF32 y, Qwen4Error *err) {
+    return encode_linear(ctx,command,store,binding,layout,expert,x,y,false,err);
+}
+/* Always the fast kernel, never the oracle: the harness measures it against
+ * the oracle selected in qw4_packed_encode. */
+Qwen4Status qw4_packed_encode_fast(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        size_t expert, Qwen4GpuF32 x, Qwen4GpuF32 y, Qwen4Error *err) {
+    return encode_linear(ctx,command,store,binding,layout,expert,x,y,true,err);
+}
+
+/* The indexed fast (or fused gate+up) kernel of a format (R1.5); NULL: none. */
+static void *indexed_kernel(void *const kernels[QW4_INDEXED_FAST], uint32_t type) {
+    for (size_t i=0;i<QW4_INDEXED_FAST;i++) if (qw4_indexed_types[i]==type) return kernels[i];
+    return NULL;
+}
+/* Admission of one indexed projection (both indexed entry points and each
+ * half of the fused gate+up): the divisor, admit() and the expert-ID span. */
+static Qwen4Status admit_indexed(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuSpan ids, size_t divisor, Qwen4GpuF32 x, Qwen4GpuF32 y, Admitted *a,
+        id<MTLBuffer> __strong *route, Qwen4Error *err) {
+    if (!divisor || divisor>UINT32_MAX || y.dim[0]%divisor)
+        return qw4_b_result(err,QW4_SHAPE,"output rows must be a multiple of the input divisor");
+    Qwen4Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0]/divisor,a,err);
+    if (status) return status;
+    status=gpu_span((__bridge id<MTLDevice>)ctx->device,ids,y.dim[0]*4,route);
+    if (status) return qw4_b_result(err,status,"invalid GPU expert-ID span");
+    size_t io=ids.offset_bytes, n=y.dim[0]*4;
+    if (gpu_alias(*route,io,n,a->output,y.span.offset_bytes,a->yb) ||
+        gpu_alias(*route,io,n,a->word,command->error_word.offset_bytes,4) ||
+        gpu_alias(*route,io,n,a->weights,binding->offset,layout->tensor_bytes))
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"expert IDs alias an output or weights");
+    return QW4_OK;
+}
+/* One indexed encode for both entry points, validation first as in
+ * encode_linear. Fast by default for the formats with an indexed kernel
+ * (R1.5: IQ2_XXS, Q2_K, Q4_K, MXFP4), at any number of rows (faster than the
+ * oracle at every bench row count, 1..128 tokens of 10 slots). Not
+ * bit-identical to the oracle (the order inside a row differs):
+ * QW4_REF_KERNELS=indexed (or 1) restores the oracle bit for bit. force_fast: qw4_packed_encode_indexed_fast, UNSUPPORTED
+ * for a format without an indexed fast kernel. */
+static Qwen4Status encode_indexed(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuSpan ids, size_t divisor, Qwen4GpuF32 x, Qwen4GpuF32 y, bool force_fast, Qwen4Error *err) {
+    Admitted a; id<MTLBuffer> route=nil;
+    Qwen4Status status=admit_indexed(ctx,command,store,binding,layout,ids,divisor,x,y,&a,&route,err);
+    if (status) return status;
+    size_t wo=binding->offset, io=ids.offset_bytes;
+    void *kernel=indexed_kernel(ctx->indexed_fast,layout->gguf_type);
+    bool fast=kernel && (force_fast || !ctx->ref_indexed);
+    if (force_fast && !fast) return qw4_b_result(err,QW4_UNSUPPORTED,"no indexed fast kernel for this format");
+    if (!y.dim[0]) return qw4_b_result(err,QW4_OK,"");
+    QW4PackedIndexedArgs args={.base=wire(layout,wo,wo+layout->tensor_bytes,y.dim[0],x,y,&a),
+        .expert_bytes=layout->expert_bytes,.experts=(uint32_t)layout->n_experts,.x_divisor=(uint32_t)divisor};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    id<MTLComputePipelineState> pipeline=(__bridge id<MTLComputePipelineState>)(fast ? kernel : ctx->indexed);
+    [encoder setComputePipelineState:pipeline];
+    bind(encoder,&a,x,y,command);
+    [encoder setBytes:&args length:sizeof args atIndex:4];
+    [encoder setBuffer:route offset:io atIndex:5];
+    if (fast) {
+        MTLSize groups=MTLSizeMake((layout->n_out+QW4_IDX_SG-1)/QW4_IDX_SG,y.dim[0],1);
+        [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*QW4_IDX_SG,1,1)];
+    } else {
+        NSUInteger threads=MIN((NSUInteger)32,pipeline.maxTotalThreadsPerThreadgroup);
+        [encoder dispatchThreads:MTLSizeMake(layout->n_out,y.dim[0],1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    }
+    return qw4_b_result(err,QW4_OK,"");
+}
+Qwen4Status qw4_packed_encode_indexed(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuSpan ids, size_t divisor, Qwen4GpuF32 x, Qwen4GpuF32 y, Qwen4Error *err) {
+    return encode_indexed(ctx,command,store,binding,layout,ids,divisor,x,y,false,err);
+}
+Qwen4Status qw4_packed_encode_indexed_fast(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuSpan ids, size_t divisor, Qwen4GpuF32 x, Qwen4GpuF32 y, Qwen4Error *err) {
+    return encode_indexed(ctx,command,store,binding,layout,ids,divisor,x,y,true,err);
+}
+/* R1.5b fused gate+up+SwiGLU (qwen4_packed_internal.h): each projection admitted
+ * as qw4_packed_encode_indexed with act as its output, then the choice. */
+Qwen4Status qw4_packed_encode_gate_up(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *gate, const QW4PackedLayout *gl,
+        const GgufBinding *up, const QW4PackedLayout *ul, Qwen4GpuSpan ids, size_t divisor,
+        Qwen4GpuF32 x, Qwen4GpuF32 act, Qwen4Error *err) {
+    Admitted a, b; id<MTLBuffer> route=nil;
+    Qwen4Status status=admit_indexed(ctx,command,store,gate,gl,ids,divisor,x,act,&a,&route,err);
+    if (!status) status=admit_indexed(ctx,command,store,up,ul,ids,divisor,x,act,&b,&route,err);
+    if (status) return status;
+    if (gl->n_experts!=ul->n_experts) return qw4_b_result(err,QW4_SHAPE,"gate and up expert counts differ");
+    void *kernel=indexed_kernel(ctx->gate_up,gl->gguf_type);
+    if (!kernel || gl->gguf_type!=ul->gguf_type || ctx->ref_indexed)
+        return qw4_b_result(err,QW4_UNSUPPORTED,"no fused gate+up for this format or selection");
+    if (!act.dim[0]) return qw4_b_result(err,QW4_OK,"");
+    size_t go=gate->offset, uo=up->offset;
+    QW4PackedIndexedArgs args[2]={
+        {.base=wire(gl,go,go+gl->tensor_bytes,act.dim[0],x,act,&a),.expert_bytes=gl->expert_bytes,
+         .experts=(uint32_t)gl->n_experts,.x_divisor=(uint32_t)divisor},
+        {.base=wire(ul,uo,uo+ul->tensor_bytes,act.dim[0],x,act,&b),.expert_bytes=ul->expert_bytes,
+         .experts=(uint32_t)ul->n_experts,.x_divisor=(uint32_t)divisor}};
+    _Static_assert(sizeof args==192,"gate/up Metal argument layout");
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:b.weights offset:0 atIndex:1];
+    [encoder setBuffer:a.input offset:x.span.offset_bytes atIndex:2];
+    [encoder setBuffer:a.output offset:act.span.offset_bytes atIndex:3];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:4];
+    [encoder setBytes:args length:sizeof args atIndex:5];
+    [encoder setBuffer:route offset:ids.offset_bytes atIndex:6];
+    /* Decode III: the IQ2_XXS kernel with a reordered dot where its float4 x reads are aligned */
+    const bool eight=ctx->gate_up8 && gl->gguf_type==16 && !(gl->k_logical%256) && !(x.span.offset_bytes%16) &&
+        !(x.stride_bytes[0]%16);
+    const size_t sgs=eight ? QW4_GATE_UP8_SG : QW4_GATE_UP_SG, per=eight ? sgs*QW4_GATE_UP8_ROWS : sgs;
+    if (eight) [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->gate_up8];
+    MTLSize groups=MTLSizeMake((gl->n_out+per-1)/per,act.dim[0],1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*sgs,1,1)];
+    return qw4_b_result(err,QW4_OK,"");
+}
+
+/* ---- R3.2 grouped MoE (qwen4_moe_fused.metal): pairs grouped by expert,
+ * one GEMM per expert. Mirror of GroupArgs; GG_M rows per tile, GG_N outputs. */
+typedef struct { uint32_t pairs, experts, tile, reserved; } QW4GroupArgs;
+enum { QW4_GG_M = 32, QW4_GG_N = 64, QW4_GN_M = 32, QW4_GN_N = 64 }; /* GN_*: the R3.5 tensor-unit tile */
+bool qw4_packed_grouped_rows(const QW4PackedGpu *ctx, uint32_t gguf_type, size_t pairs) {
+    return ctx && !ctx->ref_indexed && !ctx->ref_gemm && ctx->group[0] && pairs>=ctx->grouped_min_pairs &&
+        indexed_kernel(ctx->grouped_gate_up,gguf_type) && indexed_kernel(ctx->grouped_down,gguf_type);
+}
+size_t qw4_packed_group_bytes(size_t experts, size_t pairs) { return (4*experts+2+pairs)*4; }
+static void dispatch_1d(id<MTLComputeCommandEncoder> encoder, void *pipeline, size_t count) {
+    id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)pipeline;
+    [encoder setComputePipelineState:p];
+    [encoder dispatchThreads:MTLSizeMake(count,1,1) threadsPerThreadgroup:MTLSizeMake(MIN((NSUInteger)256,p.maxTotalThreadsPerThreadgroup),1,1)];
+    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+/* One grouped GEMM (gate+up when up is non-NULL, else down). Each call
+ * rebuilds the groups from the IDs (4 small dispatches), so it stands alone. */
+static Qwen4Status encode_grouped(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *gate, const QW4PackedLayout *gl,
+        const GgufBinding *up, const QW4PackedLayout *ul, Qwen4GpuSpan ids, size_t divisor,
+        Qwen4GpuF32 x, Qwen4GpuF32 y, Qwen4GpuSpan group, Qwen4Error *err) {
+    Admitted a, b; id<MTLBuffer> route=nil, gbuf=nil;
+    Qwen4Status status=admit_indexed(ctx,command,store,gate,gl,ids,divisor,x,y,&a,&route,err);
+    if (!status && up) status=admit_indexed(ctx,command,store,up,ul,ids,divisor,x,y,&b,&route,err);
+    if (status) return status;
+    if (up && (gl->n_experts!=ul->n_experts || gl->gguf_type!=ul->gguf_type || gl->n_out!=ul->n_out))
+        return qw4_b_result(err,QW4_SHAPE,"gate and up differ");
+    size_t pairs=y.dim[0], experts=gl->n_experts;
+    void *kernel=indexed_kernel(up ? ctx->grouped_gate_up : ctx->grouped_down,gl->gguf_type);
+    /* R3.5 half mode: the tensor-unit kernel, same tile, groups and bindings. */
+    void *nax=ctx->prefill_half ? indexed_kernel(up ? ctx->grouped_nax_gate_up : ctx->grouped_nax_down,gl->gguf_type) : NULL;
+    if (nax) kernel=nax;
+    if (!qw4_packed_grouped_rows(ctx,gl->gguf_type,pairs) || !kernel || pairs>UINT32_MAX || experts>UINT32_MAX)
+        return qw4_b_result(err,QW4_UNSUPPORTED,"no grouped kernel for this format, size or selection");
+    status=gpu_span((__bridge id<MTLDevice>)ctx->device,group,qw4_packed_group_bytes(experts,pairs),&gbuf);
+    if (status) return qw4_b_result(err,status,"invalid GPU group span");
+    size_t go=group.offset_bytes, gn=qw4_packed_group_bytes(experts,pairs);
+    if (gpu_alias(gbuf,go,gn,a.output,y.span.offset_bytes,a.yb) || gpu_alias(gbuf,go,gn,a.input,x.span.offset_bytes,a.xb) ||
+        gpu_alias(gbuf,go,gn,route,ids.offset_bytes,pairs*4) || gpu_alias(gbuf,go,gn,a.word,command->error_word.offset_bytes,4))
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"group buffer aliases an operand");
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    const size_t tm=nax ? QW4_GN_M : QW4_GG_M, tn=nax ? QW4_GN_N : QW4_GG_N; /* rows, outputs per tile */
+    { /* clear, count, scan, scatter: order[] grouped by expert */
+        QW4GroupArgs ga={(uint32_t)pairs,(uint32_t)experts,(uint32_t)tm,0};
+        [encoder setBuffer:gbuf offset:go atIndex:0]; [encoder setBytes:&ga length:sizeof ga atIndex:1];
+        dispatch_1d(encoder,ctx->group[0],experts);
+        [encoder setBuffer:route offset:ids.offset_bytes atIndex:0]; [encoder setBuffer:gbuf offset:go atIndex:1];
+        [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:2]; [encoder setBytes:&ga length:sizeof ga atIndex:3];
+        dispatch_1d(encoder,ctx->group[1],pairs);
+        [encoder setBuffer:gbuf offset:go atIndex:0]; [encoder setBytes:&ga length:sizeof ga atIndex:1];
+        dispatch_1d(encoder,ctx->group[2],1);
+        [encoder setBuffer:route offset:ids.offset_bytes atIndex:0]; [encoder setBuffer:gbuf offset:go atIndex:1];
+        [encoder setBuffer:gbuf offset:go+(4*experts+2)*4 atIndex:2]; [encoder setBytes:&ga length:sizeof ga atIndex:3];
+        dispatch_1d(encoder,ctx->group[3],pairs);
+    }
+    size_t o0=gate->offset, o1=up ? up->offset : o0;
+    QW4PackedIndexedArgs args[2]={
+        {.base=wire(gl,o0,o0+gl->tensor_bytes,pairs,x,y,&a),.expert_bytes=gl->expert_bytes,
+         .experts=(uint32_t)experts,.x_divisor=(uint32_t)divisor},
+        {.base=wire(up ? ul : gl,o1,o1+(up ? ul : gl)->tensor_bytes,pairs,x,y,up ? &b : &a),
+         .expert_bytes=(up ? ul : gl)->expert_bytes,.experts=(uint32_t)experts,.x_divisor=(uint32_t)divisor}};
+    args[0].base.reserved=x.span.offset_bytes%16==0; /* Prefill-gap: float4 x loads allowed */
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:up ? b.weights : a.weights offset:0 atIndex:1];
+    [encoder setBuffer:a.input offset:x.span.offset_bytes atIndex:2];
+    [encoder setBuffer:a.output offset:y.span.offset_bytes atIndex:3];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:4];
+    [encoder setBytes:&args[0] length:sizeof args[0] atIndex:5];
+    [encoder setBytes:&args[1] length:sizeof args[1] atIndex:6];
+    [encoder setBuffer:gbuf offset:go atIndex:7];
+    /* Row tiles: at most ceil(pairs / GG_M) plus one partial tile per expert; the rest exit. */
+    MTLSize groups=MTLSizeMake((gl->n_out+tn-1)/tn,(pairs+tm-1)/tm+MIN(experts,pairs),1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*QW4_GEMM_SG,1,1)];
+    return qw4_b_result(err,QW4_OK,"");
+}
+Qwen4Status qw4_packed_encode_grouped_gate_up(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *gate, const QW4PackedLayout *gl,
+        const GgufBinding *up, const QW4PackedLayout *ul, Qwen4GpuSpan ids, size_t divisor,
+        Qwen4GpuF32 x, Qwen4GpuF32 act, Qwen4GpuSpan group, Qwen4Error *err) {
+    if (!up || !ul) return qw4_b_result(err,QW4_INVALID_ARGUMENT,"grouped gate+up needs up");
+    return encode_grouped(ctx,command,store,gate,gl,up,ul,ids,divisor,x,act,group,err);
+}
+Qwen4Status qw4_packed_encode_grouped_down(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *down, const QW4PackedLayout *dl, Qwen4GpuSpan ids,
+        Qwen4GpuF32 act, Qwen4GpuF32 y, Qwen4GpuSpan group, Qwen4Error *err) {
+    return encode_grouped(ctx,command,store,down,dl,NULL,NULL,ids,1,act,y,group,err);
+}
+
+/* A dense [rows, cols] operand of the fused down+reduce: shape, then span. */
+static Qwen4Status dense_operand(id<MTLDevice> dev, Qwen4GpuF32 v, size_t rows, size_t cols, size_t *bytes,
+                                  id<MTLBuffer> __strong *out) {
+    if (v.rank!=2 || v.dim[0]!=rows || v.dim[1]!=cols) return QW4_SHAPE;
+    Qwen4Status status=qw4_b_matrix(v.rank,v.dim,v.stride_bytes,v.span.bytes,bytes);
+    if (status) return status;
+    if (v.stride_bytes[0]!=cols*4) return QW4_STRIDE;
+    return gpu_span(dev,v.span,*bytes,out);
+}
+/* R1.5c fused down+reduce (qwen4_packed_internal.h): the down projection admitted
+ * as qw4_packed_encode with x = act and y, then the dense operands, the IDs and
+ * the aliases of the two outputs, then the choice. */
+Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuSpan ids, Qwen4GpuF32 act, const QW4DownReduceViews *v, Qwen4GpuF32 y, Qwen4Error *err) {
+    if (!v) return qw4_b_result(err,QW4_INVALID_ARGUMENT,"missing down+reduce views");
+    Admitted a;
+    Qwen4Status status=admit(ctx,command,store,binding,layout,act,y,act.dim[0],&a,err);
+    if (status) return status;
+    size_t t=y.dim[0], k=v->scores.dim[1], n=layout->n_out;
+    if (v->scores.rank!=2 || !k || t>UINT32_MAX/k || act.dim[0]!=t*k)
+        return qw4_b_result(err,QW4_SHAPE,"act rows must be tokens x slots");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    const Qwen4GpuF32 views[4]={v->shared,v->sigmoid,v->scores,v->routed}; /* buffers 2, 3, 4, 6 */
+    const size_t cols[4]={n,1,k,n};
+    id<MTLBuffer> buffer[6]; size_t offset[6], bytes[6];
+    for (size_t i=0;i<4 && !status;i++) {
+        status=dense_operand(dev,views[i],t,cols[i],&bytes[i],&buffer[i]);
+        offset[i]=views[i].span.offset_bytes;
+    }
+    if (status) return qw4_b_result(err,status,"invalid down+reduce operand");
+    status=gpu_span(dev,ids,t*k*4,&buffer[4]);
+    if (status) return qw4_b_result(err,status,"invalid GPU expert-ID span");
+    offset[4]=ids.offset_bytes; bytes[4]=t*k*4;
+    buffer[5]=a.input; offset[5]=act.span.offset_bytes; bytes[5]=a.xb;
+    /* routed (3) aliases nothing; y was checked against act, weights and word by admit(). */
+    for (size_t i=0;i<6;i++)
+        if ((i!=3 && gpu_alias(buffer[3],offset[3],bytes[3],buffer[i],offset[i],bytes[i])) ||
+            (i<5 && gpu_alias(a.output,y.span.offset_bytes,a.yb,buffer[i],offset[i],bytes[i])))
+            return qw4_b_result(err,QW4_INVALID_ARGUMENT,"down+reduce outputs alias an operand");
+    if (gpu_alias(buffer[3],offset[3],bytes[3],a.weights,binding->offset,layout->tensor_bytes) ||
+        gpu_alias(buffer[3],offset[3],bytes[3],a.word,command->error_word.offset_bytes,4))
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"down+reduce outputs alias an operand");
+    void *kernel=indexed_kernel(ctx->down_reduce,layout->gguf_type);
+    if (!kernel || ctx->ref_indexed)
+        return qw4_b_result(err,QW4_UNSUPPORTED,"no fused down+reduce for this format or selection");
+    if (!t) return qw4_b_result(err,QW4_OK,"");
+    size_t wo=binding->offset;
+    QW4DownReduceArgs args={{.base=wire(layout,wo,wo+layout->tensor_bytes,t*k,act,y,&a),
+        .expert_bytes=layout->expert_bytes,.experts=(uint32_t)layout->n_experts,.x_divisor=1},
+        (uint32_t)t,(uint32_t)k};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)kernel];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:a.input offset:act.span.offset_bytes atIndex:1];
+    for (size_t i=0;i<3;i++) [encoder setBuffer:buffer[i] offset:offset[i] atIndex:2+i];
+    [encoder setBuffer:buffer[4] offset:offset[4] atIndex:5];
+    [encoder setBuffer:buffer[3] offset:offset[3] atIndex:6];
+    [encoder setBuffer:a.output offset:y.span.offset_bytes atIndex:7];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
+    [encoder setBytes:&args length:sizeof args atIndex:9];
+    id<MTLComputePipelineState> sp=(__bridge id<MTLComputePipelineState>)indexed_kernel(ctx->down_sp,layout->gguf_type);
+    if (sp && k<=QW4_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==QW4_SIMD && sp.maxTotalThreadsPerThreadgroup>=QW4_SIMD*k) {
+        /* Decode III: one simdgroup per slot, DOWN_ROWS outputs per threadgroup (bit-identical) */
+        [encoder setComputePipelineState:sp];
+        struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={0,0,0,0};
+        const Qwen4GpuF32 hr=v->hc_residual, hi=v->hc_inject;
+        id<MTLBuffer> rb=nil, ib=nil;
+        if (hr.span.buffer && hr.rank==3 && hr.dim[0]==t && hr.dim[2]==n && hr.stride_bytes[2]==4 &&
+            hr.stride_bytes[1]==n*4 && hi.span.buffer && hi.rank==2 && hi.dim[0]==t && hi.dim[1]==hr.dim[1] &&
+            hi.stride_bytes[1]==4 && !ctx->ref_fuse) {
+            size_t rbytes=(t-1)*hr.stride_bytes[0]+hr.dim[1]*n*4, ibytes=(t-1)*hi.stride_bytes[0]+hi.dim[1]*4;
+            if (!gpu_span(dev,hr.span,rbytes,&rb) && !gpu_span(dev,hi.span,ibytes,&ib) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,a.output,y.span.offset_bytes,a.yb) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,ib,hi.span.offset_bytes,ibytes) &&
+                !gpu_alias(rb,hr.span.offset_bytes,rbytes,a.input,act.span.offset_bytes,a.xb))
+                { ea.h=(uint32_t)hr.dim[1]; ea.width=(uint32_t)n; ea.res_stride=hr.stride_bytes[0]/4; ea.inj_stride=hi.stride_bytes[0]/4; }
+        }
+        [encoder setBuffer:ea.h ? rb : a.output offset:ea.h ? hr.span.offset_bytes : y.span.offset_bytes atIndex:10];
+        [encoder setBuffer:ea.h ? ib : a.output offset:ea.h ? hi.span.offset_bytes : y.span.offset_bytes atIndex:11];
+        [encoder setBytes:&ea length:sizeof ea atIndex:12];
+        if (v->hc_added) *v->hc_added=ea.h!=0;
+        [encoder dispatchThreadgroups:MTLSizeMake((n+QW4_DOWN_REDUCE_ROWS-1)/QW4_DOWN_REDUCE_ROWS,t,1)
+                threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*k,1,1)];
+        return qw4_b_result(err,QW4_OK,"");
+    }
+    const size_t per=QW4_DOWN_REDUCE_SG*QW4_DOWN_REDUCE_ROWS;
+    MTLSize groups=MTLSizeMake((n+per-1)/per,t,1);
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*QW4_DOWN_REDUCE_SG,1,1)];
+    return qw4_b_result(err,QW4_OK,"");
+}
+
+Qwen4Status qw4_packed_lookup(QW4PackedGpu *ctx,const Qwen4GpuCommand *cmd,
+    const GpuWeightStore *store,const GgufBinding *binding,const QW4PackedLayout *l,
+    Qwen4GpuSpan ids,Qwen4GpuF32 y,Qwen4Error *e) {
+    if (!ctx || !cmd || !cmd->compute_encoder || !store || !binding || !l)
+        return qw4_b_result(e,QW4_INVALID_ARGUMENT,"missing lookup argument");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd->compute_encoder;
+    if (cmd->device!=ctx->device || enc.device!=dev) return qw4_b_result(e,QW4_OWNER,"lookup device");
+    Qwen4CpuSpan resident; QW4PackedLayout expected; size_t bytes;
+    Qwen4Status code=qwen4_weights_cpu_span(store,binding,&resident,e); if (code) return code;
+    code=qw4_packed_layout_init(&binding->tensor,l->k_logical,&expected,e); if (code) return code;
+    if (!qw4_b_same_layout(l,&expected)) return qw4_b_result(e,QW4_FORMAT,"lookup layout");
+    if (l->n_experts!=1 || y.rank!=2 || y.dim[1]!=l->k_logical) return qw4_b_result(e,QW4_SHAPE,"lookup shape");
+    if (l->n_out>UINT32_MAX || l->k_storage>UINT32_MAX || y.dim[0]>UINT32_MAX)
+        return qw4_b_result(e,QW4_RANGE,"lookup dimensions");
+    code=qw4_b_matrix(y.rank,y.dim,y.stride_bytes,y.span.bytes,&bytes); if (code) return qw4_b_result(e,code,"lookup output");
+    id<MTLBuffer> buffers[4];
+    Qwen4GpuSpan spans[]={ids,y.span,cmd->error_word,{gpu_weights_buffer(store,binding),binding->offset,l->tensor_bytes}};
+    size_t needs[]={y.dim[0]*4,bytes,4,l->tensor_bytes};
+    for (size_t i=0;i<4;i++) {
+        code=gpu_span(dev,spans[i],needs[i],&buffers[i]); if (code) return qw4_b_result(e,code,"lookup span");
+        if (buffers[i].hazardTrackingMode==MTLHazardTrackingModeUntracked) return qw4_b_result(e,QW4_UNSUPPORTED,"lookup hazards");
+        for (size_t j=0;j<i;j++) if (gpu_alias(buffers[i],spans[i].offset_bytes,needs[i],buffers[j],spans[j].offset_bytes,needs[j]))
+            return qw4_b_result(e,QW4_INVALID_ARGUMENT,"lookup alias");
+    }
+    if (buffers[2].storageMode!=MTLStorageModeShared) return qw4_b_result(e,QW4_TYPE,"lookup error storage");
+    if (!y.dim[0]) return qw4_b_result(e,QW4_OK,"");
+    QW4PackedArgs args={.type=l->gguf_type,.k_storage=(uint32_t)l->k_storage,.k_logical=(uint32_t)l->k_logical,
+        .n_out=(uint32_t)l->n_out,.rows=(uint32_t)y.dim[0],.row_bytes=l->row_bytes,.weight_offset=binding->offset,
+        .weight_end=binding->offset+l->tensor_bytes,.y_stride=y.stride_bytes[0],.y_bytes=bytes};
+    id<MTLComputePipelineState> p=(__bridge id<MTLComputePipelineState>)ctx->lookup;
+    [enc setComputePipelineState:p];
+    [enc setBuffer:buffers[3] offset:0 atIndex:0];
+    [enc setBuffer:buffers[0] offset:ids.offset_bytes atIndex:1];
+    [enc setBuffer:buffers[1] offset:y.span.offset_bytes atIndex:2];
+    [enc setBuffer:buffers[2] offset:cmd->error_word.offset_bytes atIndex:3];
+    [enc setBytes:&args length:sizeof args atIndex:4];
+    [enc dispatchThreads:MTLSizeMake(l->k_logical,y.dim[0],1) threadsPerThreadgroup:MTLSizeMake(MIN(l->k_logical,p.maxTotalThreadsPerThreadgroup),1,1)];
+    return qw4_b_result(e,QW4_OK,"");
+}
+
+/* R1.4 multi-GEMV: the projections of one x, one dispatch per fast format.
+ * Mirror of MultiArgs in qwen4_matvec.metal: first[j] is projection j's
+ * first threadgroup column (sum of the earlier n_out of its dispatch). */
+typedef struct { uint32_t count, first[QW4_MULTI_MAX]; } QW4MultiArgs;
+_Static_assert(sizeof(QW4MultiArgs)==36,"multi Metal argument layout");
+Qwen4Status qw4_packed_encode_multi(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *const *bindings, const QW4PackedLayout *layouts,
+        size_t count, Qwen4GpuF32 x, const Qwen4GpuF32 *y, Qwen4Error *err) {
+    if (!bindings || !layouts || !y || !count || count>QW4_MULTI_MAX)
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"multi-GEMV needs 1..8 projections");
+    Admitted a[QW4_MULTI_MAX];
+    for (size_t i=0;i<count;i++) { /* each admitted as alone; no output overlaps another output or weights */
+        Qwen4Status status=admit(ctx,command,store,bindings[i],&layouts[i],x,y[i],y[i].dim[0],&a[i],err);
+        if (status) return status;
+        for (size_t j=0;j<i;j++)
+            if (gpu_alias(a[i].output,y[i].span.offset_bytes,a[i].yb,a[j].output,y[j].span.offset_bytes,a[j].yb) ||
+                gpu_alias(a[i].output,y[i].span.offset_bytes,a[i].yb,a[j].weights,bindings[j]->offset,layouts[j].tensor_bytes) ||
+                gpu_alias(a[j].output,y[j].span.offset_bytes,a[j].yb,a[i].weights,bindings[i]->offset,layouts[i].tensor_bytes))
+                return qw4_b_result(err,QW4_INVALID_ARGUMENT,"aliased GPU outputs");
+    }
+    /* group[f]: projections of fast format f (0 Q8_0, 1 F16, 2 F32) in call
+     * order; the rest (no fast kernel, QW4_REF_KERNELS=linear, no 32-wide
+     * simdgroups) run qw4_packed_encode one by one: its single fast kernel if
+ * one exists and linear is not ref, else the oracle, bit for bit. */
+    size_t group[3][QW4_MULTI_MAX], size[3]={0};
+    for (size_t i=0;i<count;i++) {
+        uint32_t type=layouts[i].gguf_type;
+        size_t f=type==8 ? 0 : type==1 ? 1 : type==0 ? 2 : 3;
+        /* R3.1: with a GEMM for these rows, one GEMM per projection (x reads are cheap there). */
+        if (f<3 && ctx->multi[f] && !ctx->ref_linear && !gemm_kernel(ctx,type,x.dim[0],layouts[i].n_out)) group[f][size[f]++]=i;
+        else {
+            Qwen4Status status=encode_linear(ctx,command,store,bindings[i],&layouts[i],0,x,y[i],false,err);
+            if (status) return status;
+        }
+    }
+    if (!x.dim[0]) return qw4_b_result(err,QW4_OK,"");
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    for (size_t f=0;f<3;f++) {
+        if (!size[f]) continue;
+        QW4PackedArgs args[QW4_MULTI_MAX]; QW4MultiArgs multi={(uint32_t)size[f],{0}};
+        size_t columns=0;
+        [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->multi[f]];
+        for (size_t j=0;j<QW4_MULTI_MAX;j++) { /* unused slots: the error word, never read */
+            [encoder setBuffer:a[0].word offset:command->error_word.offset_bytes atIndex:j];
+            [encoder setBuffer:a[0].word offset:command->error_word.offset_bytes atIndex:8+j];
+        }
+        for (size_t j=0;j<size[f];j++) {
+            size_t i=group[f][j], offset=bindings[i]->offset;
+            args[j]=wire(&layouts[i],offset,offset+layouts[i].expert_bytes,x.dim[0],x,y[i],&a[i]);
+            multi.first[j]=(uint32_t)columns;
+            columns+=layouts[i].n_out;
+            if (columns>UINT32_MAX) return qw4_b_result(err,QW4_RANGE,"multi-GEMV rows exceed uint32");
+            [encoder setBuffer:a[i].weights offset:0 atIndex:j];
+            [encoder setBuffer:a[i].output offset:y[i].span.offset_bytes atIndex:8+j];
+        }
+        [encoder setBuffer:a[0].input offset:x.span.offset_bytes atIndex:16];
+        [encoder setBuffer:a[0].word offset:command->error_word.offset_bytes atIndex:17];
+        [encoder setBytes:args length:size[f]*sizeof *args atIndex:18];
+        [encoder setBytes:&multi length:sizeof multi atIndex:19];
+        size_t tile=f ? QW4_DENSE_T : QW4_Q8_T, simdgroups=f ? dense_split(x.dim[1]) : 1;
+        [encoder dispatchThreadgroups:MTLSizeMake(columns,(x.dim[0]+tile-1)/tile,1)
+                threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*simdgroups,1,1)];
+    }
+    return qw4_b_result(err,QW4_OK,"");
+}
+
+/* Decode III Q8_0 linear + HC_ADD (qwen4_packed_internal.h). */
+bool qw4_packed_add_ready(const QW4PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t n_out) {
+    return ctx && ctx->q8_add && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==8 && !gemm_kernel(ctx,8,rows,n_out);
+}
+Qwen4Status qw4_packed_encode_add(QW4PackedGpu *ctx, const Qwen4GpuCommand *command, const GpuWeightStore *store,
+        const GgufBinding *binding, const QW4PackedLayout *layout, Qwen4GpuF32 x, Qwen4GpuF32 y,
+        Qwen4GpuF32 residual, Qwen4GpuF32 inject, Qwen4Error *err) {
+    Admitted a;
+    Qwen4Status status=admit(ctx,command,store,binding,layout,x,y,y.dim[0],&a,err);
+    if (status) return status;
+    size_t t=y.dim[0], n=layout->n_out, h=residual.rank==3 ? residual.dim[1] : 0;
+    if (!qw4_packed_add_ready(ctx,layout->gguf_type,t,n) || layout->n_experts!=1 || !h ||
+        residual.dim[0]!=t || residual.dim[2]!=n || residual.stride_bytes[2]!=4 || residual.stride_bytes[1]!=n*4 ||
+        inject.rank!=2 || inject.dim[0]!=t || inject.dim[1]!=h || inject.stride_bytes[1]!=4)
+        return qw4_b_result(err,QW4_UNSUPPORTED,"no fused linear + HC_ADD for this shape or selection");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLBuffer> rb, ib; size_t rbytes=(t-1)*residual.stride_bytes[0]+h*n*4, ibytes=(t-1)*inject.stride_bytes[0]+h*4;
+    if (!t) return qw4_b_result(err,QW4_OK,"");
+    if ((status=gpu_span(dev,residual.span,rbytes,&rb)) || (status=gpu_span(dev,inject.span,ibytes,&ib)))
+        return qw4_b_result(err,status,"invalid HC_ADD view");
+    size_t ro=residual.span.offset_bytes, wo=binding->offset;
+    if (gpu_alias(rb,ro,rbytes,a.input,x.span.offset_bytes,a.xb) || gpu_alias(rb,ro,rbytes,a.output,y.span.offset_bytes,a.yb) ||
+        gpu_alias(rb,ro,rbytes,ib,inject.span.offset_bytes,ibytes) || gpu_alias(rb,ro,rbytes,a.weights,wo,layout->tensor_bytes) ||
+        gpu_alias(rb,ro,rbytes,a.word,command->error_word.offset_bytes,4))
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"HC_ADD residual aliases an operand");
+    QW4PackedArgs args=wire(layout,wo,wo+layout->expert_bytes,t,x,y,&a);
+    struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={(uint32_t)h,(uint32_t)n,
+        residual.stride_bytes[0]/4,inject.stride_bytes[0]/4};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->q8_add];
+    bind(encoder,&a,x,y,command);
+    [encoder setBytes:&args length:sizeof args atIndex:4];
+    [encoder setBuffer:rb offset:ro atIndex:5];
+    [encoder setBuffer:ib offset:inject.span.offset_bytes atIndex:6];
+    [encoder setBytes:&ea length:sizeof ea atIndex:7];
+    [encoder dispatchThreadgroups:MTLSizeMake(n,(t+QW4_Q8_T-1)/QW4_Q8_T,1) threadsPerThreadgroup:MTLSizeMake(QW4_SIMD,1,1)];
+    return qw4_b_result(err,QW4_OK,"");
+}
+
+/* Decode III HC down with the RMSNorm folded in (qwen4_packed_internal.h). */
+bool qw4_packed_hc_down_rms_ready(const QW4PackedGpu *ctx, uint32_t gguf_type, size_t rows, size_t k, size_t streams) {
+    return ctx && ctx->hc_down && !ctx->ref_linear && !ctx->ref_fuse && gguf_type==1 &&
+        !gemm_kernel(ctx,1,rows,SIZE_MAX) && streams && streams<=4 && !(k%streams) && !((k/streams)%8) &&
+        dense_split(k)>=2;
+}
+Qwen4Status qw4_packed_encode_hc_down_rms(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *down, const QW4PackedLayout *dl,
+        const GgufBinding *inject, const QW4PackedLayout *il_layout, size_t streams, float eps,
+        Qwen4GpuF32 r, Qwen4GpuF32 gain, Qwen4GpuF32 normed, Qwen4GpuF32 low, Qwen4GpuF32 il, Qwen4Error *err) {
+    Admitted a, b={0};
+    Qwen4Status status=admit(ctx,command,store,down,dl,r,low,r.dim[0],&a,err);
+    if (status) return status;
+    const bool inj=inject!=NULL;
+    if (inj && (status=admit(ctx,command,store,inject,il_layout,r,il,r.dim[0],&b,err))) return status;
+    size_t t=r.dim[0], k=dl->k_logical, h=streams, width=h ? k/h : 0;
+    if (!ctx->hc_down || ctx->ref_linear || ctx->ref_fuse || gemm_kernel(ctx,1,t,SIZE_MAX) || dl->gguf_type!=1 ||
+        dl->n_experts!=1 || (inj && (il_layout->gguf_type!=1 || il_layout->n_experts!=1 || il_layout->k_logical!=k)) ||
+        !h || h>4 || k%h || width%8 || dense_split(k)<2 || t>UINT32_MAX)
+        return qw4_b_result(err,QW4_UNSUPPORTED,"no fused HC down for this shape or selection");
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    /* r, normed, low, il dense [t, cols]; gain [width] or [h, width] */
+    const bool g2=gain.rank==2;
+    if (r.stride_bytes[0]!=k*4 || normed.rank!=2 || normed.dim[0]!=t || normed.dim[1]!=k || normed.stride_bytes[0]!=k*4 ||
+        low.stride_bytes[0]!=dl->n_out*4 || (inj && il.stride_bytes[0]!=il_layout->n_out*4) ||
+        !(g2 ? gain.dim[0]==h && gain.dim[1]==width && gain.stride_bytes[0]==width*4 && gain.stride_bytes[1]==4 :
+               gain.rank==1 && gain.dim[0]==width && gain.stride_bytes[0]==4))
+        return qw4_b_result(err,QW4_UNSUPPORTED,"HC down views not dense");
+    id<MTLBuffer> gb, nb; size_t gbytes=(g2 ? h : 1)*width*4, nbytes=t*k*4;
+    if ((status=gpu_span(dev,gain.span,gbytes,&gb)) || (status=gpu_span(dev,normed.span,nbytes,&nb)))
+        return qw4_b_result(err,status,"invalid HC down view");
+    if (gpu_alias(nb,normed.span.offset_bytes,nbytes,a.input,r.span.offset_bytes,a.xb) ||
+        gpu_alias(nb,normed.span.offset_bytes,nbytes,a.output,low.span.offset_bytes,a.yb) ||
+        (inj && gpu_alias(nb,normed.span.offset_bytes,nbytes,b.output,il.span.offset_bytes,b.yb)) ||
+        (inj && gpu_alias(a.output,low.span.offset_bytes,a.yb,b.output,il.span.offset_bytes,b.yb)) ||
+        gpu_alias(nb,normed.span.offset_bytes,nbytes,a.word,command->error_word.offset_bytes,4))
+        return qw4_b_result(err,QW4_INVALID_ARGUMENT,"HC down outputs alias an operand");
+    if (!t) return qw4_b_result(err,QW4_OK,"");
+    size_t wo=down->offset;
+    QW4HcDownArgs args={.down=wire(dl,wo,wo+dl->tensor_bytes,t,r,low,&a),.streams=(uint32_t)h,.width=(uint32_t)width,
+        .n_inject=inj ? (uint32_t)il_layout->n_out : 0,.gain_rank=g2 ? 2 : 1,.eps=eps};
+    if (inj) { size_t io=inject->offset; args.inject=wire(il_layout,io,io+il_layout->tensor_bytes,t,r,il,&b); }
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)ctx->hc_down];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    [encoder setBuffer:inj ? b.weights : a.weights offset:0 atIndex:1];
+    [encoder setBuffer:a.input offset:r.span.offset_bytes atIndex:2];
+    [encoder setBuffer:gb offset:gain.span.offset_bytes atIndex:3];
+    [encoder setBuffer:nb offset:normed.span.offset_bytes atIndex:4];
+    [encoder setBuffer:a.output offset:low.span.offset_bytes atIndex:5];
+    [encoder setBuffer:inj ? b.output : a.output offset:inj ? il.span.offset_bytes : low.span.offset_bytes atIndex:6];
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:7];
+    [encoder setBytes:&args length:sizeof args atIndex:8];
+    [encoder dispatchThreadgroups:MTLSizeMake(dl->n_out+(inj ? il_layout->n_out : 0),t,1)
+            threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*dense_split(k),1,1)];
+    return qw4_b_result(err,QW4_OK,"");
+}
+
+/* R2.6 fused HC read tail (qwen4_packed_internal.h): up admitted as
+ * qw4_packed_encode (x = act, y = gate), then the choice, then the other
+ * views and the aliases of the four outputs. */
+Qwen4Status qw4_packed_encode_hc_tail(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *up, const QW4PackedLayout *layout, size_t streams,
+        Qwen4GpuF32 low, Qwen4GpuF32 normed, Qwen4GpuF32 il, Qwen4GpuF32 act, Qwen4GpuF32 gate,
+        Qwen4GpuF32 mixed, Qwen4GpuF32 inject, Qwen4Error *err) {
+    Admitted a;
+    Qwen4Status status=admit(ctx,command,store,up,layout,act,gate,gate.dim[0],&a,err);
+    if (status) return status;
+    size_t t=gate.dim[0], k=layout->k_logical, h=streams;
+    /* R3.1: many rows (prefill) take the sequence, whose up projection is a GEMM. */
+    if (!ctx->hc_tail || ctx->ref_linear || ctx->ref_fuse || gemm_kernel(ctx,1,t,SIZE_MAX) || layout->gguf_type!=1 || layout->n_experts!=1 ||
+        dense_split(k)!=1 || k>QW4_HC_TAIL_MAX_K || !h || h>QW4_HC_TAIL_MAX_H || layout->n_out%h)
+        return qw4_b_result(err,QW4_UNSUPPORTED,"no fused HC tail for this shape or selection");
+    size_t width=layout->n_out/h;
+    bool inj=il.span.buffer!=NULL;
+    /* 0 low, 1 normed, 2 il, 3 act, 4 gate, 5 mixed, 6 inject; 3..6 are written. */
+    const Qwen4GpuF32 v[7]={low,normed,il,act,gate,mixed,inject};
+    const size_t cols[7]={k,h*width,h,k,h*width,width,h};
+    id<MTLDevice> dev=(__bridge id<MTLDevice>)ctx->device;
+    id<MTLBuffer> buffer[7]; size_t bytes[7];
+    for (size_t i=0;i<7;i++) {
+        if (!inj && (i==2 || i==6)) { buffer[i]=nil; bytes[i]=0; continue; }
+        if (v[i].rank!=2 || v[i].dim[0]!=t || v[i].dim[1]!=cols[i])
+            return qw4_b_result(err,QW4_SHAPE,"HC tail view dimensions differ");
+        status=qw4_b_matrix(v[i].rank,v[i].dim,v[i].stride_bytes,v[i].span.bytes,&bytes[i]);
+        if (!status) status=gpu_span(dev,v[i].span,bytes[i],&buffer[i]);
+        if (status) return qw4_b_result(err,status,"invalid HC tail view");
+    }
+    for (size_t o=3;o<7;o++) {
+        if (!buffer[o]) continue;
+        for (size_t i=0;i<7;i++)
+            if (i!=o && buffer[i] && gpu_alias(buffer[o],v[o].span.offset_bytes,bytes[o],buffer[i],v[i].span.offset_bytes,bytes[i]))
+                return qw4_b_result(err,QW4_INVALID_ARGUMENT,"HC tail output aliases an operand");
+        if (gpu_alias(buffer[o],v[o].span.offset_bytes,bytes[o],a.weights,up->offset,layout->tensor_bytes) ||
+            gpu_alias(buffer[o],v[o].span.offset_bytes,bytes[o],a.word,command->error_word.offset_bytes,4))
+            return qw4_b_result(err,QW4_INVALID_ARGUMENT,"HC tail output aliases an operand");
+    }
+    if (!t) return qw4_b_result(err,QW4_OK,"");
+    if (t>UINT32_MAX || width>UINT32_MAX) return qw4_b_result(err,QW4_RANGE,"HC tail dimensions exceed uint32");
+    size_t wo=up->offset;
+    QW4HcTailArgs args={.up=wire(layout,wo,wo+layout->tensor_bytes,t,act,gate,&a),.streams=(uint32_t)h,
+        .width=(uint32_t)width,.inject=inj,.low=low.stride_bytes[0]/4,.normed=normed.stride_bytes[0]/4,
+        .mixed=mixed.stride_bytes[0]/4,.il=inj ? il.stride_bytes[0]/4 : 0,.out=inj ? inject.stride_bytes[0]/4 : 0};
+    id<MTLComputeCommandEncoder> encoder=(__bridge id<MTLComputeCommandEncoder>)command->compute_encoder;
+    const bool tail8=ctx->hc_tail8 && !(layout->k_logical%8) && !(wo%16) && !(layout->row_bytes%16);
+    [encoder setComputePipelineState:(__bridge id<MTLComputePipelineState>)(tail8 ? ctx->hc_tail8 : ctx->hc_tail)];
+    [encoder setBuffer:a.weights offset:0 atIndex:0];
+    for (size_t i=0;i<7;i++) { /* the absent il and inject bind low, never read or written */
+        size_t j=buffer[i] ? i : 0;
+        [encoder setBuffer:buffer[j] offset:v[j].span.offset_bytes atIndex:1+i];
+    }
+    [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
+    [encoder setBytes:&args length:sizeof args atIndex:9];
+    const size_t tsg=tail8 ? QW4_HC_TAIL8_SG : QW4_HC_TAIL_SG;
+    [encoder dispatchThreadgroups:MTLSizeMake((width+tsg-1)/tsg,t,1)
+            threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*tsg,1,1)];
+    return qw4_b_result(err,QW4_OK,"");
+}

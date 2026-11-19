@@ -3,7 +3,7 @@
 #include "pf_tools.h"
 #include "pf_web.h"
 #include "common.h"
-#include "qwen38_run.h"     /* q38_now, q38_stopped */
+#include "qwen4_run.h"     /* qw4_now, qw4_stopped */
 #include <ctype.h>
 #include <copyfile.h>
 #include <dirent.h>
@@ -403,12 +403,12 @@ static void *job_monitor(void *arg) {
         int status = 0; pid_t r = waitpid(j->pid, &status, WNOHANG);
         if (r == j->pid || (r < 0 && errno != EINTR)) {
             pthread_mutex_lock(&j->mu);
-            j->done = true; j->status = status; j->ended = q38_now();
+            j->done = true; j->status = status; j->ended = qw4_now();
             pthread_mutex_unlock(&j->mu);
             return NULL;
         }
         pthread_mutex_lock(&j->mu);
-        double now = q38_now(), deadline = j->deadline;
+        double now = qw4_now(), deadline = j->deadline;
         if (!terminated && now >= deadline) j->timed_out = !j->stopped;
         pthread_mutex_unlock(&j->mu);
         if (!terminated && now >= deadline) { killpg(j->pid, SIGTERM); terminated = true; kill_at = now+2; }
@@ -422,7 +422,7 @@ static bool job_done(Job *j) {
 }
 /* Wait up to `seconds` for the job to end; Ctrl+C stops waiting. */
 static bool job_wait(Job *j, double seconds) {
-    for (double end = q38_now()+seconds; !job_done(j) && q38_now() < end && !q38_stopped;) pause_ms(20);
+    for (double end = qw4_now()+seconds; !job_done(j) && qw4_now() < end && !qw4_stopped;) pause_ms(20);
     return job_done(j);
 }
 /* End the group now (the monitor sends the signals) and wait for it. */
@@ -458,7 +458,7 @@ static void log_tail(const Job *j, off_t after, int lines, Buf *out) {
 static void job_state(Job *j, Buf *out) {
     pthread_mutex_lock(&j->mu);
     bool done = j->done, timed_out = j->timed_out; int status = j->status;
-    double secs = (done ? j->ended : q38_now())-j->started;
+    double secs = (done ? j->ended : qw4_now())-j->started;
     pthread_mutex_unlock(&j->mu);
     if (!done) buf_fmt(out, "[job %d running for %.0f s: %s]\n", j->id, secs, j->command);
     else if (timed_out) buf_fmt(out, "[stopped by its timeout after %.0f s]\n", secs);
@@ -516,7 +516,7 @@ static void tool_bash(PfTools *a, const PfCall *c, Buf *out) {
         char real[PATH_MAX];
         if (realpath(a->job_dir, real)) snprintf(a->job_dir, sizeof a->job_dir, "%s", real);
     }
-    *j = (Job){.id = ++a->last_job, .started = q38_now()};
+    *j = (Job){.id = ++a->last_job, .started = qw4_now()};
     j->deadline = j->started+(double)timeout;
     snprintf(j->log, sizeof j->log, "%s/job%d.log", a->job_dir, j->id);
     int fd = open(j->log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -529,7 +529,7 @@ static void tool_bash(PfTools *a, const PfCall *c, Buf *out) {
     j->monitoring = !pthread_create(&j->monitor, NULL, job_monitor, j);
     if (!j->monitoring) die("pf-agent: cannot start a job monitor");
     bool ended = job_wait(j, (double)refresh);
-    if (!ended && q38_stopped) { job_stop(j); ended = true; buf_str(out, "[interrupted by the user]\n"); }
+    if (!ended && qw4_stopped) { job_stop(j); ended = true; buf_str(out, "[interrupted by the user]\n"); }
     job_report(j, out);
     if (ended) { job_free(j); return; }
     buf_fmt(out, "[still running as job %d: bash_status id=%d shows new output, bash_stop id=%d ends it]\n", j->id, j->id, j->id);

@@ -1,6 +1,6 @@
 /* common.h — the few helpers every part of the engine shares.
  *
- * Deliberately tiny: the model-specific types live in the qwen38_*.h headers,
+ * Deliberately tiny: the model-specific types live in the qwen4_*.h headers,
  * the GGUF reader in gguf.h. What is left here is "fail loudly" and a JSON
  * scanner just big enough for chat and tokenizer metadata.
  */

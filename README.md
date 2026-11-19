@@ -81,7 +81,7 @@ speculative decoding must emit exactly the tokens of plain greedy decoding.
 
 ```sh
 make test-all      # offline checks, no checkpoint
-make test-qwen38   # full gate (needs the reference assets)
+make test-qwen4    # full gate (needs the reference assets)
 ```
 
 ## Documentation

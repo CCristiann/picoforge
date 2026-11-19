@@ -3,15 +3,15 @@
  *   pf [-m MODEL] [-p TEXT] [-n N] [--mtp] ...      chat or one answer
  *   pf bench [same options]  (or pf-bench)           repeated decode timing
  *   pf models                                         the models -m can name
- *   pf --qwen38 FILE.gguf [flags]                     long form, every measurement flag
+ *   pf --qwen4 FILE.gguf [flags]                     long form, every measurement flag
  *   pf --inspect-gguf FILE.gguf                       tensor inventory
  *
  * The engine runs one model family at a time. Everything model-specific
- * lives in src/qwen38_*; this file only decides which entry point to call.
+ * lives in src/qwen4_*; this file only decides which entry point to call.
  */
 #include "common.h"
 #include "gguf.h"
-#include "qwen38_cli.h"
+#include "qwen4_cli.h"
 #include "model_select.h"
 
 #include <stdio.h>
@@ -20,7 +20,7 @@ static int usage(void) {
     fputs("usage: pf [-m MODEL] [-p TEXT] [-n N] [-c CTX] [--mtp] [--thinking]\n"
           "       pf bench [options]   (also: pf-bench [options])\n"
           "       pf models\n"
-          "       pf --qwen38 FILE.gguf [flags]\n"
+          "       pf --qwen4 FILE.gguf [flags]\n"
           "       pf --inspect-gguf FILE.gguf\n"
           "MODEL is a .gguf path or a short name from `pf models` (e.g. q4); without -m,\n"
           "$PICOFORGE_MODEL, the only model found, or a choice on the terminal.\n", stderr);
@@ -30,9 +30,9 @@ static int usage(void) {
 int main(int argc, char **argv) {
     if (argc > 1 && (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))) return usage();
     if (argc == 2 && !strcmp(argv[1], "models")) return model_list(argv[0]);
-    if (argc > 1 && !strcmp(argv[1], "--qwen38")) return qwen38_cli(argc, argv);
-    if (qwen38_short_form(argc, argv)) return qwen38_short(argc, argv);
-    if (argc > 1 && !strcmp(argv[1], "bench")) return qwen38_bench(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "--qwen4")) return qwen4_cli(argc, argv);
+    if (qwen4_short_form(argc, argv)) return qwen4_short(argc, argv);
+    if (argc > 1 && !strcmp(argv[1], "bench")) return qwen4_bench(argc, argv);
     if (argc > 1 && !strcmp(argv[1], "--inspect-gguf")) {
         if (argc != 3) die("usage: pf --inspect-gguf FILE");
         Gguf g;
