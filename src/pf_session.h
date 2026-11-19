@@ -18,6 +18,7 @@ typedef struct { const char *role, *content; } PfMsg;     /* "user", "assistant"
 
 typedef struct {
     void (*text)(void *ctx, const uint8_t *, size_t);       /* reply bytes as they are decoded */
+    void (*progress)(void *ctx, size_t prefilled, size_t prompt, size_t generated);   /* optional */
     void *ctx;
 } PfStream;
 

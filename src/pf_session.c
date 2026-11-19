@@ -176,7 +176,8 @@ char *pf_session_reply(PfSession *s, size_t added, const PfStream *stream, PfRep
     if (canned) { pf_session_dump(s); return canned; }
     Q38Turn t; bool replayed;
     size_t prefilled = q38_chat_continue(&s->run, s->ids, s->n, total, s->max_new,
-        stream ? stream->text : NULL, stream ? stream->ctx : NULL, s->generated, &t, &replayed);
+        stream ? stream->text : NULL, stream ? stream->ctx : NULL, stream ? stream->progress : NULL,
+        s->generated, &t, &replayed);
     bool cancelled = !strcmp(t.reason, "cancelled");
     memcpy(s->ids+total, s->generated, t.got*sizeof *s->ids);
     if (t.got || !cancelled) s->n = total+t.got;   /* stopped before the first token: drop the turn (as the REPL) */

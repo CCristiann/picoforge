@@ -113,7 +113,7 @@ static void show_result(const Buf *out) {
 
 static char *reply(Agent *a, size_t added) {
     View v = {.out = {.color = isatty(STDOUT_FILENO)}}; q38_printer_shade(&v.out, a->s.thinking);
-    PfStream stream = {view_text, &v}; PfReplyStats st;
+    PfStream stream = {view_text, NULL, &v}; PfReplyStats st;
     char *text = pf_session_reply(&a->s, added, &stream, &st);
     view_end(&v);
     if (!st.generated && !st.prefilled && text) return text;   /* a canned reply (--script) */

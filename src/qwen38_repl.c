@@ -117,6 +117,7 @@ void q38_print_end(Printer *p) { fwrite(p->pending,1,p->n,stdout); p->n=0; q38_p
  * to `held` is the transcript, so a graph past it (a cancelled turn) replays. */
 size_t q38_chat_continue(Q38Run *r, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
                          void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
+                         void (*progress)(void *, size_t, size_t, size_t),
                          int32_t *generated, Q38Turn *t, bool *replayed) {
     Qwen38Error e; q38_stopped=0; *replayed=false;
     size_t pos=(size_t)qwen38_gpu_forward_info(r->graph).next_pos;
@@ -133,13 +134,13 @@ size_t q38_chat_continue(Q38Run *r, const int32_t *ids, size_t held, size_t tota
     size_t room=r->capacity-total; if (!max_new || max_new>room) max_new=(uint32_t)room;
     qwen38_decoder_reset(r->decoder);
     q38_turn(r,ids+pos,total-pos,(Q38TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=max_new,
-        .stop_after=UINT32_MAX,.keep_predictor=true,.print=print,.print_ctx=print_ctx},generated,t);
+        .stop_after=UINT32_MAX,.keep_predictor=true,.print=print,.print_ctx=print_ctx,.progress=progress},generated,t);
     return total-pos;
 }
 static void reply(Chat *ch, size_t added) {
     Q38Run *r=ch->r; size_t total=ch->n+added;
     Q38Turn t; Printer printer={.color=isatty(STDOUT_FILENO)}; q38_printer_shade(&printer,ch->thinking);
-    bool replayed; size_t prefilled=q38_chat_continue(r,ch->ids,ch->n,total,ch->max_new,q38_print_text,&printer,ch->generated,&t,&replayed);
+    bool replayed; size_t prefilled=q38_chat_continue(r,ch->ids,ch->n,total,ch->max_new,q38_print_text,&printer,NULL,ch->generated,&t,&replayed);
     q38_print_end(&printer);
     ch->replays+=replayed;
     fputc('\n',stdout);

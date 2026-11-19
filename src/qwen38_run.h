@@ -70,6 +70,9 @@ typedef struct {
     bool keep_predictor;
     /* Optional text sink (REPL formatting); NULL writes the bytes to stdout. */
     void (*print)(void *, const uint8_t *, size_t); void *print_ctx;
+    /* Optional, for a status line: after each prefill chunk (prefilled of
+     * prompt tokens) and each emitted token (generated). Same ctx as print. */
+    void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated);
 } Q38TurnOptions;
 
 typedef struct {
@@ -110,6 +113,7 @@ void q38_print_end(Q38Printer *);
  * ids prefilled. */
 size_t q38_chat_continue(Q38Run *, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
                          void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
+                         void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated),
                          int32_t *generated, Q38Turn *, bool *replayed);
 /* Interactive chat on stdin (src/qwen38_repl.c). max_new 0 = until stop or full context. */
 int q38_repl(Q38Run *, bool thinking, uint32_t max_new, const char *ids_path);

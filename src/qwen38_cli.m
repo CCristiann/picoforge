@@ -245,6 +245,7 @@ static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,i
             t->mtp_prefill_s+=q38_now()-mtp_start;
             if (pairs) accumulate(&t->mtp,graph);
         }
+        if (o.progress) o.progress(o.print_ctx,start+n,count,0);
         if (o.session) {
             fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
             fflush(stdout);
@@ -288,6 +289,7 @@ static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,i
         int32_t id=have_id ? next_id : pick(r,logits,vocab);
         if (probe>=0) { pol->alpha[0]+=((probe==id)-pol->alpha[0])/8; probe=-1; }
         generated[got++]=id;
+        if (o.progress) o.progress(o.print_ctx,count,count,got);
         if (qwen38_token_is_stop(r->tok,id)) t->reason="stop";
         else emit(r->decoder,&id,&o);
         if (t->first_token==0) { t->first_token=q38_now(); t->decode_start=t->first_token; }
@@ -355,6 +357,7 @@ static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,i
         for (size_t j=0;j<m && !done;j++) {   /* row j's argmax is draft j */
             if (o.logfile && fwrite(logits+j*vocab,4,vocab,o.logfile)!=vocab) die("logits write failed");
             generated[got++]=d[j]; emit(r->decoder,&d[j],&o); step++;
+            if (o.progress) o.progress(o.print_ctx,count,count,got);
             if (got==o.stop_after) { t->reason="cancelled"; done=true; }
         }
         if (done) break;
