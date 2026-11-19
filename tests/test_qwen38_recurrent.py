@@ -495,7 +495,7 @@ class CHc(ct.Structure):
 
 class CGdn(ct.Structure):
     _fields_ = [(name, ct.c_size_t) for name in ("key_heads", "value_heads", "key_dim", "value_dim")] + [
-                ("rms_eps", ct.c_float), ("l2_eps", ct.c_float)]
+                ("rms_eps", ct.c_float), ("l2_eps", ct.c_float), ("silu_gate", ct.c_bool)]
 
 
 def c_view(array):
@@ -698,8 +698,15 @@ class NativeTests(unittest.TestCase):
                 np.testing.assert_array_equal(actual, expected)
             o, z, gain = rng.normal(size=(t, hv, dv)).astype(np.float32), rng.normal(size=(t, hv, dv)).astype(np.float32), rng.normal(size=dv).astype(np.float32)
             expected = oracle.gdn_norm_reference(self.ref, *map(torch.from_numpy, (o, z, gain)))
+            source = o.copy()
             self.invoke("gdn_norm_gate", ct.byref(shape), *map(c_view, (o, z, gain, o)))
             self.assertLessEqual(oracle.error_metrics(torch.from_numpy(o), expected)["scaled_inf"], 1e-5)
+            # SiLU gate (upstream output_gate_type "silu", its default when unset).
+            silu = oracle.gdn_norm_reference(self.ref, *map(torch.from_numpy, (source, z, gain)), activation="silu")
+            shape.silu_gate, o = True, source.copy()
+            self.invoke("gdn_norm_gate", ct.byref(shape), *map(c_view, (o, z, gain, o)))
+            shape.silu_gate = False
+            self.assertLessEqual(oracle.error_metrics(torch.from_numpy(o), silu)["scaled_inf"], 1e-5)
 
     def check_numeric(self, name, got, expected, tolerance, axes=1):
         expected = expected if isinstance(expected, torch.Tensor) else torch.from_numpy(expected)

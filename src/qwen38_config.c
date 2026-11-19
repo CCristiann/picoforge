@@ -69,7 +69,8 @@ static Qwen38Status known_fields(const Gguf *g, Qwen38Error *e) {
         "hyper_connection.low_rank","rope.dimension_count","rope.freq_base","attention.compress_ratios",
         "ple.layers","ple.ngram_size","ple.heads_per_ngram","ple.conv_kernel","ple.eos_token_id",
         "embedding_length_per_layer_input","ple.seed","ple.vocab_base","ple.vocab_divisor","ple.row_count",
-        "ple.row_dimension","ple.layer_multipliers","ple.head_offsets","ple.head_vocab_sizes"
+        "ple.row_dimension","ple.layer_multipliers","ple.head_offsets","ple.head_vocab_sizes",
+        "ssm.output_gate_type"
     };
     for (size_t i = 0; i < g->metadata_count; ++i) {
         const char *key = g->metadata[i].name;
@@ -127,6 +128,27 @@ static Qwen38Status array64(const Gguf *g, const char *key, size_t expected,
     for (size_t i = 0; i < n; ++i) (*out)[i] = q38a_le(b.data+8*i, 8);
     return Q38_OK;
 }
+static bool has_key(const Gguf *g, const char *key) {
+    for (size_t i = 0; i < g->metadata_count; ++i) if (!strcmp(g->metadata[i].name, key)) return true;
+    return false;
+}
+/* GDN output gate. Upstream's output_gate_type falls back to hidden_act (SiLU);
+ * Flash-Next sets "sigmoid" and its GGUF carries no key, so an absent key means
+ * sigmoid. The key name mirrors the HF field; provisional until a converter
+ * for a SiLU checkpoint fixes it. */
+static Qwen38Status gate_field(const Gguf *g, bool *silu, Qwen38Error *e) {
+    *silu = false;
+    if (!has_key(g, "qwen4exp.ssm.output_gate_type")) return Q38_OK;
+    Qwen38Bytes b;
+    Qwen38Status s = q38a_meta(g, "qwen4exp.ssm.output_gate_type", 8, &b, e);
+    if (s) return s;
+    if (b.len < 8 || q38a_le(b.data, 8) != b.len-8) return q38a_error(e, Q38_FORMAT, "output_gate_type", "string length");
+    size_t n = b.len-8; const uint8_t *v = b.data+8;
+    if (n == 4 && !memcmp(v, "silu", 4)) *silu = true;
+    else if (!(n == 7 && !memcmp(v, "sigmoid", 7)))
+        return q38a_error(e, Q38_UNSUPPORTED, "output_gate_type", "expected sigmoid or silu");
+    return Q38_OK;
+}
 static Qwen38Status load_fields(const Gguf *g, Qwen38Config *c, Qwen38Error *e) {
     Qwen38ConfigView *v = &c->view;
     Qwen38AttentionConfig *a = &v->attention;
@@ -164,6 +186,8 @@ static Qwen38Status load_fields(const Gguf *g, Qwen38Config *c, Qwen38Error *e) 
     s = float_field(g, "qwen4exp.attention.layer_norm_rms_epsilon", &a->rms_eps, e);
     if (s) return s;
     s = float_field(g, "qwen4exp.rope.freq_base", &a->rope_theta, e);
+    if (s) return s;
+    s = gate_field(g, &v->gdn.silu_gate, e);
     if (s) return s;
     /* R5.3: two profiles of trunk experts, picked by the file's layer-0 tensors and nothing else.
      * Q2: IQ2_XXS gate/up, Q2_K down whose K is padded to 256 (the ds4.qwen4.down.* fields say so).

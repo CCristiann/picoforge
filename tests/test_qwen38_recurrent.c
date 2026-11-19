@@ -121,7 +121,7 @@ static void test_hc(void) {
     assert(normed[0]==4 && normed[1]==0 && normed[2]==4 && normed[3]==13 && normed[4]==18 && normed[5]==31);
 }
 static void test_gdn_lifecycle(void) {
-    Qwen38GdnShape shape={2,6,3,5,1e-6f,1e-6f}; Qwen38StateSize size; Qwen38Error e;
+    Qwen38GdnShape shape={2,6,3,5,1e-6f,1e-6f,false}; Qwen38StateSize size; Qwen38Error e;
     assert(qwen38_gdn_state_bytes(&shape,&size,&e)==Q38_OK && size.payload_bytes>=90*sizeof(float));
     Qwen38Memory m=backing(size.metadata_bytes),p=backing(size.payload_bytes);
     Qwen38GdnState *s; Qwen38StateKey key={.model=&shape,.epoch=1};
@@ -136,7 +136,7 @@ static void test_gdn_lifecycle(void) {
     shape.value_heads=5; assert(qwen38_gdn_state_bytes(&shape,&size,&e)==Q38_SHAPE && size.payload_bytes==0);
 }
 static void test_gdn_prepare(void) {
-    Qwen38GdnShape shape={1,1,2,1,1e-6f,1e-6f}; Qwen38Error e;
+    Qwen38GdnShape shape={1,1,2,1,1e-6f,1e-6f,false}; Qwen38Error e;
     float qkv[]={3,4,0,0,7}, a[]={0}, b[]={0}, weight[]={0}, dt[]={.25f};
     Qwen38F32Mut x=view(qkv,sizeof(qkv),2,(size_t[]){1,5});
     Qwen38F32Mut aa=view(a,sizeof(a),2,(size_t[]){1,1}), bb=view(b,sizeof(b),2,(size_t[]){1,1});
@@ -152,7 +152,7 @@ static void test_gdn_prepare(void) {
     assert(fabsf(o[0]-.25f)<1e-6f);
 }
 static void test_gdn_scan(void) {
-    Qwen38GdnShape shape={1,1,1,1,1e-6f,1e-6f}; Qwen38StateSize size; Qwen38Error e;
+    Qwen38GdnShape shape={1,1,1,1,1e-6f,1e-6f,false}; Qwen38StateSize size; Qwen38Error e;
     assert(qwen38_gdn_state_bytes(&shape,&size,&e)==Q38_OK);
     Qwen38Memory m=backing(size.metadata_bytes),p=backing(size.payload_bytes);
     Qwen38GdnState *s; Qwen38StateKey key={.model=&shape,.epoch=1};

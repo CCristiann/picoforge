@@ -83,8 +83,12 @@ int main(int argc, char **argv) {
     }
     assert(ple == 1 && gdn+qsa == v->blocks);
     assert(qwen38_config_layer(c, v->blocks, &l, &error) == Q38_RANGE && !l);
-    printf("config OK: E=%u V=%u trunk=%u MTP=%u GDN=%zu QSA=%zu\n",
-           v->hidden_size, v->vocab_size, v->trunk_blocks, v->mtp_blocks, gdn, qsa);
+    printf("config OK: E=%u V=%u trunk=%u MTP=%u GDN=%zu QSA=%zu gate=%s\n",
+           v->hidden_size, v->vocab_size, v->trunk_blocks, v->mtp_blocks, gdn, qsa,
+           v->gdn.silu_gate ? "silu" : "sigmoid");
+    for (size_t i = 0; i < g.metadata_count; ++i)       /* a third activation is refused */
+        if (!strcmp(g.metadata[i].name, "qwen4exp.ssm.output_gate_type"))
+            rejected(&g, "qwen4exp.ssm.output_gate_type", 'x', 8, 1, Q38_UNSUPPORTED);
     rejected(&g, "qwen4exp.embedding_length", 0, 0, 4, Q38_RANGE);
     rejected(&g, "qwen4exp.attention.head_count_kv", 5, 0, 4, Q38_SHAPE);
     rejected(&g, "qwen4exp.vocab_size", 1, 0, 4, Q38_RANGE);

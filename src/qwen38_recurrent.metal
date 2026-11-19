@@ -76,7 +76,7 @@ kernel void q38c_rms(Q38C_BUFFERS) {
     for (uint j=0;j<width;++j) {
         float y=(v0[xi+j]*scale)*v1[wi+j];
         if (!valid(y,error)) return;
-        if (a.p[0]) y*=sigmoid(v3[at(a.v[3],i*width+j)]);
+        if (a.p[0]) { float z=v3[at(a.v[3],i*width+j)]; y*=a.p[0]==2 ? z*sigmoid(z) : sigmoid(z); }
         v2[yi+j]=y;
     }
 }
@@ -127,7 +127,7 @@ kernel void q38c_rms_fast(device float *v0 [[buffer(0)]], device float *v1 [[buf
         float y=(v0[xi+j]*scale)*g;
         if (!ok) continue;
         if (!valid(y,error)) continue;
-        if (a.p[0]) y*=sigmoid(z);
+        if (a.p[0]) y*=a.p[0]==2 ? z*sigmoid(z) : sigmoid(z);
         v2[yi+j]=y;
     }
     if (bad) atomic_fetch_or_explicit(error,1u,memory_order_relaxed);

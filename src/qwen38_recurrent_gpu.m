@@ -153,7 +153,7 @@ static Qwen38Status stage(Q38CGpuOp op, const Q38CGpuSpec *s, Q38CGpuArgs *a,
             Qwen38StateSize size; Q38C_TRY(qwen38_gdn_state_bytes(&s->gdn,&size,e));
             if (!gpu_dims(v[0],3,(size_t[]){t,s->gdn.value_heads,s->gdn.value_dim}) ||
                 !gpu_same(v[0],v[3]) || v[1].rank!=1) goto shape;
-            eps=s->gdn.rms_eps; a->p[0]=1; a->read_mask=11;
+            eps=s->gdn.rms_eps; a->p[0]=s->gdn.silu_gate ? 2 : 1; a->read_mask=11; /* gate: 1 sigmoid, 2 SiLU */
         }
         if (!isfinite(eps)) return q38c_error(e,Q38_NONFINITE,"nonfinite RMS epsilon");
         if (eps<=0) return q38c_error(e,Q38_RANGE,"nonpositive RMS epsilon");

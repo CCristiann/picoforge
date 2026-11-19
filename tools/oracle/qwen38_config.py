@@ -67,6 +67,8 @@ def reference_metadata(hf):
     require(all(x == "full_attention" for x in mtp), "HF MTP kind")
     heads = (c["ngram_size"] - 1) * c["heads_per_ngram"]
     require(heads > 0 and c["ple_embed_dim"] % heads == 0, "PLE embedding division")
+    gate = c.get("output_gate_type") or c["hidden_act"]
+    require(gate in ("sigmoid", "silu"), "HF output gate activation")
     rotary = c["head_dim"] * c["rope_parameters"]["partial_rotary_factor"]
     require(rotary == int(rotary) and rotary > 0 and int(rotary) % 2 == 0, "RoPE dimension")
     values.update({
@@ -81,6 +83,9 @@ def reference_metadata(hf):
         "embedding_length_per_layer_input": c["ple_embed_dim"] // heads,
         "ple.row_dimension": c["ple_embed_dim"] // heads,
     })
+    # Flash-Next (sigmoid) carries no key: an absent key means sigmoid.
+    if gate == "silu":
+        values["ssm.output_gate_type"] = "silu"
     return {PREFIX + k: v for k, v in values.items()}
 
 

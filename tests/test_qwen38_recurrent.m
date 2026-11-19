@@ -219,7 +219,7 @@ static void convolutions(void) {
     }
 }
 static void gdn_preparation(void) {
-    Qwen38GdnShape shapes[]={{2,6,3,5,1e-6f,1e-6f},{2,2,4,7,1e-6f,1e-6f},{16,48,128,128,1e-6f,1e-6f}};
+    Qwen38GdnShape shapes[]={{2,6,3,5,1e-6f,1e-6f,false},{2,2,4,7,1e-6f,1e-6f,false},{16,48,128,128,1e-6f,1e-6f,false}};
     for (size_t si=0;si<3;++si) for (size_t inplace=0;inplace<2;++inplace) {
         Q38CGpuSpec spec={.gdn=shapes[si]}; size_t hk=spec.gdn.key_heads, hv=spec.gdn.value_heads;
         size_t dk=spec.gdn.key_dim, dv=spec.gdn.value_dim, c=2*hk*dk+hv*dv, t=si==2 ? 3 : 129;
@@ -243,11 +243,19 @@ static void gdn_preparation(void) {
         View o=view(3,(size_t[]){t,hv,dv},5), z=view(3,(size_t[]){t,hv,dv},3);
         View gain=view(1,(size_t[]){dv},0), y=view(3,(size_t[]){t,hv,dv},7);
         pattern(o,0.5f); pattern(z,2); pattern(gain,1.5f); gain.cpu.data[0]=1e-10f;
-        View target=inplace ? o : y; float *ref=expected(target); Qwen38F32Mut norm=target.cpu; norm.data=ref;
-        assert(qwen38_gdn_norm_gate(&spec.gdn,q38c_ro(o.cpu),q38c_ro(z.cpu),q38c_ro(gain.cpu),norm,NULL)==Q38_OK);
-        Qwen38GpuF32 nv[]={o.gpu,gain.gpu,target.gpu,z.gpu};
-        assert(q38c_gpu_encode(gpu,begin(0),Q38C_GDN_NORM,&spec,nv,4,NULL)==Q38_OK); finish(0);
-        compare(target,ref,1e-5); free(ref); guards(o); guards(z); guards(gain);
+        View target=inplace ? o : y;
+        float *input=malloc(o.cpu.capacity_bytes); assert(input); memcpy(input,o.cpu.data,o.cpu.capacity_bytes);
+        /* Both gate activations (sigmoid, SiLU) on both kernels (the oracle q38c_rms, the fast one). */
+        for (size_t mode=0;mode<4;++mode) {
+            spec.gdn.silu_gate=mode&1; q38c_gpu_set_reference(gpu,mode>>1);
+            memcpy(o.cpu.data,input,o.cpu.capacity_bytes);
+            float *ref=expected(target); Qwen38F32Mut norm=target.cpu; norm.data=ref;
+            assert(qwen38_gdn_norm_gate(&spec.gdn,q38c_ro(o.cpu),q38c_ro(z.cpu),q38c_ro(gain.cpu),norm,NULL)==Q38_OK);
+            Qwen38GpuF32 nv[]={o.gpu,gain.gpu,target.gpu,z.gpu};
+            assert(q38c_gpu_encode(gpu,begin(0),Q38C_GDN_NORM,&spec,nv,4,NULL)==Q38_OK); finish(0);
+            compare(target,ref,1e-5); free(ref);
+        }
+        q38c_gpu_set_reference(gpu,q38_ref_kernels("fuse")); free(input); guards(o); guards(z); guards(gain);
         release_view(o); release_view(z); release_view(gain); release_view(y);
     }
 }
@@ -274,8 +282,8 @@ static void gdn_scans(void) {
     for (size_t test=0;test<19;++test) {
         case_error=0;
         bool real=test>=17; size_t t=real ? (test==17 ? 1 : 65) : lengths[test];
-        Q38CGpuSpec spec={.gdn=real ? (Qwen38GdnShape){16,48,128,128,1e-6f,1e-6f} :
-            (Qwen38GdnShape){2,6,3,5,1e-6f,1e-6f}};
+        Q38CGpuSpec spec={.gdn=real ? (Qwen38GdnShape){16,48,128,128,1e-6f,1e-6f,false} :
+            (Qwen38GdnShape){2,6,3,5,1e-6f,1e-6f,false}};
         size_t hk=spec.gdn.key_heads,hv=spec.gdn.value_heads,dk=spec.gdn.key_dim,dv=spec.gdn.value_dim,c=2*hk*dk+hv*dv;
         Qwen38StateSize bytes; assert(qwen38_gdn_state_bytes(&spec.gdn,&bytes,NULL)==Q38_OK);
         void *metadata=backing(bytes.metadata_bytes), *payload=backing(bytes.payload_bytes); Qwen38GdnState *state=NULL;
@@ -355,7 +363,7 @@ static void state_errors(void) {
         assert(h.cpu.data[0]==1 && y.cpu.data[0]==123456);
     }
     release_view(x); release_view(taps); release_view(y); release_view(h);
-    Q38CGpuSpec s={.gdn={1,1,1,1,1e-6f,1e-6f}};
+    Q38CGpuSpec s={.gdn={1,1,1,1,1e-6f,1e-6f,false}};
     View q=view(2,(size_t[]){1,3},0), g=view(2,(size_t[]){1,1},0), b=view(2,(size_t[]){1,1},0);
     View state=view(3,(size_t[]){1,1,1},0), out=view(3,(size_t[]){1,1,1},0);
     q.cpu.data[0]=q.cpu.data[1]=1; q.cpu.data[2]=0.25f; state.cpu.data[0]=0;

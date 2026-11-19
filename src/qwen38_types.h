@@ -62,6 +62,9 @@ typedef struct { size_t channels, kernel, dilation; bool apply_silu; } Qwen38Con
 typedef struct {
     size_t key_heads, value_heads, key_dim, value_dim;
     float rms_eps, l2_eps;
+    /* Output gate of the gated norm: false = sigmoid (Flash-Next sets it), true =
+     * SiLU (upstream's default when output_gate_type is unset). */
+    bool silu_gate;
 } Qwen38GdnShape;
 typedef struct { size_t streams, hidden_size, low_rank; float rms_eps; } Qwen38HcShape;
 typedef struct {

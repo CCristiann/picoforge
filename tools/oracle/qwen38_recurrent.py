@@ -215,13 +215,16 @@ def zero_centered_weight(gain):
     return weight
 
 
-def gdn_norm_reference(ref, out, z, gain, eps=1e-6):
-    """The GDN gated norm uses direct gain and sigmoid, NOT zero-centered gain."""
+def gdn_norm_reference(ref, out, z, gain, eps=1e-6, activation="sigmoid"):
+    """The GDN gated norm uses direct gain, NOT zero-centered gain. The gate is
+    sigmoid in Flash-Next (output_gate_type) and SiLU in upstream's default."""
     require_fp32(out, z, gain)
     if out.ndim != 3 or out.shape != z.shape or gain.shape != out.shape[-1:]:
         raise ValueError("GDN norm shape mismatch")
     with torch.device("cpu"), torch.inference_mode():
-        norm = ref.Qwen4ExpTextRMSNormGated(out.shape[-1], eps, activation="sigmoid").float()
+        if activation not in ("sigmoid", "silu"):
+            raise ValueError("GDN gate activation")
+        norm = ref.Qwen4ExpTextRMSNormGated(out.shape[-1], eps, activation=activation).float()
         norm.weight.copy_(gain)
         return norm(out, z)
 
@@ -633,7 +636,7 @@ def composition_reference(ref, weights, residual):
     scan, stages["state"] = gdn_reference(ref, q, k, v, stages["log_decay"], stages["beta"], state)
     stages["scan"] = scan.flatten(1)
     stages["gated_norm"] = gdn_norm_reference(ref, scan, stages["z"].reshape_as(scan),
-        weights.constant(11).flatten(), m["eps"]).flatten(1)
+        weights.constant(11).flatten(), m["eps"], m.get("gate", "sigmoid")).flatten(1)
     linear(12, "contribution", stages["gated_norm"])
     stages["residual"] = residual + stages["injection"].unsqueeze(-1) * stages["contribution"].unsqueeze(1)
     return stages

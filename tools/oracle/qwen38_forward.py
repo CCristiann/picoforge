@@ -79,7 +79,8 @@ class GdnAdapter:
         self.w, self.prefix = weights, f"blk.{layer}."
         self.metadata = dict(eps=c["rms_norm_eps"], kernel=c["linear_conv_kernel_dim"],
                              hk=c["linear_num_key_heads"], hv=c["linear_num_value_heads"],
-                             dk=c["linear_key_head_dim"], dv=c["linear_value_head_dim"])
+                             dk=c["linear_key_head_dim"], dv=c["linear_value_head_dim"],
+                             gate=c.get("output_gate_type") or c["hidden_act"])
 
     def name(self, slot):
         suffix = "" if GDN_SLOTS[slot] in ("ssm_a", "ssm_dt.bias") else ".weight"

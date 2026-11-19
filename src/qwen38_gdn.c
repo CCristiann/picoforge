@@ -108,12 +108,15 @@ Qwen38Status qwen38_gdn_norm_gate(const Qwen38GdnShape *s, Qwen38F32 o,
     Q38C_TRY(q38c_alias(y,z,false,e)); Q38C_TRY(q38c_finite(z,e));
     /* RMS validates all other aliases and finite inputs before writing out. */
     Q38C_TRY(qwen38_rmsnorm_groups(o,gain,out,s->rms_eps,e));
-    for (size_t i=0;i<q38c_count(y);++i) out.data[q38c_offset(y,i)] *= q38c_sigmoid(q38c_get(z,i));
+    for (size_t i=0;i<q38c_count(y);++i) {
+        float g=q38c_get(z,i);
+        out.data[q38c_offset(y,i)] *= s->silu_gate ? q38c_silu(g) : q38c_sigmoid(g);
+    }
     return q38c_error(e,Q38_OK,NULL);
 }
 static bool gdn_same(Qwen38GdnShape a, Qwen38GdnShape b) {
     return a.key_heads==b.key_heads && a.value_heads==b.value_heads && a.key_dim==b.key_dim &&
-        a.value_dim==b.value_dim && a.rms_eps==b.rms_eps && a.l2_eps==b.l2_eps;
+        a.value_dim==b.value_dim && a.rms_eps==b.rms_eps && a.l2_eps==b.l2_eps && a.silu_gate==b.silu_gate;
 }
 Qwen38Status qwen38_gdn_scan(const Qwen38GdnShape *shape, Qwen38F32 prepared,
         Qwen38F32 log_decay, Qwen38F32 beta, Qwen38F32Mut out,

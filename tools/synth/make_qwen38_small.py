@@ -165,7 +165,7 @@ def verify(args):
                  "src/qwen38_bpe.c","src/json.c"]+common}
     for name, sources in groups.items():
         subprocess.run(flags+["-Ibuild/qwen38-a"]+sources+["-lm","-o",str(build/f"test_{name}")],cwd=ROOT,check=True)
-        paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn")]
+        paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn","silu")]
         if args.checkpoint: paths.append(args.checkpoint)
         for path in paths:
             command = [str(build/f"test_{name}"),str(path)]
@@ -205,6 +205,9 @@ if __name__ == "__main__":
     write_fixture(destination.with_name("no-mtp.gguf"),no_mtp)
     no_mtp["text_config"].update(num_hidden_layers=1,layer_types=["linear_attention"],ple_layer_ids=[1])
     write_fixture(destination.with_name("last-gdn.gguf"),no_mtp)
+    silu = small_config()                    # upstream's default GDN gate (output_gate_type unset)
+    silu["text_config"].pop("output_gate_type")
+    write_fixture(destination.with_name("silu.gguf"),silu)
     text_cases()
     chat_cases()
     print(destination)
