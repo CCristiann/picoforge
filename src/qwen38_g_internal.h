@@ -10,6 +10,8 @@ Qwen38StateInfo q38g_gpu_ngram_info(const Qwen38GpuForward *,uint32_t layer);
 /* Graph-only rewind after complete validation, with no active command. */
 Qwen38Status q38g_session_rewind(Qwen38GpuSession *,const void *model,uint64_t epoch,
     uint64_t position,Qwen38Error *);
+/* Saved sessions: a fresh (reset, idle) session jumps to position. */
+Qwen38Status q38g_session_seek(Qwen38GpuSession *,const void *model,uint64_t position,Qwen38Error *);
 /* R0.2 opt-in profile (qwen38_profile.h). ENCODING only: ends the current
  * encoder, opens the next (pass: MTLComputePassDescriptor, NULL = plain) and
  * updates cmd. On failure the caller must abort the command. */

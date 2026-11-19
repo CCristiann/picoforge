@@ -67,7 +67,7 @@ int main(int argc,char **argv) { @autoreleasepool {
     Qwen38GpuCommand cmd={(__bridge void *)device,(__bridge void *)encoder,err,false};
     nocopy(gpu,cmd);
     uint32_t dims[4]; read_value(dims,sizeof(dims));
-    for (size_t i=0;i<4;++i) assert(dims[i]<=32768);
+    for (size_t i=0;i<4;++i) assert(dims[i]<=QWEN38_MAX_CONTEXT);
     Q38DGpuArgs a={0}; Qwen38GpuSpan v[6]={0},output={0}; size_t count=0; uint32_t op=0;
     Q38CGpu *c_gpu=NULL;
     bool selection=!strcmp(argv[2],"select_tokens");
@@ -80,7 +80,7 @@ int main(int argc,char **argv) { @autoreleasepool {
         bad=v[0]; bad.offset_bytes++;
         assert(q38d_select_encode(gpu,cmd,visible,r,budget,bad,v[1],v[2],NULL)==Q38_STRIDE);
         if (n) assert(q38d_select_encode(gpu,cmd,visible,r,budget,v[0],v[0],v[2],NULL)==Q38_INVALID_ARGUMENT);
-        assert(q38d_select_encode(gpu,cmd,32769,r,budget,v[0],v[1],v[2],NULL)==Q38_RANGE);
+        assert(q38d_select_encode(gpu,cmd,QWEN38_MAX_CONTEXT+1,r,budget,v[0],v[1],v[2],NULL)==Q38_RANGE);
         assert(q38d_select_encode(gpu,cmd,visible,0,budget,v[0],v[1],v[2],NULL)==Q38_RANGE);
     } else if (!strcmp(argv[2],"rope") || prep) {
         op=Q38D_ROPE; a.h=dims[0]; a.d=dims[1]; a.r=dims[2]; a.pos=dims[3];

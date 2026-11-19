@@ -139,7 +139,7 @@ def main():
     errors = [scaled(np.fromfile(native/f'layer{i}.output.f32', '<f4').reshape(len(TOKENS), -1), hidden[:, i]) for i in range(48)]
     ref = logits_report(logits, fp32); metal = logits_report(logits, stock)
     passed = max(errors)<=GATE and ref['scaled']<=GATE and ref['argmax_matches']==len(TOKENS) and ref['margin_decided']==len(TOKENS)
-    commands.append(fenced(launch, out, 'chat', [ROOT/'picoforge', '--qwen38', checkpoint, '--chat', 'Rispondi in italiano: quanto fa 2 + 2?',
+    commands.append(fenced(launch, out, 'chat', [ROOT/'pf', '--qwen38', checkpoint, '--chat', 'Rispondi in italiano: quanto fa 2 + 2?',
                                                  '--max-new', 16, '--token-ids', out/'chat-ids.json', '--logits', out/'chat-logits.f32'], ROOT))
     memory = json.loads((out/'launch-chat/process/process.json').read_text())
     metal_memory = [json.loads(line.split(': ', 1)[1]) for line in (out/'launch-chat/process/stderr.log').read_text().splitlines()

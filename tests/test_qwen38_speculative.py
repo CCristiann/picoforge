@@ -55,7 +55,7 @@ class Speculative(unittest.TestCase):
     def tearDown(self): self.tmp.cleanup()
     def run_cli(self,gguf,mtp=True,tokens=(1,),n=8,chunk=3,context=32,extra=(),draft='1'):
         self.serial+=1; out=self.path/f'run{self.serial}.jsonl'; logits=self.path/f'run{self.serial}.f32'
-        cmd=[str(ROOT/'picoforge'),'--qwen38',str(gguf),'--tokens',','.join(map(str,tokens)),
+        cmd=[str(ROOT/'pf'),'--qwen38',str(gguf),'--tokens',','.join(map(str,tokens)),
              '--max-new',str(n),'--chunk',str(chunk),'--context',str(context),'--runs-jsonl',str(out),
              '--logits',str(logits),*(['--mtp-draft',draft] if mtp else []),*extra]
         p=subprocess.run(cmd,cwd=ROOT,capture_output=True,timeout=45)
@@ -119,7 +119,7 @@ class Speculative(unittest.TestCase):
                 for row in rows: self.assertEqual(row['generated_ids'],reference[0]['generated_ids'])
                 if draft!='auto': self.assertGreater(rows[0]['mtp']['rollback_count'],0)
     def test_streaming_signal_stop_and_reset(self):
-        p=subprocess.Popen([str(ROOT/'picoforge'),'--qwen38',str(GGUF),'--session','--mtp','--context','512','--chunk','3'],
+        p=subprocess.Popen([str(ROOT/'pf'),'--qwen38',str(GGUF),'--session','--mtp','--context','512','--chunk','3'],
                            cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
         try:
             self.assertEqual(json.loads(p.stdout.readline())['event'],'ready')

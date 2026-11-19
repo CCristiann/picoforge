@@ -966,7 +966,7 @@ static int attend_main(int argc,char **argv,const char *library) {
     assert(argc==8 && (fast || !strcmp(argv[2],"oracle") || (!timing && !strcmp(argv[2],"encode"))));
     uint32_t h=(uint32_t)number(argv[3]),j=(uint32_t)number(argv[4]),d=(uint32_t)number(argv[5]),
              n=(uint32_t)number(argv[6]),m=(uint32_t)number(argv[7]);
-    assert(h && h<=128 && j && d && d<=256 && n && n<=32768 && m && m<=n);
+    assert(h && h<=128 && j && d && d<=256 && n && n<=QWEN38_MAX_CONTEXT && m && m<=n);
     size_t sizes[6]={(size_t)h*d,(size_t)h*d,(size_t)n*j*d,(size_t)n*j*d,m,(size_t)h*d};
     double seconds[23];
     @autoreleasepool {
@@ -1150,7 +1150,7 @@ static int index_main(int argc,char **argv,const char *library) {
     uint32_t h=(uint32_t)number(argv[3]),d=(uint32_t)number(argv[4]),visible=(uint32_t)number(argv[5]),
              ratio=(uint32_t)number(argv[6]),budget=(uint32_t)number(argv[7]),n=visible/ratio,
              sel=n<budget/ratio ? n : budget/ratio,count=sel*ratio+visible%ratio;
-    assert(h && d && ratio && budget%ratio==0 && n && visible<=32768);
+    assert(h && d && ratio && budget%ratio==0 && n && visible<=QWEN38_MAX_CONTEXT);
     @autoreleasepool {
         id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
         NSError *error=nil;

@@ -107,7 +107,7 @@ DwarfStar), one process per sample: ≥ 3 warm-ups, then 20 measured samples.
 Decode throughput is `(generated − 1) / decode_s`, because the first token
 comes from prefill. The ratio is median against median.
 
-**`picoforge bench`.** Runs 3 warm-ups and 20 repetitions of an ordinary run
+**`pf-bench`** (also `pf bench`). Runs 3 warm-ups and 20 repetitions of an ordinary run
 inside one process and prints prefill tok/s, decode tok/s and TTFT as median
 and p10/p90. `--bench-csv FILE` keeps the raw rows.
 

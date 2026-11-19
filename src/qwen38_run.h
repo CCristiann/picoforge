@@ -41,7 +41,7 @@ static inline __attribute__((unused)) const char *q38_system_prompt(void) {
 typedef struct {
     Gguf g; Qwen38Config *config; Qwen38Weights *weights; Qwen38Tokenizer *tok;
     const Qwen38ConfigView *c; GpuWeightStore *store;
-    void *device, *library;                 /* borrowed from the CLI's ARC scope */
+    void *device, *library;                 /* retained by q38_run_gpu, released by q38_run_close */
     Qwen38GpuForward *graph; Qwen38Decoder *decoder; Q38Profile *profile;
     float *logits; Qwen38F32Mut y;          /* one row, two with MTP */
     uint32_t capacity, chunk; bool mtp;
@@ -70,6 +70,9 @@ typedef struct {
     bool keep_predictor;
     /* Optional text sink (REPL formatting); NULL writes the bytes to stdout. */
     void (*print)(void *, const uint8_t *, size_t); void *print_ctx;
+    /* Optional, for a status line: after each prefill chunk (prefilled of
+     * prompt tokens) and each emitted token (generated). Same ctx as print. */
+    void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated);
 } Q38TurnOptions;
 
 typedef struct {
@@ -87,13 +90,34 @@ typedef struct {
  * REPL: only on rollback). With MTP the predictor must already be caught up. */
 void q38_turn(Q38Run *, const int32_t *tokens, size_t count, Q38TurnOptions,
               int32_t *generated, Q38Turn *);
-/* (Re)create graph, decoder and logits for a context size; the old ones go. */
+/* Load a model (src/qwen38_cli.m): open = GGUF, config, weights, tokenizer;
+ * gpu = Metal device, kernels, weights (SSD streaming when needed); close frees all. */
+void q38_run_open(Q38Run *, const char *path);
+void q38_run_gpu(Q38Run *, const char *path, const char *metallib, uint32_t capacity);   /* capacity: sizes the expert pool */
+void q38_run_close(Q38Run *);
+/* (Re)create graph, decoder and logits for a context size; the old ones go.
+ * Dies, before allocating, if the graph would not fit in the GPU budget. */
 void q38_run_graph(Q38Run *, uint32_t capacity);
 void q38_check(Qwen38Status, const Qwen38Error *);
 double q38_now(void);
+/* Streamed reply text for a terminal (src/qwen38_repl.c): <think> tags dropped,
+ * reasoning grey when color is on. Zero-initialize, set color, shade(in_think). */
+typedef struct { bool color, in_think, newline; char pending[8]; size_t n; } Q38Printer;
+void q38_printer_shade(Q38Printer *, bool think);
+void q38_print_text(void *printer, const uint8_t *, size_t);
+void q38_print_end(Q38Printer *);
+/* Bring the graph to ids[0..total) and decode up to max_new (0: the room left)
+ * ids into generated[], streaming the text to print (e.g. q38_print_text with a
+ * Q38Printer). held: transcript length before this turn; a graph past it, or an
+ * MTP predictor behind, resets and replays (*replayed). Returns the number of
+ * ids prefilled. */
+size_t q38_chat_continue(Q38Run *, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
+                         void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
+                         void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated),
+                         int32_t *generated, Q38Turn *, bool *replayed);
 /* Interactive chat on stdin (src/qwen38_repl.c). max_new 0 = until stop or full context. */
 int q38_repl(Q38Run *, bool thinking, uint32_t max_new, const char *ids_path);
-/* One measured repetition of `picoforge bench` (src/qwen38_bench.c). */
+/* One measured repetition of `pf-bench` (src/qwen38_bench.c). */
 typedef struct { size_t prompt_tokens, decode_tokens; double prefill_s, decode_s, ttft_s; } Q38BenchRow;
 /* Median and p10/p90 of prefill tok/s, decode tok/s and TTFT on stdout;
  * weight_mb > 0 (measured bytes/token, in MB) adds GB/s against 307. */

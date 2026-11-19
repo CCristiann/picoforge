@@ -20,7 +20,7 @@ class CliTests(unittest.TestCase):
     def test_greedy_and_last_logits(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'build/qwen38-g2') as directory:
             path = Path(directory)
-            cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+            cmd = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
                    '--context', '32', '--chunk', '3', '--max-new', '5', '--logits', str(path/'gpu.f32'),
                    '--token-ids', str(path/'ids.json')]
             self.run_cli(cmd)
@@ -52,7 +52,7 @@ class CliTests(unittest.TestCase):
             path = Path(directory)
             results = {}
             for split in ('1', '3', '8', 'default'):
-                cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                cmd = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
                        '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{split}.f32'),
                        '--token-ids', str(path/f'{split}.json')]
                 env = {k: v for k, v in os.environ.items() if k != 'PICOFORGE_CMD_SPLIT'}
@@ -74,7 +74,7 @@ class CliTests(unittest.TestCase):
             results = {}
             for mode in ('exact', 'exact,moe'):
                 tag = 'fast' if mode == 'exact' else 'moe'
-                cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
+                cmd = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT)),
                        '--context', '48', '--chunk', '3', '--max-new', '12', '--logits', str(path/f'{tag}.f32'),
                        '--token-ids', str(path/f'{tag}.json')]
                 done = subprocess.run(cmd, cwd=ROOT, capture_output=True, env={**os.environ, 'Q38_REF_KERNELS': mode})
@@ -90,7 +90,7 @@ class CliTests(unittest.TestCase):
             path = Path(directory)
             def logits(prompt, chunk, mode):
                 out = path/f'{mode}-{len(prompt)}.f32'
-                self.run_cli([str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, prompt)),
+                self.run_cli([str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, prompt)),
                               '--context', '64', '--chunk', str(chunk), '--max-new', '0', '--logits', str(out),
                               '--prefill-precision', mode])
                 return np.fromfile(out, '<f4')
@@ -105,7 +105,7 @@ class CliTests(unittest.TestCase):
     def test_text_modes(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
             ids = Path(directory)/'ids.json'
-            base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '512',
+            base = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--context', '512',
                     '--chunk', '7', '--max-new', '0', '--token-ids', str(ids)]
             self.run_cli(base+['--complete', 'caffè'])
             self.assertEqual(json.loads(ids.read_text())['prompt_ids'], list('caffè'.encode()))
@@ -121,7 +121,7 @@ class CliTests(unittest.TestCase):
             path = Path(directory)
             seconds = {}
             for power in ('100', '25'):
-                cmd = [str(ROOT / 'picoforge'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT*4)),
+                cmd = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', ','.join(map(str, PROMPT*4)),
                        '--context', '64', '--chunk', '4', '--max-new', '12', '--power', power,
                        '--logits', str(path/f'{power}.f32'), '--token-ids', str(path/f'{power}.json')]
                 start = time.monotonic(); self.run_cli(cmd); seconds[power] = time.monotonic() - start
@@ -129,7 +129,7 @@ class CliTests(unittest.TestCase):
                              json.loads((path/'25.json').read_text())['generated_ids'])
             self.assertEqual((path/'100.f32').read_bytes(), (path/'25.f32').read_bytes())
             self.assertGreater(seconds['25'], seconds['100'])
-        base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--tokens', '5,17,300']
+        base = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--tokens', '5,17,300']
         for args in (['--power', '0'], ['--power', '101'], ['--power', '50', '--bench'],
                      ['--power', '50', '--teacher-forced', '1']):
             with self.subTest(args=args):
@@ -137,7 +137,7 @@ class CliTests(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
 
     def test_admission(self):
-        base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF)]
+        base = [str(ROOT/'pf'), '--qwen38', str(GGUF)]
         for args in (['--tokens', '5,', '--max-new', '0'], ['--tokens', '512'],
                      ['--tokens', '5,17,300', '--context', '2'], ['--chunk', '2049', '--tokens', '5'],
                      ['--tokens', '5', '--thinking']):
@@ -152,17 +152,17 @@ class CliTests(unittest.TestCase):
                 self.assertNotEqual(done.returncode, 0)
                 self.assertIn(b'fp32 or half', done.stderr)
         # the short form also starts with the switch ($PICOFORGE_MODEL names the model)
-        done = subprocess.run([str(ROOT/'picoforge'), '--prefill-precision', 'half', '--tokens', '5', '--max-new', '0'],
+        done = subprocess.run([str(ROOT/'pf'), '--prefill-precision', 'half', '--tokens', '5', '--max-new', '0'],
                               cwd=ROOT, capture_output=True, env=os.environ | {'PICOFORGE_MODEL': str(GGUF)})
         self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
-        self.assertEqual(subprocess.run([str(ROOT/'picoforge'), '--qwen38', '--help'],
+        self.assertEqual(subprocess.run([str(ROOT/'pf'), '--qwen38', '--help'],
                          cwd=ROOT, capture_output=True).returncode, 0)
 
     def test_repeat_cancel_files_and_measurement(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
             p = Path(directory)
             (p/'prompt.txt').write_text('caffè')
-            base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '64',
+            base = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--context', '64',
                     '--chunk', '6', '--max-new', '5']
             encoded = self.run_cli(base+['--complete-file', str(p/'prompt.txt'), '--encode-only'])
             self.assertEqual(json.loads(encoded.stdout)['prompt_ids'], list('caffè'.encode()))
@@ -196,7 +196,7 @@ class CliTests(unittest.TestCase):
         prompt, k = [5, 17, 300, 9, 44], 6
         with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
             p = Path(directory)
-            base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32', '--chunk', '3']
+            base = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--context', '32', '--chunk', '3']
             self.run_cli(base+['--tokens', ','.join(map(str, prompt)), '--max-new', str(k),
                                '--logits', str(p/'plain.f32'), '--token-ids', str(p/'plain.json')])
             ids = json.loads((p/'plain.json').read_text())['generated_ids']
@@ -230,7 +230,7 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT/'build/qwen38-g2') as directory:
             p = Path(directory)
             for chunk in ('1', '2', '5'):
-                base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32', '--chunk', chunk,
+                base = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--context', '32', '--chunk', chunk,
                         '--tokens', ','.join(map(str, prompt)), '--max-new', str(k)]
                 self.run_cli(base+['--logits', str(p/'l.f32'), '--token-ids', str(p/'logits.json')])
                 want = json.loads((p/'logits.json').read_text())['generated_ids']
@@ -240,7 +240,7 @@ class CliTests(unittest.TestCase):
                     done = subprocess.run(base+['--token-ids', str(p/'ids.json')], cwd=ROOT, capture_output=True, env=env)
                     self.assertEqual(done.returncode, 0, done.stderr.decode(errors='replace'))
                     self.assertEqual(json.loads((p/'ids.json').read_text())['generated_ids'], want, f'{chunk=} {mode=}')
-                    forced = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32', '--chunk', chunk,
+                    forced = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--context', '32', '--chunk', chunk,
                               '--tokens', ','.join(map(str, prompt+want[:k-1])), '--teacher-forced', str(k-1),
                               '--token-ids', str(p/'forced.json')]
                     done = subprocess.run(forced, cwd=ROOT, capture_output=True, env=env)
@@ -248,7 +248,7 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(json.loads((p/'forced.json').read_text())['generated_ids'], want[1:], f'{chunk=} {mode=}')
 
     def test_teacher_forced_admission(self):
-        base = [str(ROOT/'picoforge'), '--qwen38', str(GGUF), '--context', '32']
+        base = [str(ROOT/'pf'), '--qwen38', str(GGUF), '--context', '32']
         for args in (['--complete', 'abc', '--teacher-forced', '1'], ['--tokens', '5,17', '--teacher-forced', '0'],
                      ['--tokens', '5,17', '--teacher-forced', '2'], ['--session', '--teacher-forced', '1'],
                      ['--tokens', '5,17', '--teacher-forced', '1', '--mtp'],

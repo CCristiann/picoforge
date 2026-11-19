@@ -7,6 +7,10 @@
 
 #define QWEN38_CONTRACT_VERSION 1u
 #define QWEN38_MAX_RANK 4u
+/* The longest context a graph can hold (the model allows 262144). Kernel indices
+ * stay within 32 bits up to here; memory, about 57 KB of state per token on
+ * Qwen3.8-Flash-Next, is the practical limit. */
+#define QWEN38_MAX_CONTEXT 131072u
 typedef enum {
     Q38_OK = 0, Q38_INVALID_ARGUMENT, Q38_MISSING, Q38_TYPE, Q38_RANGE,
     Q38_SHAPE, Q38_STRIDE, Q38_FORMAT, Q38_UNSUPPORTED, Q38_OVERFLOW,

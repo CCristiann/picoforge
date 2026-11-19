@@ -103,6 +103,10 @@ bool q38_profile_end_append(Q38Profile *p, bool ok) {
     NSArray *buffers = (__bridge NSArray *)p->buffers; NSData *data = nil; bool good = ns > 0; uint64_t last = p->floor;
     for (size_t i = 0, slot = 0; i < n && good; i++, slot += 2) {
         if (slot % SAMPLES == 0) data = [buffers[slot / SAMPLES] resolveCounterRange:NSMakeRange(0, MIN((size_t)SAMPLES, 2 * n - slot))];
+        /* A group that encoded nothing is not a measurement: the GPU never runs its
+         * empty encoder (no timestamps). It happens when a mark precedes a fused
+         * kernel that turns out unsupported and the fallback opens its own groups. */
+        if (!p->groups[i].dispatches) continue;
         const uint64_t *t = data.length >= (slot % SAMPLES + 2) * 8 ? (const uint64_t *)data.bytes + slot % SAMPLES : NULL;
         /* A missing sample (error value, 0 for an encoder the GPU never ran, or a
          * stale pair left by an earlier append in these reused slots: it starts

@@ -21,7 +21,9 @@ tools/probe/metal4_probe
 # numbers are the public artifact of this project.
 
 # Compiled engine binary
-/picoforge
+/pf
+/pf-bench
+/pf-agent
 /tests/test_ops
 /picoforge.metallib
 build/

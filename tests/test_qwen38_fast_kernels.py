@@ -2387,7 +2387,7 @@ class FastKernelTests(unittest.TestCase):
         visible tail, other head counts/dims on and off the fast path (only h > 8 falls back since R2.8), and
         NaN/Inf in the query or one block key (bit 1)."""
         rng = np.random.default_rng(4139)
-        cases = [((4, 128), visible, 4, 2048) for visible in (4, 7, 2049, 8192, 8195, 32768)]
+        cases = [((4, 128), visible, 4, 2048) for visible in (4, 7, 2049, 8192, 8195, 32768, 100003, 131072)]
         cases += [((1, 16), 300, 4, 64), ((8, 128), 1000, 4, 256), ((3, 48), 999, 3, 300), ((9, 32), 400, 4, 64),
                   ((2, 24), 400, 4, 64)]
         for (h, d), visible, ratio, budget in cases:
@@ -2405,6 +2405,23 @@ class FastKernelTests(unittest.TestCase):
                     self.assertEqual(fast[0], oracle[0])
                     if not fast[0]:
                         self.assertEqual(fast[1:], oracle[1:])
+
+    def test_long_context_selection_ties(self):
+        """Long context: the O(n) radix selection keeps the oracle's blocks when the m-th score is shared by
+        many blocks (smaller ID wins), when it falls among the ReLU zeros, when every score is equal, and
+        with n just above m. One head of width 1, q = 1: the score of block b is max(0, k[b])."""
+        rng = np.random.default_rng(77)
+        q = np.ones((1, 1), np.float32)
+        for visible in (2052, 2056, 40000, 131072):
+            n = visible // 4
+            designs = {"small integers": rng.integers(-1, 4, n), "few positive": np.where(rng.random(n) < 300 / n, 1.0 + rng.random(n), -1.0),
+                       "all equal": np.ones(n), "signed zeros": rng.choice([0.0, -0.0, 1.0], n, p=[0.45, 0.45, 0.1])}
+            for name, k in designs.items():
+                with self.subTest(visible=visible, case=name):
+                    blocks = np.asarray(k, np.float32).reshape(n, 1)
+                    fast, oracle = (run_index(mode, q, blocks, visible, 4, 2048) for mode in ("fast", "oracle"))
+                    self.assertEqual((fast[0], oracle[0]), (0, 0))
+                    self.assertEqual(fast[1:], oracle[1:])
 
     # ---- R2.4 fast GDN scan (q38c_gdn_scan_fast, family fuse) ----
     def test_gdn_scan_fast_against_oracle_and_fp64(self):

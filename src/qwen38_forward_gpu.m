@@ -96,7 +96,8 @@ static Qwen38Status alloc_view(Qwen38GpuForward *f,Qwen38GpuF32 *out,bool state,
     size_t bytes=4;
     for (size_t i=0;i<rank;i++) if (dims[i]>UINT32_MAX || !q38c_mul(bytes,dims[i],&bytes)) return fail(e,Q38_OVERFLOW,"buffer shape");
     size_t physical=MAX(bytes,4);
-    if (bytes/4>UINT32_MAX || physical>((size_t)4<<30)-f->bytes) return fail(e,Q38_CAPACITY,"graph buffers exceed 4 GiB");
+    /* Kernels index one buffer with 32 bits; the total is a sanity bound (128K tokens take ~9 GB). */
+    if (bytes/4>UINT32_MAX || physical>((size_t)16<<30)-f->bytes) return fail(e,Q38_CAPACITY,"graph buffers exceed 16 GiB");
     id<MTLDevice> dev=(__bridge id<MTLDevice>)f->device;
     id<MTLBuffer> b=[dev newBufferWithLength:physical options:MTLResourceStorageModeShared];
     if (!b) return fail(e,Q38_OOM,"graph Metal buffer");
@@ -406,7 +407,7 @@ Qwen38Status qwen38_gpu_forward_create(const Gguf *g,const Qwen38Config *config,
     if (out) *out=NULL;
     if (!g || !config || !weights || !store || !device || !library || !out) return fail(e,Q38_INVALID_ARGUMENT,"graph arguments");
     const Qwen38ConfigView *c=qwen38_config_view(config);
-    if (!c || !max_tokens || max_tokens>2048 || max_tokens>capacity || capacity>32768 || capacity>c->max_positions || max_logits_rows>max_tokens)
+    if (!c || !max_tokens || max_tokens>2048 || max_tokens>capacity || capacity>QWEN38_MAX_CONTEXT || capacity>c->max_positions || max_logits_rows>max_tokens)
         return fail(e,Q38_CAPACITY,"graph chunk/context/logits capacities");
     Qwen38GpuForward *f=calloc(1,sizeof *f); if (!f) return fail(e,Q38_OOM,"graph allocation");
     f->gguf=g; f->config=config; f->weights=weights; f->store=store; f->c=*c; f->max_tokens=max_tokens;
@@ -1192,4 +1193,83 @@ Qwen38Status qwen38_gpu_checkpoint_restore(Qwen38GpuForward *f,Qwen38GpuCheckpoi
     checkpoint_transfer(f,f->snapshot,true); f->next_pos=s.position;
     f->last_start=f->saved_start; f->last_count=f->saved_count; f->snapshot_serial++;
     f->valid=true; return fail(e,Q38_OK,NULL);
+}
+
+/* ------------------------------------------------------------ saved sessions
+ * File: a header, the length of every state buffer (a cheap check that the
+ * graph has the same shape), then the bytes: the state buffers in creation
+ * order (zero blocks elided, state_buffer), the trunk residual r, the predictor's mtp_r, each PLE layer's
+ * previous token ids. The GDN keep swaps buffers in place in `histories`, so
+ * the index of a buffer always names the same piece of state. */
+typedef struct {
+    char magic[8]; uint32_t version,buffers,mtp,pad;
+    uint64_t next_pos,mtp_pos,last_start,last_count,mtp_last_rows;
+} StateHeader;
+static bool state_io(FILE *file,void *data,size_t n,bool read) {
+    return (read ? fread(data,1,n,file) : fwrite(data,1,n,file))==n;
+}
+/* The state buffers are sized for the whole context and zeroed at reset, so a
+ * short conversation leaves most of them zero: a 64 KiB block of zeros is
+ * written as one flag byte 0, any other block as 1 and its bytes. Exact, and
+ * the file grows with the conversation, not with the context size. */
+enum { STATE_BLOCK=65536 };
+static bool state_buffer(FILE *file,uint8_t *p,size_t n,bool read) {
+    static const uint8_t zero[STATE_BLOCK];
+    for (size_t at=0;at<n;at+=STATE_BLOCK) {
+        size_t len=MIN((size_t)STATE_BLOCK,n-at); uint8_t flag=1;
+        if (!read) flag=memcmp(p+at,zero,len)!=0;
+        if (!state_io(file,&flag,1,read) || flag>1) return false;
+        if (flag && !state_io(file,p+at,len,read)) return false;
+        if (!flag && read) memset(p+at,0,len);
+    }
+    return true;
+}
+static bool state_bytes(Qwen38GpuForward *f,FILE *file,bool read) {
+    bool ok=true;
+    for (id<MTLBuffer> b in (__bridge NSArray *)f->histories) ok=ok && state_buffer(file,b.contents,b.length,read);
+    ok=ok && state_io(file,contents(f->r),f->r.span.bytes,read);
+    if (f->mtp_enabled) ok=ok && state_io(file,contents(f->mtp_r),f->mtp_r.span.bytes,read);
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) {
+        Qwen38NgramState *s=f->layer[i].estate;
+        ok=ok && state_io(file,s->previous,(s->store->config.order-1)*sizeof *s->previous,read);
+    }
+    return ok;
+}
+Qwen38Status qwen38_gpu_state_write(Qwen38GpuForward *f,FILE *out,Qwen38Error *e) {
+    if (!f || !out) return fail(e,Q38_INVALID_ARGUMENT,"state arguments");
+    Qwen38StateInfo info=qwen38_gpu_forward_info(f);
+    if (info.busy) return fail(e,Q38_BUSY,"graph busy");
+    if (!info.valid || f->verify_rows) return fail(e,Q38_BAD_STATE,"state save needs a valid graph and no pending verify");
+    NSArray *histories=(__bridge NSArray *)f->histories;
+    StateHeader h={.magic="Q38STAT",.version=2,.buffers=(uint32_t)histories.count,.mtp=f->mtp_enabled,
+        .next_pos=f->next_pos,.mtp_pos=qwen38_gpu_mtp_info(f).next_pos,.last_start=f->last_start,
+        .last_count=f->last_count,.mtp_last_rows=f->mtp_last_rows};
+    bool ok=state_io(out,&h,sizeof h,false);
+    for (id<MTLBuffer> b in histories) { uint64_t n=b.length; ok=ok && state_io(out,&n,sizeof n,false); }
+    ok=ok && state_bytes(f,out,false);
+    return ok ? fail(e,Q38_OK,NULL) : fail(e,Q38_IO,"state write failed");
+}
+Qwen38Status qwen38_gpu_state_read(Qwen38GpuForward *f,FILE *in,Qwen38Error *e) {
+    if (!f || !in) return fail(e,Q38_INVALID_ARGUMENT,"state arguments");
+    NSArray *histories=(__bridge NSArray *)f->histories;
+    StateHeader h;
+    if (!state_io(in,&h,sizeof h,true) || memcmp(h.magic,"Q38STAT",8) || h.version!=2) return fail(e,Q38_FORMAT,"not a picoforge state file");
+    if (h.buffers!=histories.count || h.mtp!=f->mtp_enabled || h.next_pos>f->capacity || h.mtp_pos>h.next_pos ||
+        h.last_count>f->max_tokens || h.last_start+h.last_count>h.next_pos || h.mtp_last_rows>f->max_tokens)
+        return fail(e,Q38_SHAPE,"the state was saved with another context size, chunk or MTP setting");
+    for (id<MTLBuffer> b in histories) {
+        uint64_t n;
+        if (!state_io(in,&n,sizeof n,true)) return fail(e,Q38_EOF,"state file truncated");
+        if (n!=b.length) return fail(e,Q38_SHAPE,"the state was saved with another context size, chunk or MTP setting");
+    }
+    TRY(qwen38_gpu_forward_reset(f,e));               /* fresh ledgers and epoch, zeroed buffers */
+    if (!state_bytes(f,in,true)) { qwen38_gpu_forward_reset(f,NULL); return fail(e,Q38_EOF,"state file truncated"); }
+    f->valid=false;
+    Qwen38Status rc=q38g_session_seek(f->session,f->config,h.next_pos,e);
+    if (!rc && f->mtp_enabled) rc=q38g_session_seek(f->mtp_session,f->config,h.mtp_pos,e);
+    if (rc) { qwen38_gpu_forward_reset(f,NULL); return rc; }
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) if (f->layer[i].estate) f->layer[i].estate->info.next_pos=h.next_pos;
+    f->next_pos=h.next_pos; f->last_start=h.last_start; f->last_count=(size_t)h.last_count;
+    f->mtp_last_rows=(size_t)h.mtp_last_rows; f->snapshot_serial++; f->valid=true;
+    return fail(e,Q38_OK,NULL);
 }

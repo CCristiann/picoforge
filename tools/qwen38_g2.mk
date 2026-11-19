@@ -32,30 +32,30 @@ test-qwen38-g2-state: build/qwen38-g2/test_forward build/qwen38-g1/graph.gguf $(
 build/qwen38-g2/cli.gguf: tools/synth/make_qwen38_cli.py tools/synth/make_qwen38_graph.py tools/synth/make_qwen38_a.py tools/oracle/qwen38_config.py tests/fixtures/qwen38/a/manifest.json
 	$(Q38_ENV) $(PYTHON) -B $< --reference-root "$(Q38_REFERENCE_ROOT)"
 
-test-qwen38-cli: picoforge build/qwen38-g1/test_forward build/qwen38-g2/cli.gguf
+test-qwen38-cli: pf build/qwen38-g1/test_forward build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_cli.py -v
 .PHONY: test-qwen38-cli
 
-test-qwen38-repl: picoforge build/qwen38-g2/cli.gguf
+test-qwen38-repl: pf build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_repl.py -v
 .PHONY: test-qwen38-repl
 
 # Explicit, heavyweight real-checkpoint gate. Never part of the tiny suite.
 # G3_OUTPUT must name a fresh directory; the script retains failed evidence.
 G3_OUTPUT ?= build/qwen38-g3
-qwen38-g3: picoforge build/qwen38-g2/forward_real build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf build/process_memory
+qwen38-g3: pf build/qwen38-g2/forward_real build/qwen38-g2/test_parts build/qwen38-g1/graph.gguf build/process_memory
 	$(Q38_LOCK) $(Q38_ENV) $(PYTHON) -B tools/qwen38_g3.py --checkpoint "$(Q38_CHECKPOINT)" --dwarfstar "$(Q38_DWARFSTAR)" --output "$(G3_OUTPUT)"
 .PHONY: qwen38-g3
 
 # Persistent engine tests take the existing cross-worktree lock once.
-test-qwen38-session: picoforge build/qwen38-g2/cli.gguf
+test-qwen38-session: pf build/qwen38-g2/cli.gguf
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_session.py -v
 
-ui-qwen38: picoforge
+ui-qwen38: pf
 	$(PYTHON) tools/ui/qwen38/server.py --checkpoint "$(Q38_CHECKPOINT)"
 
 # The server's resident worker acquires the lock; do not wrap this target again.
-test-qwen38-server: picoforge build/qwen38-g2/cli.gguf build/qwen38-mtp/cli.gguf
+test-qwen38-server: pf build/qwen38-g2/cli.gguf build/qwen38-mtp/cli.gguf
 	$(Q38_ENV) $(PYTHON) -B tests/test_qwen38_server.py -v
 
 build/qwen38-attention-bench: tools/probe/qwen38_attention_bench.m src/qwen38_d_internal.h
@@ -88,6 +88,6 @@ test-qwen38-mtp: build/qwen38-mtp/test_mtp build/qwen38-mtp/cli.gguf $(METALLIB)
 	$(Q38_LOCK) $(Q38_ENV) MTL_DEBUG_LAYER=1 Q38_REF_KERNELS=gemm ./$< build/qwen38-mtp/cli.gguf build/qwen38-mtp/tiny33 33 1 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32
 .PHONY: test-qwen38-mtp
 
-test-qwen38-speculative: picoforge build/qwen38-mtp/cli.gguf $(METALLIB)
+test-qwen38-speculative: pf build/qwen38-mtp/cli.gguf $(METALLIB)
 	$(Q38_LOCK) $(Q38_TEST) tests/test_qwen38_speculative.py -v
 .PHONY: test-qwen38-speculative

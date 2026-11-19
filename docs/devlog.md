@@ -2,6 +2,47 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## pf-agent II (2026-11-19): modules, ds4-style tools, a terminal UI, Chrome
+
+pf-agent is split for a future pf-server: `pf_session` (model, transcript, replies, saved sessions,
+system checkpoint, compaction; output through callbacks), `pf_tools` (tool calls and tools, approvals
+through a callback), `pf_web`, `pf_util`, and `pf_term` + `pf_agent.c` for the terminal. After
+reading ds4-agent (ds4 b3f5018): bash jobs with a monitor thread (refresh_sec, timeout_sec, head then
+tail, the full log readable), edit/write refusing hard links and files changed since they were read,
+search with context and limits; the system block prefilled once and kept in `.system.pfs`;
+compaction to system + summary + a verbatim tail; /history, /del, /strip, /hints, /power. Two
+threads on a terminal: the worker owns model and tools, the UI owns an ANSI scroll region, an
+editable input line and a footer with the context bar and prefill/decode speeds. Web: a visible
+Chrome with its own profile, driven over CDP by a small HTTP + WebSocket client (Google results,
+rendered pages); consent pages and human checks are left to the user; curl as the fallback. Tests:
+offline with a fake curl and a fake CDP endpoint; on the synthetic checkpoint, including the UI in a
+pseudo-terminal. Two test bugs worth remembering: a regex over the whole terminal output backtracked
+for minutes, and a pty nobody reads blocks the child's writes, so it never exits.
+
+**Next:** real-model checks (tool use with Qwen3.8, the footer's speeds, Chrome on Google), then the
+100K stage's real runs.
+
+## pf-agent (2026-11-18): a coding agent on the engine, saved sessions
+
+`src/pf_agent.c`: the model calls tools in Qwen3.8's XML format, rendered by our chat template with
+the tool definitions; the transcript only grows, as in the REPL, so each turn prefills its own suffix
+(a turn of tool results alone is no user query for the template: we render it after a placeholder
+user message and drop the placeholder's bytes). Tools: files confined to the workspace with realpath,
+atomic writes, output cleaned of invalid UTF-8 and of `<|` (the tokenizer would read `<|im_end|>` in
+a file as the real end of turn); bash through posix_spawn in its own process group with only
+stdin/stdout/stderr inherited, background jobs past a timeout; web through curl without a shell.
+Engine: `qwen38_gpu_state_write/read` save every state buffer, the residual rows and the positions;
+a resumed session gives the same greedy tokens as an uninterrupted one, with and without MTP, and
+prefills only the new turn (a mutation that drops the position makes the test fail). Zero blocks are
+elided, so a file grows with the conversation. Tests: `make test-pf-agent` (offline, a fake curl),
+`make test-pf-agent-model` (synthetic checkpoint).
+
+**Next:** 100K context. The admission caps (32768) are conservative, but the indexer's top-k
+selection (`rank_fast`) compares every block with every other: n^2 per row, about 625M compares per
+row and layer at 100K, hours of prefill. It needs an exact O(n) selection (radix threshold, same keep
+set and ties). Memory: about 57 KB of graph state per token (measured 1K vs 4K), so 100K is about
+6.7 GB of graph buffers, past the graph's own 4 GiB cap, and about 51.5 GB of Metal memory on Q2.
+
 ## Prefill-gap III (2026-11-15): materialized attention — 8K FP32 24.9 s at chunk 2048
 
 Attention for prefill batches now runs in three passes on the tensor units with FP32 operands

@@ -42,7 +42,7 @@ def tokenize(text: str) -> list[int]:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8") as f:
         f.write(text)
         f.flush()
-        out = subprocess.run([str(ROOT / "picoforge"), "-m", "q2", "--complete-file", f.name,
+        out = subprocess.run([str(ROOT/"pf"), "-m", "q2", "--complete-file", f.name,
                               "--encode-only", "-c", "32768"], check=True, capture_output=True, text=True)
     return json.loads(out.stdout)["prompt_ids"]
 

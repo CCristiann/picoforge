@@ -355,40 +355,91 @@ kernel void q38d_rope_fast_gpu(device const float *x [[buffer(0)]], device float
     constant float *frequencies [[buffer(8)]], uint e [[thread_position_in_grid]]) {
     rope_fast(x,y,a,a.pos,error,frequencies,e);
 }
-static inline void rank_fast(device const float *scores, device uint *keep, Q38DSplit a,
-    device atomic_uint *error, uint g, ushort sg, ushort sn, ushort lane) {
-    uint b=g*sn+sg;
-    if (b>=a.n) return;
-    float s=scores[b]; uint rank=0; bool bad=false;
-    for (uint c=lane;c<a.n;c+=32) {
-        float o=scores[c]; bad|=!isfinite(o);
-        rank+=(o>s || (o==s && c<b)) ? 1u : 0u;
+/* Long-context block selection, O(n) per row (the R2.2 rank/compact pair compared
+ * every block with every other: n^2, hours of prefill at 100K tokens). Same keep
+ * flags and IDs as q38d_rank/q38d_compact, bit for bit, from one threadgroup per row:
+ *  1. scores become unsigned keys with the same order (q38d_order), and a radix
+ *     select, four passes of 8 bits over a 256-bin histogram, finds T, the key of
+ *     the m-th best block;
+ *  2. blocks above T are kept, and of the blocks equal to T the first m - #above
+ *     by ID: "higher score, or equal score and smaller ID, wins", as in rank;
+ *  3. an ordered prefix scan writes keep[] and the kept blocks' token IDs in time order.
+ * A non-finite score keeps nothing and sets bit 1, as rank does. */
+static inline uint q38d_order(float s) {
+    const uint u=as_type<uint>(s==0.0f ? 0.0f : s);          /* -0 ties with +0, as the float compare */
+    return (u&0x80000000u) ? ~u : (u|0x80000000u);           /* negatives reversed below positives */
+}
+/* Exclusive prefix sum of v over the threadgroup (tn = 32 * groups); *total = the sum. */
+static inline uint q38d_tg_scan(uint v, threadgroup uint *sums, uint sg, uint lane, uint groups, thread uint &total) {
+    const uint before=simd_prefix_exclusive_sum(v), all=simd_sum(v);
+    if (lane==0) sums[sg]=all;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg==0) {
+        const uint x=lane<groups ? sums[lane] : 0u, ex=simd_prefix_exclusive_sum(x), sum=simd_sum(x);
+        if (lane<groups) sums[lane]=ex;
+        if (lane==0) sums[32]=sum;
     }
-    rank=simd_sum(rank);
-    if (simd_any(bad)) { if (!lane) { keep[b]=0; fail(error,1); } return; }
-    if (!lane) keep[b]=rank<a.m ? 1u : 0u;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint r=before+sums[sg]; total=sums[32];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return r;
 }
-kernel void q38d_rank_fast_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
-    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
-    rank_fast(scores,keep,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,g,sg,sn,lane);
+struct Q38DSelectMem { threadgroup atomic_uint *hist; threadgroup uint *sums, *pick; threadgroup atomic_uint *bad; };
+static inline void select_row(device const float *scores, device uint *keep, device uint *ids, uint n, uint m, uint r,
+    device atomic_uint *error, uint t, uint tn, uint sg, uint lane, Q38DSelectMem mem) {
+    const uint groups=tn/32u;
+    if (t==0) atomic_store_explicit(mem.bad,0u,memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    bool bad=false;
+    for (uint b=t;b<n;b+=tn) bad|=!isfinite(scores[b]);
+    if (simd_any(bad) && lane==0) atomic_store_explicit(mem.bad,1u,memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (atomic_load_explicit(mem.bad,memory_order_relaxed)) {
+        for (uint b=t;b<n;b+=tn) keep[b]=0u;
+        if (t==0) fail(error,1);
+        return;
+    }
+    uint prefix=0u, mask=0u, want=m;   /* keys matching prefix under mask hold the m-th; want of them are kept */
+    for (int shift=24;m<n && shift>=0;shift-=8) {
+        for (uint i=t;i<256u;i+=tn) atomic_store_explicit(&mem.hist[i],0u,memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint b=t;b<n;b+=tn) {
+            const uint k=q38d_order(scores[b]);
+            if ((k&mask)==prefix) atomic_fetch_add_explicit(&mem.hist[(k>>shift)&255u],1u,memory_order_relaxed);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (t==0) {      /* from the top bin down, until the bins cover `want` keys */
+            uint above=0u, bin=255u, c;
+            while (above+(c=atomic_load_explicit(&mem.hist[bin],memory_order_relaxed))<want) { above+=c; bin--; }
+            mem.pick[0]=bin; mem.pick[1]=want-above;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        prefix|=mem.pick[0]<<uint(shift); mask|=255u<<uint(shift); want=mem.pick[1];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    uint equal_seen=0u, kept_seen=0u, total;
+    for (uint base=0;base<n;base+=tn) {
+        const uint b=base+t; const bool live=b<n;
+        const uint k=live ? q38d_order(scores[b]) : 0u;
+        const bool equal=live && m<n && k==prefix, above=live && (m>=n || k>prefix);
+        const uint equal_before=equal_seen+q38d_tg_scan(equal ? 1u : 0u,mem.sums,sg,lane,groups,total);
+        equal_seen+=total;
+        const bool kept=above || (equal && equal_before<want);
+        const uint slot=kept_seen+q38d_tg_scan(kept ? 1u : 0u,mem.sums,sg,lane,groups,total);
+        kept_seen+=total;
+        if (live) keep[b]=kept ? 1u : 0u;
+        if (kept && slot>=m) fail(error,2);
+        else if (kept) for (uint i=0;i<r;i++) ids[slot*r+i]=b*r+i;
+    }
 }
-static inline void compact_fast(device const uint *keep, device uint *ids, Q38DSplit a,
-    device atomic_uint *error, uint g, ushort sg, ushort sn, ushort lane) {
-    uint b=g*sn+sg;
-    if (b>=a.n || !keep[b]) return;
-    uint slot=0;
-    for (uint c=lane;c<b;c+=32) slot+=keep[c];
-    slot=simd_sum(slot);
-    if (slot>=a.m) { if (!lane) fail(error,2); return; }
-    for (uint r=lane;r<a.r;r+=32) ids[slot*a.r+r]=b*a.r+r;
-}
-kernel void q38d_compact_fast_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    uint g [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
-    ushort sn [[simdgroups_per_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
-    compact_fast(keep,ids,Q38DSplit{a.h,a.j,a.d,a.n,a.m,a.r,a.pos},error,g,sg,sn,lane);
+#define Q38D_SELECT_MEMORY threadgroup atomic_uint hist[256], bad; threadgroup uint sums[33], pick[2]; \
+    const Q38DSelectMem mem={hist,sums,pick,&bad}
+kernel void q38d_select_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
+    device uint *ids [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+    uint t [[thread_index_in_threadgroup]], uint tn [[threads_per_threadgroup]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    Q38D_SELECT_MEMORY;
+    select_row(scores,keep,ids,a.n,a.m,a.r,error,t,tn,sg,lane,mem);
 }
 /* a.m = first tail slot, a.n = first tail token, a.pos = last visible token. */
 kernel void q38d_tail_gpu(device uint *ids [[buffer(0)]], constant Q38DGpuArgs &a [[buffer(6)]],
@@ -472,25 +523,16 @@ kernel void q38d_scores_batch_gpu(device const float *q [[buffer(0)]], device co
     if (bad || !isfinite(score)) { fail(error,1); return; }
     out[(ulong)z*b.scores_stride+blk]=score;
 }
-kernel void q38d_rank_batch_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
+/* One row (token) per threadgroup: token z sees blocks 0 .. (pos0+z+1)/ratio - 1. */
+kernel void q38d_select_batch_gpu(device const float *scores [[buffer(0)]], device uint *keep [[buffer(1)]],
+    device uint *ids [[buffer(2)]], constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
     constant Q38DBatch &b [[buffer(9)]], uint2 g [[threadgroup_position_in_grid]],
-    ushort sg [[simdgroup_index_in_threadgroup]], ushort sn [[simdgroups_per_threadgroup]],
-    ushort lane [[thread_index_in_simdgroup]]) {
+    uint2 t [[thread_position_in_threadgroup]], uint2 tn [[threads_per_threadgroup]],
+    ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     if (g.y>=b.count) return;
-    const uint n=q38d_visible_blocks(b,g.y);
-    rank_fast(scores+(ulong)g.y*b.scores_stride,keep+(ulong)g.y*b.scores_stride,
-              Q38DSplit{0,0,0,n,q38d_selected(b,g.y),b.ratio,0},error,g.x,sg,sn,lane);
-}
-kernel void q38d_compact_batch_gpu(device const uint *keep [[buffer(0)]], device uint *ids [[buffer(1)]],
-    constant Q38DGpuArgs &a [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
-    constant Q38DBatch &b [[buffer(9)]], uint2 g [[threadgroup_position_in_grid]],
-    ushort sg [[simdgroup_index_in_threadgroup]], ushort sn [[simdgroups_per_threadgroup]],
-    ushort lane [[thread_index_in_simdgroup]]) {
-    if (g.y>=b.count) return;
-    const uint n=q38d_visible_blocks(b,g.y);
-    compact_fast(keep+(ulong)g.y*b.scores_stride,ids+(ulong)g.y*b.ids_stride,
-                 Q38DSplit{0,0,0,n,q38d_selected(b,g.y),b.ratio,0},error,g.x,sg,sn,lane);
+    Q38D_SELECT_MEMORY;
+    select_row(scores+(ulong)g.y*b.scores_stride,keep+(ulong)g.y*b.scores_stride,ids+(ulong)g.y*b.ids_stride,
+               q38d_visible_blocks(b,g.y),q38d_selected(b,g.y),b.ratio,error,t.x,tn.x,sg,lane,mem);
 }
 /* The causal tail after the selected blocks: as q38d_tail_gpu with m = sel*ratio, n = blocks*ratio. */
 kernel void q38d_tail_batch_gpu(device uint *ids [[buffer(0)]], constant Q38DBatch &b [[buffer(9)]],

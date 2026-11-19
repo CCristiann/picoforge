@@ -9,7 +9,7 @@ CFLAGS  := -std=c11 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 LDFLAGS := -lm
 PYTHON  ?= ./tools/venv/bin/python
 
-SRC     := $(wildcard src/*.c)
+SRC     := $(filter-out src/pf_%.c,$(wildcard src/*.c))
 OBJC    := $(wildcard src/*.m)
 OBJ     := $(SRC:.c=.o) $(OBJC:.m=.m.o)
 METALLIB := picoforge.metallib
@@ -17,8 +17,22 @@ METALLIB := picoforge.metallib
 # Objective-C contains Metal glue and links the platform frameworks.
 FRAMEWORKS := -framework Metal -framework Foundation
 
-picoforge: $(OBJ) $(METALLIB)
+# The commands are pf (chat, one answer, models), pf-bench and pf-agent; the
+# kernels stay in picoforge.metallib.
+all: pf pf-bench pf-agent
+
+pf: $(OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
+
+# pf-agent: the coding agent, linked with the same engine objects minus
+# pf's main. pf_session/pf_tools/pf_web/pf_util are meant for a future
+# pf-server too; pf_agent.c is only the terminal interface.
+ENGINE_OBJ := $(filter-out src/main.o,$(OBJ))
+PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o src/pf_term.o
+pf-agent: src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
+pf-bench: src/pf_bench.o $(ENGINE_OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ src/pf_bench.o $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 # Every object depends on every header: a constant changed only in a header (a
 # Metal wire struct, a tile size) must rebuild the host code that mirrors it.
@@ -62,7 +76,7 @@ microbench: build/microbench
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
 # is `make test-qwen38` (tools/qwen38.mk).
-test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts test-qwen38-expert-pool test-qwen38-sample
+test-all: test-qwen38-tools test-gguf test-gpu-weights test-qwen38-contracts test-qwen38-expert-pool test-qwen38-sample test-pf-agent
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -119,8 +133,17 @@ build/test_sample: tests/test_qwen38_sample.c src/qwen38_sample.c src/qwen38_sam
 test-qwen38-sample: build/test_sample
 	@./build/test_sample
 
+# pf-agent tools and parser, offline (no model); the loop on the synthetic
+# checkpoint (GPU, under the lock) is test-pf-agent-model.
+test-pf-agent: pf-agent
+	@$(PYTHON) tests/test_pf_agent.py
+
+test-pf-agent-model: pf-agent build/qwen38-g2/cli.gguf
+	$(Q38_LOCK) env PF_AGENT_GGUF=build/qwen38-g2/cli.gguf $(Q38_TEST) tests/test_pf_agent.py -v
+.PHONY: test-pf-agent test-pf-agent-model
+
 clean:
-	rm -f src/*.o picoforge $(METALLIB) build/*.air
+	rm -f src/*.o pf pf-bench pf-agent $(METALLIB) build/*.air
 
 .PHONY: clean microbench test-qwen38-expert-pool test-qwen38-sample test-all test-qwen38-tools test-gguf test-gpu-weights
 

@@ -36,10 +36,10 @@ static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what
     return (uint32_t)n;
 }
 static void usage(void) {
-    fprintf(stderr,"usage: picoforge --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
+    fprintf(stderr,"usage: pf --qwen38 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
         "       (no prompt: interactive chat; /help inside)\n"
         "   or: picoforge [-m FILE] [-p TEXT] [-c CONTEXT] [-n MAX_NEW] [--mtp] [--thinking] ...\n"
-        "       (MODEL: a path or a short name such as q4, see `picoforge models`; -p is --chat, no -p is the chat)\n"
+        "       (MODEL: a path or a short name such as q4, see `pf models`; -p is --chat, no -p is the chat)\n"
         "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
@@ -219,7 +219,13 @@ void q38_power_pause(const Q38Run *r,double *avg,double work) {
     struct timespec ts={(time_t)pause,(long)((pause-(double)(time_t)pause)*1e9)};
     while (nanosleep(&ts,&ts) && errno==EINTR && !q38_stopped) {}
 }
+static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t);
+/* Each turn drains its own autorelease pool: Metal hands out autoreleased
+ * command buffers, and a long chat or agent session must not keep them all. */
 void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
+    @autoreleasepool { turn(r,tokens,count,o,generated,t); }
+}
+static void turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int32_t *generated,Q38Turn *t) {
     const Qwen38ConfigView *c=r->c; Qwen38GpuForward *graph=r->graph; Qwen38Error e;
     float *logits=r->logits; Qwen38F32Mut *y=&r->y; *t=(Q38Turn){.reason="length"};
     size_t residual_offset=0,got=0;
@@ -239,6 +245,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
             t->mtp_prefill_s+=q38_now()-mtp_start;
             if (pairs) accumulate(&t->mtp,graph);
         }
+        if (o.progress) o.progress(o.print_ctx,start+n,count,0);
         if (o.session) {
             fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
             fflush(stdout);
@@ -282,6 +289,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
         int32_t id=have_id ? next_id : pick(r,logits,vocab);
         if (probe>=0) { pol->alpha[0]+=((probe==id)-pol->alpha[0])/8; probe=-1; }
         generated[got++]=id;
+        if (o.progress) o.progress(o.print_ctx,count,count,got);
         if (qwen38_token_is_stop(r->tok,id)) t->reason="stop";
         else emit(r->decoder,&id,&o);
         if (t->first_token==0) { t->first_token=q38_now(); t->decode_start=t->first_token; }
@@ -349,6 +357,7 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
         for (size_t j=0;j<m && !done;j++) {   /* row j's argmax is draft j */
             if (o.logfile && fwrite(logits+j*vocab,4,vocab,o.logfile)!=vocab) die("logits write failed");
             generated[got++]=d[j]; emit(r->decoder,&d[j],&o); step++;
+            if (o.progress) o.progress(o.print_ctx,count,count,got);
             if (got==o.stop_after) { t->reason="cancelled"; done=true; }
         }
         if (done) break;
@@ -369,7 +378,26 @@ void q38_turn(Q38Run *r,const int32_t *tokens,size_t count,Q38TurnOptions o,int3
  * 90% of the GPU's recommended working set stays resident (the Q2: ~42 of 52 GiB), and one that does
  * not (the Q4: ~70 GiB) streams with a pool of 85% of that budget minus everything else. The sizes
  * come from the same plan the store will use, so what is counted is exactly what gets mapped. */
-static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget) {
+/* Graph bytes that grow with the context, from the config: per token, every QSA
+ * layer (trunk, and the MTP predictor when on) keeps its keys and values
+ * (2 x kv_heads x head_dim), its index keys and 1/ratio of a pooled block key,
+ * all FP32, and a prefill chunk scores and flags every block (2 x chunk/ratio
+ * words). Qwen3.8-Flash-Next: 56.8 KB per token without MTP, as measured from 1K
+ * to 4K tokens (devlog, pf-agent). */
+static uint64_t context_bytes(const Q38Run *r,uint32_t capacity) {
+    const Qwen38AttentionConfig *a=&r->c->attention; uint64_t per=0; uint32_t ratio=0;
+    const uint64_t index=(uint64_t)(a->index_kv_heads ? a->index_kv_heads : 1)*a->index_dim;
+    for (uint32_t i=0;i<r->c->trunk_blocks+(r->mtp ? r->c->mtp_blocks : 0);i++) {
+        const Qwen38Layer *l; Qwen38Error e;
+        if (qwen38_config_layer(r->config,i,&l,&e) || l->kind!=Q38_LAYER_QSA) continue;
+        ratio=l->compress_ratio ? l->compress_ratio : 1;
+        per+=4*(2ull*a->kv_heads*a->head_dim+index)+4*index/ratio;
+    }
+    if (ratio) per+=8ull*MIN(r->chunk,capacity)/ratio;
+    return per*capacity;
+}
+/* reserve: graph bytes beyond those the 15% margin below was measured to hold (32K tokens). */
+static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget,uint64_t reserve) {
     const char *v=getenv("PICOFORGE_STREAM_EXPERTS");
     if (v && *v) {
         char *end; unsigned long n=strtoul(v,&end,10);
@@ -383,7 +411,7 @@ static uint32_t stream_slots(const Gguf *g,uint32_t trunk,uint64_t budget) {
     for (int m=0;m<3;m++) { const GgufTensor *t=gguf_plan_streamed(&plan,0,m); if (t) { first+=t->bytes; count=t->shape[2]; } }
     gguf_plan_free(&plan);
     if (!count || rest+experts<=budget/10*9) return 0;
-    const uint64_t pool=budget/20*17,per=first/count;
+    const uint64_t pool=budget/20*17-MIN(reserve,budget/20*17),per=first/count;
     if (pool<=rest+count*per) die("the model does not fit in GPU memory even with a minimal expert pool");
     const uint32_t slots=(uint32_t)MIN((pool-rest)/per,(uint64_t)trunk*count);
     fprintf(stderr,"expert streaming: automatic, %.1f GiB of weights > 90%% of %.1f GiB GPU budget "
@@ -422,10 +450,50 @@ static void close_stream(Q38Run *r) {
         (unsigned long long)s.evictions,(double)s.bytes_read/1073741824.0,(double)s.acquire_ns*1e-9);
     q38_pool_destroy(r->pool); close(r->pool_fd); r->pool=NULL;
 }
+/* Model loading shared by the CLI and pf-agent. open: the CPU side (GGUF,
+ * config, tokenizer); gpu: device, kernels and weights, with SSD expert
+ * streaming when they do not fit. The graph comes later (q38_run_graph). */
+void q38_run_open(Q38Run *r,const char *path) {
+    Qwen38Error e; gguf_open(path,&r->g);
+    q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
+    q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);
+    q38_check(qwen38_tokenizer_load(&r->g,r->config,&r->tok,&e),&e);
+    r->c=qwen38_config_view(r->config);
+}
+void q38_run_gpu(Q38Run *r,const char *path,const char *metallib,uint32_t capacity) {
+    Qwen38Error e; id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+    if (!device) die("Metal device unavailable");
+    NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
+    if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
+    /* Retained here, released in q38_run_close: the pointers outlive any ARC scope. */
+    r->device=(__bridge_retained void *)device; r->library=(__bridge_retained void *)lib;
+    const uint64_t big=context_bytes(r,capacity),held=context_bytes(r,MIN(capacity,32768u));
+    const uint32_t slots=stream_slots(&r->g,r->c->trunk_blocks,device.recommendedMaxWorkingSetSize,big-held);
+    r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? r->c->trunk_blocks : 0);
+    if (slots) open_stream(r,path,slots);
+    q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
+}
+void q38_run_close(Q38Run *r) {
+    if (r->decoder) qwen38_decoder_free(r->decoder);
+    if (r->graph) qwen38_gpu_forward_destroy(r->graph);
+    qwen38_tokenizer_free(r->tok); qwen38_weights_free(r->weights);
+    if (r->store) gpu_weights_close(r->store);
+    close_stream(r); qwen38_config_free(r->config); gguf_close(&r->g); free(r->logits);
+    if (r->library) CFRelease(r->library);
+    if (r->device) CFRelease(r->device);
+    *r=(Q38Run){0};
+}
 void q38_run_graph(Q38Run *r,uint32_t capacity) {
     Qwen38Error e; uint32_t chunk=MIN(r->chunk,capacity);
     if (r->graph) qwen38_gpu_forward_destroy(r->graph);
     free(r->logits); r->graph=NULL; r->capacity=capacity; r->last_count=0;
+    /* The graph's buffers are zeroed, so wired, as they are created: past Metal's
+     * budget the machine pages (it froze twice). Refuse before allocating. */
+    id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
+    const uint64_t need=context_bytes(r,capacity),have=device.currentAllocatedSize,budget=device.recommendedMaxWorkingSetSize;
+    if (have+need>budget-budget/20)
+        die("a context of %u tokens needs about %.1f GiB of graph state, %.1f GiB are in use and the GPU budget is %.1f GiB: "
+            "choose a smaller context",capacity,(double)need/1073741824.0,(double)have/1073741824.0,(double)budget/1073741824.0);
     q38_check(qwen38_gpu_forward_create(&r->g,r->config,r->weights,r->store,r->device,r->library,
         r->mtp ? MIN(MAX(chunk,(uint32_t)QWEN38_VERIFY_ROWS),capacity) : chunk,capacity,
         r->mtp ? MIN((uint32_t)QWEN38_VERIFY_ROWS,capacity) : 1,&r->graph,&e),&e);
@@ -442,7 +510,7 @@ void q38_run_graph(Q38Run *r,uint32_t capacity) {
 /* ds4-style short form (`./ds4 -p ...`): -m MODEL, -p TEXT, -c N, -n N, the rest
  * as in the long form. MODEL is a path or a short name ("q4"); without -m the
  * model comes from $PICOFORGE_MODEL, the only model in models/, or a prompt
- * (model_select.c). A bare ./picoforge is the chat. */
+ * (model_select.c). A bare ./pf is the chat. */
 bool qwen38_short_form(int argc,char **argv) {
     static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision","--power",NULL};
     if (argc==1) return true;
@@ -463,7 +531,7 @@ int qwen38_short(int argc,char **argv) {
     out[0]=argv[0]; out[1]="--qwen38"; out[2]=path;
     int rc=qwen38_cli(n,out); free(path); free(out); return rc;
 }
-/* `picoforge bench [short-form options]`: protocol defaults (3 warm-up, 20
+/* `pf bench` / `pf-bench` [short-form options]: protocol defaults (3 warm-up, 20
  * measured, 128 new tokens), a fixed prompt unless one is given; generated
  * text is discarded, the summary goes to stdout. Later options win. */
 static void discard(void *ctx,const uint8_t *s,size_t n) { (void)ctx; (void)s; (void)n; }
@@ -508,8 +576,8 @@ int qwen38_cli(int argc,char **argv) {
         if (!strcmp(opt,"--chat") || !strcmp(opt,"--complete") || !strcmp(opt,"--tokens") ||
             !strcmp(opt,"--chat-file") || !strcmp(opt,"--complete-file")) {
             if (mode) die("choose one prompt mode"); mode=opt; input=value;
-        } else if (!strcmp(opt,"--max-new")) { max_new=number(value,0,32768,opt); max_new_given=true; }
-        else if (!strcmp(opt,"--context")) capacity=number(value,1,32768,opt);
+        } else if (!strcmp(opt,"--max-new")) { max_new=number(value,0,QWEN38_MAX_CONTEXT,opt); max_new_given=true; }
+        else if (!strcmp(opt,"--context")) capacity=number(value,1,QWEN38_MAX_CONTEXT,opt);
         else if (!strcmp(opt,"--prefill-precision")) {
             /* R3.5: one switch for flag and environment; the packed context
              * reads PICOFORGE_PREFILL_PRECISION when the graph is built. */
@@ -529,10 +597,10 @@ int qwen38_cli(int argc,char **argv) {
         else if (!strcmp(opt,"--repeat")) repeat=number(value,1,1000,opt);
         else if (!strcmp(opt,"--warmup")) warmup=number(value,0,1000,opt);
         else if (!strcmp(opt,"--replay-chunk")) replay_chunk=number(value,1,2048,opt);
-        else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,32768,opt);
+        else if (!strcmp(opt,"--stop-after")) stop_after=number(value,0,QWEN38_MAX_CONTEXT,opt);
         else if (!strcmp(opt,"--runs-jsonl")) runs_path=value;
         else if (!strcmp(opt,"--profile")) profile_path=value;
-        else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,32768,opt);
+        else if (!strcmp(opt,"--teacher-forced")) forced=number(value,1,QWEN38_MAX_CONTEXT,opt);
         else if (!strcmp(opt,"--bench-csv")) bench_csv=value;
         else if (!strcmp(opt,"--weight-mb")) {
             char *end; errno=0; weight_mb=strtod(value,&end);
@@ -580,11 +648,8 @@ int qwen38_cli(int argc,char **argv) {
         Q38Run run={.chunk=chunk_request,.mtp=mtp,.power=(int)power}; Q38Run *r=&run; Qwen38Error e;  /* chunk clamped per graph */
         q38_policy_init(&r->policy,mtp_draft,getenv("PICOFORGE_MTP_COST"));
         q38_sampler_init(&r->sampler,temp,top_k,top_p,min_p,seed);
-        gguf_open(argv[2],&r->g);
-        q38_check(qwen38_config_load(&r->g,&r->config,&e),&e);
-        q38_check(qwen38_weights_describe(&r->g,r->config,&r->weights,&e),&e);
-        q38_check(qwen38_tokenizer_load(&r->g,r->config,&r->tok,&e),&e);
-        const Qwen38ConfigView *c=r->c=qwen38_config_view(r->config); Qwen38Tokenizer *tok=r->tok;
+        q38_run_open(r,argv[2]);
+        const Qwen38ConfigView *c=r->c; Qwen38Tokenizer *tok=r->tok;
         if (capacity>c->max_positions) die("context exceeds model maximum");
         int32_t *tokens=malloc((size_t)capacity*4),*generated=malloc((size_t)capacity*4);
         if (!tokens || !generated) die("token allocation");
@@ -614,18 +679,10 @@ int qwen38_cli(int argc,char **argv) {
         if (encode_only) {
             fputs("{\"prompt_ids\":",stdout); ids_json(stdout,tokens,count);
             fprintf(stdout,",\"prompt_tokens\":%zu,\"context\":%u}\n",count,capacity);
-            qwen38_tokenizer_free(tok); qwen38_weights_free(r->weights); qwen38_config_free(r->config); gguf_close(&r->g);
+            q38_run_close(r);
             free(tokens); free(generated); free(owned_input); if (runs) fclose(runs); if (profile_csv) fclose(profile_csv); return 0;
         }
-        id<MTLDevice> device=MTLCreateSystemDefaultDevice();
-        if (!device) die("Metal device unavailable");
-        NSError *error=nil; id<MTLLibrary> lib=[device newLibraryWithURL:[NSURL fileURLWithPath:@(metallib)] error:&error];
-        if (!lib) die("cannot load %s: %s",metallib,error.localizedDescription.UTF8String);
-        r->device=(__bridge void *)device; r->library=(__bridge void *)lib;
-        const uint32_t slots=stream_slots(&r->g,c->trunk_blocks,device.recommendedMaxWorkingSetSize);
-        r->store=gpu_weights_open_ex(r->device,&r->g,0,slots ? c->trunk_blocks : 0);
-        if (slots) open_stream(r,argv[2],slots);
-        q38_check(qwen38_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
+        q38_run_gpu(r,argv[2],metallib,capacity); id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
         if (profile_csv) q38_check(q38_profile_create(r->device,profile_csv,&r->profile,&e),&e);
         q38_run_graph(r,capacity); Qwen38GpuForward *graph=r->graph;
         fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
@@ -708,10 +765,9 @@ int qwen38_cli(int argc,char **argv) {
             if (bench_out) { q38_bench_csv(bench_out,bench_rows,bench_n); if (fclose(bench_out)) die("bench CSV write failed"); }
             free(bench_rows);
         }
-        qwen38_decoder_free(r->decoder); qwen38_gpu_forward_destroy(r->graph); qwen38_tokenizer_free(tok);
         if (!q38_profile_close(r->profile)) die("profile write failed");
-        qwen38_weights_free(r->weights); gpu_weights_close(r->store); close_stream(r); qwen38_config_free(r->config); gguf_close(&r->g);
-        free(tokens); free(generated); free(r->logits);
+        r->profile=NULL; q38_run_close(r);
+        free(tokens); free(generated);
     }
     free(owned_input); if (runs && runs!=stdout && fclose(runs)) die("runs close failed");
     return 0;

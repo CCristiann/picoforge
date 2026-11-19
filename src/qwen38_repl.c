@@ -88,22 +88,22 @@ static size_t user_turn(Chat *ch, const char *text) {
 /* Reply text: the <think>/</think> tags are dropped and the reasoning is
  * grey on a terminal (idea from ds4 fc80bd6, MIT, ds4_cli.c:token_printer_process).
  * A tag can arrive split across tokens, so a possible prefix waits. */
-typedef struct { bool color, in_think, newline; char pending[8]; size_t n; } Printer;
+typedef Q38Printer Printer;
 static const char think_open[]="<think>",think_close[]="</think>";
 static bool tag_prefix(const char *p, size_t n) {
     return (n<=7 && !memcmp(p,think_open,n)) || (n<=8 && !memcmp(p,think_close,n));
 }
-static void shade(Printer *p, bool think) {
+void q38_printer_shade(Printer *p, bool think) {
     if (p->color && think!=p->in_think) fputs(think ? "\x1b[90m" : "\x1b[0m",stdout);
     p->in_think=think;
 }
-static void print_text(void *ctx, const uint8_t *s, size_t len) {
+void q38_print_text(void *ctx, const uint8_t *s, size_t len) {
     Printer *p=ctx;
     for (size_t i=0;i<len;i++) {
         p->pending[p->n++]=(char)s[i];
-        if (p->n==7 && !memcmp(p->pending,think_open,7)) { shade(p,true); p->n=0; }
+        if (p->n==7 && !memcmp(p->pending,think_open,7)) { q38_printer_shade(p,true); p->n=0; }
         else if (p->n==8 && !memcmp(p->pending,think_close,8)) {
-            shade(p,false); if (!p->newline) fputc('\n',stdout);
+            q38_printer_shade(p,false); if (!p->newline) fputc('\n',stdout);
             p->newline=true; p->n=0;
         }
         while (p->n && !tag_prefix(p->pending,p->n)) {
@@ -111,27 +111,39 @@ static void print_text(void *ctx, const uint8_t *s, size_t len) {
         }
     }
 }
-static void print_end(Printer *p) { fwrite(p->pending,1,p->n,stdout); p->n=0; shade(p,false); fflush(stdout); }
-/* Prefill what the graph does not hold yet, then decode the reply. */
-static void reply(Chat *ch, size_t added) {
-    Q38Run *r=ch->r; Qwen38Error e; size_t total=ch->n+added; q38_stopped=0;
+void q38_print_end(Printer *p) { fwrite(p->pending,1,p->n,stdout); p->n=0; q38_printer_shade(p,false); fflush(stdout); }
+/* Prefill what the graph does not hold yet, then decode the reply. Shared
+ * with pf-agent (qwen38_run.h). The graph holds ids[0..pos); everything up
+ * to `held` is the transcript, so a graph past it (a cancelled turn) replays. */
+size_t q38_chat_continue(Q38Run *r, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
+                         void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
+                         void (*progress)(void *, size_t, size_t, size_t),
+                         int32_t *generated, Q38Turn *t, bool *replayed) {
+    Qwen38Error e; q38_stopped=0; *replayed=false;
     size_t pos=(size_t)qwen38_gpu_forward_info(r->graph).next_pos;
     /* Pair the MTP predictor's pending rows (the last append's) with the IDs
      * that follow them; anything older than that append means replay. */
     size_t mpos=r->mtp ? (size_t)qwen38_gpu_mtp_info(r->graph).next_pos : pos;
-    if (pos>ch->n || mpos+r->last_count<pos) {
-        q38_check(qwen38_gpu_forward_reset(r->graph,&e),&e); pos=mpos=0; r->last_count=0; ch->replays++;
+    if (pos>held || mpos+r->last_count<pos) {
+        q38_check(qwen38_gpu_forward_reset(r->graph,&e),&e); pos=mpos=0; r->last_count=0; *replayed=true;
     }
     if (mpos<pos) {
         Qwen38F32Mut empty=r->y; empty.dim[0]=0;
-        q38_check(qwen38_gpu_mtp(r->graph,mpos-(pos-r->last_count),ch->ids+mpos+1,pos-mpos,empty,&e),&e);
+        q38_check(qwen38_gpu_mtp(r->graph,mpos-(pos-r->last_count),ids+mpos+1,pos-mpos,empty,&e),&e);
     }
-    size_t room=r->capacity-total; uint32_t max_new=ch->max_new && ch->max_new<room ? ch->max_new : (uint32_t)room;
-    Q38Turn t; qwen38_decoder_reset(r->decoder);
-    Printer printer={.color=isatty(STDOUT_FILENO)}; shade(&printer,ch->thinking);
-    q38_turn(r,ch->ids+pos,total-pos,(Q38TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=max_new,
-        .stop_after=UINT32_MAX,.keep_predictor=true,.print=print_text,.print_ctx=&printer},ch->generated,&t);
-    print_end(&printer); fputc('\n',stdout);
+    size_t room=r->capacity-total; if (!max_new || max_new>room) max_new=(uint32_t)room;
+    qwen38_decoder_reset(r->decoder);
+    q38_turn(r,ids+pos,total-pos,(Q38TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=max_new,
+        .stop_after=UINT32_MAX,.keep_predictor=true,.print=print,.print_ctx=print_ctx,.progress=progress},generated,t);
+    return total-pos;
+}
+static void reply(Chat *ch, size_t added) {
+    Q38Run *r=ch->r; size_t total=ch->n+added;
+    Q38Turn t; Printer printer={.color=isatty(STDOUT_FILENO)}; q38_printer_shade(&printer,ch->thinking);
+    bool replayed; size_t prefilled=q38_chat_continue(r,ch->ids,ch->n,total,ch->max_new,q38_print_text,&printer,NULL,ch->generated,&t,&replayed);
+    q38_print_end(&printer);
+    ch->replays+=replayed;
+    fputc('\n',stdout);
     /* Stopped before the first token: drop the user turn too (as ds4). The
      * graph is then ahead of the transcript, so the next turn replays. */
     bool cancelled=!strcmp(t.reason,"cancelled");
@@ -139,7 +151,7 @@ static void reply(Chat *ch, size_t added) {
     if (t.got || !cancelled) ch->n=total+t.got;
     double prefill=t.prefill_end-t.prefill_start,decode=t.end-t.decode_start;
     fprintf(stderr,"picoforge: prefill %.2f t/s, generation %.2f t/s, context %zu/%u%s\n",
-        prefill>0 ? (double)(total-pos)/prefill : 0.0,decode>0 && t.got>1 ? (double)(t.got-1)/decode : 0.0,
+        prefill>0 ? (double)prefilled/prefill : 0.0,decode>0 && t.got>1 ? (double)(t.got-1)/decode : 0.0,
         ch->n,r->capacity,cancelled ? " [interrupted]" : "");
     dump_ids(ch);
 }
@@ -161,7 +173,7 @@ static void forget(Chat *ch) {
  * double; the model weights stay mapped. */
 static void resize(Chat *ch, const char *arg) {
     char *end; errno=0; unsigned long n=strtoul(arg,&end,10);
-    uint32_t top=ch->r->c->max_positions<32768 ? ch->r->c->max_positions : 32768;
+    uint32_t top=ch->r->c->max_positions<QWEN38_MAX_CONTEXT ? ch->r->c->max_positions : QWEN38_MAX_CONTEXT;
     if (errno || end==arg || *end || n<2 || n>top) { fprintf(stderr,"picoforge: /ctx needs N in [2,%u]\n",top); return; }
     q38_run_graph(ch->r,(uint32_t)n);
     int32_t *ids=realloc(ch->ids,n*sizeof *ids); if (!ids) die("transcript allocation"); ch->ids=ids;

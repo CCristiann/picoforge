@@ -24,7 +24,7 @@ class Engine:
 
     def load(self):
         command=[sys.executable,str(ROOT/'tools/qwen38_gpu_lock.py'),'--timeout','3600','--',
-                 str(ROOT/'picoforge'),'--qwen38',str(self.checkpoint),'--session',
+                 str(ROOT/'pf'),'--qwen38',str(self.checkpoint),'--session',
                  '--context',str(self.context),'--chunk',str(self.chunk)]
         if self.mtp: command.append('--mtp')
         try:
