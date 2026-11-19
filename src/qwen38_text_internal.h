@@ -20,7 +20,8 @@ struct Qwen38Config {
     Qwen38Layer *layers;
     Qwen38NgramConfig ngram;
     uint64_t *multipliers, *offsets, *vocabs;
-    uint32_t interval, inner, ple_divisor;
+    uint32_t inner, ple_divisor;
+    bool has_ple;                 /* qwen4exp.ple.layers present: one PLE site */
 };
 Q38A_INLINE Qwen38Status q38a_error(Qwen38Error *e, Qwen38Status s,
                                      const char *subject, const char *detail) {

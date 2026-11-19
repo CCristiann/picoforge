@@ -81,7 +81,9 @@ int main(int argc, char **argv) {
             assert(n->head_count*n->head_dim == v->hidden_size && n->layer == i); ++ple;
         } else assert(qwen38_config_ngram(c, i, &n, &error) == Q38_MISSING && !n);
     }
-    assert(ple == 1 && gdn+qsa == v->blocks);
+    bool ple_keys = false;                                /* PLE is optional upstream */
+    for (size_t i = 0; i < g.metadata_count; ++i) ple_keys |= !strncmp(g.metadata[i].name, "qwen4exp.ple.", 13);
+    assert(ple == (ple_keys ? 1u : 0u) && gdn+qsa == v->blocks);
     assert(qwen38_config_layer(c, v->blocks, &l, &error) == Q38_RANGE && !l);
     printf("config OK: E=%u V=%u trunk=%u MTP=%u GDN=%zu QSA=%zu gate=%s\n",
            v->hidden_size, v->vocab_size, v->trunk_blocks, v->mtp_blocks, gdn, qsa,
@@ -95,11 +97,14 @@ int main(int argc, char **argv) {
     rejected(&g, "qwen4exp.attention.head_count", UINT32_MAX-1u, 0, 4, Q38_OVERFLOW);
     rejected(&g, "qwen4exp.block_count", 4097, 0, 4, Q38_RANGE);
     rejected(&g, "qwen4exp.attention.layer_norm_rms_epsilon", 0x7fc00000, 0, 4, Q38_NONFINITE);
-    rejected(&g, "qwen4exp.ple.layer_multipliers", UINT64_MAX, 12, 8, Q38_RANGE);
-    rejected(&g, "qwen4exp.ple.head_offsets", 1, 12, 8, Q38_RANGE);
-    rejected(&g, "qwen4exp.ple.row_count", 1, 0, 4, Q38_RANGE);
+    if (ple_keys) {
+        rejected(&g, "qwen4exp.ple.layer_multipliers", UINT64_MAX, 12, 8, Q38_RANGE);
+        rejected(&g, "qwen4exp.ple.head_offsets", 1, 12, 8, Q38_RANGE);
+        rejected(&g, "qwen4exp.ple.row_count", 1, 0, 4, Q38_RANGE);
+    }
     rejected(&g, "ds4.qwen4.down.physical_input", 7, 0, 4, Q38_SHAPE);
-    rejected(&g, "qwen4exp.attention.compress_ratios", 1, 12, 8, Q38_SHAPE);
+    rejected(&g, "qwen4exp.attention.compress_ratios", 3, 12, 8, Q38_SHAPE);
+    if (v->mtp_blocks) rejected(&g, "qwen4exp.attention.compress_ratios", 0, 12+8*(size_t)(v->blocks-1), 8, Q38_SHAPE);
     GgufMetadata *m = field(&g, "qwen4exp.embedding_length");
     uint32_t type = m->type; m->type = 7;
     Qwen38Config *bad = (void *)1;

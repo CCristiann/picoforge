@@ -19,7 +19,8 @@ static void storage_bridge(const Gguf *g, const Qwen38Config *c) {
     for (size_t i = 0; i < span.bytes; ++i) assert(span.data[i] == 0);
     GgufBinding forged = *t->gpu;
     assert(qwen38_weights_cpu_span(store,&forged,&span,&e) == Q38_OWNER && !span.data && !span.bytes);
-    assert(qwen38_weights_get(w,QWEN38_GLOBAL_LAYER,Q38_PLE_TABLE,&t,&e) == Q38_OK && !t->gpu);
+    Qwen38Status table = qwen38_weights_get(w,QWEN38_GLOBAL_LAYER,Q38_PLE_TABLE,&t,&e);
+    assert(table == Q38_MISSING || (table == Q38_OK && !t->gpu));
     qwen38_weights_free(w); gpu_weights_close(store); metal_shutdown(metal);
     puts("small Metal storage attach/CPU span/forged owner OK");
 }
@@ -61,8 +62,12 @@ int main(int argc, char **argv) {
     assert(qwen38_weights_get(w, 0, Q38_MOE_DOWN, &down, &e) == Q38_OK);
     assert(down->logical_shape[0] == v->moe.intermediate && down->storage.shape[0] == v->moe.down_physical);
     assert(down->row_bytes == v->moe.down_physical/256*84 && down->block_elems == 256);
-    assert(qwen38_weights_get(w, QWEN38_GLOBAL_LAYER, Q38_PLE_TABLE, &t, &e) == Q38_OK);
-    assert(t->domain == Q38_DISK_PLE && t->layout == Q38_DISK_ROWS && !t->gpu);
+    bool has_ple = false; const Qwen38Layer *kind;
+    for (uint32_t i = 0; i < v->blocks; ++i) { assert(qwen38_config_layer(c,i,&kind,&e) == Q38_OK); has_ple |= kind->has_ple; }
+    const Qwen38Tensor *table = NULL;
+    Qwen38Status table_status = qwen38_weights_get(w, QWEN38_GLOBAL_LAYER, Q38_PLE_TABLE, &table, &e);
+    if (has_ple) assert(table_status == Q38_OK && table->domain == Q38_DISK_PLE && table->layout == Q38_DISK_ROWS && !table->gpu);
+    else assert(table_status == Q38_MISSING && !table && !count[Q38_DISK_PLE]);  /* no PLE: no SSD table */
     size_t ix = 0;
     while (strcmp(g.tensors[ix].name, down->storage.name)) ++ix;
     GgufTensor bad = g.tensors[ix]; bad.type = 12;
@@ -92,7 +97,7 @@ int main(int argc, char **argv) {
     size_t oldbytes = g.tensors[ix].bytes; g.tensors[ix].bytes--;
     assert(qwen38_weights_attach(w, &g, &plan, &e) == Q38_STALE); g.tensors[ix].bytes = oldbytes;
     assert(qwen38_weights_attach(w, &g, &plan, &e) == Q38_OK);
-    assert(down->gpu && down->gpu->owner == &plan && !t->gpu);
+    assert(down->gpu && down->gpu->owner == &plan && (!table || !table->gpu));
     assert(qwen38_weights_attach(w, &g, &plan, &e) == Q38_BUSY);
     printf("bindings OK: ordinary=%zu MTP=%zu disk=%zu views=%zu\n",
         count[0], count[1], count[2], plan.view_count);

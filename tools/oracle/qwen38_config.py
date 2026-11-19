@@ -26,13 +26,17 @@ FIELDS = {
     "ssm.conv_kernel": "linear_conv_kernel_dim",
     "ssm.state_size": "linear_key_head_dim", "ssm.group_count": "linear_num_key_heads",
     "ssm.time_step_rank": "linear_num_value_heads",
-    "full_attention_interval": "full_attention_interval",
     "hyper_connection.count": "hc_count", "hyper_connection.low_rank": "hc_lowrank",
+}
+# Present only when PLE is on (upstream ple_layer_ids non-empty).
+PLE_FIELDS = {
     "ple.ngram_size": "ngram_size", "ple.heads_per_ngram": "heads_per_ngram",
     "ple.conv_kernel": "ple_conv_kernel_size", "ple.eos_token_id": "eos_token_id",
     "ple.vocab_base": "ngram_vocab_size_base",
     "ple.vocab_divisor": "make_ngram_vocab_size_divisible_by",
 }
+# Upstream layer kinds; "full_attention" in a checkpoint means an indexed (QSA) layer.
+ATTENTION = ("full_attention", "indexed_attention")
 
 
 def require(condition, subject):
@@ -58,15 +62,16 @@ def reference_metadata(hf):
     require(hf["model_type"] == "qwen4_exp", "HF architecture")
     c = hf["text_config"]
     require(c["model_type"] == "qwen4_exp_text", "HF text architecture")
-    values = {key: positive(c[field], field) for key, field in FIELDS.items()}
+    ple = bool(c.get("ple_layer_ids"))
+    values = {key: positive(c[field], field) for key, field in {**FIELDS, **(PLE_FIELDS if ple else {})}.items()}
+    if "full_attention_interval" in c:       # an explicit layer_types list may come without it
+        values["full_attention_interval"] = positive(c["full_attention_interval"], "full_attention_interval")
     layers = c["layer_types"]
     require(len(layers) == c["num_hidden_layers"], "HF layer_types length")
-    require(all(x in ("linear_attention", "full_attention") for x in layers), "HF layer kind")
+    require(all(x == "linear_attention" or x in ATTENTION for x in layers), "HF layer kind")
     mtp = c["mtp"]["layer_types"]
     require(len(mtp) == c["mtp_num_hidden_layers"] == c["mtp"]["num_hidden_layers"], "HF MTP length")
-    require(all(x == "full_attention" for x in mtp), "HF MTP kind")
-    heads = (c["ngram_size"] - 1) * c["heads_per_ngram"]
-    require(heads > 0 and c["ple_embed_dim"] % heads == 0, "PLE embedding division")
+    require(all(x in ATTENTION for x in mtp), "HF MTP kind")
     gate = c.get("output_gate_type") or c["hidden_act"]
     require(gate in ("sigmoid", "silu"), "HF output gate activation")
     rotary = c["head_dim"] * c["rope_parameters"]["partial_rotary_factor"]
@@ -79,10 +84,13 @@ def reference_metadata(hf):
         "attention.layer_norm_rms_epsilon": c["rms_norm_eps"],
         "attention.compress_ratios": [0 if x == "linear_attention" else c["indexer_compress_ratio"]
                                       for x in layers + mtp],
-        "ple.layers": [i - 1 for i in c["ple_layer_ids"]],
-        "embedding_length_per_layer_input": c["ple_embed_dim"] // heads,
-        "ple.row_dimension": c["ple_embed_dim"] // heads,
     })
+    if ple:
+        heads = (c["ngram_size"] - 1) * c["heads_per_ngram"]
+        require(heads > 0 and c["ple_embed_dim"] % heads == 0, "PLE embedding division")
+        values.update({"ple.layers": [i - 1 for i in c["ple_layer_ids"]],
+                       "embedding_length_per_layer_input": c["ple_embed_dim"] // heads,
+                       "ple.row_dimension": c["ple_embed_dim"] // heads})
     # Flash-Next (sigmoid) carries no key: an absent key means sigmoid.
     if gate == "silu":
         values["ssm.output_gate_type"] = "silu"
@@ -100,6 +108,11 @@ def check_metadata(hf, metadata):
         else:
             require(same_value(actual, value), key)
     c = hf["text_config"]
+    if not c.get("ple_layer_ids"):
+        require(not any(k.startswith(PREFIX + "ple.") for k in metadata), "PLE metadata without PLE")
+        return check_down(c, metadata, {"metadata_fields": len(expected), "ordinary_layers": c["num_hidden_layers"],
+                                        "mtp_layers": c["mtp_num_hidden_layers"], "ple_hash_rows": 0,
+                                        "ple_physical_rows": 0, "ple_padding_rows": 0})
     offsets = metadata[PREFIX + "ple.head_offsets"]
     sizes = metadata[PREFIX + "ple.head_vocab_sizes"]
     heads = (c["ngram_size"] - 1) * c["heads_per_ngram"]
@@ -115,13 +128,17 @@ def check_metadata(hf, metadata):
     divisor = c["make_ngram_vocab_size_divisible_by"]
     rows = positive(metadata[PREFIX + "ple.row_count"], "PLE row count")
     require(rows == (end + divisor - 1) // divisor * divisor, "PLE physical padding")
+    return check_down(c, metadata, {"metadata_fields": len(expected), "ordinary_layers": c["num_hidden_layers"],
+                                    "mtp_layers": c["mtp_num_hidden_layers"], "ple_hash_rows": end,
+                                    "ple_physical_rows": rows, "ple_padding_rows": rows - end})
+
+
+def check_down(c, metadata, summary):
     logical = c["moe_intermediate_size"]
     require(metadata["ds4.qwen4.down.logical_input"] == logical, "down logical input")
     require(metadata["ds4.qwen4.down.physical_input"] == (logical + 255) // 256 * 256,
             "down physical padding")
-    return {"metadata_fields": len(expected), "ordinary_layers": c["num_hidden_layers"],
-            "mtp_layers": c["mtp_num_hidden_layers"], "ple_hash_rows": end,
-            "ple_physical_rows": rows, "ple_padding_rows": rows - end}
+    return summary
 
 
 # GGUF block layout, distinct from picoforge's q4_row/q8_row formats.
@@ -144,8 +161,7 @@ def reference_tensors(hf, rows):
     gv, gc = hv*dv, 2*hk*dk+hv*dv
     q, kv = c["num_attention_heads"]*c["head_dim"], c["num_key_value_heads"]*c["head_dim"]
     di, hi = c["indexer_head_dim"], c["indexer_n_heads"]
-    ngram_heads = (c["ngram_size"]-1)*c["heads_per_ngram"]
-    head_dim = c["ple_embed_dim"]//ngram_heads
+    ple = bool(c.get("ple_layer_ids"))
     result = {}
 
     def add(prefix, name, shape, fmt, domain):
@@ -161,7 +177,9 @@ def reference_tensors(hf, rows):
     add("", "token_embd.weight", [e, v], "BF16", "ordinary")
     add("", "output.weight", [e, v], "Q8_0", "ordinary")
     hc("", "output_hc", "ordinary")
-    add("", "per_layer_token_embd.weight", [head_dim, rows], "BF16", "disk_ple")
+    if ple:
+        head_dim = c["ple_embed_dim"]//((c["ngram_size"]-1)*c["heads_per_ngram"])
+        add("", "per_layer_token_embd.weight", [head_dim, rows], "BF16", "disk_ple")
     for layer, kind in enumerate(c["layer_types"]+c["mtp"]["layer_types"]):
         prefix = f"blk.{layer}."
         mtp = layer >= c["num_hidden_layers"]
@@ -193,7 +211,7 @@ def reference_tensors(hf, rows):
             for name in ("q", "k"):
                 group[f"attn_{name}_norm.weight"] = ([c["head_dim"]], "F32")
                 group[f"indexer.{name}_norm.weight"] = ([di], "F32")
-        if layer+1 in c["ple_layer_ids"] and not mtp:
+        if ple and layer+1 in c["ple_layer_ids"] and not mtp:
             group.update({"ple_key.weight": ([c["ple_embed_dim"], x], "Q8_0"),
                           "ple_value.weight": ([c["ple_embed_dim"], e], "Q8_0"),
                           "ple_conv1d.weight": ([c["ple_conv_kernel_size"], x], "F32")})
@@ -209,7 +227,7 @@ def reference_tensors(hf, rows):
 
 
 def check_tensors(hf, metadata, tensors):
-    expected = reference_tensors(hf, metadata[PREFIX+"ple.row_count"])
+    expected = reference_tensors(hf, metadata.get(PREFIX+"ple.row_count", 0))
     actual = {t["name"]: t for t in tensors}
     require(len(actual) == len(tensors), "duplicate tensor name")
     require(actual.keys() == expected.keys(), "tensor name set: " + str(sorted(actual.keys() ^ expected.keys())[:4]))

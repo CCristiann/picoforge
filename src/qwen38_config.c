@@ -30,7 +30,7 @@ static Qwen38Status validate_fields(Qwen38Config *c, Qwen38Error *e) {
     Qwen38MoeConfig *m = &v->moe;
     Qwen38NgramConfig *n = &c->ngram;
     if (v->blocks > 4096 || v->mtp_blocks >= v->blocks || v->vocab_size < 2 ||
-        n->order < 2 || n->order > 64)
+        (c->has_ple && (n->order < 2 || n->order > 64)))
         return q38a_error(e, Q38_RANGE, "config", "layer/order admission");
     v->trunk_blocks = v->blocks-v->mtp_blocks;
     if (a->heads % a->kv_heads || a->rotary_dim % 2 || a->rotary_dim > a->head_dim ||
@@ -43,8 +43,8 @@ static Qwen38Status validate_fields(Qwen38Config *c, Qwen38Error *e) {
     uint64_t padded = m->trunk_type[2] == 10 ? ((uint64_t)m->intermediate+255)/256*256 : m->intermediate;
     if (padded > UINT32_MAX || padded != m->down_physical)   /* R5.3: only Q2_K pads K (to 256) */
         return q38a_error(e, Q38_SHAPE, "down", "physical K must round logical K to 256");
-    uint64_t heads = (uint64_t)(n->order-1)*n->heads_per_order;
-    if (heads > 2000000 || heads*n->head_dim != v->hidden_size || n->eos_id >= v->vocab_size)
+    uint64_t heads = c->has_ple ? (uint64_t)(n->order-1)*n->heads_per_order : 0;
+    if (c->has_ple && (heads > 2000000 || heads*n->head_dim != v->hidden_size || n->eos_id >= v->vocab_size))
         return q38a_error(e, Q38_SHAPE, "PLE", "embedding width or EOS");
     /* Kernel dimensions must eventually narrow to uint32, never wrap first. */
     if ((uint64_t)v->hidden_size*v->hc.streams > UINT32_MAX ||
@@ -172,17 +172,22 @@ static Qwen38Status load_fields(const Gguf *g, Qwen38Config *c, Qwen38Error *e) 
     U("expert_shared_feed_forward_length", m->shared_intermediate);
     U("ssm.conv_kernel", v->gdn_conv_kernel); U("ssm.state_size", v->gdn.key_dim);
     U("ssm.group_count", v->gdn.key_heads); U("ssm.time_step_rank", v->gdn.value_heads);
-    U("ssm.inner_size", c->inner); U("full_attention_interval", c->interval);
+    U("ssm.inner_size", c->inner);
     U("hyper_connection.count", v->hc.streams); U("hyper_connection.low_rank", v->hc.low_rank);
     U("rope.dimension_count", a->rotary_dim);
-    U("ple.ngram_size", n->order); U("ple.heads_per_ngram", n->heads_per_order);
-    U("ple.conv_kernel", n->conv_kernel); U("ple.row_dimension", n->head_dim);
-    U("embedding_length_per_layer_input", tmp);
-    if (tmp != n->head_dim) return q38a_error(e, Q38_SHAPE, "PLE", "row dimensions disagree");
-    U("ple.row_count", n->row_count); U("ple.vocab_divisor", c->ple_divisor);
+    /* PLE is optional upstream (ple_layer_ids empty): without ple.layers no
+     * ple.* field is read and no layer has PLE. */
+    c->has_ple = has_key(g, "qwen4exp.ple.layers");
+    if (c->has_ple) {
+        U("ple.ngram_size", n->order); U("ple.heads_per_ngram", n->heads_per_order);
+        U("ple.conv_kernel", n->conv_kernel); U("ple.row_dimension", n->head_dim);
+        U("embedding_length_per_layer_input", tmp);
+        if (tmp != n->head_dim) return q38a_error(e, Q38_SHAPE, "PLE", "row dimensions disagree");
+        U("ple.row_count", n->row_count); U("ple.vocab_divisor", c->ple_divisor);
+        s = uint_field(g, "qwen4exp.ple.eos_token_id", &n->eos_id, e);
+        if (s) return s;
+    }
 #undef U
-    s = uint_field(g, "qwen4exp.ple.eos_token_id", &n->eos_id, e);
-    if (s) return s;
     s = float_field(g, "qwen4exp.attention.layer_norm_rms_epsilon", &a->rms_eps, e);
     if (s) return s;
     s = float_field(g, "qwen4exp.rope.freq_base", &a->rope_theta, e);
@@ -227,10 +232,13 @@ static Qwen38Status load_arrays(const Gguf *g, Qwen38Config *c, Qwen38Error *e) 
     if (s) return s;
     c->layers = calloc(v->blocks, sizeof *c->layers);
     if (!c->layers) { free(ratios); return q38a_error(e, Q38_OOM, "layers", "config allocation"); }
+    /* The ratios name the layer kinds (0 = GDN, r = QSA with blocks of r keys),
+     * so any upstream layer_types list loads, not only the every-4th pattern of
+     * full_attention_interval. MTP layers are QSA. */
     for (uint32_t i = 0; i < v->blocks; ++i) {
-        bool mtp = i >= v->trunk_blocks, qsa = mtp || (i+1)%c->interval == 0;
         uint64_t r = ratios[i];
-        if ((!qsa && r) || (qsa && (!r || r > UINT32_MAX || v->attention.token_budget % r))) {
+        bool mtp = i >= v->trunk_blocks, qsa = r != 0;
+        if ((mtp && !qsa) || (qsa && (r > UINT32_MAX || v->attention.token_budget % r))) {
             s = q38a_error(e, Q38_SHAPE, "compress_ratios", "layer kind/budget mismatch"); break;
         }
         c->layers[i] = (Qwen38Layer){qsa ? Q38_LAYER_QSA : Q38_LAYER_GDN,
@@ -239,6 +247,7 @@ static Qwen38Status load_arrays(const Gguf *g, Qwen38Config *c, Qwen38Error *e) 
     }
     free(ratios);
     if (s) return s;
+    if (!c->has_ple) { c->ngram.layer = UINT32_MAX; return Q38_OK; }
     /* One PLE site is supported by the frozen profile; not a hidden kernel constant. */
     s = array64(g, "qwen4exp.ple.layers", 1, &ple, e);
     if (s) return s;

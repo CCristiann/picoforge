@@ -39,13 +39,15 @@ def string(value):
 
 def write_fixture(path, hf):
     meta = ref.reference_metadata(hf)
+    ple = bool(hf["text_config"].get("ple_layer_ids"))
     meta.update({"general.architecture": "qwen4exp", "general.alignment": 16384,
-                 ref.PREFIX+"ple.row_count": 128,
-                 ref.PREFIX+"ple.layer_multipliers": [17, 31, 43],
-                 ref.PREFIX+"ple.head_offsets": [0, 7, 14, 21],
-                 ref.PREFIX+"ple.head_vocab_sizes": [7]*4,
                  "ds4.qwen4.down.logical_input": 64, "ds4.qwen4.down.physical_input": 256})
-    tensors = ref.reference_tensors(hf, 128)
+    if ple:
+        meta.update({ref.PREFIX+"ple.row_count": 128,
+                     ref.PREFIX+"ple.layer_multipliers": [17, 31, 43],
+                     ref.PREFIX+"ple.head_offsets": [0, 7, 14, 21],
+                     ref.PREFIX+"ple.head_vocab_sizes": [7]*4})
+    tensors = ref.reference_tensors(hf, 128 if ple else 0)
     header = bytearray(b"GGUF"+struct.pack("<IQQ", 3, len(tensors), len(meta)))
     for key, value in meta.items():
         if isinstance(value, str): kind, payload = 8, string(value)
@@ -165,7 +167,7 @@ def verify(args):
                  "src/qwen38_bpe.c","src/json.c"]+common}
     for name, sources in groups.items():
         subprocess.run(flags+["-Ibuild/qwen38-a"]+sources+["-lm","-o",str(build/f"test_{name}")],cwd=ROOT,check=True)
-        paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn","silu")]
+        paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn","silu","no-ple","irregular")]
         if args.checkpoint: paths.append(args.checkpoint)
         for path in paths:
             command = [str(build/f"test_{name}"),str(path)]
@@ -208,6 +210,13 @@ if __name__ == "__main__":
     silu = small_config()                    # upstream's default GDN gate (output_gate_type unset)
     silu["text_config"].pop("output_gate_type")
     write_fixture(destination.with_name("silu.gguf"),silu)
+    no_ple = small_config()                  # upstream ple_layer_ids empty: no n-gram table
+    no_ple["text_config"]["ple_layer_ids"] = []
+    write_fixture(destination.with_name("no-ple.gguf"),no_ple)
+    irregular = small_config()               # an explicit layer_types list off the every-k pattern
+    irregular["text_config"].update(layer_types=["full_attention", "linear_attention"], ple_layer_ids=[2])
+    irregular["text_config"].pop("full_attention_interval")
+    write_fixture(destination.with_name("irregular.gguf"),irregular)
     text_cases()
     chat_cases()
     print(destination)

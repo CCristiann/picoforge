@@ -76,9 +76,11 @@ static Qwen38Status catalog(const Gguf *g, const Qwen38Config *c, Qwen38Weights 
     MAT(Q38_TOKEN_EMBD,"token_embd.weight",30,d,v->vocab_size);
     MAT(Q38_LM_HEAD,"output.weight",8,d,v->vocab_size);
     HC("output_hc",Q38_OUTPUT_HC_NORM,Q38_OUTPUT_HC_DOWN,Q38_OUTPUT_HC_UP);
-    domain = Q38_DISK_PLE;
-    ADD(Q38_PLE_TABLE,"per_layer_token_embd.weight",30,2,c->ngram.head_dim,c->ngram.row_count,
-        1,c->ngram.head_dim,Q38_DISK_ROWS);
+    if (c->has_ple) {                     /* the n-gram table, read from the SSD */
+        domain = Q38_DISK_PLE;
+        ADD(Q38_PLE_TABLE,"per_layer_token_embd.weight",30,2,c->ngram.head_dim,c->ngram.row_count,
+            1,c->ngram.head_dim,Q38_DISK_ROWS);
+    }
     for (layer = 0; layer < v->blocks; ++layer) {
         domain = c->layers[layer].domain;
         bool mtp = domain == Q38_MTP;
@@ -194,22 +196,24 @@ Qwen38Status qwen38_weights_attach(Qwen38Weights *w, const Gguf *g,
     if (g != w->source || p->source != g || g->header != w->header || g->fd != w->fd ||
         g->fd < 0 || !g->header || g->file_size != w->file_size || p->file_size != w->file_size)
         return q38a_error(e, Q38_OWNER, "attach", "same live reader required");
+    /* The PLE table, when the model has one, stays on the SSD: never GPU-bound. */
+    const Qwen38Tensor *disk = NULL;
+    Qwen38Status s = qwen38_weights_get(w, QWEN38_GLOBAL_LAYER, Q38_PLE_TABLE, &disk, NULL);
+    if (s != Q38_OK && s != Q38_MISSING) return q38a_error(e, s, "attach", "PLE table lookup");
     if (g->tensor_count != w->count || !g->tensors || !p->weights || !p->views ||
-        p->weight_count+p->streamed_count != w->count-1 || !p->view_count || p->view_count > p->weight_count)
+        p->weight_count+p->streamed_count != w->count-(disk ? 1 : 0) || !p->view_count || p->view_count > p->weight_count)
         return q38a_error(e, Q38_SHAPE, "attach", "catalog/plan sizes");
-    const Qwen38Tensor *disk;
-    Qwen38Status s = qwen38_weights_get(w, QWEN38_GLOBAL_LAYER, Q38_PLE_TABLE, &disk, e);
-    if (s) return s;
     if (!memchr(p->disk_table.name, 0, sizeof p->disk_table.name) ||
-        !same_tensor(&disk->storage, &p->disk_table))
+        (disk ? !same_tensor(&disk->storage, &p->disk_table) : p->disk_table.bytes != 0))
         return q38a_error(e, Q38_FORMAT, "attach", "disk descriptor changed");
     for (size_t j = 0; j < p->view_count; ++j) {
         const GgufView *v = p->views+j;
         if (!v->bytes || v->bytes > SIZE_MAX-v->file_offset ||
-            (v->file_offset < disk->storage.file_offset+disk->storage.bytes &&
+            (disk && v->file_offset < disk->storage.file_offset+disk->storage.bytes &&
              disk->storage.file_offset < v->file_offset+v->bytes))
             return q38a_error(e, Q38_RANGE, "attach", "view overflow or PLE overlap");
     }
+    s = Q38_OK;
     /* Validate every association before publishing ANY borrowed plan pointer. */
     const GgufBinding **bindings = calloc(w->count, sizeof *bindings);
     if (!bindings) return q38a_error(e, Q38_OOM, "attach", "association scratch");
