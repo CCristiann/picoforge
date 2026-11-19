@@ -60,7 +60,7 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | R5 SSD streaming | Expert pool with parallel reads and event gates; the Q4 file on 64 GiB | Done: Q4 at ~18-19 tok/s with a warm pool |
 | P3-P5 Long prefill | Chat-path overheads, GDN scan addressing, MoE tiles, split attention | Done: 8K prompt 46.2 s (FP32), 24.9 s (half) |
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
-| R6 Next generation | Support for the next Qwen release (a 27B dense and a Flash-Next sibling) | Waiting for the release |
+| R6 Next generation | Qwen4 open weights (a 27B dense and smaller MoE models announced) | Prepared: the engine is named after the architecture (`qwen4_*`); no PLE, SiLU GDN gate and any layer order pass the oracle on synthetic checkpoints (CPU, GPU, CLI) and G3 on Q2 is unchanged. Waiting for the weights; dense FFN not started |
 | Prefill gap | GDN prefill kernels restored, vector staging, FP32 GEMMs and attention on the Neural Accelerators (FP32 operands), grouped MoE occupancy, `--power` | Done: 8K prompt FP32 46.2 -> 26.9 s; decode 0.969x short, 0.935x at 8K |
 | R8 Closure | Final protocol benchmarks, the per-technique ladder, writeup | Next |
 
@@ -99,7 +99,7 @@ which is why checkpoints larger than that run quantised.
 | `tools/microbench/` | the model-agnostic matmul and dispatch-cost benchmark |
 | `tools/ui/qwen4/` | a local web chat in front of the engine (secondary to the terminal) |
 | `tests/` | correctness harnesses (`make test-all`, `make test-qwen4`) |
-| `bench/` | measured data by stage (`qwen4/`), microbenchmark CSVs, the Qwen3 archive |
+| `bench/` | measured data by stage (`qwen38/`), microbenchmark CSVs, the Qwen3 archive |
 | `docs/` | this file, the benchmark protocol, the development log, the project history, weight and corpus locks |
 
 ## Conventions

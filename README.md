@@ -1,10 +1,19 @@
 # picoforge
 
 An LLM inference engine for Apple Silicon in C11 and Metal, small enough to read
-end to end. It runs one model, **Qwen3.8-Flash-Next** (48-layer mixture of
-experts), from its quantised GGUF file, entirely on the GPU and with no ML
-framework in the engine. Correctness comes first and every number is measured;
-the approach follows [DwarfStar](https://github.com/antirez/ds4).
+end to end. It runs one architecture, **Qwen4** (Hugging Face `qwen4_exp`, GGUF
+`qwen4exp`: Gated DeltaNet, sparse attention with an indexer, 512-expert MoE,
+hyper-connections, n-gram embeddings), from a quantised GGUF file, entirely on
+the GPU and with no ML framework in the engine. Today's checkpoint is
+**Qwen3.8-Flash-Next** (48 layers), the public preview of that architecture.
+Correctness comes first and every number is measured; the approach follows
+[DwarfStar](https://github.com/antirez/ds4).
+
+The loader also takes the upstream variants Flash-Next does not use (no n-gram
+table, the SiLU gate in Gated DeltaNet, any order of attention layers), checked
+against the reference on synthetic checkpoints (`make test-qwen4-variants`)
+until open-weight Qwen4 models exist. A dense model (the announced 27B) is not
+supported yet.
 
 ## Requirements
 

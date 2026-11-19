@@ -2,6 +2,26 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Qwen4 prep (2026-11-19): upstream variants, the engine named after the architecture
+
+Qwen4-Max is out (API only) and Transformers has `qwen4_exp`: the same blocks as Flash-Next, which
+its model card calls the preview of Qwen4. The pinned upstream config allows what Flash-Next does not
+use, so the engine now takes it, each part against the upstream code: the GDN output gate as sigmoid
+or SiLU (upstream's default; an optional `qwen4exp.ssm.output_gate_type`, absent = sigmoid, name
+provisional until a converter fixes it), no PLE (no n-gram table, no SSD reads), and any layer order
+(a layer is QSA iff its compress ratio is nonzero, not every 4th). Indexer-less attention is not a real
+variant (upstream always builds the indexer), so it was left out. A tiny graph with all three
+(`make test-qwen4-variants`) passes the oracle on the CPU and GPU graphs and the CLI; the run found one
+hidden assumption (the tokenizer checked the PLE EOS even without PLE). Then the rename: `qwen38_*` ->
+`qwen4_*`, `q38`/`Q38` -> `qw4`/`QW4` (Q4 already names a checkpoint and a quantization), targets
+`test-qwen4-*`, `QW4_REF_KERNELS`, `--qwen4`; evidence paths, the checkpoint's profile IDs and the
+pinned packed-reference adapter keep their names. G3 on Q2 is bit-identical before and after
+(scaled 2.76e-7). Found on the way, not caused here: `make test-qwen4-compositions` fails on main too
+(the oracle sees a GDN gate value out of domain in the Metal composition on real layer 0).
+
+**Next:** the compositions failure; when open weights appear, their `config.json` and GGUF against the
+loader; a dense FFN only once a dense model's reference code is public.
+
 ## pf-agent II (2026-11-19): modules, ds4-style tools, a terminal UI, Chrome
 
 pf-agent is split for a future pf-server: `pf_session` (model, transcript, replies, saved sessions,
