@@ -68,15 +68,15 @@ B_ORACLE_PY=/path/to/picoforge/tools/venv/bin/python
 B_ORACLE_DS4=/path/to/ds4-qwen38-baseline
 B_ORACLE_MODEL=/path/to/picoforge/models/Qwen3.8-Flash-Next-Q2/Qwen3.8-Flash-Next-Q2.gguf
 
-"$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py build "$B_ORACLE_DS4" build/qwen38-packed/repro-cpu
-"$B_ORACLE_PY" -B tests/test_qwen38_packed.py --reference build/qwen38-packed/repro-cpu/reference --report build/qwen38-packed/repro-cpu-tests.json -v
-"$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py build "$B_ORACLE_DS4" build/qwen38-packed/repro-sanitized --sanitize
-"$B_ORACLE_PY" -B tests/test_qwen38_packed.py --reference build/qwen38-packed/repro-sanitized/reference --report build/qwen38-packed/repro-sanitized-tests.json -v
+"$B_ORACLE_PY" -B tools/oracle/qwen4_packed.py build "$B_ORACLE_DS4" build/qwen4-packed/repro-cpu
+"$B_ORACLE_PY" -B tests/test_qwen4_packed.py --reference build/qwen4-packed/repro-cpu/reference --report build/qwen4-packed/repro-cpu-tests.json -v
+"$B_ORACLE_PY" -B tools/oracle/qwen4_packed.py build "$B_ORACLE_DS4" build/qwen4-packed/repro-sanitized --sanitize
+"$B_ORACLE_PY" -B tests/test_qwen4_packed.py --reference build/qwen4-packed/repro-sanitized/reference --report build/qwen4-packed/repro-sanitized-tests.json -v
 
-"$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py slices build/qwen38-packed/repro-sanitized/reference "$B_ORACLE_MODEL" build/qwen38-packed/repro-q2 --kind 10
-"$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py replay build/qwen38-packed/repro-sanitized/reference build/qwen38-packed/repro-q2
-"$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py slices build/qwen38-packed/repro-sanitized/reference "$B_ORACLE_MODEL" build/qwen38-packed/repro-iq2 --kind 16
-"$B_ORACLE_PY" -B tools/oracle/qwen38_packed.py replay build/qwen38-packed/repro-sanitized/reference build/qwen38-packed/repro-iq2
+"$B_ORACLE_PY" -B tools/oracle/qwen4_packed.py slices build/qwen4-packed/repro-sanitized/reference "$B_ORACLE_MODEL" build/qwen4-packed/repro-q2 --kind 10
+"$B_ORACLE_PY" -B tools/oracle/qwen4_packed.py replay build/qwen4-packed/repro-sanitized/reference build/qwen4-packed/repro-q2
+"$B_ORACLE_PY" -B tools/oracle/qwen4_packed.py slices build/qwen4-packed/repro-sanitized/reference "$B_ORACLE_MODEL" build/qwen4-packed/repro-iq2 --kind 16
+"$B_ORACLE_PY" -B tools/oracle/qwen4_packed.py replay build/qwen4-packed/repro-sanitized/reference build/qwen4-packed/repro-iq2
 ```
 
 Attesi: `Ran 21 tests ... OK` per ciascuna suite; `PASS: 27 real rows, 6804

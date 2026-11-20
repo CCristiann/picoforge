@@ -187,7 +187,7 @@ def verify(args):
     if args.gpu:
         sources = groups["bindings"]+["src/gpu_weights.m","tests/metal_device.m"]
         exe = build/"test_storage"
-        subprocess.run(flags+["-DQ38_A_GPU","-fobjc-arc"]+sources+
+        subprocess.run(flags+["-fobjc-arc"]+sources+
                        ["-framework","Metal","-framework","Foundation","-lm","-o",str(exe)],cwd=ROOT,check=True)
         subprocess.run([sys.executable,"-B","tools/qwen4_gpu_lock.py","--timeout","60","--",str(exe),str(build/"small.gguf")],
                        cwd=ROOT,env={**os.environ,"MTL_DEBUG_LAYER":"1"},check=True)
