@@ -341,6 +341,20 @@ class AgentLoop(unittest.TestCase):
         self.assertIn('Done.<|im_end|>\n<|im_start|>user\nthanks<|im_end|>\n<|im_start|>assistant\n', text)
         self.assertEqual(state['kv'], len(state['ids']) - 1)   # the graph holds the transcript, minus the last token
 
+    def test_new_conversation_without_a_system_checkpoint(self):
+        # The sessions path is a file: no checkpoint can be saved or loaded, so
+        # /new prefills the system block right after a reply.
+        (self.dir / 'not-a-dir').write_text('')
+        env = {**os.environ, 'PICOFORGE_SESSIONS': str(self.dir / 'not-a-dir')}
+        p = subprocess.run([str(AGENT), '-m', GGUF, '-w', str(self.dir / 'ws'), '-n', '3', '-c', '16384', '--no-think',
+                            '--non-interactive'], input=b'hello\n/new\nagain\n', stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=300, env=env)
+        self.assertEqual(p.returncode, 0, p.stderr.decode()[-2000:])
+        self.assertEqual(len(self.prefilled_in(p.stderr.decode())), 2)
+
+    def prefilled_in(self, stderr):
+        return re.findall(r'\[prefill (\d+) tokens', stderr)
+
     def test_bash_with_the_model_loaded(self):
         out, state = self.agent([call('bash', command='ls /dev/fd'), 'Ok.'], ['fds?'], '--yes', '--no-think')
         alone = subprocess.run(['/bin/bash', '-c', 'ls /dev/fd'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

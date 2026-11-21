@@ -457,6 +457,7 @@ bool pf_session_prime(PfSession *s, const PfStream *stream) {
     if (system_load(s, count)) note(s, "System prompt: %zu tokens from the checkpoint in %.1f s.\n", count, qw4_now()-start);
     else {
         QW4Turn t;
+        qwen4_decoder_reset(s->run.decoder);   /* a previous reply left it finished */
         qw4_turn(&s->run, s->ids, count, (QW4TurnOptions){.chunk = s->run.chunk < s->run.capacity ? s->run.chunk : s->run.capacity,
             .max_new = 0, .stop_after = UINT32_MAX, .keep_predictor = true, .print = stream ? stream->text : NULL,
             .print_ctx = stream ? stream->ctx : NULL, .progress = stream ? stream->progress : NULL}, s->generated, &t);
