@@ -118,14 +118,13 @@ void qw4_print_end(Printer *p) { fwrite(p->pending,1,p->n,stdout); p->n=0; qw4_p
 /* Prefill what the graph does not hold yet, then decode the reply. Shared
  * with pf-agent (qwen4_run.h). The graph holds ids[0..pos); everything up
  * to `held` is the transcript, so a graph past it (a cancelled turn) replays. */
-size_t qw4_chat_continue(QW4Run *r, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
-                         void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
-                         void (*progress)(void *, size_t, size_t, size_t),
-                         int32_t *generated, QW4Turn *t, bool *replayed) {
-    Qwen4Error e; qw4_stopped=0; *replayed=false;
+/* Make the graph hold a prefix of ids[0..held) that the next append can extend:
+ * a graph past `held`, or an MTP predictor older than the last append, starts
+ * over; otherwise the predictor's pending rows (the last append's) are paired
+ * with the IDs that follow them. Returns the graph position. */
+static size_t chat_catch_up(QW4Run *r, const int32_t *ids, size_t held, bool *replayed) {
+    Qwen4Error e; *replayed=false;
     size_t pos=(size_t)qwen4_gpu_forward_info(r->graph).next_pos;
-    /* Pair the MTP predictor's pending rows (the last append's) with the IDs
-     * that follow them; anything older than that append means replay. */
     size_t mpos=r->mtp ? (size_t)qwen4_gpu_mtp_info(r->graph).next_pos : pos;
     if (pos>held || mpos+r->last_count<pos) {
         qw4_check(qwen4_gpu_forward_reset(r->graph,&e),&e); pos=mpos=0; r->last_count=0; *replayed=true;
@@ -134,11 +133,29 @@ size_t qw4_chat_continue(QW4Run *r, const int32_t *ids, size_t held, size_t tota
         Qwen4F32Mut empty=r->y; empty.dim[0]=0;
         qw4_check(qwen4_gpu_mtp(r->graph,mpos-(pos-r->last_count),ids+mpos+1,pos-mpos,empty,&e),&e);
     }
+    return pos;
+}
+size_t qw4_chat_continue(QW4Run *r, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
+                         void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
+                         void (*progress)(void *, size_t, size_t, size_t),
+                         int32_t *generated, QW4Turn *t, bool *replayed) {
+    qw4_stopped=0;
+    size_t pos=chat_catch_up(r,ids,held,replayed);
     size_t room=r->capacity-total; if (!max_new || max_new>room) max_new=(uint32_t)room;
     qwen4_decoder_reset(r->decoder);
     qw4_turn(r,ids+pos,total-pos,(QW4TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=max_new,
         .stop_after=UINT32_MAX,.keep_predictor=true,.print=print,.print_ctx=print_ctx,.progress=progress},generated,t);
     return total-pos;
+}
+static void no_text(void *ctx, const uint8_t *p, size_t n) { (void)ctx; (void)p; (void)n; }
+size_t qw4_chat_prefill(QW4Run *r, const int32_t *ids, size_t held, size_t upto,
+                        void (*progress)(void *, size_t, size_t, size_t), void *ctx, QW4Turn *t, bool *replayed) {
+    size_t pos=chat_catch_up(r,ids,held,replayed);
+    if (pos>=upto) { *t=(QW4Turn){.reason="stop"}; return 0; }
+    qwen4_decoder_reset(r->decoder);   /* the turn finishes the decoder, even with no token */
+    qw4_turn(r,ids+pos,upto-pos,(QW4TurnOptions){.chunk=r->chunk<r->capacity ? r->chunk : r->capacity,.max_new=0,
+        .stop_after=UINT32_MAX,.keep_predictor=true,.print=no_text,.print_ctx=ctx,.progress=progress},NULL,t);
+    return upto-pos;
 }
 static void reply(Chat *ch, size_t added) {
     QW4Run *r=ch->r; size_t total=ch->n+added;

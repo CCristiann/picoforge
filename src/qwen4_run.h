@@ -115,6 +115,12 @@ size_t qw4_chat_continue(QW4Run *, const int32_t *ids, size_t held, size_t total
                          void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
                          void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated),
                          int32_t *generated, QW4Turn *, bool *replayed);
+/* Only the prefill: bring the graph to ids[0..upto) (the same catch-up and
+ * replay rule as qw4_chat_continue), no token sampled. The state can then be
+ * saved at that boundary. qw4_stopped is not cleared: the caller owns it. */
+size_t qw4_chat_prefill(QW4Run *, const int32_t *ids, size_t held, size_t upto,
+                        void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated), void *ctx,
+                        QW4Turn *, bool *replayed);
 /* Metal memory now in use and the GPU working-set budget, in bytes (src/qwen4_cli.m). */
 void qw4_run_memory(const QW4Run *, uint64_t *in_use, uint64_t *budget);
 /* Interactive chat on stdin (src/qwen4_repl.c). max_new 0 = until stop or full context.
