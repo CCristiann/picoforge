@@ -32,12 +32,13 @@ into `models/` and check it against the pinned hashes:
 
 ```sh
 cd models && shasum -a 256 -c --ignore-missing ../docs/weights.lock && cd ..
-make                                   # builds pf, pf-bench and pf-agent
+make                                   # builds pf, pf-bench, pf-agent and pf-server
 ./pf                                   # interactive chat (/help for commands)
 ./pf -m q2 -p "What is 2 + 2?" -n 32   # one answer, then exit
 ./pf-bench -m q2                       # 3 warm-up + 20 runs, median and p10/p90
 ./pf models                            # models found and the name -m takes
 ./pf-agent -m q2                       # coding agent in the current directory (/help)
+./pf-server -m q2                      # OpenAI/Anthropic API on 127.0.0.1:8080 (docs/SERVER.md)
 ```
 
 The chat samples (temperature 0.6, top-k 20, top-p 0.95) and drafts with
@@ -60,6 +61,13 @@ Run one process at a time: wired GPU memory takes ~1.5 s to be released after ex
 files of the directory it starts in, runs commands and looks things up on the web, asking before
 anything that changes files or runs a command. A status line shows the context used and the speeds;
 sessions can be saved and resumed.
+
+### Server for other agents
+
+`pf-server` serves the model over the OpenAI Chat Completions and Anthropic Messages APIs, with
+streaming, tool calls and reasoning, so opencode, Claude Code, Pi and any OpenAI SDK can use it. It
+keeps the model's own tokens across stateless requests and checkpoints the graph state on disk, so an
+agent's resent conversation is not prefilled again. Setup for each client: [docs/SERVER.md](docs/SERVER.md).
 
 ## Code-tuned weights
 

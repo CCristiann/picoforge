@@ -43,6 +43,27 @@ line that had never run grouped, because the shared test environment reset the t
 **Next:** a coding-task benchmark (HumanEval+ needs a download and running generated code), then
 promoting experts to Q4 per session through SSD streaming.
 
+## pf-server (2026-11-21): the engine behind an HTTP API
+
+`pf-server` serves OpenAI Chat Completions and Anthropic Messages (streaming, tools, reasoning as
+`reasoning_content` / thinking blocks, `count_tokens`, `/v1/models`) for opencode, Claude Code and Pi.
+New modules: `pf_json` (JSON text to the `Qwen4Json` trees the template takes), `pf_http` (one
+connection at a time, SSE, a hung-up client stops the generation), `pf_api` (both formats normalized
+to the template's schema; a streaming splitter for reasoning / text / tool calls; arguments typed by
+the tool schema), `pf_cache`. After reading how ds4-server handles the same problem, two choices of
+our own. Exact replay without a tool-id map: a client's copy of our reply is compared with ours as a
+canonical render (reasoning aside), and if it says the same thing our sampled tokens are kept and only
+the new messages are rendered after them; the last 8 exchanges are remembered, not just the last. And
+checkpoints driven by when the graph would be lost (an unrelated request, shutdown) plus two cheap
+boundaries (the end of the system block of a cold prompt, the end of a long prefill), because the GDN
+state cannot be rewound. Found on the way: `/new` in pf-agent died ("decoder: already finished")
+when no system checkpoint was usable; fixed, with a test. Tests on the synthetic checkpoint
+(`make test-pf-server-model`): both formats, the replay equal to a full render with reasoning, and a
+restored checkpoint decoding the same greedy tokens.
+
+**Next:** a real-model session with opencode (measure the first-prefill and checkpoint costs on Q2);
+exchanges persisted with their checkpoints, so the exact replay also survives a restart.
+
 ## Qwen4 prep (2026-11-19): upstream variants, the engine named after the architecture
 
 Qwen4-Max is out (API only) and Transformers has `qwen4_exp`: the same blocks as Flash-Next, which
