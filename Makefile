@@ -32,7 +32,7 @@ PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o src/pf_
 pf-agent: src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 # pf-server: the HTTP API (OpenAI and Anthropic formats) for coding agents.
-SERVER_OBJ := src/pf_json.o src/pf_http.o src/pf_api.o
+SERVER_OBJ := src/pf_json.o src/pf_http.o src/pf_api.o src/pf_cache.o
 pf-server: src/pf_server.o $(SERVER_OBJ) $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ src/pf_server.o $(SERVER_OBJ) $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 pf-bench: src/pf_bench.o $(ENGINE_OBJ) $(METALLIB)

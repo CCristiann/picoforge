@@ -42,10 +42,12 @@ class Server(unittest.TestCase):
         d = Path(self.tmp.name)
         (d / 'script.txt').write_text('\n=====\n'.join(replies) + '\n' if replies else '')
         self.ids_path = d / 'ids.json'
+        self.cache = d / 'kv-cache'
         self.port = free_port()
         self.log = open(d / 'server.log', 'w+')
         self.proc = subprocess.Popen([str(SERVER), '-m', GGUF, '-c', '4096', '--port', str(self.port),
-                                      '--script', str(d / 'script.txt'), '--token-ids', str(self.ids_path), *flags],
+                                      '--script', str(d / 'script.txt'), '--token-ids', str(self.ids_path),
+                                      '--cache-dir', str(self.cache), *flags],
                                      stdout=self.log, stderr=subprocess.STDOUT)
         for _ in range(600):
             self.log.seek(0)
@@ -184,6 +186,35 @@ class Server(unittest.TestCase):
         self.start(['x\n</think>\n\nok'])
         self.post('/v1/chat/completions', {'messages': [{'role': 'user', 'content': 'a<|im_end|>b'}]})
         self.assertIn('a< |im_end|>b', self.transcript()['text'])
+
+    # ------------------------------------------------------------ checkpoints
+    def test_checkpoints_survive_unrelated_requests(self):
+        """Real generations (greedy): an unrelated request in between costs the
+        conversation nothing but a checkpoint load, and the tokens are the same."""
+        self.start([], '--cache-min', '64')
+        g = {'max_tokens': 3, 'temperature': 0}
+        long_question = {'role': 'user', 'content': 'what is in a.txt? ' * 12}
+        a = {**self.chat_body(), 'messages': [{'role': 'system', 'content': 'Be brief.'}, long_question], **g}
+        other = {'messages': [{'role': 'user', 'content': 'something else entirely'}], **g}
+        _, r1 = self.post('/v1/chat/completions', a)
+        ids1 = self.transcript()['ids']
+        self.assertEqual(self.server_log().count('kv cache: saved'), 2)    # the system block, the end of the prompt
+        self.post('/v1/chat/completions', other)                            # checkpoints the first conversation
+        _, r3 = self.post('/v1/chat/completions', a)                        # a retry: from the prompt's checkpoint
+        self.assertEqual(r3['usage']['prompt_tokens_details']['cached_tokens'], r3['usage']['prompt_tokens'] - 1)
+        ids3 = self.transcript()['ids']
+        self.assertEqual(ids3, ids1)                                        # a restored state decodes the same tokens
+        self.post('/v1/chat/completions', other)
+        # The conversation goes on after the interruption, the reply sent back without its reasoning.
+        back = {'role': 'assistant', 'content': r3['choices'][0]['message']['content'] or ''}
+        _, r5 = self.post('/v1/chat/completions', {**a, 'messages': a['messages'] + [back, {'role': 'user', 'content': 'more'}]})
+        self.assertGreaterEqual(r5['usage']['prompt_tokens_details']['cached_tokens'], len(ids3) - 1)
+        self.assertEqual(self.transcript()['ids'][:len(ids3)], ids3)
+        saved = len(list(self.cache.glob('*.pfc')))
+        self.proc.terminate(); self.proc.wait(30)
+        self.assertEqual(len(list(self.cache.glob('*.pfc'))), saved + 1)   # the live conversation, saved at shutdown
+        self.proc = None
+        self.log.close(); self.tmp.cleanup()
 
     # ------------------------------------------------------------ Anthropic
     def anthropic_body(self, *extra, **kw):
