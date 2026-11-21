@@ -70,6 +70,7 @@ typedef struct {
     PfCache cache;
     /* Per request. */
     int fd; PfOut out; PfSplit split; double gone_check;
+    size_t base, total; double prefill_start, prefill_note;   /* prefill progress: tokens before this call, of total */
 } Server;
 
 static volatile sig_atomic_t quitting;
@@ -211,9 +212,20 @@ static size_t build_prompt(Server *sv, PfArena *a, const PfChatRequest *rq, cons
 static void on_text(void *ctx, const uint8_t *p, size_t n) { Server *sv = ctx; pf_split_feed(&sv->split, (const char *)p, n); }
 static void on_delta(void *ctx, PfPart part, const char *p, size_t n) { Server *sv = ctx; pf_out_delta(&sv->out, part, p, n); }
 /* After each prefill chunk and token: a client that hung up stops the work. */
+/* A long prefill shows nothing to the client: say how far it is, in the log
+ * and as an SSE keep-alive (ignored by parsers, but proof of life). */
+static void prefill_note(Server *sv, size_t done, double now) {
+    if (now-sv->prefill_note < 5) return;
+    sv->prefill_note = now;
+    double rate = now > sv->prefill_start ? (double)(done-sv->base)/(now-sv->prefill_start) : 0;
+    logf_("prefill %zu/%zu tokens (%.0f t/s, about %.0f s left)\n", done, sv->total, rate,
+          rate > 0 ? (double)(sv->total-done)/rate : 0.0);
+    pf_out_keepalive(&sv->out);
+}
 static void on_progress(void *ctx, size_t prefilled, size_t prompt, size_t generated) {
-    (void)prefilled; (void)prompt; (void)generated;
+    (void)prompt;
     Server *sv = ctx; double now = qw4_now();
+    if (!generated) prefill_note(sv, sv->base+prefilled, now);
     if (now-sv->gone_check < 0.25) return;
     sv->gone_check = now;
     if (sv->out.gone || pf_http_gone(sv->fd)) { sv->out.gone = true; qw4_stopped = 1; }
@@ -263,6 +275,7 @@ static size_t system_end(Server *sv, const Buf *rendered, size_t total) {
 /* Prefill up to `upto`, then save the state there. False if stopped. */
 static bool checkpoint(Server *sv, size_t *held, size_t upto, size_t *prefilled, double *seconds) {
     QW4Turn t; bool replayed;
+    sv->base = *held;
     *prefilled += qw4_chat_prefill(&sv->s.run, sv->s.ids, *held, upto, on_progress, sv, &t, &replayed);
     *seconds += t.prefill_end-t.prefill_start;
     if (qw4_stopped) return false;
@@ -301,7 +314,8 @@ static void chat(Server *sv, PfArena *a, const PfChatRequest *rq) {
     sampler(sv, rq);
     QW4Turn t = {.reason = "stop"}; bool replayed = false; size_t prefilled = 0, got = 0; double prefill_s = 0;
     pf_out_begin(&sv->out, total, held);
-    sv->gone_check = start;
+    sv->gone_check = sv->prefill_start = sv->prefill_note = start; sv->total = total; sv->base = held;
+    if (total-held > 2048) logf_("prefill of %zu new tokens (%zu reused) ...\n", total-held, held);
     if (script) { scripted(sv, total, &got); prefilled = total-reuse; }   /* what a generation would have prefilled */
     else {
         /* Checkpoints on the way: the system block of a cold prompt, the end of a long prefill. */
@@ -310,6 +324,7 @@ static void chat(Server *sv, PfArena *a, const PfChatRequest *rq) {
                      checkpoint(sv, &held, sys, &prefilled, &prefill_s);
         if (going && sv->cache.on && total-1 >= held+min) going = checkpoint(sv, &held, total-1, &prefilled, &prefill_s);
         if (going) {
+            sv->base = held;
             prefilled += qw4_chat_continue(&s->run, s->ids, held, total, max_new, on_text, sv, on_progress, s->generated, &t, &replayed);
             prefill_s += t.prefill_end-t.prefill_start;
             got = t.got;

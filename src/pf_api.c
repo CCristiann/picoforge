@@ -479,6 +479,13 @@ void pf_out_delta(PfOut *o, PfPart part, const char *p, size_t n) {
     }
     buf_free(&b); free(text);
 }
+void pf_out_keepalive(PfOut *o) {
+    if (!o->stream || o->gone) return;
+    Buf b = {0};
+    if (o->protocol == PF_ANTHROPIC) { buf_str(&b, "{\"type\":\"ping\"}"); sse(o, "ping", &b); }
+    else { buf_str(&b, ": prefill\n\n"); send_buf(o, &b); }
+    buf_free(&b);
+}
 static const char *anthropic_stop(const char *finish) {
     return !strcmp(finish, "tool_calls") ? "tool_use" : !strcmp(finish, "length") ? "max_tokens" : "end_turn";
 }

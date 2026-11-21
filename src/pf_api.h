@@ -75,6 +75,7 @@ typedef struct {
 void pf_out_begin(PfOut *, size_t prompt_tokens, size_t cached_tokens);   /* stream headers + the first event */
 void pf_out_delta(PfOut *, PfPart, const char *, size_t);
 void pf_out_end(PfOut *, const PfReply *);
+void pf_out_keepalive(PfOut *);   /* streams only: an SSE comment, or an Anthropic ping */
 /* An error body in the protocol's shape (type: e.g. "invalid_request_error"). */
 void pf_error_body(Buf *, PfProtocol, const char *type, const char *code, const char *message);
 void pf_random_id(char *out, size_t cap, const char *prefix);
