@@ -132,6 +132,7 @@ test-qwen4:
 	$(MAKE) test-qwen4-g2
 	$(MAKE) test-qwen4-g2-state
 	$(MAKE) test-qwen4-cli
+	$(MAKE) test-quant-engine
 	$(MAKE) test-qwen4-repl
 	$(MAKE) test-qwen4-variants
 

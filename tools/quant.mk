@@ -18,4 +18,8 @@ test-quant: build/libqw4q.dylib
 	@$(PYTHON) tests/test_quant_io.py
 	@$(PYTHON) tests/test_quantize_layer.py
 
-.PHONY: test-quant
+# Engine side (GPU, synthetic checkpoint): QW4_ACT_LOG capture. Part of `make test-qwen4`.
+test-quant-engine: pf build/qwen4-g2/cli.gguf
+	@$(PYTHON) tests/test_act_log.py
+
+.PHONY: test-quant test-quant-engine
