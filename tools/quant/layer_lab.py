@@ -10,7 +10,7 @@ and the routed output of a token is y = sum_k g_k E_k(x). Reported per run:
   down    sum over routed pairs g^2 |(W - W^) a|^2   a = the exact SwiGLU output
 A tensor missing from a run directory, or excluded with --only, stays BF16.
 
-  layer_lab.py --source DIR --layer L --act LOG --runs DIR... [--only {all,gate-up,down}] [--max-tokens N]
+  layer_lab.py --source DIR --layer L --act LOG... --runs DIR... [--only {all,gate-up,down}] [--max-tokens N]
 """
 
 import argparse
@@ -95,12 +95,13 @@ def main(argv) -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--source", type=Path, required=True)
     p.add_argument("--layer", type=int, required=True)
-    p.add_argument("--act", type=Path, required=True)
+    p.add_argument("--act", type=Path, nargs="+", required=True)
     p.add_argument("--runs", type=Path, nargs="+", required=True)
     p.add_argument("--only", choices=("all", "gate-up", "down"), default="all")
     p.add_argument("--max-tokens", type=int, default=0)
     a = p.parse_args(argv)
-    x, ids, g = layer_rows(a.act, a.layer)
+    parts = [layer_rows(f, a.layer) for f in a.act]
+    x, ids, g = (np.concatenate([p[i] for p in parts]) for i in range(3))
     if a.max_tokens:
         x, ids, g = x[:a.max_tokens], ids[:a.max_tokens], g[:a.max_tokens]
     res = measure(a.source, a.layer, x, ids, g, a.runs, a.only)
