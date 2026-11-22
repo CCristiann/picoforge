@@ -76,7 +76,7 @@ microbench: build/microbench
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
 # is `make test-qwen4` (tools/qwen4.mk).
-test-all: test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-pf-agent
+test-all: test-quant test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-pf-agent
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -161,3 +161,4 @@ test-qwen4-contracts:
 .PHONY: test-qwen4-contracts
 
 include tools/qwen4.mk
+include tools/quant.mk
