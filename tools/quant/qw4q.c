@@ -333,6 +333,22 @@ static void iq2_block_decode(const uint8_t *y, float *out) {
     }
 }
 
+/* ---- Q2_K (84 bytes per 256 weights): 16 sub-blocks of 16 with 4-bit scale and
+ * 4-bit min, both multiples of the f16 d / dmin at bytes 80 and 82; 2-bit codes
+ * at bytes 16..79. Decoded weight = d*scale*code - dmin*min. ---- */
+
+/* Compat encoder: the unchanged DwarfStar translation unit (third_party/README.md says why). */
+#include "third_party/quants.h"   /* DwarfStar's Q2_K encoder, verbatim: see third_party/README.md */
+
+static void q2k_block_decode(const uint8_t *y, float *out) {
+    const float d = f16_to_f32((uint16_t)(y[80] | y[81] << 8)), dmin = f16_to_f32((uint16_t)(y[82] | y[83] << 8));
+    for (int j = 0; j < QK; j++) {
+        const uint8_t sc = y[j / 16];
+        const int code = (y[16 + j / 128 * 32 + j % 32] >> (2 * (j % 128 / 32))) & 3;
+        out[j] = (d * (float)(sc & 15)) * (float)code - dmin * (float)(sc >> 4);
+    }
+}
+
 /* ---- public API ---- */
 
 size_t qw4q_row_bytes(int type, int64_t ncols) {
@@ -354,9 +370,18 @@ int qw4q_quantize_iq2_xxs(const float *src, int64_t nrows, int64_t ncols, const 
     return 0;
 }
 
+int qw4q_quantize_q2_k(const float *src, int64_t nrows, int64_t ncols, const float *importance, uint8_t *dst) {
+    if (!src || !importance || !dst || nrows < 0 || !qw4q_row_bytes(QW4Q_Q2_K, ncols)) return -1;
+    if (ds4q_quantize_chunk(DS4Q_TYPE_Q2_K, src, dst, 0, nrows, ncols, importance) != (size_t)nrows * qw4q_row_bytes(QW4Q_Q2_K, ncols)) return -1;
+    return 0;
+}
+
 int qw4q_dequantize(int type, const uint8_t *src, int64_t nrows, int64_t ncols, float *dst) {
     if (!src || !dst || nrows < 0 || !qw4q_row_bytes(type, ncols)) return -1;
-    if (type != QW4Q_IQ2_XXS) return -1;
-    for (int64_t i = 0; i < nrows * (ncols / QK); i++) iq2_block_decode(src + i * 66, dst + i * QK);
+    const size_t bytes = type == QW4Q_IQ2_XXS ? 66 : 84;
+    for (int64_t i = 0; i < nrows * (ncols / QK); i++) {
+        if (type == QW4Q_IQ2_XXS) iq2_block_decode(src + i * bytes, dst + i * QK);
+        else q2k_block_decode(src + i * bytes, dst + i * QK);
+    }
     return 0;
 }

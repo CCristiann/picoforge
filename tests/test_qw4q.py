@@ -50,5 +50,28 @@ class Iq2XxsCompat(unittest.TestCase):
         self.assertEqual(rc, -1)
 
 
+class Q2KCompat(unittest.TestCase):
+    """The expert down projection: 640 logical inputs padded with zeros to 768."""
+
+    def setUp(self):
+        self.x, self.imp = golden_inputs(99, 64, 768)
+        self.x[:, 640:] = 0
+        self.imp[640:] = 0
+
+    def test_q2_k_matches_dwarfstar_golden(self):
+        self.assertEqual(qw4q.quantize(qw4q.Q2_K, self.x, self.imp), (FIX / "q2_k.bin").read_bytes())
+
+    def test_q2_k_dequantize_matches_oracle(self):
+        data = (FIX / "q2_k.bin").read_bytes()
+        ours = qw4q.dequantize(qw4q.Q2_K, data, 64, 768)
+        self.assertTrue(np.array_equal(ours, mathematical_rows(data, 10, 768)))
+
+    def test_q2_k_bad_width_is_an_error(self):
+        x = np.ones(640, "<f4"); imp = np.ones(640, "<f4"); out = np.empty(84 * 3, np.uint8)
+        f32 = ctypes.POINTER(ctypes.c_float)
+        rc = qw4q.lib().qw4q_quantize_q2_k(x.ctypes.data_as(f32), 1, 640, imp.ctypes.data_as(f32), out.ctypes.data)
+        self.assertEqual(rc, -1)
+
+
 if __name__ == "__main__":
     unittest.main()
