@@ -44,11 +44,40 @@ statistics do not pick.
 Memory: one expert is 1.49 MB in Q2 (IQ2_XXS gate/up + Q2_K down) and 2.71 MB in Q4, so top 10%
 in every one of the 48 layers adds about 3.0 GB to the 41.7 GiB resident Q2 weights (5%: 1.5 GB).
 
+## 3. Does the code ranking generalize? (2026-11-23)
+
+New captures, same layers, Q4 teacher-forced, one guarded run per window: the 4 R7 prose
+windows and 12 windows of `build/quant/code-corpus.json` (`tools/quant/code_corpus.py`: six
+permissive repositories at recorded commits, one language each; calibration llama.cpp C++,
+flask Python, react JS; evaluation tokio Rust, cobra Go, guava Java). The code ranking is the
+gate mass on the calibration repositories plus picoforge code windows 0-1; evaluation sets
+never feed a ranking. Raw output: `m3-general.txt`.
+
+| Layer | eval set | compat rel.err | Unsloth 5% | Unsloth 10% | code 5% | code 10% |
+|---:|---|---:|---:|---:|---:|---:|
+| 4 | other languages (12288 tok) | 0.089 | −1.7% | −3.9% | −36.1% | **−54.0%** |
+| 4 | picoforge 2-3 (4096) | 0.105 | −17.4% | −18.7% | −54.5% | **−63.7%** |
+| 4 | prose (8192) | 0.114 | −30.5% | −34.6% | −30.6% | **−37.9%** |
+| 28 | other languages | 0.189 | −4.1% | −7.0% | −35.7% | **−52.3%** |
+| 28 | picoforge 2-3 | 0.199 | −3.0% | −7.2% | −35.9% | **−56.7%** |
+| 28 | prose | 0.206 | −7.0% | −13.8% | −6.0% | **−18.1%** |
+| 44 | other languages | 0.219 | −7.9% | −15.0% | −25.7% | **−45.5%** |
+| 44 | picoforge 2-3 | 0.219 | −5.9% | −8.2% | −46.5% | **−65.4%** |
+| 44 | prose | 0.211 | −2.8% | −3.9% | −8.0% | **−16.5%** |
+
+A ranking learned on C++/Python/JS code transfers to Rust/Go/Java, and it does not cost prose:
+there it also beats the general-text ranking (the R7 prose is technical Markdown).
+
+Literature (2026-11-23, abstracts only): frequency- or importance-aware bit allocation across
+MoE experts is established (MC-MoE arXiv 2410.06270, MoPEQ 2509.02512, GEMQ, Colla-Q 2609.18131,
+AlphaQ 2606.04980), and calibration-domain effects on code are reported (EAC-MoE 2508.01625,
+AlphaQ). So the idea is not new; what we add is the measured effect on Qwen3.8-Flash-Next at
+IQ2/Q4 in a GGUF engine that has to fit 64 GB.
+
 ## Limits
 
-- The four windows are all picoforge code (C, ObjC, Metal, Python): held-out windows, but one
-  repository and style. Generality to other code needs a broader corpus; prose will get less
-  benefit (or none) from a code ranking — not measured yet.
+- Section 3 answers the single-repository concern for routing-level error; the corpus repos are
+  public and probably in training data (fine for comparing quantizations).
 - Three layers of 48; per-layer error, not end-to-end logits. The end-to-end check is R7 KL /
   top-1 / greedy agreement on a full build.
 - Mixed formats inside one layer's experts are not supported by the picoforge loader or by
