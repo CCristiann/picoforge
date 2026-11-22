@@ -1,0 +1,3 @@
+layer 4: all compat, eval rel. err 0.1048;  gu +0.4%  gud -0.1%;  median gains gate 1.00 up 0.94 down 0.928
+layer 28: all compat, eval rel. err 0.1985;  gu -6.3%  gud -6.3%;  median gains gate 0.98 up 0.94 down 0.925
+layer 44: all compat, eval rel. err 0.2185;  gu -6.7%  gud -7.0%;  median gains gate 0.98 up 0.94 down 0.916
