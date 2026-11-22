@@ -15,5 +15,6 @@ build/libqw4q.dylib: build/quant-ds4_quants.o tools/quant/qw4q.c tools/quant/thi
 
 test-quant: build/libqw4q.dylib
 	@$(PYTHON) tests/test_qw4q.py
+	@$(PYTHON) tests/test_quant_io.py
 
 .PHONY: test-quant
