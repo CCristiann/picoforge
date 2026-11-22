@@ -9,7 +9,7 @@
 typedef struct { uintptr_t first, end; } MoeSpan;
 enum { LOGITS, PROBS, SCORES, IDS, GATHER, DOWN, GATE, UP, ACT, SHARED, SG, SA,
        OFFSETS, CURSORS, P2R, R2P, NBUF };
-struct Qwen4Moe { Qwen4MoeConfig c; QW4PackedCpuView w[8]; size_t refs; bool alive; };
+struct Qwen4Moe { Qwen4MoeConfig c; QW4PackedCpuView w[8], hot[3]; int32_t *slot; size_t refs; bool alive; };
 struct Qwen4MoeWork {
     Qwen4Moe *owner;
     size_t cap, micro, bytes, count[NBUF];
@@ -46,6 +46,10 @@ static Qwen4F32Mut moe_matrix(float *p, size_t rows, size_t cols) {
 
 Qwen4Status qwen4_moe_create(const Qwen4MoeConfig *c, const Qwen4MoeWeights *weights,
                              Qwen4Moe **out, Qwen4Error *err) {
+    return qwen4_moe_create_mixed(c, weights, NULL, out, err);
+}
+Qwen4Status qwen4_moe_create_mixed(const Qwen4MoeConfig *c, const Qwen4MoeWeights *weights,
+                                   const Qwen4MoeMixed *mixed, Qwen4Moe **out, Qwen4Error *err) {
     if (out) *out=NULL;
     if (!out || !weights) return moe_error(err,QW4_INVALID_ARGUMENT,"null create argument");
     Qwen4Status st=moe_config(c,err); if (st) return st;
@@ -53,9 +57,32 @@ Qwen4Status qwen4_moe_create(const Qwen4MoeConfig *c, const Qwen4MoeWeights *wei
         weights->shared_gate,weights->shared_up,weights->shared_down,weights->shared_router};
     size_t h=c->hidden_size, i=c->intermediate, s=c->shared_intermediate;
     size_t in[]={h,h,h,i,h,h,s,h}, n[]={c->experts,i,i,h,s,s,h,1};
+    int32_t *slot=NULL; size_t cold=c->experts, hot=0;
+    if (mixed) {   /* mixed: the map must be a bijection onto [0,cold) and [0,hot) */
+        slot=calloc(c->experts,sizeof *slot);
+        uint8_t *seen=calloc(c->experts,1);
+        if (!slot || !seen) { free(slot); free(seen); return moe_error(err,QW4_OOM,"MoE expert map"); }
+        hot=mixed->hot_gate.layout.n_experts; cold=c->experts-hot;
+        for (size_t e=0;e<c->experts && !st;e++) {
+            float v=mixed->map[e]; long iv=(long)v;
+            size_t idx=iv>=0?(size_t)iv:cold+(size_t)(-1-iv);
+            if ((float)iv!=v || hot==0 || hot>=c->experts || (iv>=0 && (size_t)iv>=cold) ||
+                (iv<0 && (size_t)(-1-iv)>=hot) || seen[idx]++)
+                st=moe_error(err,QW4_FORMAT,"expert map is not a bijection");
+            slot[e]=(int32_t)iv;
+        }
+        free(seen);
+        QW4PackedCpuView hv[]={mixed->hot_gate,mixed->hot_up,mixed->hot_down};
+        for (size_t a=0;a<3 && !st;a++) {
+            QW4PackedLayout l=hv[a].layout;
+            if (l.k_logical!=in[a+1] || l.n_out!=n[a+1] || l.n_experts!=hot || l.k_storage!=in[a+1])
+                st=moe_error(err,QW4_SHAPE,"hot expert weight shape mismatch");
+        }
+        if (st) { free(slot); return st; }
+    }
     for (size_t a=0;a<8;a++) {
         QW4PackedLayout l=w[a].layout;
-        size_t experts=(a>=1 && a<=3)?c->experts:1;
+        size_t experts=(a>=1 && a<=3)?cold:1;
         if (l.k_logical!=in[a] || l.n_out!=n[a] || l.n_experts!=experts ||
             l.k_storage!=(a==3?c->down_physical:in[a]))
             return moe_error(err,QW4_SHAPE,"MoE weight shape mismatch");
@@ -65,14 +92,15 @@ Qwen4Status qwen4_moe_create(const Qwen4MoeConfig *c, const Qwen4MoeWeights *wei
          * weight bytes. No duplicate packed-layout validation in F. */
         Qwen4F32Mut y=moe_matrix(NULL,0,n[a]);
         Qwen4F32 rx={.data=NULL,.rank=2,.dim={0,in[a],1,1},.stride_bytes={in[a]*4,4,0,0}};
-        st=qw4_packed_matmul(&w[a],0,rx,y,err); if (st) return st;
+        st=qw4_packed_matmul(&w[a],0,rx,y,err); if (st) { free(slot); return st; }
     }
     Qwen4Moe *m=calloc(1,sizeof *m);
-    if (!m) return moe_error(err,QW4_OOM,"MoE allocation");
-    m->c=*c; memcpy(m->w,w,sizeof w); m->refs=1; m->alive=true; *out=m;
+    if (!m) { free(slot); return moe_error(err,QW4_OOM,"MoE allocation"); }
+    m->c=*c; memcpy(m->w,w,sizeof w); m->slot=slot; m->refs=1; m->alive=true; *out=m;
+    if (slot) { m->hot[0]=mixed->hot_gate; m->hot[1]=mixed->hot_up; m->hot[2]=mixed->hot_down; }
     return moe_error(err,QW4_OK,"");
 }
-static void moe_release(Qwen4Moe *m) { if (m && --m->refs==0) free(m); }
+static void moe_release(Qwen4Moe *m) { if (m && --m->refs==0) { free(m->slot); free(m); } }
 void qwen4_moe_destroy(Qwen4Moe *m) { if (m && m->alive) { m->alive=false; moe_release(m); } }
 
 /* Counts are checked before multiplication; each arena offset is size_t aligned.
@@ -308,7 +336,13 @@ static void moe_trace(Qwen4MoeWork *w,size_t stage,size_t expert,size_t token,
 }
 static Qwen4Status moe_linear(Qwen4MoeWork *w,size_t stage,size_t expert,size_t token,
                                Qwen4F32 x,Qwen4F32Mut y,Qwen4Error *err) {
-    Qwen4Status st=qw4_packed_matmul(&w->owner->w[stage],expert,x,y,err);
+    const Qwen4Moe *m=w->owner;
+    const QW4PackedCpuView *view=&m->w[stage]; size_t index=expert;
+    if (m->slot && stage>=1 && stage<=3) {   /* mixed: the expert's own tensor and slot */
+        int32_t v=m->slot[expert];
+        if (v>=0) index=(size_t)v; else { view=&m->hot[stage-1]; index=(size_t)(-1-v); }
+    }
+    Qwen4Status st=qw4_packed_matmul(view,index,x,y,err);
     if (!st) moe_trace(w,stage,expert,token,x,y);
     return st;
 }

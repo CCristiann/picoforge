@@ -21,8 +21,9 @@ test-quant: build/libqw4q.dylib
 	@$(PYTHON) tests/test_mixed_fixture.py
 
 # Engine side (GPU, synthetic checkpoint): QW4_ACT_LOG capture. Part of `make test-qwen4`.
-test-quant-engine: pf build/qwen4-g2/cli.gguf
+test-quant-engine: pf build/qwen4-g2/cli.gguf build/qwen4-g1/test_forward build/qwen4-g1/graph-mixed.gguf
 	@$(PYTHON) tests/test_act_log.py
+	$(QW4_LOCK) $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g1/test_forward --gguf build/qwen4-g1/graph-mixed.gguf -v
 
 # Picoforge mixed experts (notes M4): the synthetic graph with one Q4 expert per trunk layer.
 build/qwen4-g1/graph-mixed.gguf: tools/synth/make_qwen4_graph.py tools/synth/make_qwen4_small.py tools/oracle/qwen4_config.py

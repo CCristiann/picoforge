@@ -242,11 +242,26 @@ static Qwen4Status load_arrays(const Gguf *g, Qwen4Config *c, Qwen4Error *e) {
             s = qw4a_error(e, QW4_SHAPE, "compress_ratios", "layer kind/budget mismatch"); break;
         }
         c->layers[i] = (Qwen4Layer){qsa ? QW4_LAYER_QSA : QW4_LAYER_GDN,
-            mtp ? QW4_MTP : QW4_TRUNK, (uint32_t)r, false};
+            mtp ? QW4_MTP : QW4_TRUNK, (uint32_t)r, false, false};
         if (qsa && !v->attention.ratio) v->attention.ratio = (uint32_t)r;
     }
     free(ratios);
     if (s) return s;
+    /* picoforge mixed experts: a trunk layer with blk.L.ffn_exps_map.weight keeps its hot experts in
+     * Q4 tensors (tools/synth --mixed-hot, tools/quant). Only with the explicit metadata flag. */
+    bool mixed = false;
+    if (has_key(g, "picoforge.experts.mixed")) {
+        Qwen4Bytes flag;
+        s = qw4a_meta(g, "picoforge.experts.mixed", 7, &flag, e);
+        if (s) return s;
+        mixed = flag.len == 1 && flag.data[0] == 1;
+    }
+    for (uint32_t i = 0; i < v->trunk_blocks; ++i) {
+        char name[64]; snprintf(name, sizeof name, "blk.%u.ffn_exps_map.weight", i);
+        if (!tensor_named(g, name)) continue;
+        if (!mixed) return qw4a_error(e, QW4_UNSUPPORTED, "experts", "expert map without picoforge.experts.mixed");
+        c->layers[i].mixed_experts = true;
+    }
     if (!c->has_ple) { c->ngram.layer = UINT32_MAX; return QW4_OK; }
     /* One PLE site is supported by the frozen profile; not a hidden kernel constant. */
     s = array64(g, "qwen4exp.ple.layers", 1, &ple, e);

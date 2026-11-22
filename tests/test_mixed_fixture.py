@@ -40,6 +40,35 @@ class MixedFixtureTests(unittest.TestCase):
             np.testing.assert_array_equal(full[e], cold[v] if v >= 0 else hot[-1 - v])
         self.assertEqual(full.shape, (self.w.hf["num_experts"], self.w.hf["hidden_size"], 64))
 
+    def test_cold_and_hot_tensor_shapes(self):
+        ne, h, f = (self.w.hf[k] for k in ("num_experts", "hidden_size", "moe_intermediate_size"))
+        for layer in range(self.w.hf["num_hidden_layers"]):
+            p = f"blk.{layer}."
+            for part in ("gate", "up"):
+                self.assertEqual(self.w.tensors[p + f"ffn_{part}_exps.weight"]["shape"], [h, f, ne - 1])
+                self.assertEqual(self.w.tensors[p + f"ffn_{part}_exps_hot.weight"]["shape"], [h, f, 1])
+            self.assertEqual(self.w.tensors[p + "ffn_down_exps.weight"]["shape"][2], ne - 1)
+            self.assertEqual(self.w.tensors[p + "ffn_down_exps_hot.weight"]["shape"], [f, h, 1])
+
+    def test_cold_experts_and_other_tensors_match_the_plain_fixture(self):
+        plain = Path(self.tmp.name) / "plain.gguf"
+        synth.write_graph(plain, synth.graph_config(), 3811)
+        p = oracle.Weights(plain)
+        np.testing.assert_array_equal(self.w.matrix("blk.3.attn_q.weight"), p.matrix("blk.3.attn_q.weight"))
+        cold = oracle.experts(self.w, "blk.1.", "gate")
+        hot = {e for e, v in enumerate(self.w.vector("blk.1.ffn_exps_map.weight")) if v < 0}
+        full = p.matrix("blk.1.ffn_gate_exps.weight")
+        for e in range(full.shape[0]):
+            if e not in hot:
+                np.testing.assert_array_equal(cold[e], full[e])
+
+    def test_gguf_header_lists_every_tensor(self):
+        sys.path.insert(0, str(ROOT / "tools/quant"))
+        from gguf_header import read_header
+        meta, tensors = read_header(self.path)
+        self.assertTrue(meta["picoforge.experts.mixed"])
+        self.assertEqual(set(tensors), set(self.w.tensors))
+
     def test_mtp_layer_is_not_mixed(self):
         self.assertNotIn(f"blk.{self.w.hf['num_hidden_layers']}.ffn_exps_map.weight", self.w.tensors)
 

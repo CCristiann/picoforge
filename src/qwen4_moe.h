@@ -8,10 +8,15 @@ typedef struct {
     QW4PackedCpuView router, gate, up, down;
     QW4PackedCpuView shared_gate, shared_up, shared_down, shared_router;
 } Qwen4MoeWeights;
+/* picoforge mixed experts: Qwen4MoeWeights' gate/up/down hold the cold experts, these the hot
+ * ones; map[e] >= 0 is expert e's cold slot, < 0 its hot slot -1-map[e] (F32, exact integers). */
+typedef struct { QW4PackedCpuView hot_gate, hot_up, hot_down; const float *map; } Qwen4MoeMixed;
 typedef struct { Qwen4U32Mut ids; Qwen4F32Mut weights; } Qwen4MoeRoutes;
 /* CPU weights borrowed until destroy. Direct B calls; no callback plugin ABI. */
 Qwen4Status qwen4_moe_create(const Qwen4MoeConfig *,
     const Qwen4MoeWeights *, Qwen4Moe **, Qwen4Error *);
+Qwen4Status qwen4_moe_create_mixed(const Qwen4MoeConfig *, const Qwen4MoeWeights *,
+    const Qwen4MoeMixed *, Qwen4Moe **, Qwen4Error *);   /* mixed NULL: plain layout */
 void qwen4_moe_destroy(Qwen4Moe *);
 Qwen4Status qwen4_moe_work_size(const Qwen4Moe *, size_t token_cap,
     size_t *bytes, Qwen4Error *);

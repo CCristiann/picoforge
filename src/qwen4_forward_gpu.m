@@ -419,6 +419,7 @@ static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
     for (uint32_t i=0;i<f->c.trunk_blocks;i++) {
         G2Layer *l=&f->layer[i]; const Qwen4Layer *kind; TRY(qwen4_config_layer(f->config,i,&kind,e)); l->kind=*kind;
         if (kind->domain!=QW4_TRUNK) return fail(e,QW4_UNSUPPORTED,"nontrunk layer");
+        if (kind->mixed_experts) return fail(e,QW4_UNSUPPORTED,"mixed experts: no Metal path yet (notes M4b)");
         if (kind->kind==QW4_LAYER_GDN) TRY(create_gdn(f,i,e)); else TRY(create_qsa(f,i,e));
         TRY(hc_bind(f,i,ffn_roles,&l->ffn,e));
         const Qwen4Role roles[]={QW4_MOE_ROUTER,QW4_MOE_GATE,QW4_MOE_UP,QW4_MOE_DOWN,QW4_SHARED_GATE,QW4_SHARED_UP,QW4_SHARED_DOWN,QW4_SHARED_ROUTER};
