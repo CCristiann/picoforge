@@ -34,6 +34,8 @@ typedef struct {
      * which the history after any kept row is a contiguous window. */
     Qwen4GpuF32 snap[QWEN4_VERIFY_ROWS-1],conv_ext,ple_ext; int32_t *ple_prev;
     bool streamed;   /* R5.1b: fb[1..3] are pool bindings, fl[1..3] count pool slots as experts */
+    /* picoforge mixed experts: hot gate/up/down bindings and the int32 [E] slot map (MTLBuffer) */
+    bool mixed; const GgufBinding *hb[3]; QW4PackedLayout hl[3]; void *emap;
 } G2Layer;
 typedef struct { uint32_t layer; Qwen4GraphStage stage; Qwen4GpuF32 view; } G2Trace;
 struct Qwen4GpuForward {
@@ -253,6 +255,12 @@ static Qwen4Status scratch(Qwen4GpuForward *f,Qwen4Error *e) {
     ALLOC(f->fw.sup,false,mt,m->shared_intermediate); ALLOC(f->fw.sact,false,mt,m->shared_intermediate);
     ALLOC(f->fw.shared,false,mt,d); ALLOC(f->fw.slogit,false,mt,1); ALLOC(f->fw.ssig,false,mt,1); ALLOC(f->fw.routed,false,mt,d);
     ALLOC(ids,false,p); ALLOC(keep,false,p); f->fw.ids=ids.span; f->fw.identity=keep.span;
+    bool any_mixed=false;
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) { const Qwen4Layer *k; TRY(qwen4_config_layer(f->config,i,&k,e)); any_mixed|=k->mixed_experts; }
+    if (any_mixed) {   /* picoforge mixed experts: the hot pass's act, both passes' down rows, per-format slots */
+        Qwen4GpuF32 cold,hot; ALLOC(f->fw.act_hot,false,p,m->intermediate); ALLOC(f->fw.down2,false,2*p,d);
+        ALLOC(cold,false,p); ALLOC(hot,false,p); f->fw.cold_ids=cold.span; f->fw.hot_ids=hot.span;
+    }
     const size_t groups=MAX((size_t)m->experts,(size_t)gpu_weights_stream_slots(f->store));   /* R5.1b: slots group like experts */
     Qwen4GpuF32 group; ALLOC(group,false,qw4_packed_group_bytes(groups,p)/4); f->fw.group=group.span;
     if (gpu_weights_stream_slots(f->store)) {
@@ -381,6 +389,34 @@ static Qwen4Status act_create(Qwen4GpuForward *f,const char *path,const char *la
     if (!(f->act_log=fopen(path,"wbx"))) return fail(e,QW4_GPU_ERROR,"QW4_ACT_LOG must name a new file");
     return QW4_OK;
 }
+/* picoforge mixed experts: hot tensors bound like the others, the F32 map checked (a bijection onto
+ * the cold and hot slots) and uploaded as int32 for qw4f_mixed_remap. Never streamed. */
+static Qwen4Status bind_mixed(Qwen4GpuForward *f,uint32_t i,Qwen4Error *e) {
+    G2Layer *l=&f->layer[i];
+    if (l->streamed) return fail(e,QW4_UNSUPPORTED,"mixed experts cannot be streamed");
+    const Qwen4Role roles[]={QW4_MOE_GATE_HOT,QW4_MOE_UP_HOT,QW4_MOE_DOWN_HOT};
+    for (size_t j=0;j<3;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); l->hb[j]=w.binding; l->hl[j]=w.layout; }
+    G2Weight mw; Qwen4CpuSpan span; TRY(bind_weight(f,i,QW4_MOE_MAP,&mw,e));
+    TRY(qwen4_weights_cpu_span(f->store,mw.binding,&span,e));
+    size_t ne=f->c.moe.experts,hot=l->hl[0].n_experts,cold=l->fl[1].n_experts;
+    if (mw.layout.gguf_type!=0 || span.bytes<ne*4 || hot+cold!=ne) return fail(e,QW4_FORMAT,"expert map");
+    int32_t *map=calloc(ne,sizeof *map); uint8_t *seen=calloc(ne,1);
+    if (!map || !seen) { free(map); free(seen); return fail(e,QW4_OOM,"expert map"); }
+    Qwen4Status st=QW4_OK;
+    for (size_t x=0;x<ne && !st;x++) {
+        float v; memcpy(&v,span.data+4*x,4); long iv=(long)v;
+        size_t idx=iv>=0 ? (size_t)iv : cold+(size_t)(-1-iv);
+        if ((float)iv!=v || (iv>=0 && (size_t)iv>=cold) || (iv<0 && (size_t)(-1-iv)>=hot) || seen[idx]++)
+            st=fail(e,QW4_FORMAT,"expert map is not a bijection");
+        map[x]=(int32_t)iv;
+    }
+    id<MTLBuffer> buf=st ? nil : [(__bridge id<MTLDevice>)f->device newBufferWithBytes:map length:ne*4 options:MTLResourceStorageModeShared];
+    free(map); free(seen);
+    if (st) return st;
+    if (!buf) return fail(e,QW4_OOM,"expert map buffer");
+    l->emap=(__bridge_retained void *)buf; l->mixed=true;
+    return QW4_OK;
+}
 static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
     TRY(qwen4_gpu_session_create(f->device,f->config,f->capacity,&f->session,e));
     TRY(residency(f,f->session,library,e));
@@ -419,7 +455,6 @@ static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
     for (uint32_t i=0;i<f->c.trunk_blocks;i++) {
         G2Layer *l=&f->layer[i]; const Qwen4Layer *kind; TRY(qwen4_config_layer(f->config,i,&kind,e)); l->kind=*kind;
         if (kind->domain!=QW4_TRUNK) return fail(e,QW4_UNSUPPORTED,"nontrunk layer");
-        if (kind->mixed_experts) return fail(e,QW4_UNSUPPORTED,"mixed experts: no Metal path yet (notes M4b)");
         if (kind->kind==QW4_LAYER_GDN) TRY(create_gdn(f,i,e)); else TRY(create_qsa(f,i,e));
         TRY(hc_bind(f,i,ffn_roles,&l->ffn,e));
         const Qwen4Role roles[]={QW4_MOE_ROUTER,QW4_MOE_GATE,QW4_MOE_UP,QW4_MOE_DOWN,QW4_SHARED_GATE,QW4_SHARED_UP,QW4_SHARED_DOWN,QW4_SHARED_ROUTER};
@@ -427,6 +462,7 @@ static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
             G2Weight w; TRY(j>=1 && j<=3 ? bind_expert(f,i,roles[j],&w,&l->streamed,e) : bind_weight(f,i,roles[j],&w,e));
             l->fb[j]=w.binding; l->fl[j]=w.layout;
         }
+        if (kind->mixed_experts) TRY(bind_mixed(f,i,e));
         if (kind->has_ple) TRY(create_ple(f,i,e));
     }
     f->main_histories=[(__bridge NSArray *)f->histories count];
@@ -494,7 +530,7 @@ void qwen4_gpu_forward_destroy(Qwen4GpuForward *f) {
     if (f->buffers) CFRelease(f->buffers);
     if (f->histories) CFRelease(f->histories);
     if (f->device) CFRelease(f->device);
-    if (f->layer) for (uint32_t i=0;i<f->c.trunk_blocks;i++) free(f->layer[i].ple_prev);
+    if (f->layer) for (uint32_t i=0;i<f->c.trunk_blocks;i++) { free(f->layer[i].ple_prev); if (f->layer[i].emap) CFRelease(f->layer[i].emap); }
     free(f->pinned); free(f->pin_ids); free(f->jobs);
     free(f->snapshot); free(f->layer); free(f->traces); free(f);
 }
@@ -755,6 +791,11 @@ static Qwen4Status moe(Qwen4GpuForward *f,Qwen4GpuCommand *cmdp,uint32_t i,size_
         }
         bool added=false;
         if (n==t) { w.hc_residual=time_view(f->r,t); w.hc_inject=time_view(f->inject,t); w.hc_added=&added; }
+        if (l->mixed) {   /* picoforge mixed experts */
+            for (size_t j=0;j<3;j++) { w.hot[j]=l->hb[j]; w.hot_layout[j]=l->hl[j]; }
+            w.expert_map=(Qwen4GpuSpan){l->emap,0,(size_t)f->c.moe.experts*4};
+            w.act_hot=time_view(w.act_hot,p); w.down2=time_view(w.down2,2*p);
+        } else w.expert_map=(Qwen4GpuSpan){0};
         TRY(qw4f_routed_encode(f->moe,f->b,f->ops,*cmdp,&mc,f->store,l->fb,l->fl,
             slice(f->mixed,start,n),slice(f->block,start,n),&w,e));
         if (hc_added) *hc_added=added;

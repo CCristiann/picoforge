@@ -211,10 +211,10 @@ Qwen4Status qw4f_gpu_encode(QW4FMoeGpu *f,Qwen4GpuCommand cmd,Qwen4GpuF32 x,
  * each (token, slot) pair is its own row, its expert read by B from the IDs. */
 /* ref_moe: QW4_REF_KERNELS selects `moe` (read at creation): never fuse gate+up
  * or down+reduce. */
-struct QW4FRouted { void *device, *route, *iota, *product, *reduce, *route_fast, *shared_act, *route_simd; bool ref_moe; };
+struct QW4FRouted { void *device, *route, *iota, *product, *reduce, *route_fast, *shared_act, *route_simd, *mixed_remap, *mixed_select; bool ref_moe; };
 void qw4f_routed_destroy(QW4FRouted *r) {
     if (!r) return;
-    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->shared_act,r->route_simd,r->device};
+    void *all[]={r->route,r->iota,r->product,r->reduce,r->route_fast,r->shared_act,r->route_simd,r->mixed_remap,r->mixed_select,r->device};
     for (size_t i=0;i<sizeof all/sizeof *all;i++) if (all[i]) CFRelease(all[i]);
     free(r);
 }
@@ -225,9 +225,9 @@ Qwen4Status qw4f_routed_create(void *device,void *library,QW4FRouted **out,Qwen4
     QW4FRouted *r=calloc(1,sizeof *r); if (!r) return qw4c_error(err,QW4_OOM,"routed MoE context");
     r->device=(__bridge_retained void *)dev;
     r->ref_moe=qw4_ref_kernels("moe");
-    NSArray *names=@[@"qw4f_route",@"qw4f_iota",@"qw4f_product",@"qw4f_reduce"];
-    void **slots[]={&r->route,&r->iota,&r->product,&r->reduce};
-    for (size_t j=0;j<4;j++) {
+    NSArray *names=@[@"qw4f_route",@"qw4f_iota",@"qw4f_product",@"qw4f_reduce",@"qw4f_mixed_remap",@"qw4f_mixed_select"];
+    void **slots[]={&r->route,&r->iota,&r->product,&r->reduce,&r->mixed_remap,&r->mixed_select};
+    for (size_t j=0;j<6;j++) {
         id<MTLFunction> fn=[lib newFunctionWithName:names[j]];
         id<MTLComputePipelineState> p=fn?[dev newComputePipelineStateWithFunction:fn error:nil]:nil;
         if (!p) { qw4f_routed_destroy(r); return qw4c_error(err,QW4_GPU_ERROR,"routed MoE pipeline"); }
@@ -268,6 +268,34 @@ static bool dense(Qwen4GpuF32 v,size_t rows,size_t cols) {
     return v.rank==2 && v.dim[0]==rows && v.dim[1]==cols && v.stride_bytes[0]==cols*4 &&
         v.stride_bytes[1]==4 && v.span.buffer && v.span.bytes>=rows*cols*4 && !(v.span.offset_bytes%4);
 }
+/* picoforge mixed experts: one format's gate+up over every pair (grouped, fused or unfused, as below). */
+static Qwen4Status mixed_gate_up(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4GpuCommand *cmd,const GpuWeightStore *store,
+    const GgufBinding *gb,const QW4PackedLayout *gl,const GgufBinding *ub,const QW4PackedLayout *ul,Qwen4GpuSpan ids,
+    size_t k,size_t p,size_t i,Qwen4GpuF32 x,Qwen4GpuF32 act,const QW4FRoutedWork *w,Qwen4Error *err) {
+    const bool grouped=!r->ref_moe && w->group.buffer && gl->gguf_type==ul->gguf_type && qw4_packed_grouped_rows(b,gl->gguf_type,p);
+    Qwen4Status st=r->ref_moe ? QW4_UNSUPPORTED : grouped ?
+        qw4_packed_encode_grouped_gate_up(b,cmd,store,gb,gl,ub,ul,ids,k,x,act,w->group,err) :
+        qw4_packed_encode_gate_up(b,cmd,store,gb,gl,ub,ul,ids,k,x,act,err);
+    id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd->compute_encoder;
+    if (st==QW4_OK) { [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; return QW4_OK; }
+    if (grouped || st!=QW4_UNSUPPORTED) return st==QW4_UNSUPPORTED ? qw4c_error(err,QW4_GPU_ERROR,"grouped gate+up refused") : st;
+    QW4C_TRY(qw4_packed_encode_indexed(b,cmd,store,gb,gl,ids,k,x,w->gate,err)); [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    QW4C_TRY(qw4_packed_encode_indexed(b,cmd,store,ub,ul,ids,k,x,w->up,err)); [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    QW4CGpuSpec spec={.activation=QW4_SILU}; Qwen4GpuF32 v[]={w->gate,act};
+    QW4C_TRY(qw4c_gpu_encode(ops,*cmd,QW4C_ACT,&spec,v,2,err));
+    at(enc,act.span,0); at(enc,w->up.span,1); at(enc,cmd->error_word,2); run(enc,r->product,p*i);
+    return QW4_OK;
+}
+/* picoforge mixed experts: one format's down over every pair into rows [0,P) of y. */
+static Qwen4Status mixed_down(QW4FRouted *r,QW4PackedGpu *b,Qwen4GpuCommand *cmd,const GpuWeightStore *store,
+    const GgufBinding *db,const QW4PackedLayout *dl,Qwen4GpuSpan ids,size_t p,Qwen4GpuF32 act,Qwen4GpuF32 y,
+    const QW4FRoutedWork *w,Qwen4Error *err) {
+    const bool grouped=!r->ref_moe && w->group.buffer && qw4_packed_grouped_rows(b,dl->gguf_type,p);
+    QW4C_TRY(grouped ? qw4_packed_encode_grouped_down(b,cmd,store,db,dl,ids,act,y,w->group,err) :
+                       qw4_packed_encode_indexed(b,cmd,store,db,dl,ids,1,act,y,err));
+    [(__bridge id<MTLComputeCommandEncoder>)cmd->compute_encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    return QW4_OK;
+}
 Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4GpuCommand cmd,
     const Qwen4MoeConfig *c,const GpuWeightStore *store,const GgufBinding *const wb[8],
     const QW4PackedLayout wl[8],Qwen4GpuF32 x,Qwen4GpuF32 y,const QW4FRoutedWork *w,Qwen4Error *err) {
@@ -282,6 +310,11 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
         !dense(w->sup,t,s) || !dense(w->sact,t,s) || !dense(w->shared,t,h) || !dense(w->slogit,t,1) ||
         !dense(w->ssig,t,1) || !dense(w->routed,t,h) || w->ids.bytes<p*4 || w->identity.bytes<p*4)
         return qw4c_error(err,QW4_SHAPE,"routed MoE workspace views");
+    const bool mixed=w->expert_map.buffer!=NULL;
+    if (mixed && (!dense(w->act_hot,p,i) || !dense(w->down2,2*p,h) || w->cold_ids.bytes<p*4 || w->hot_ids.bytes<p*4 ||
+                  w->expert_map.bytes<e*4 || !w->hot[0] || !w->hot[1] || !w->hot[2]))
+        return qw4c_error(err,QW4_SHAPE,"routed MoE mixed-expert views");
+    if (mixed && w->remap) return qw4c_error(err,QW4_UNSUPPORTED,"mixed experts cannot be streamed");
     if (!t) return qw4c_error(err,QW4_OK,NULL);
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
     if (w->hc_added) *w->hc_added=false;
@@ -312,7 +345,7 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
     /* Decode III: the shared expert's activation runs beside the router and its down matvec beside
      * gate+up, without the two barriers of their own (same kernels, same bits); `barrier` keeps the
      * old order. */
-    bool early_shared=r->shared_act && !w->mark && !qw4_ref_kernels("barrier") && !qw4_ref_kernels("exact"); /* profile: own group */
+    bool early_shared=r->shared_act && !w->mark && !mixed && !qw4_ref_kernels("barrier") && !qw4_ref_kernels("exact"); /* profile: own group */
     if (qw4f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
         const bool simd=r->route_simd!=NULL; /* Decode III: one simdgroup per token */
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)(simd ? r->route_simd : r->route_fast)];
@@ -340,15 +373,24 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
      * would not match the oracle indexed sequence; so does a format without a
      * row dot. Then the unfused sequence. */
     MARK("moe.gate_up",QW4_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
+    if (mixed) {   /* picoforge mixed experts: slots per format, then both formats on every pair */
+        struct { uint32_t pairs,experts; } ma={(uint32_t)p,(uint32_t)e};
+        at(enc,w->ids,0); at(enc,w->expert_map,1); at(enc,w->cold_ids,2); at(enc,w->hot_ids,3); at(enc,w->identity,4);
+        [enc setBytes:&ma length:sizeof ma atIndex:5]; at(enc,cmd.error_word,6); run(enc,r->mixed_remap,p);
+        QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->cold_ids,k,p,i,x,w->act,w,err));
+        QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,w->hot[0],&w->hot_layout[0],w->hot[1],&w->hot_layout[1],w->hot_ids,k,p,i,x,w->act_hot,w,err));
+        enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+    }
     /* R3.2: a prefill-sized group of pairs runs one GEMM per expert instead
      * (then down too, below); the per-pair kernels otherwise. */
     const bool grouped=!r->ref_moe && w->group.buffer && qw4_packed_grouped_rows(b,wl[1].gguf_type,p) &&
         qw4_packed_grouped_rows(b,wl[3].gguf_type,p) && wl[1].gguf_type==wl[2].gguf_type;
-    Qwen4Status fused=r->ref_moe ? QW4_UNSUPPORTED : grouped ?
+    Qwen4Status fused=mixed ? QW4_OK : r->ref_moe ? QW4_UNSUPPORTED : grouped ?
         qw4_packed_encode_grouped_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],xids,k,x,w->act,w->group,err) :
         qw4_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],xids,k,x,w->act,err);
     if (grouped && fused==QW4_UNSUPPORTED) return qw4c_error(err,QW4_GPU_ERROR,"grouped gate+up refused");
-    if (fused==QW4_OK) {
+    if (mixed) {
+    } else if (fused==QW4_OK) {
         if (early_shared) QW4C_TRY(qw4_packed_encode(b,&cmd,store,wb[6],&wl[6],0,w->sact,w->shared,err));
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     } else if (fused!=QW4_UNSUPPORTED) return fused;
@@ -378,8 +420,22 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
      * a row dot), else IDX down then qw4f_reduce, as before R1.5c. */
     MARK("moe.down",QW4_PROFILE_MIXED,p*wl[3].expert_bytes);
     const QW4DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed,w->hc_residual,w->hc_inject,w->hc_added};
-    fused=r->ref_moe || grouped ? QW4_UNSUPPORTED : qw4_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],xids,w->act,&dv,y,err);
-    if (fused==QW4_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    fused=r->ref_moe || grouped || mixed ? QW4_UNSUPPORTED : qw4_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],xids,w->act,&dv,y,err);
+    if (mixed) {   /* cold rows [0,P), hot rows [P,2P); identity already holds each pair's row */
+        Qwen4GpuF32 cold=w->down2,hot=w->down2;
+        cold.dim[0]=hot.dim[0]=p; cold.span.bytes=hot.span.bytes=p*h*4; hot.span.offset_bytes+=p*h*4;
+        QW4C_TRY(mixed_down(r,b,&cmd,store,wb[3],&wl[3],w->cold_ids,p,w->act,cold,w,err));
+        QW4C_TRY(mixed_down(r,b,&cmd,store,w->hot[2],&w->hot_layout[2],w->hot_ids,p,w->act_hot,hot,w,err));
+        enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+        struct { uint32_t pairs,width; } sa={(uint32_t)p,(uint32_t)h};
+        at(enc,w->down2.span,0); at(enc,w->identity,1); at(enc,w->down.span,2);
+        [enc setBytes:&sa length:sizeof sa atIndex:3]; at(enc,cmd.error_word,4); run(enc,r->mixed_select,p*h);
+        at(enc,w->identity,0); run(enc,r->iota,p);
+        FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
+        at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
+        at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
+        at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
+    } else if (fused==QW4_OK) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     else if (fused!=QW4_UNSUPPORTED) return fused;
     else { /* the identity map is read only by qw4f_reduce */
         at(enc,w->identity,0); run(enc,r->iota,p);

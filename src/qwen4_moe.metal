@@ -74,3 +74,27 @@ kernel void qw4f_route(device const float *logits [[buffer(0)]],device float *pr
 }
 /* Rows are pairs directly (no grouping): the reduce map is the identity. */
 kernel void qw4f_iota(device uint *map [[buffer(0)]],uint i [[thread_position_in_grid]]) { map[i]=i; }
+/* picoforge mixed experts: expert id -> slot in the cold tensor (hot slot 0 as filler) or in the hot
+ * tensor (cold slot 0 as filler); rows[pair] tells qw4f_reduce where its down row is: the cold pass
+ * writes rows [0,P), the hot pass rows [P,2P). map: int32 [E], v >= 0 cold slot, v < 0 hot -1-v. */
+kernel void qw4f_mixed_remap(device const uint *ids [[buffer(0)]],device const int *map [[buffer(1)]],
+    device uint *cold [[buffer(2)]],device uint *hot [[buffer(3)]],device uint *rows [[buffer(4)]],
+    constant uint2 &a [[buffer(5)]],device atomic_uint *error [[buffer(6)]],uint p [[thread_position_in_grid]]) {
+    if (p>=a.x) return;
+    uint e=ids[p];
+    int v=e<a.y ? map[e] : 0;
+    if (e>=a.y) atomic_fetch_or_explicit(error,2u,memory_order_relaxed);
+    cold[p]=v>=0 ? uint(v) : 0u;
+    hot[p]=v<0 ? uint(-1-v) : 0u;
+    rows[p]=v<0 ? a.x+p : p;
+}
+/* picoforge mixed experts: each pair's down row from its format's pass, back into [P,H] for qw4f_reduce. */
+kernel void qw4f_mixed_select(device const float *both [[buffer(0)]],device const uint *rows [[buffer(1)]],
+    device float *down [[buffer(2)]],constant uint2 &a [[buffer(3)]],device atomic_uint *error [[buffer(4)]],
+    uint index [[thread_position_in_grid]]) {
+    uint p=index/a.y,col=index%a.y;
+    if (p>=a.x) return;
+    uint row=rows[p];
+    if (row>=2*a.x) { atomic_fetch_or_explicit(error,2u,memory_order_relaxed); return; }
+    down[index]=both[row*a.y+col];
+}
