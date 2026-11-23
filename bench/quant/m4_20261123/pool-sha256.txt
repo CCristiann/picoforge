@@ -1,0 +1,1 @@
+379928f0b9c0f51c9d9f09ece78fac72f08f1e17cafbce69007a598783f9c542  pool-q4-top102.gguf (top 102 experts per layer from the Q4, 0 byte mismatches over 14688 experts)

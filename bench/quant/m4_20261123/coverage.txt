@@ -1,0 +1,14 @@
+--- 5% (26/layer, 1248 experts)
+  other-code code: 33.5%  code+greedy: 34.0%  unsloth: 5.7%  oracle: 38.7%
+  r7-code    code: 30.2%  code+greedy: 30.1%  unsloth: 3.9%  oracle: 47.4%
+  r7-prose   code: 9.3%  code+greedy: 9.3%  unsloth: 4.7%  oracle: 39.5%
+--- 10% (51/layer, 2448 experts)
+  other-code code: 47.8%  code+greedy: 48.1%  unsloth: 10.9%  oracle: 52.8%
+  r7-code    code: 50.9%  code+greedy: 50.9%  unsloth: 8.4%  oracle: 65.7%
+  r7-prose   code: 17.6%  code+greedy: 17.6%  unsloth: 12.3%  oracle: 54.9%
+--- 20% (102/layer, 4896 experts)
+  other-code code: 63.7%  code+greedy: 63.9%  unsloth: 21.6%  oracle: 68.8%
+  r7-code    code: 69.3%  code+greedy: 69.6%  unsloth: 17.8%  oracle: 81.5%
+  r7-prose   code: 31.4%  code+greedy: 31.5%  unsloth: 26.1%  oracle: 74.3%
+greedy 10% allocation per layer: [42, 48, 42, 44, 42, 33, 46, 46, 46, 44, 33, 40, 44, 35, 43, 48, 50, 46, 54, 46, 43, 54, 55, 48, 52, 56, 47, 51, 55, 55, 57, 60, 66, 52, 65, 64, 58, 69, 63, 54, 49, 53, 56, 57, 60, 64, 55, 58]
+calibration mass in top 51 per layer: [0.37, 0.42, 0.4, 0.48, 0.47, 0.5, 0.39, 0.39, 0.39, 0.42, 0.32, 0.39, 0.4, 0.32, 0.4, 0.49, 0.48, 0.41, 0.42, 0.42, 0.44, 0.45, 0.43, 0.39, 0.47, 0.49, 0.42, 0.5, 0.49, 0.42, 0.47, 0.54, 0.54, 0.47, 0.49, 0.53, 0.58, 0.56, 0.52, 0.58, 0.59, 0.56, 0.54, 0.58, 0.59, 0.63, 0.62, 0.58]
