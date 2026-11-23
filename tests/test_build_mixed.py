@@ -95,6 +95,18 @@ class BuildMixedTests(unittest.TestCase):
             self.assertEqual(res["layers"]["7"]["mass"], [0.5, 0.5, 0.75, 1.25])
             self.assertEqual(res["layers"]["7"]["order"], [3, 2, 0, 1])
 
+    def test_page_aligned_tensors_stay_page_aligned(self):
+        """The disk-only n-gram table must start on a page (gguf_plan.c); the real Q2 aligns data
+        to 32 bytes only, so the writer keeps every page-aligned template tensor page-aligned."""
+        with tempfile.TemporaryDirectory(dir=ROOT / "build/qwen4-g1") as d:
+            out = Path(d) / "w.gguf"
+            blob = lambda n: (lambda f: f.write(bytes(n)))
+            bm._write(out, bm._kv("general.alignment", 32), 1, 32,
+                      [("a", 0, [3], blob(12), 12, False), ("b", 0, [4096], blob(16384), 16384, True)])
+            g = bm.Gguf(out)
+            self.assertEqual(g.tensors["b"][2] % bm.PAGE, 0)
+            self.assertEqual(g.tensors["a"][2] % 32, 0)
+
     def test_mixed_template_is_refused(self):
         with self.assertRaises(AssertionError):
             bm.build(self.direct, SOURCE, self.ranking, {0: 1}, Path(self.tmp.name) / "again.gguf", {})

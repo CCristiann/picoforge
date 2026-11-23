@@ -38,6 +38,7 @@ from qwen4_config import FORMATS  # noqa: E402
 BLOCK = {t: (b, s) for t, b, s in FORMATS.values()}       # ggml type -> (weights per block, bytes)
 PARTS = ("gate", "up", "down")
 COPY = 1 << 26                                           # 64 MiB per read while copying
+PAGE = 16384                                             # Apple Silicon page: the disk-only n-gram table starts on one
 
 
 class Gguf:
@@ -97,16 +98,22 @@ def _kv(key: str, value) -> bytes:
 
 
 def _write(out: Path, kv: bytes, n_kv: int, align: int, tensors: list) -> None:
-    """tensors: (name, type, dims, writer) with writer(f) writing exactly the tensor's bytes."""
+    """tensors: (name, type, dims, writer, size, page) with writer(f) writing exactly `size` bytes;
+    page = start on a PAGE boundary of the file (the data base is known before any offset, since
+    every table entry has a fixed width)."""
+    head = 24 + len(kv) + sum(len(_string(n)) + 4 + 8 * len(d) + 12 for n, _, d, _, _, _ in tensors)
+    base = (head + align - 1) // align * align
     table, offset, placed = b"", 0, []
-    for name, t, dims, writer, size in tensors:
+    for name, t, dims, writer, size, page in tensors:
         offset = (offset + align - 1) // align * align
+        if page:
+            offset = (base + offset + PAGE - 1) // PAGE * PAGE - base
         table += _string(name) + struct.pack("<I", len(dims)) + struct.pack(f"<{len(dims)}Q", *dims)
         table += struct.pack("<IQ", t, offset)
         placed.append((offset, writer, size))
         offset += size
     header = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), n_kv) + kv + table
-    base = (len(header) + align - 1) // align * align
+    assert len(header) == head
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".part")
     with open(tmp, "wb") as f:
@@ -176,7 +183,7 @@ def pool(q4: Path, ranking: dict, count: int, out: Path) -> None:
             name = f"blk.{layer}.ffn_{part}_exps.weight"
             t, dims, _ = src.tensors[name]
             per = src.nbytes(name) // dims[-1]
-            tensors.append((name, t, dims[:-1] + [count], _experts(src, chosen, name), per * count))
+            tensors.append((name, t, dims[:-1] + [count], _experts(src, chosen, name), per * count, False))
     _write(out, kv, n_kv, src.align, tensors)
 
 
@@ -190,25 +197,25 @@ def build(template: Path, source: Path, ranking: dict, counts: dict, out: Path, 
         part = next((p for p in PARTS if name == f"blk.{layer}.ffn_{p}_exps.weight"), None)
         n = counts.get(layer, 0)
         if part is None or layer not in tpl.trunk_layers() or n == 0:
-            tensors.append((name, t, dims, _copier(tpl, name), tpl.nbytes(name)))
+            tensors.append((name, t, dims, _copier(tpl, name), tpl.nbytes(name), tpl.tensors[name][2] % PAGE == 0))
             continue
         ne = dims[-1]
         hot = sorted(ranking["layers"][str(layer)]["order"][:n])
         cold = [x for x in range(ne) if x not in set(hot)]
         per = tpl.nbytes(name) // ne
-        tensors.append((name, t, dims[:-1] + [len(cold)], _experts(tpl, cold, name), per * len(cold)))
+        tensors.append((name, t, dims[:-1] + [len(cold)], _experts(tpl, cold, name), per * len(cold), False))
         hname = f"blk.{layer}.ffn_{part}_exps.weight"
         ht, hdims, _ = src.tensors[hname]
         assert hdims[1] == dims[1] and (part == "down" or hdims[0] == dims[0]), f"{hname}: shape mismatch"
         hper = src.nbytes(hname) // hdims[-1]
         slots = [_slot(src, layer, x) for x in hot]
-        tensors.append((f"blk.{layer}.ffn_{part}_exps_hot.weight", ht, hdims[:-1] + [n], _experts(src, slots, hname), hper * n))
+        tensors.append((f"blk.{layer}.ffn_{part}_exps_hot.weight", ht, hdims[:-1] + [n], _experts(src, slots, hname), hper * n, False))
         if part == "down":
             values = np.empty(ne, "<f4")
             values[cold] = np.arange(len(cold)); values[hot] = -1 - np.arange(n)
             maps[layer] = values
             blob = values.tobytes()
-            tensors.append((f"blk.{layer}.ffn_exps_map.weight", 0, [ne], lambda f, b=blob: f.write(b), len(blob)))
+            tensors.append((f"blk.{layer}.ffn_exps_map.weight", 0, [ne], lambda f, b=blob: f.write(b), len(blob), False))
     _write(out, kv, tpl.n_kv + 2, tpl.align, tensors)
     return {"hot": {str(l): sorted(np.nonzero(v < 0)[0].tolist()) for l, v in maps.items()}}
 
