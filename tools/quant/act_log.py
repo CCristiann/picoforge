@@ -5,6 +5,7 @@ decode token): u32 magic "QW4A", version 1, position, rows t, layers n, hidden
 H, top-k K; then per captured layer: u32 layer index, x f32[t,H] (the routed
 experts' input, the same vector the router reads), ids u32[t,K] (chosen
 experts), g f32[t,K] (their gate weights, as the reduction uses them).
+With QW4_ACT_X=0 the engine writes H = 0 and no x: only routes, for ranking.
 """
 
 import struct

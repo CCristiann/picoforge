@@ -69,6 +69,28 @@ class ActLogTests(unittest.TestCase):
                 want /= want.sum(1, keepdims=True)
                 self.assertLessEqual(np.abs(want - g).max(), 1e-5)
 
+    def test_routes_only_on_every_layer(self):
+        """M4c ranking: QW4_ACT_LAYERS=all with QW4_ACT_X=0 keeps ids and gate weights of every trunk layer, no x."""
+        meta, _ = read_header(GGUF)
+        k = int(meta["qwen4exp.expert_used_count"])
+        with tempfile.TemporaryDirectory(dir=ROOT / "build/qwen4-g2") as d:
+            d = Path(d)
+            full = self.run_pf(d, "1,3")
+            self.assertEqual(full.returncode, 0, full.stderr.decode(errors="replace"))
+            env = {**os.environ, "QW4_ACT_LOG": str(d / "ids.bin"), "QW4_ACT_LAYERS": "all", "QW4_ACT_X": "0",
+                   "QW4_ROUTE_LOG": str(d / "route-ids.bin")}
+            done = subprocess.run([str(ROOT / "pf"), "--qwen4", str(GGUF), "--tokens", ",".join(map(str, PROMPT)),
+                                   "--context", "64", "--chunk", "3", "--max-new", "2"], cwd=ROOT, capture_output=True, env=env)
+            self.assertEqual(done.returncode, 0, done.stderr.decode(errors="replace"))
+            routes = route_log(d / "route-ids.bin", 4, k)
+            self.assertEqual(sorted(read_act_log(d / "ids.bin")[0]["layers"]), sorted(routes))
+            for layer in routes:
+                x, ids, g = layer_rows(d / "ids.bin", layer)
+                self.assertEqual(x.shape, (len(PROMPT) + 1, 0))
+                np.testing.assert_array_equal(ids, routes[layer])
+            for layer in (1, 3):
+                np.testing.assert_array_equal(layer_rows(d / "ids.bin", layer)[2], layer_rows(d / "act.bin", layer)[2])
+
     def test_layer_out_of_range_fails(self):
         with tempfile.TemporaryDirectory(dir=ROOT / "build/qwen4-g2") as d:
             done = self.run_pf(Path(d), "1,9")

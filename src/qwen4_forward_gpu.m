@@ -18,6 +18,8 @@ static double clock_s(void) {
     return (double)t.tv_sec+(double)t.tv_nsec*1e-9;
 }
 
+#define QW4_ACT_MAX_LAYERS 128u   /* QW4_ACT_LAYERS capacity ("all" needs every trunk layer) */
+
 typedef struct { const GgufBinding *binding; QW4PackedLayout layout; } G2Weight;
 typedef struct { G2Weight down,up,inject; Qwen4GpuF32 gain; } G2Hc;
 typedef struct {
@@ -68,8 +70,9 @@ struct Qwen4GpuForward {
     /* Quant M2 diagnostic, off unless QW4_ACT_LOG names a new file: for the trunk layers listed in
      * QW4_ACT_LAYERS, the routed experts' input x [t,H], their ids [t,K] and gate weights [t,K] of
      * every trunk append, to measure weight quantization on real inputs (tools/quant/layer_lab.py).
-     * Never read by the forward itself. */
-    FILE *act_log; void *act_buf; uint32_t act_layer[8],act_count;
+     * Never read by the forward itself. QW4_ACT_LAYERS=all with QW4_ACT_X=0 keeps only ids and weights
+     * of every trunk layer (M4c expert ranking: ~4 KB per token instead of ~0.5 MB). */
+    FILE *act_log; void *act_buf; uint32_t act_layer[QW4_ACT_MAX_LAYERS],act_count,act_h;
     /* R4 pending verify: rows and start of the last qwen4_gpu_forward_verify,
      * valid until keep or any other append/reset. */
     uint32_t verify_rows; uint64_t verify_start,verify_epoch; int32_t verify_tokens[QWEN4_VERIFY_ROWS];
@@ -365,23 +368,30 @@ static Qwen4Status residency(Qwen4GpuForward *f,Qwen4GpuSession *session,void *l
     free(views);
     return rc==QW4_UNSUPPORTED ? QW4_OK : rc;
 }
-/* Quant M2 capture layout in act_buf, per captured layer j: x [max_tokens,H] f32, ids [max_tokens,K]
- * u32, g [max_tokens,K] f32, all dense. */
+/* Quant M2 capture layout in act_buf, per captured layer j: x [max_tokens,act_h] f32 (act_h = H, or 0
+ * without x), ids [max_tokens,K] u32, g [max_tokens,K] f32, all dense. */
 static size_t act_stride(const Qwen4GpuForward *f) {
-    return (size_t)f->max_tokens*(f->c.moe.hidden_size+2u*f->c.moe.top_k)*4;
+    return (size_t)f->max_tokens*(f->act_h+2u*f->c.moe.top_k)*4;
 }
 static Qwen4GpuSpan act_span(const Qwen4GpuForward *f,uint32_t j,size_t word,size_t words) {
     return (Qwen4GpuSpan){f->act_buf,j*act_stride(f)+word*4,words*4};
 }
 static Qwen4Status act_create(Qwen4GpuForward *f,const char *path,const char *layers,Qwen4Error *e) {
     if (!layers || !*layers) return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LOG needs QW4_ACT_LAYERS (e.g. 28,40)");
+    const char *x=getenv("QW4_ACT_X");
+    f->act_h=x && !strcmp(x,"0") ? 0 : (uint32_t)f->c.moe.hidden_size;
+    if (!strcmp(layers,"all")) {
+        if (f->c.trunk_blocks>QW4_ACT_MAX_LAYERS) return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS=all: too many trunk layers");
+        for (uint32_t i=0;i<f->c.trunk_blocks;i++) f->act_layer[f->act_count++]=i;
+        layers="";
+    }
     for (const char *c=layers;*c;) {
         char *end; long v=strtol(c,&end,10);
-        if (end==c || v<0 || v>=(long)f->c.trunk_blocks || f->act_count==8)
-            return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS: up to 8 trunk layer indices, comma separated");
+        if (end==c || v<0 || v>=(long)f->c.trunk_blocks || f->act_count==QW4_ACT_MAX_LAYERS)
+            return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS: trunk layer indices, comma separated, or all");
         f->act_layer[f->act_count++]=(uint32_t)v;
         c=*end==',' ? end+1 : end;
-        if (*end && *end!=',') return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS: up to 8 trunk layer indices, comma separated");
+        if (*end && *end!=',') return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS: trunk layer indices, comma separated, or all");
     }
     id<MTLBuffer> b=[(__bridge id<MTLDevice>)f->device newBufferWithLength:f->act_count*act_stride(f) options:MTLResourceStorageModeShared];
     if (!b) return fail(e,QW4_OOM,"QW4_ACT_LOG buffer");
@@ -812,10 +822,10 @@ static Qwen4Status moe(Qwen4GpuForward *f,Qwen4GpuCommand *cmdp,uint32_t i,size_
             barrier(cmd);
         }
         for (uint32_t j=0;j<f->act_count;j++) if (f->act_layer[j]==i) {   /* Quant M2: rows [start,start+n) */
-            const size_t h=f->c.moe.hidden_size,k=f->c.moe.top_k;
+            const size_t h=f->act_h,k=f->c.moe.top_k;
             Qwen4GpuF32 x=slice(f->mixed,start,n);
-            if (x.stride_bytes[0]!=h*4 || w.weights.stride_bytes[0]!=k*4) return fail(e,QW4_SHAPE,"QW4_ACT_LOG: strided view");
-            copy_u32(f,cmd,x.span,act_span(f,j,start*h,n*h),n*h);
+            if ((h && x.stride_bytes[0]!=h*4) || w.weights.stride_bytes[0]!=k*4) return fail(e,QW4_SHAPE,"QW4_ACT_LOG: strided view");
+            if (h) copy_u32(f,cmd,x.span,act_span(f,j,start*h,n*h),n*h);
             copy_u32(f,cmd,w.ids,act_span(f,j,f->max_tokens*h+start*k,n*k),n*k);
             copy_u32(f,cmd,w.weights.span,act_span(f,j,f->max_tokens*(h+k)+start*k,n*k),n*k);
         }
@@ -982,8 +992,9 @@ static Qwen4Status forward(Qwen4GpuForward *f,const int32_t *tokens,size_t count
         fflush(f->route_log);
     }
     if (!rc && f->act_log && layers==f->c.trunk_blocks) {
-        /* record: "QW4A", version 1, position, rows, layers, H, K; per layer: index, x[t,H], ids[t,K], g[t,K] */
-        const uint32_t h=f->c.moe.hidden_size,k=f->c.moe.top_k;
+        /* record: "QW4A", version 1, position, rows, layers, H, K; per layer: index, x[t,H], ids[t,K], g[t,K]
+         * (H = 0 when QW4_ACT_X=0: no x) */
+        const uint32_t h=f->act_h,k=f->c.moe.top_k;
         uint32_t head[7]={0x41345751u,1,(uint32_t)before.next_pos,(uint32_t)count,f->act_count,h,k};
         fwrite(head,4,7,f->act_log);
         const char *base=[(__bridge id<MTLBuffer>)f->act_buf contents];
