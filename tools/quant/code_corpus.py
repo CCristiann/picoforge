@@ -8,6 +8,11 @@ in the model's training data: fine for routing statistics and for comparing
 two quantizations of the same model, not for measuring the model itself.
 
   tools/venv/bin/python tools/quant/code_corpus.py [CLONE_DIR] [OUT.json]
+  tools/venv/bin/python tools/quant/code_corpus.py --rank [CLONE_DIR] [OUT.json]
+
+--rank builds the expert-ranking corpus (M4c): calibration repositories only, eight
+languages, one long window each. The evaluation repositories above and picoforge's
+own code (the R7 corpus) stay out of it, so both remain held out.
 """
 
 import hashlib
@@ -18,9 +23,11 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CLONES = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "models/code-corpus"
-OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "build/quant/code-corpus.json"
-LENGTH, WINDOWS = 2048, 2
+RANK = "--rank" in sys.argv[1:]
+ARGS = [a for a in sys.argv[1:] if a != "--rank"]
+CLONES = Path(ARGS[0]) if ARGS else ROOT / "models/code-corpus"
+OUT = Path(ARGS[1]) if len(ARGS) > 1 else ROOT / ("build/quant/rank-corpus.json" if RANK else "build/quant/code-corpus.json")
+LENGTH, WINDOWS = (12288, 1) if RANK else (2048, 2)
 # name, repository, license, split, directory, extensions
 REPOS = [
     ("llama.cpp", "https://github.com/ggml-org/llama.cpp", "MIT", "calib", "src", (".cpp", ".h")),
@@ -30,8 +37,15 @@ REPOS = [
     ("cobra", "https://github.com/spf13/cobra", "Apache-2.0", "eval", ".", (".go",)),
     ("guava", "https://github.com/google/guava", "Apache-2.0", "eval", "guava/src/com/google/common/collect", (".java",)),
 ]
+RANK_REPOS = [r for r in REPOS if r[3] == "calib"] + [
+    ("ripgrep", "https://github.com/BurntSushi/ripgrep", "MIT OR Unlicense", "calib", "crates", (".rs",)),
+    ("gin", "https://github.com/gin-gonic/gin", "MIT", "calib", ".", (".go",)),
+    ("gson", "https://github.com/google/gson", "Apache-2.0", "calib", "gson/src/main/java", (".java",)),
+    ("zod", "https://github.com/colinhacks/zod", "MIT", "calib", "packages/zod/src", (".ts",)),
+    ("curl", "https://github.com/curl/curl", "curl", "calib", "lib", (".c", ".h")),
+]
 MAX_FILE = 200_000      # bytes; skips generated or vendored blobs
-PER_FILE = 6_000        # characters taken from each file, so a window spans many files
+PER_FILE = 3_000 if RANK else 6_000   # characters taken from each file, so a window spans many files
 
 
 def run(*cmd, cwd=None) -> str:
@@ -63,7 +77,7 @@ def repo_text(path: Path, directory: str, exts: tuple, budget: int) -> tuple[str
 def main() -> None:
     CLONES.mkdir(parents=True, exist_ok=True)
     corpus = {"length": LENGTH, "streams": {}}
-    for name, url, lic, split, directory, exts in REPOS:
+    for name, url, lic, split, directory, exts in (RANK_REPOS if RANK else REPOS):
         dest = CLONES / name
         if not dest.exists():
             run("git", "clone", "--depth", "1", "--quiet", url, str(dest))
@@ -71,7 +85,7 @@ def main() -> None:
         text, used = repo_text(dest, directory, exts, budget=LENGTH * WINDOWS * 6)
         ids = tokenize(text)
         assert len(ids) >= LENGTH * WINDOWS, f"{name}: only {len(ids)} tokens"
-        step = (len(ids) - LENGTH) // (WINDOWS - 1)
+        step = (len(ids) - LENGTH) // max(WINDOWS - 1, 1)
         corpus["streams"][name] = {"url": url, "commit": commit, "license": lic, "split": split,
                                    "files": used, "tokens": len(ids),
                                    "windows": [{"start": i * step, "ids": ids[i * step:i * step + LENGTH]} for i in range(WINDOWS)]}
