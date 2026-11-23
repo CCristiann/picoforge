@@ -137,7 +137,20 @@ def mix_experts(tensors, hf, hot, seed):
     return out, maps
 
 
-def write_graph(path, hf, seed, text_meta=None, enable_mtp=False, mixed_hot=0):
+def q4_experts(tensors, hf):
+    """The published Q4 layout on every trunk layer: Q4_K gate/up and MXFP4 down at the logical
+    input (no padding), as in the real -Q4 file. A byte source for build_mixed tests."""
+    c = hf["text_config"]
+    ne, e, f = c["num_experts"], c["hidden_size"], c["moe_intermediate_size"]
+    out = dict(tensors)
+    for name, (shape, fmt, domain) in tensors.items():
+        if domain == "mtp" or not name.endswith("_exps.weight"):
+            continue
+        out[name] = ([f, e, ne], "MXFP4", domain) if "ffn_down_" in name else (shape, "Q4_K", domain)
+    return out
+
+
+def write_graph(path, hf, seed, text_meta=None, enable_mtp=False, mixed_hot=0, q4=False):
     meta = ref.reference_metadata(hf)
     ple = bool(hf["text_config"]["ple_layer_ids"])
     meta.update({"general.architecture": "qwen4exp", "general.alignment": ALIGN,
@@ -150,6 +163,9 @@ def write_graph(path, hf, seed, text_meta=None, enable_mtp=False, mixed_hot=0):
     ref.check_metadata(hf, meta)
     meta.update(text_meta or {})
     tensors, maps = ref.reference_tensors(hf, 128 if ple else 0), {}
+    assert not (q4 and mixed_hot), "--q4-experts and --mixed-hot are exclusive"
+    if q4:
+        tensors = q4_experts(tensors, hf)
     if mixed_hot:
         meta["picoforge.experts.mixed"] = True
     header = bytearray(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta)))
@@ -213,7 +229,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=3811)
     parser.add_argument("--variant", action="store_true", help="upstream defaults: no PLE, SiLU gate, QSA second")
     parser.add_argument("--mixed-hot", type=int, default=0, help="picoforge mixed experts: this many Q4 experts per trunk layer")
+    parser.add_argument("--q4-experts", action="store_true", help="trunk experts in the published Q4 formats")
     args = parser.parse_args()
     records = write_graph(args.output, variant_config() if args.variant else graph_config(), args.seed,
-                          mixed_hot=args.mixed_hot)
+                          mixed_hot=args.mixed_hot, q4=args.q4_experts)
     print(f"{args.output}: {len(records)} tensors, {args.output.stat().st_size} bytes")
