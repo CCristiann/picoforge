@@ -212,7 +212,7 @@ char *pf_session_reply(PfSession *s, size_t added, const PfStream *stream, PfRep
 typedef struct {
     char magic[8];                      /* "PFAGENT" */
     uint32_t version, capacity, thinking, mtp;
-    uint64_t n, model_bytes, last_count; int64_t saved;
+    uint64_t n, model_id, last_count; int64_t saved;
     char model[PATH_MAX], workspace[PATH_MAX], title[120];
 } SessionHeader;
 static bool session_dir(char out[PATH_MAX]) {
@@ -249,7 +249,7 @@ static FILE *session_open(const PfSession *s, const char *name, SessionHeader *h
 static bool write_file(PfSession *s, const char *path, const char *title, bool with_state, long long *bytes) {
     char tmp[PATH_MAX+16];
     SessionHeader h = {.magic = "PFAGENT", .version = 1, .capacity = s->run.capacity, .thinking = s->thinking,
-        .mtp = s->run.mtp, .n = s->n, .model_bytes = s->model_bytes, .last_count = s->run.last_count, .saved = time(NULL)};
+        .mtp = s->run.mtp, .n = s->n, .model_id = s->model_id, .last_count = s->run.last_count, .saved = time(NULL)};
     snprintf(h.model, sizeof h.model, "%s", s->model_path); snprintf(h.workspace, sizeof h.workspace, "%s", s->workspace);
     snprintf(h.title, sizeof h.title, "%s", title);
     snprintf(tmp, sizeof tmp, "%s.XXXXXX", path);
@@ -314,7 +314,7 @@ bool pf_session_resume(PfSession *s, const char *name) {
     SessionHeader h; FILE *f = session_open(s, name, &h);
     if (!f) return false;
     bool ok = false; double start = qw4_now();
-    if (h.model_bytes != s->model_bytes) note(s, "%s was saved with another model (%s)\n", name, h.model);
+    if (h.model_id != s->model_id) note(s, "%s was saved with another model (%s)\n", name, h.model);
     else if (h.mtp != (uint32_t)s->run.mtp) note(s, "%s was saved with MTP %s: restart with%s --no-mtp\n", name, h.mtp ? "on" : "off", h.mtp ? "out" : "");
     else ok = read_file(s, f, &h, name);
     fclose(f);
@@ -435,7 +435,7 @@ static bool system_load(PfSession *s, size_t n) {
     if (!system_path(path) || !(f = fopen(path, "rb"))) return false;
     int32_t *saved = malloc((n ? n : 1)*sizeof *saved); Qwen4Error e;
     bool ok = saved && fread(&h, sizeof h, 1, f) == 1 && !memcmp(h.magic, "PFAGENT", 8) && h.version == 1 &&
-              h.n == n && h.capacity == s->run.capacity && h.mtp == (uint32_t)s->run.mtp && h.model_bytes == s->model_bytes &&
+              h.n == n && h.capacity == s->run.capacity && h.mtp == (uint32_t)s->run.mtp && h.model_id == s->model_id &&
               fread(saved, sizeof *saved, n, f) == n && !memcmp(saved, s->ids, n*sizeof *saved);
     if (ok) {
         setvbuf(f, NULL, _IOFBF, 8u << 20);
@@ -597,13 +597,15 @@ bool pf_session_compact(PfSession *s, const PfStream *stream) {
 /* ------------------------------------------------------------ lifetime */
 
 void pf_session_open(PfSession *s, const PfSessionOptions *o) {
-    QW4Run *r = &s->run; Qwen4Error e; size_t one = 0; int32_t probe[2]; struct stat st;
-    if (stat(o->model, &st)) die("pf-agent: %s: %s", o->model, strerror(errno));
-    s->model_path = strdup(o->model); s->model_bytes = (uint64_t)st.st_size;
+    QW4Run *r = &s->run; Qwen4Error e; size_t one = 0; int32_t probe[2];
+    s->model_path = strdup(o->model);
     r->chunk = 1024; r->mtp = o->mtp; r->power = o->power;
     qw4_policy_init(&r->policy, getenv("PICOFORGE_MTP_DRAFT"), getenv("PICOFORGE_MTP_COST"));
     qw4_sampler_init(&r->sampler, o->temperature, 20, 0.95f, 0.0f, (uint64_t)time(NULL));   /* as the chat; 0: greedy */
     qw4_run_open(r, o->model);
+    /* The header holds the metadata and the tensor table: two files of the same size (Code5
+     * built from two rankings) differ there, so a state saved with one never loads into the other. */
+    s->model_id = fnv1a(r->g.header, r->g.data_offset < r->g.header_size ? r->g.data_offset : r->g.header_size);
     if (o->context > r->c->max_positions) die("pf-agent: a context of %u exceeds the model's %u positions", o->context, r->c->max_positions);
     if (qwen4_encode(r->tok, (Qwen4Bytes){(const uint8_t *)"<|im_end|>", 10}, probe, 2, &one, &e) || one != 1)
         die("pf-agent: the model needs <|im_end|> as a single token");

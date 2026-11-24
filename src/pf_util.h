@@ -21,6 +21,7 @@ void clean_text(Buf *);
 void json_escape(Buf *, const char *);           /* a JSON string body */
 char *trim_line(char *);                         /* spaces off both ends, in place */
 long count_lines(const char *, size_t);
+uint64_t fnv1a(const void *, size_t);           /* a 64-bit FNV-1a hash */
 
 void pause_ms(long ms);
 /* argv[0] (absolute) in its own process group, stdin /dev/null, stdout to

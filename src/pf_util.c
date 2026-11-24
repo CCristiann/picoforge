@@ -95,6 +95,11 @@ char *trim_line(char *s) {
     while (n && isspace((unsigned char)s[n-1])) s[--n] = 0;
     return s;
 }
+uint64_t fnv1a(const void *data, size_t n) {
+    uint64_t h = 1469598103934665603ull; const uint8_t *p = data;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
 long count_lines(const char *s, size_t n) {
     long lines = 1;
     for (size_t i = 0; i < n; i++) lines += s[i] == '\n';

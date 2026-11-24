@@ -12,17 +12,14 @@
 typedef struct {
     char magic[8];                    /* "PFKVC01" */
     uint32_t capacity, mtp;
-    uint64_t n, model_bytes, last_count;
+    uint64_t n, model_id, last_count;
 } Header;
 
-/* FNV-1a over the token ids: the file name, so one prefix is one file. */
-static uint64_t hash(const int32_t *ids, size_t n) {
-    uint64_t h = 1469598103934665603ull; const uint8_t *p = (const uint8_t *)ids;
-    for (size_t i = 0; i < n*sizeof *ids; i++) { h ^= p[i]; h *= 1099511628211ull; }
-    return h;
-}
-static void entry_path(const PfCache *c, const int32_t *ids, size_t n, char out[PATH_MAX]) {
-    snprintf(out, PATH_MAX, "%s/%016llx-%zu.pfc", c->dir, (unsigned long long)hash(ids, n), n);
+/* The model and the hash of the token ids name the file: one prefix of one model is one file,
+ * and models sharing the directory never replace each other's entries. */
+static void entry_path(const PfCache *c, const PfSession *s, const int32_t *ids, size_t n, char out[PATH_MAX]) {
+    snprintf(out, PATH_MAX, "%s/%016llx-%016llx-%zu.pfc", c->dir, (unsigned long long)s->model_id,
+             (unsigned long long)fnv1a(ids, n*sizeof *ids), n);
 }
 
 bool pf_cache_open(PfCache *c, const char *dir, uint64_t budget, size_t min_tokens) {
@@ -44,7 +41,7 @@ static FILE *entry_open(const PfSession *s, const char *path, Header *h, int32_t
     if (!f) return NULL;
     *ids = NULL;
     if (fread(h, sizeof *h, 1, f) != 1 || memcmp(h->magic, "PFKVC01", 8) || h->capacity != s->run.capacity ||
-        h->mtp != (uint32_t)s->run.mtp || h->model_bytes != s->model_bytes || !h->n || h->n > h->capacity) { fclose(f); return NULL; }
+        h->mtp != (uint32_t)s->run.mtp || h->model_id != s->model_id || !h->n || h->n > h->capacity) { fclose(f); return NULL; }
     *ids = malloc(h->n*sizeof **ids);
     if (!*ids) die("pf-server: out of memory");
     if (fread(*ids, sizeof **ids, h->n, f) != h->n) { free(*ids); *ids = NULL; fclose(f); return NULL; }
@@ -80,13 +77,13 @@ static void evict(const PfCache *c) {
 
 bool pf_cache_save(const PfCache *c, PfSession *s, size_t n) {
     if (!c->on || n < c->min_tokens || pf_cache_has(c, s, s->ids, n)) return false;
-    char path[PATH_MAX], tmp[PATH_MAX+16]; entry_path(c, s->ids, n, path);
+    char path[PATH_MAX], tmp[PATH_MAX+16]; entry_path(c, s, s->ids, n, path);
     snprintf(tmp, sizeof tmp, "%s.XXXXXX", path);
     int fd = mkstemp(tmp); FILE *f = fd < 0 ? NULL : fdopen(fd, "wb");
     if (!f) { if (fd >= 0) { close(fd); unlink(tmp); } return false; }
     setvbuf(f, NULL, _IOFBF, 8u << 20);
     Header h = {.magic = "PFKVC01", .capacity = s->run.capacity, .mtp = s->run.mtp, .n = n,
-                .model_bytes = s->model_bytes, .last_count = s->run.last_count};
+                .model_id = s->model_id, .last_count = s->run.last_count};
     Qwen4Error e = {0}; double start = qw4_now();
     bool ok = fwrite(&h, sizeof h, 1, f) == 1 && fwrite(s->ids, sizeof *s->ids, n, f) == n &&
               !qwen4_gpu_state_write(s->run.graph, f, &e) && !fflush(f);
@@ -102,7 +99,7 @@ bool pf_cache_save(const PfCache *c, PfSession *s, size_t n) {
 bool pf_cache_has(const PfCache *c, const PfSession *s, const int32_t *ids, size_t n) {
     if (!c->on) return false;
     char path[PATH_MAX]; Header h; int32_t *saved;
-    entry_path(c, ids, n, path);
+    entry_path(c, s, ids, n, path);
     FILE *f = entry_open(s, path, &h, &saved);
     bool same = f && h.n == n && !memcmp(saved, ids, n*sizeof *ids);
     if (f) { fclose(f); free(saved); }
@@ -112,11 +109,13 @@ bool pf_cache_has(const PfCache *c, const PfSession *s, const int32_t *ids, size
 size_t pf_cache_load(const PfCache *c, PfSession *s, const int32_t *ids, size_t limit, size_t better_than) {
     if (!c->on) return 0;
     DIR *d = opendir(c->dir); struct dirent *e; char best[PATH_MAX] = ""; size_t best_n = better_than;
+    char model[20]; snprintf(model, sizeof model, "%016llx-", (unsigned long long)s->model_id);
     while (d && (e = readdir(d))) {
         size_t len = strlen(e->d_name), n; char path[PATH_MAX]; Header h; int32_t *saved;
-        /* The name carries the length: most entries are ruled out without opening them. */
+        /* The name carries the model and the length: most entries are ruled out without opening them. */
         const char *dash = strrchr(e->d_name, '-');
-        if (len < 5 || strcmp(e->d_name+len-4, ".pfc") || !dash || sscanf(dash+1, "%zu", &n) != 1 || n <= best_n || n > limit) continue;
+        if (len < 5 || strcmp(e->d_name+len-4, ".pfc") || strncmp(e->d_name, model, 17) || !dash ||
+            sscanf(dash+1, "%zu", &n) != 1 || n <= best_n || n > limit) continue;
         snprintf(path, sizeof path, "%s/%s", c->dir, e->d_name);
         FILE *f = entry_open(s, path, &h, &saved);
         if (f && h.n == n && !memcmp(saved, ids, n*sizeof *ids)) { snprintf(best, sizeof best, "%s", path); best_n = n; }

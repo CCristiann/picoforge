@@ -43,9 +43,14 @@ class Server(unittest.TestCase):
         (d / 'script.txt').write_text('\n=====\n'.join(replies) + '\n' if replies else '')
         self.ids_path = d / 'ids.json'
         self.cache = d / 'kv-cache'
+        self.launch(GGUF, *flags)
+
+    def launch(self, gguf, *flags):
+        """pf-server on `gguf`, with the script, transcript and cache of this test."""
+        d = Path(self.tmp.name)
         self.port = free_port()
         self.log = open(d / 'server.log', 'w+')
-        self.proc = subprocess.Popen([str(SERVER), '-m', GGUF, '-c', '4096', '--port', str(self.port),
+        self.proc = subprocess.Popen([str(SERVER), '-m', str(gguf), '-c', '4096', '--port', str(self.port),
                                       '--script', str(d / 'script.txt'), '--token-ids', str(self.ids_path),
                                       '--cache-dir', str(self.cache), *flags],
                                      stdout=self.log, stderr=subprocess.STDOUT)
@@ -56,6 +61,10 @@ class Server(unittest.TestCase):
             self.assertIsNone(self.proc.poll(), self.server_log())
             time.sleep(0.1)
         self.fail('pf-server did not start')
+
+    def stop(self):
+        self.proc.terminate(); self.proc.wait(30)
+        self.log.close()
 
     def tearDown(self):
         if getattr(self, 'proc', None):
@@ -217,6 +226,29 @@ class Server(unittest.TestCase):
         self.log.close(); self.tmp.cleanup()
 
     # ------------------------------------------------------------ Anthropic
+    def test_a_checkpoint_never_loads_into_another_model(self):
+        """Two files of the same size that give the same tokens, one number apart in the
+        metadata (rope.freq_base): a state saved with one must not load into the other."""
+        self.start([], '--cache-min', '64')
+        a = {**self.chat_body(), 'max_tokens': 1, 'temperature': 0,
+             'messages': [{'role': 'user', 'content': 'what is in a.txt? ' * 12}]}
+        self.post('/v1/chat/completions', a)
+        self.stop()
+        data = bytearray(Path(GGUF).read_bytes())
+        at = data.index(b'rope.freq_base') + len(b'rope.freq_base')
+        self.assertEqual(int.from_bytes(data[at:at+4], 'little'), 6)       # GGUF float32
+        data[at+4] ^= 1                                                     # the lowest bit of the value
+        other = Path(self.tmp.name) / 'other.gguf'
+        other.write_bytes(data)
+        self.launch(other, '--cache-min', '64')
+        _, r = self.post('/v1/chat/completions', a)
+        self.assertNotIn('kv cache: loaded', self.server_log())
+        self.assertEqual(r['usage']['prompt_tokens_details']['cached_tokens'], 0)
+        self.stop()
+        self.launch(GGUF, '--cache-min', '64')                              # the same file finds its state
+        self.post('/v1/chat/completions', a)
+        self.assertIn('kv cache: loaded', self.server_log())
+
     def anthropic_body(self, *extra, **kw):
         return {'model': 'claude-anything', 'max_tokens': 1000, 'system': [{'type': 'text', 'text': 'Be brief.'}],
                 'tools': [{'name': 'read', 'description': 'Read a file', 'input_schema': READ_TOOL['function']['parameters']}],

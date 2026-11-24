@@ -42,7 +42,8 @@ typedef struct {
     uint32_t max_new;                     /* tokens per reply, 0: the room left */
     char *system;                         /* the system prompt of the first turn (owned) */
     Qwen4Json tools; bool has_tools;     /* tool definitions for the template */
-    char *model_path; uint64_t model_bytes;
+    char *model_path;
+    uint64_t model_id;                    /* hash of the GGUF header: a saved state belongs to this file */
     size_t primed_n; Buf prefix;          /* ids and bytes of the system block in the graph (pf_session_prime) */
     char workspace[PATH_MAX];             /* stored with a saved session */
     char name[65], title[120];            /* the saved session we continue; its first request */

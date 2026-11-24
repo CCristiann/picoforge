@@ -83,7 +83,8 @@ tokens takes over a minute on this machine. So the server avoids prefilling what
 Checkpoints live in `~/.picoforge/kv-cache` (`--cache-dir`, or `$PICOFORGE_KV_CACHE`), up to
 16 GiB (`--cache-mb`); the least recently used go first. Prefixes under 4096 tokens are not saved
 (`--cache-min`): they are faster to prefill than to keep. A checkpoint grows with its conversation,
-not with the context size. `--no-cache` turns them off. The files contain prompt text and model state:
+not with the context size. Each checkpoint belongs to one model file, recognized by a hash of its
+GGUF header, so several models can share the directory. `--no-cache` turns them off. The files contain prompt text and model state:
 treat the directory as private. It is disposable; stop the server before deleting it.
 
 Every request logs one line: prompt tokens and how many were reused, prefill and decode speed, why
