@@ -115,8 +115,15 @@ size_t qw4_chat_continue(QW4Run *, const int32_t *ids, size_t held, size_t total
                          void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
                          void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated),
                          int32_t *generated, QW4Turn *, bool *replayed);
-/* Interactive chat on stdin (src/qwen4_repl.c). max_new 0 = until stop or full context. */
-int qw4_repl(QW4Run *, bool thinking, uint32_t max_new, const char *ids_path);
+/* Metal memory now in use and the GPU working-set budget, in bytes (src/qwen4_cli.m). */
+void qw4_run_memory(const QW4Run *, uint64_t *in_use, uint64_t *budget);
+/* Interactive chat on stdin (src/qwen4_repl.c). max_new 0 = until stop or full context.
+ * path and load_s feed the summary shown on a terminal. */
+int qw4_repl(QW4Run *, const char *path, double load_s, bool thinking, uint32_t max_new, const char *ids_path);
+/* The chat on a terminal (src/qwen4_ui.c): the model and session summary, and the numbers of a
+ * reply with the context bar. Through a pipe the chat prints its plain lines instead. */
+void qw4_ui_summary(FILE *, const QW4Run *, const char *path, bool thinking, double load_s, bool color);
+void qw4_ui_turn(FILE *, const QW4Run *, const QW4Turn *, size_t prefilled, size_t used, bool cancelled);
 /* One measured repetition of `pf-bench` (src/qwen4_bench.c). */
 typedef struct { size_t prompt_tokens, decode_tokens; double prefill_s, decode_s, ttft_s; } QW4BenchRow;
 /* Median and p10/p90 of prefill tok/s, decode tok/s and TTFT on stdout;

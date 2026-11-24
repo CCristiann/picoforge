@@ -20,13 +20,16 @@ typedef struct {
  * SA_RESTART keeps stdout writes and the line read free of EINTR; at the
  * prompt the terminal already drops the typed line, we just redraw. */
 static volatile sig_atomic_t at_prompt;
+/* The prompt: bold cyan on a terminal that shows colors, plain otherwise. */
+static const char *prompt="picoforge> ";
 static void interrupt(int signum) {
     (void)signum; qw4_stopped=1;
-    if (at_prompt) { ssize_t ignored=write(STDOUT_FILENO,"\npicoforge> ",12); (void)ignored; }
+    if (at_prompt) { ssize_t ignored=write(STDOUT_FILENO,"\n",1); ignored=write(STDOUT_FILENO,prompt,strlen(prompt)); (void)ignored; }
 }
 static void help(void) {
     puts("Commands:\n"
          "  /help          Show this help.\n"
+         "  /info          Model, memory and session settings.\n"
          "  /read FILE     Send a text file as your message.\n"
          "  /ctx N         New context size (clears the conversation).\n"
          "  /reset         Start a new conversation.\n"
@@ -150,7 +153,8 @@ static void reply(Chat *ch, size_t added) {
     memcpy(ch->ids+total,ch->generated,t.got*sizeof *ch->ids);
     if (t.got || !cancelled) ch->n=total+t.got;
     double prefill=t.prefill_end-t.prefill_start,decode=t.end-t.decode_start;
-    fprintf(stderr,"picoforge: prefill %.2f t/s, generation %.2f t/s, context %zu/%u%s\n",
+    if (isatty(STDERR_FILENO)) qw4_ui_turn(stderr,r,&t,prefilled,ch->n,cancelled);
+    else fprintf(stderr,"picoforge: prefill %.2f t/s, generation %.2f t/s, context %zu/%u%s\n",
         prefill>0 ? (double)prefilled/prefill : 0.0,decode>0 && t.got>1 ? (double)(t.got-1)/decode : 0.0,
         ch->n,r->capacity,cancelled ? " [interrupted]" : "");
     dump_ids(ch);
@@ -182,7 +186,7 @@ static void resize(Chat *ch, const char *arg) {
     printf("Context %lu tokens, graph buffers %.1f MiB. New conversation.\n",n,
         (double)qwen4_gpu_forward_bytes(ch->r->graph)/1048576.0);
 }
-int qw4_repl(QW4Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
+int qw4_repl(QW4Run *r, const char *path, double load_s, bool thinking, uint32_t max_new, const char *ids_path) {
     Chat ch={.r=r,.thinking=thinking,.max_new=max_new,.ids_path=ids_path,.im_end=-1};
     ch.ids=malloc((size_t)r->capacity*sizeof *ch.ids); ch.generated=malloc((size_t)r->capacity*sizeof *ch.ids);
     if (!ch.ids || !ch.generated) die("transcript allocation");
@@ -192,10 +196,11 @@ int qw4_repl(QW4Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
     ch.im_end=probe[0];
     struct sigaction action={0},old; action.sa_handler=interrupt; action.sa_flags=SA_RESTART;
     sigemptyset(&action.sa_mask); if (sigaction(SIGINT,&action,&old)) die("cannot install Ctrl+C handler");
-    bool tty=isatty(STDIN_FILENO); char *line=NULL; size_t cap=0;
-    if (tty) help();
+    bool tty=isatty(STDIN_FILENO),color=tty && isatty(STDOUT_FILENO); char *line=NULL; size_t cap=0;
+    if (color) prompt="\x1b[1;38;5;81m\xe2\x80\xba\x1b[0m ";   /* "› " */
+    if (tty) qw4_ui_summary(stdout,r,path,ch.thinking,load_s,color);
     for (;;) {
-        if (tty) { fputs("picoforge> ",stdout); fflush(stdout); }
+        if (tty) { fputs(prompt,stdout); fflush(stdout); }
         at_prompt=tty; errno=0;
         ssize_t got=getline(&line,&cap,stdin);
         at_prompt=0;
@@ -205,6 +210,7 @@ int qw4_repl(QW4Run *r, bool thinking, uint32_t max_new, const char *ids_path) {
         char *cmd=trim(line);
         if (!*cmd) continue;
         if (!strcmp(cmd,"/help")) help();
+        else if (!strcmp(cmd,"/info")) qw4_ui_summary(stdout,r,path,ch.thinking,load_s,color);
         else if (!strcmp(cmd,"/quit") || !strcmp(cmd,"/exit")) break;
         else if (!strcmp(cmd,"/think") || !strcmp(cmd,"/nothink")) {
             ch.thinking=!strcmp(cmd,"/think"); printf("Thinking %s.\n",ch.thinking ? "on" : "off");

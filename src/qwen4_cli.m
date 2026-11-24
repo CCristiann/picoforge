@@ -473,6 +473,10 @@ void qw4_run_gpu(QW4Run *r,const char *path,const char *metallib,uint32_t capaci
     if (slots) open_stream(r,path,slots);
     qw4_check(qwen4_weights_attach(r->weights,&r->g,gpu_weights_plan(r->store),&e),&e);
 }
+void qw4_run_memory(const QW4Run *r,uint64_t *in_use,uint64_t *budget) {
+    id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
+    *in_use=device.currentAllocatedSize; *budget=device.recommendedMaxWorkingSetSize;
+}
 void qw4_run_close(QW4Run *r) {
     if (r->decoder) qwen4_decoder_free(r->decoder);
     if (r->graph) qwen4_gpu_forward_destroy(r->graph);
@@ -648,6 +652,8 @@ int qwen4_cli(int argc,char **argv) {
         QW4Run run={.chunk=chunk_request,.mtp=mtp,.power=(int)power}; QW4Run *r=&run; Qwen4Error e;  /* chunk clamped per graph */
         qw4_policy_init(&r->policy,mtp_draft,getenv("PICOFORGE_MTP_COST"));
         qw4_sampler_init(&r->sampler,temp,top_k,top_p,min_p,seed);
+        const bool terminal=repl && isatty(STDIN_FILENO) && isatty(STDERR_FILENO);   /* the chat's summary replaces the log line */
+        if (terminal) fprintf(stderr,"loading %s ...\n",argv[2]);
         qw4_run_open(r,argv[2]);
         const Qwen4ConfigView *c=r->c; Qwen4Tokenizer *tok=r->tok;
         if (capacity>c->max_positions) die("context exceeds model maximum");
@@ -685,10 +691,10 @@ int qwen4_cli(int argc,char **argv) {
         qw4_run_gpu(r,argv[2],metallib,capacity); id<MTLDevice> device=(__bridge id<MTLDevice>)r->device;
         if (profile_csv) qw4_check(qw4_profile_create(r->device,profile_csv,&r->profile,&e),&e);
         qw4_run_graph(r,capacity); Qwen4GpuForward *graph=r->graph;
-        fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
+        if (!terminal) fprintf(stderr,"Qwen3.8: %u layers, %zu prompt tokens, context %u, chunk %u; graph buffers %.1f MiB\n",
             c->trunk_blocks,count,capacity,chunk,(double)qwen4_gpu_forward_bytes(graph)/1048576.0);
         double load_s=qw4_now()-entered;
-        if (repl) qw4_repl(r,thinking,max_new_given ? max_new : 0,ids_path);
+        if (repl) qw4_repl(r,argv[2],load_s,thinking,max_new_given ? max_new : 0,ids_path);
         if (session) { runs=stdout; fprintf(stdout,"{\"event\":\"ready\",\"load_s\":%.9f,\"context\":%u}\n",load_s,capacity); fflush(stdout); }
         for (uint32_t repetition=0;!repl && (session || repetition<repeat+warmup);repetition++) {
         if (session) {
