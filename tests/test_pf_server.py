@@ -178,6 +178,17 @@ class Server(unittest.TestCase):
         self.assertIn('text only', r['error']['message'])
         status, r = self.post('/v1/nothing', {})
         self.assertEqual(status, 404)
+        # Past the tokenizer's 4 MiB input: the same answer as any prompt that does not fit, and the
+        # server lives on (it used to die), for a chat and for a token count.
+        huge = {'messages': [{'role': 'user', 'content': 'word ' * 1000000}]}
+        status, r = self.post('/v1/chat/completions', huge)
+        self.assertEqual((status, r['error']['code']), (400, 'context_length_exceeded'))
+        edge = {'messages': [{'role': 'user', 'content': 'a' * (4 * 1024 * 1024 - 40)}]}   # fits the template, not the tokenizer
+        status, r = self.post('/v1/chat/completions', edge)
+        self.assertEqual((status, r['error']['code']), (400, 'context_length_exceeded'))
+        status, r = self.post('/v1/messages/count_tokens', {'model': 'pf', **huge})
+        self.assertEqual(status, 400)
+        self.assertIsNone(self.proc.poll(), self.server_log())
 
     def test_models_and_auth(self):
         self.start([], '--api-key', 'secret', '--alias', 'pico')

@@ -95,7 +95,12 @@ static char *render(const Server *sv, const Qwen4Json *msgs, size_t n, const Ren
     Qwen4ChatOptions o = r->o; o.add_generation_prompt = generation;
     const Qwen4Json *tools = r->tools && r->tools->as.array.count ? r->tools : NULL;
     Qwen4Error e = {0};
-    if (qwen4_chat_render(sv->s.run.tok, &list, tools, o, NULL, 0, len, &e)) { snprintf(err, cap, "%s", e.detail); return NULL; }
+    Qwen4Status rc = qwen4_chat_render(sv->s.run.tok, &list, tools, o, NULL, 0, len, &e);
+    if (rc == QW4_RANGE)   /* past the template's 4 MiB of text: far past any context, and said so the same way */
+        snprintf(err, cap, "This model's maximum context length is %u tokens. However, your messages are longer "
+                 "than the 4 MiB of text a prompt may have.", sv->s.run.capacity);
+    else if (rc) snprintf(err, cap, "%s", e.detail);
+    if (rc) return NULL;
     char *text = malloc(*len+1);
     if (!text) die("pf-server: out of memory");
     qw4_check(qwen4_chat_render(sv->s.run.tok, &list, tools, o, (uint8_t *)text, *len, len, &e), &e);
@@ -115,8 +120,9 @@ static char *canonical(const Server *sv, PfArena *a, const Qwen4Json *message, s
 static size_t encode(const Server *sv, const char *text, size_t n, int32_t *out, size_t cap, bool *full) {
     size_t count = 0; Qwen4Error e;
     Qwen4Status rc = qwen4_encode(sv->s.run.tok, (Qwen4Bytes){(const uint8_t *)text, n}, out, cap, &count, &e);
-    *full = rc == QW4_CAPACITY || count >= cap;
-    if (rc && rc != QW4_CAPACITY) die("pf-server: cannot encode a rendered prompt: %s", e.detail);
+    if (rc == QW4_RANGE) count = cap;      /* past the tokenizer's 4 MiB input: more than fits, whatever the count */
+    *full = rc == QW4_CAPACITY || rc == QW4_RANGE || count >= cap;
+    if (rc && rc != QW4_CAPACITY && rc != QW4_RANGE) die("cannot encode a rendered prompt: %s", e.detail);
     return count;
 }
 
