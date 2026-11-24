@@ -76,7 +76,7 @@ microbench: build/microbench
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
 # is `make test-qwen4` (tools/qwen4.mk).
-test-all: test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-pf-agent
+test-all: test-quant test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-model-select test-pf-agent
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -133,6 +133,12 @@ build/test_sample: tests/test_qwen4_sample.c src/qwen4_sample.c src/qwen4_sample
 test-qwen4-sample: build/test_sample
 	@./build/test_sample
 
+build/test_model_select: tests/test_model_select.c src/model_select.c src/model_select.h src/util.c src/common.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_model_select.c src/model_select.c src/util.c $(LDFLAGS)
+test-model-select: build/test_model_select
+	@./build/test_model_select
+
 # pf-agent tools and parser, offline (no model); the loop on the synthetic
 # checkpoint (GPU, under the lock) is test-pf-agent-model.
 test-pf-agent: pf-agent
@@ -145,7 +151,7 @@ test-pf-agent-model: pf-agent build/qwen4-g2/cli.gguf
 clean:
 	rm -f src/*.o pf pf-bench pf-agent $(METALLIB) build/*.air
 
-.PHONY: clean microbench test-qwen4-expert-pool test-qwen4-sample test-all test-qwen4-tools test-gguf test-gpu-weights
+.PHONY: clean microbench test-qwen4-expert-pool test-qwen4-sample test-model-select test-all test-qwen4-tools test-gguf test-gpu-weights
 
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
 # Metal-only headers (ruling R3: decode helpers of the fast kernels) are not C
@@ -161,3 +167,4 @@ test-qwen4-contracts:
 .PHONY: test-qwen4-contracts
 
 include tools/qwen4.mk
+include tools/quant.mk

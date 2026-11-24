@@ -25,6 +25,7 @@ typedef struct {
     Qwen4Domain domain;
     uint32_t compress_ratio;
     bool has_ple;
+    bool mixed_experts;   /* picoforge mixed layout: hot experts in Q4 tensors, F32 slot map */
 } Qwen4Layer;
 typedef struct {
     GgufTensor storage;
@@ -47,6 +48,7 @@ typedef enum {
     QW4_INDEX_Q_NORM, QW4_INDEX_K_NORM,
     QW4_MOE_ROUTER, QW4_MOE_GATE, QW4_MOE_UP, QW4_MOE_DOWN,
     QW4_SHARED_GATE, QW4_SHARED_UP, QW4_SHARED_DOWN, QW4_SHARED_ROUTER,
+    QW4_MOE_GATE_HOT, QW4_MOE_UP_HOT, QW4_MOE_DOWN_HOT, QW4_MOE_MAP,   /* picoforge mixed experts */
     QW4_PLE_KEY, QW4_PLE_VALUE, QW4_PLE_KEY_NORM, QW4_PLE_QUERY_NORM,
     QW4_PLE_CONV_NORM, QW4_PLE_CONV,
     QW4_MTP_EH, QW4_MTP_E_NORM, QW4_MTP_H_NORM,

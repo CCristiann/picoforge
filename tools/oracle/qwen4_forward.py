@@ -137,6 +137,17 @@ def ple(w, layer, tokens, residual):
     return oracle.run(list(tokens), residual)[0]
 
 
+def experts(w, p, part, k_logical=None):
+    """[E, out, in] decoded routed-expert weights; the picoforge mixed layout is put back in
+    expert order with blk.L.ffn_exps_map.weight (v >= 0 cold slot v, v < 0 hot slot -1-v)."""
+    name = p + f"ffn_{part}_exps.weight"
+    if not w.meta.get("picoforge.experts.mixed"):
+        return w.matrix(name, k_logical)
+    cold, hot = w.matrix(name, k_logical), w.matrix(p + f"ffn_{part}_exps_hot.weight", k_logical)
+    slots = [int(v) for v in w.vector(p + "ffn_exps_map.weight")]
+    return np.stack([cold[v] if v >= 0 else hot[-1 - v] for v in slots])
+
+
 def mlp(w, p, x):
     c = w.hf
     cfg = moe.FixtureConfig(hidden_size=c["hidden_size"], num_experts=c["num_experts"],
@@ -144,9 +155,8 @@ def mlp(w, p, x):
         shared_expert_intermediate_size=c["shared_expert_intermediate_size"])
     i = cfg.moe_intermediate_size
     weights = {"gate.weight": w.matrix(p + "ffn_gate_inp.weight"),
-               "experts.gate_up_proj": np.concatenate([w.matrix(p + "ffn_gate_exps.weight"),
-                                                       w.matrix(p + "ffn_up_exps.weight")], axis=1),
-               "experts.down_proj": w.matrix(p + "ffn_down_exps.weight", i),
+               "experts.gate_up_proj": np.concatenate([experts(w, p, "gate"), experts(w, p, "up")], axis=1),
+               "experts.down_proj": experts(w, p, "down", i),
                "shared_expert.gate_proj.weight": w.matrix(p + "ffn_gate_shexp.weight"),
                "shared_expert.up_proj.weight": w.matrix(p + "ffn_up_shexp.weight"),
                "shared_expert.down_proj.weight": w.matrix(p + "ffn_down_shexp.weight"),

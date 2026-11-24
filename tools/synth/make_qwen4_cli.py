@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--output', type=Path, default=ROOT/'build/qwen4-g2/cli.gguf')
     parser.add_argument('--mtp', action='store_true')
     parser.add_argument('--variant', action='store_true', help='upstream defaults: no PLE, SiLU gate, QSA second')
+    parser.add_argument('--mixed-hot', type=int, default=0, help='picoforge mixed experts: Q4 experts per trunk layer')
     args = parser.parse_args()
     item = json.loads((ROOT/'tests/fixtures/qwen4/text/manifest.json').read_text())['tokenizer_config']
     raw = (args.reference_root/item['relative_to_reference_root']).read_bytes()
@@ -38,7 +39,7 @@ def main():
             'tokenizer.ggml.padding_token_id': 256, 'tokenizer.ggml.bos_token_id': 256,
             'tokenizer.ggml.add_bos_token': False}
     hf = variant_config() if args.variant else graph_config(); hf['text_config']['eos_token_id'] = 256
-    write_graph(args.output, hf, 3811, meta, enable_mtp=args.mtp)
+    write_graph(args.output, hf, 3811, meta, enable_mtp=args.mtp, mixed_hot=args.mixed_hot)
     print(f'{args.output}: graph with byte tokenizer, {args.output.stat().st_size} bytes')
 
 

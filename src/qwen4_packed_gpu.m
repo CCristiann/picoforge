@@ -13,7 +13,7 @@
  * of the same formats; each is NULL on a GPU whose simdgroups are not 32 wide. */
 enum { QW4_INDEXED_FAST = 4 };
 struct QW4PackedGpu { void *device, *linear, *indexed, *lookup, *q8_0, *f16, *f32, *multi[3],
-                      *indexed_fast[QW4_INDEXED_FAST], *gate_up[QW4_INDEXED_FAST], *down_reduce[QW4_INDEXED_FAST], *down_sp[QW4_INDEXED_FAST], *gate_up8,
+                      *indexed_fast[QW4_INDEXED_FAST], *gate_up[QW4_INDEXED_FAST], *down_reduce[QW4_INDEXED_FAST], *down_sp[QW4_INDEXED_FAST], *down_sp_mixed, *gate_up8,
                       *hc_tail, *hc_tail8, *hc_down, *q8_add, *gemm[3], *gemm_nax[3], *gemm_naxd[3], *grouped_gate_up[QW4_INDEXED_FAST], *grouped_down[QW4_INDEXED_FAST],
                       *grouped_nax_gate_up[QW4_INDEXED_FAST], *grouped_nax_down[QW4_INDEXED_FAST],
                       *group[4]; bool ref_linear, ref_indexed, ref_fuse, ref_gemm, prefill_half, fp32_nax;
@@ -221,6 +221,11 @@ Qwen4Status qw4_packed_gpu_create(void *device, void *library,
             id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
             ctx->down_sp[i]=p ? (__bridge_retained void *)p : NULL;
         }
+        if (!getenv("PICOFORGE_DOWN_SERIAL") && !qw4_ref_kernels("exact")) { /* picoforge mixed experts */
+            id<MTLFunction> fn=[lib newFunctionWithName:@"qw4_moe_down_reduce_sp_mixed_q2_k_mxfp4"];
+            id<MTLComputePipelineState> p=fn ? [dev newComputePipelineStateWithFunction:fn error:&failure] : nil;
+            ctx->down_sp_mixed=p ? (__bridge_retained void *)p : NULL;
+        }
     }
     ctx->ref_linear=qw4_ref_kernels("linear");
     ctx->ref_indexed=qw4_ref_kernels("indexed");
@@ -253,6 +258,7 @@ void qw4_packed_gpu_free(QW4PackedGpu *ctx) {
     if (ctx->hc_down) CFRelease(ctx->hc_down);
     if (ctx->q8_add) CFRelease(ctx->q8_add);
     if (ctx->gate_up8) CFRelease(ctx->gate_up8);
+    if (ctx->down_sp_mixed) CFRelease(ctx->down_sp_mixed);
     for (size_t i=0;i<3;i++) if (ctx->multi[i]) CFRelease(ctx->multi[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm[i]) CFRelease(ctx->gemm[i]);
     for (size_t i=0;i<3;i++) if (ctx->gemm_nax[i]) CFRelease(ctx->gemm_nax[i]);
@@ -677,12 +683,26 @@ static Qwen4Status dense_operand(id<MTLDevice> dev, Qwen4GpuF32 v, size_t rows, 
 /* R1.5c fused down+reduce (qwen4_packed_internal.h): the down projection admitted
  * as qw4_packed_encode with x = act and y, then the dense operands, the IDs and
  * the aliases of the two outputs, then the choice. */
-Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+/* picoforge mixed experts: the parallel-slot kernel over a cold and a hot tensor exists for these
+ * formats, and so do both fused gate+up kernels, for k slots. */
+static bool sp_fits(void *pipeline, size_t k) {
+    id<MTLComputePipelineState> sp=(__bridge id<MTLComputePipelineState>)pipeline;
+    return sp && k<=QW4_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==QW4_SIMD && sp.maxTotalThreadsPerThreadgroup>=QW4_SIMD*k;
+}
+bool qw4_packed_mixed_fast(const QW4PackedGpu *ctx, uint32_t gate_type, uint32_t hot_gate_type, uint32_t down_type,
+        uint32_t hot_down_type, size_t k) {
+    return ctx && !ctx->ref_indexed && indexed_kernel(ctx->gate_up,gate_type) && indexed_kernel(ctx->gate_up,hot_gate_type) &&
+        down_type==10 && hot_down_type==39 && sp_fits(ctx->down_sp_mixed,k);
+}
+/* hot: NULL, or the mixed experts' hot tensor and its per-pair slots (the cold slots in ids). */
+typedef struct { const GgufBinding *binding; const QW4PackedLayout *layout; Qwen4GpuSpan ids; } HotDown;
+static Qwen4Status down_reduce(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
         const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
-        Qwen4GpuSpan ids, Qwen4GpuF32 act, const QW4DownReduceViews *v, Qwen4GpuF32 y, Qwen4Error *err) {
+        Qwen4GpuSpan ids, Qwen4GpuF32 act, const QW4DownReduceViews *v, Qwen4GpuF32 y, const HotDown *hot, Qwen4Error *err) {
     if (!v) return qw4_b_result(err,QW4_INVALID_ARGUMENT,"missing down+reduce views");
-    Admitted a;
+    Admitted a, ha;
     Qwen4Status status=admit(ctx,command,store,binding,layout,act,y,act.dim[0],&a,err);
+    if (!status && hot) status=admit(ctx,command,store,hot->binding,hot->layout,act,y,act.dim[0],&ha,err);
     if (status) return status;
     size_t t=y.dim[0], k=v->scores.dim[1], n=layout->n_out;
     if (v->scores.rank!=2 || !k || t>UINT32_MAX/k || act.dim[0]!=t*k)
@@ -711,6 +731,19 @@ Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *ctx, const Qwen4GpuComma
     void *kernel=indexed_kernel(ctx->down_reduce,layout->gguf_type);
     if (!kernel || ctx->ref_indexed)
         return qw4_b_result(err,QW4_UNSUPPORTED,"no fused down+reduce for this format or selection");
+    id<MTLBuffer> hids=nil;
+    if (hot) {
+        if (layout->gguf_type!=10 || hot->layout->gguf_type!=39 || !sp_fits(ctx->down_sp_mixed,k))
+            return qw4_b_result(err,QW4_UNSUPPORTED,"no mixed down+reduce for these formats or selection");
+        if (hot->layout->n_out!=n || hot->layout->k_logical!=layout->k_logical)
+            return qw4_b_result(err,QW4_SHAPE,"cold and hot down shapes differ");
+        status=gpu_span(dev,hot->ids,t*k*4,&hids);
+        if (status) return qw4_b_result(err,status,"invalid GPU hot-slot span");
+        if (gpu_alias(buffer[3],offset[3],bytes[3],hids,hot->ids.offset_bytes,t*k*4) ||
+            gpu_alias(a.output,y.span.offset_bytes,a.yb,hids,hot->ids.offset_bytes,t*k*4) ||
+            gpu_alias(buffer[3],offset[3],bytes[3],ha.weights,hot->binding->offset,hot->layout->tensor_bytes))
+            return qw4_b_result(err,QW4_INVALID_ARGUMENT,"down+reduce outputs alias an operand");
+    }
     if (!t) return qw4_b_result(err,QW4_OK,"");
     size_t wo=binding->offset;
     QW4DownReduceArgs args={{.base=wire(layout,wo,wo+layout->tensor_bytes,t*k,act,y,&a),
@@ -726,8 +759,16 @@ Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *ctx, const Qwen4GpuComma
     [encoder setBuffer:a.output offset:y.span.offset_bytes atIndex:7];
     [encoder setBuffer:a.word offset:command->error_word.offset_bytes atIndex:8];
     [encoder setBytes:&args length:sizeof args atIndex:9];
-    id<MTLComputePipelineState> sp=(__bridge id<MTLComputePipelineState>)indexed_kernel(ctx->down_sp,layout->gguf_type);
-    if (sp && k<=QW4_DOWN_SP_MAX_SLOTS && sp.threadExecutionWidth==QW4_SIMD && sp.maxTotalThreadsPerThreadgroup>=QW4_SIMD*k) {
+    id<MTLComputePipelineState> sp=(__bridge id<MTLComputePipelineState>)(hot ? ctx->down_sp_mixed : indexed_kernel(ctx->down_sp,layout->gguf_type));
+    if (hot) { /* the hot tensor, its wire record and slots; everything else is the cold kernel's */
+        size_t ho=hot->binding->offset;
+        QW4PackedIndexedArgs hargs={.base=wire(hot->layout,ho,ho+hot->layout->tensor_bytes,t*k,act,y,&ha),
+            .expert_bytes=hot->layout->expert_bytes,.experts=(uint32_t)hot->layout->n_experts,.x_divisor=1};
+        [encoder setBuffer:ha.weights offset:0 atIndex:13];
+        [encoder setBytes:&hargs length:sizeof hargs atIndex:14];
+        [encoder setBuffer:hids offset:hot->ids.offset_bytes atIndex:15];
+    }
+    if (sp_fits((__bridge void *)sp,k)) {
         /* Decode III: one simdgroup per slot, DOWN_ROWS outputs per threadgroup (bit-identical) */
         [encoder setComputePipelineState:sp];
         struct { uint32_t h, width; uint64_t res_stride, inj_stride; } ea={0,0,0,0};
@@ -755,6 +796,19 @@ Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *ctx, const Qwen4GpuComma
     MTLSize groups=MTLSizeMake((n+per-1)/per,t,1);
     [encoder dispatchThreadgroups:groups threadsPerThreadgroup:MTLSizeMake(QW4_SIMD*QW4_DOWN_REDUCE_SG,1,1)];
     return qw4_b_result(err,QW4_OK,"");
+}
+
+Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *binding, const QW4PackedLayout *layout,
+        Qwen4GpuSpan ids, Qwen4GpuF32 act, const QW4DownReduceViews *v, Qwen4GpuF32 y, Qwen4Error *err) {
+    return down_reduce(ctx,command,store,binding,layout,ids,act,v,y,NULL,err);
+}
+Qwen4Status qw4_packed_encode_down_reduce_mixed(QW4PackedGpu *ctx, const Qwen4GpuCommand *command,
+        const GpuWeightStore *store, const GgufBinding *cold, const QW4PackedLayout *cl, Qwen4GpuSpan cold_ids,
+        const GgufBinding *hot, const QW4PackedLayout *hl, Qwen4GpuSpan hot_ids, Qwen4GpuF32 act,
+        const QW4DownReduceViews *v, Qwen4GpuF32 y, Qwen4Error *err) {
+    const HotDown h={hot,hl,hot_ids};
+    return down_reduce(ctx,command,store,cold,cl,cold_ids,act,v,y,&h,err);
 }
 
 Qwen4Status qw4_packed_lookup(QW4PackedGpu *ctx,const Qwen4GpuCommand *cmd,

@@ -62,6 +62,7 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
 | R6 Next generation | Qwen4 open weights (a 27B dense and smaller MoE models announced) | Prepared: the engine is named after the architecture (`qwen4_*`); no PLE, SiLU GDN gate and any layer order pass the oracle on synthetic checkpoints (CPU, GPU, CLI) and G3 on Q2 is unchanged. Waiting for the weights; dense FFN not started |
 | Prefill gap | GDN prefill kernels restored, vector staging, FP32 GEMMs and attention on the Neural Accelerators (FP32 operands), grouped MoE occupancy, `--power` | Done: 8K prompt FP32 46.2 -> 26.9 s; decode 0.969x short, 0.935x at 8K |
+| M1-M4 Own quants | Byte-identical IQ2_XXS/Q2_K encoders, an output-error lab, then code-ranked Q4 experts inside the Q2 (picoforge-only mixed layout, fast decode and grouped prefill paths, `tools/quant/build_mixed.py`) | Done: KL to Q4 on unseen code 0.288 -> 0.217 (5% of experts) / 0.167 (10%); decode -4% / -5..-8%; published as a patch on Hugging Face |
 | R8 Closure | Final protocol benchmarks, the per-technique ladder, writeup | Next |
 
 **Not goals:** an API server or coding agent, vision, batched sessions, other

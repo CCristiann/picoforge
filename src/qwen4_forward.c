@@ -179,7 +179,18 @@ static Qwen4Status create_moe(Qwen4Forward *f, uint32_t i, Qwen4Error *e) {
     const Qwen4Role roles[] = {QW4_MOE_ROUTER, QW4_MOE_GATE, QW4_MOE_UP, QW4_MOE_DOWN,
         QW4_SHARED_GATE, QW4_SHARED_UP, QW4_SHARED_DOWN, QW4_SHARED_ROUTER};
     for (size_t j = 0; j < 8; ++j) TRY(bind(f, i, roles[j], views[j], e));
-    TRY(qwen4_moe_create(&f->c.moe, &w, &l->moe, e));
+    const Qwen4Layer *kind;
+    Qwen4MoeMixed mixed;
+    TRY(qwen4_config_layer(f->config, i, &kind, e));
+    if (kind->mixed_experts) {   /* picoforge mixed experts: hot tensors and the F32 slot map */
+        QW4PackedCpuView map;
+        TRY(bind(f, i, QW4_MOE_GATE_HOT, &mixed.hot_gate, e)); TRY(bind(f, i, QW4_MOE_UP_HOT, &mixed.hot_up, e));
+        TRY(bind(f, i, QW4_MOE_DOWN_HOT, &mixed.hot_down, e)); TRY(bind(f, i, QW4_MOE_MAP, &map, e));
+        if (map.layout.gguf_type != 0 || map.layout.k_logical != f->c.moe.experts)
+            return fail(e, QW4_FORMAT, "expert map must be F32 [experts]");
+        mixed.map = (const float *)map.span.data;
+    }
+    TRY(qwen4_moe_create_mixed(&f->c.moe, &w, kind->mixed_experts ? &mixed : NULL, &l->moe, e));
     size_t bytes;
     TRY(qwen4_moe_work_size(l->moe, f->max_tokens, &bytes, e));
     if (bytes > 32u << 20) return fail(e, QW4_CAPACITY, "MoE workspace exceeds the 32 MiB budget");

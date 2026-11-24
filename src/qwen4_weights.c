@@ -94,9 +94,22 @@ static Qwen4Status catalog(const Gguf *g, const Qwen4Config *c, Qwen4Weights *w,
         MAT(QW4_SHARED_UP,"ffn_up_shexp.weight",8,d,fs);
         MAT(QW4_SHARED_DOWN,"ffn_down_shexp.weight",8,fs,d);
         /* R5.3: the trunk's expert formats come from the config's profile (Q2 or Q4); the MTP layer is Q4 in both. */
-        ADD(QW4_MOE_GATE,"ffn_gate_exps.weight",mtp?12:v->moe.trunk_type[0],3,d,f,ne,d,QW4_EXPERTS);
-        ADD(QW4_MOE_UP,"ffn_up_exps.weight",mtp?12:v->moe.trunk_type[1],3,d,f,ne,d,QW4_EXPERTS);
-        ADD(QW4_MOE_DOWN,"ffn_down_exps.weight",mtp?39:v->moe.trunk_type[2],3,mtp?f:v->moe.down_physical,d,ne,f,QW4_EXPERTS);
+        size_t cold = ne;
+        if (c->layers[layer].mixed_experts) {   /* hot experts: Q4_K gate/up, MXFP4 down at the logical K */
+            char hot_name[64]; size_t hot = 0;
+            snprintf(hot_name, sizeof hot_name, "blk.%u.ffn_gate_exps_hot.weight", layer);
+            for (size_t i = 0; i < g->tensor_count; ++i)
+                if (!strcmp(g->tensors[i].name, hot_name) && g->tensors[i].rank == 3) hot = g->tensors[i].shape[2];
+            if (!hot || hot >= ne) return qw4a_error(e, QW4_SHAPE, hot_name, "hot expert count");
+            cold = ne-hot;
+            ADD(QW4_MOE_GATE_HOT,"ffn_gate_exps_hot.weight",12,3,d,f,hot,d,QW4_EXPERTS);
+            ADD(QW4_MOE_UP_HOT,"ffn_up_exps_hot.weight",12,3,d,f,hot,d,QW4_EXPERTS);
+            ADD(QW4_MOE_DOWN_HOT,"ffn_down_exps_hot.weight",39,3,f,d,hot,f,QW4_EXPERTS);
+            VEC(QW4_MOE_MAP,"ffn_exps_map.weight",ne);
+        }
+        ADD(QW4_MOE_GATE,"ffn_gate_exps.weight",mtp?12:v->moe.trunk_type[0],3,d,f,cold,d,QW4_EXPERTS);
+        ADD(QW4_MOE_UP,"ffn_up_exps.weight",mtp?12:v->moe.trunk_type[1],3,d,f,cold,d,QW4_EXPERTS);
+        ADD(QW4_MOE_DOWN,"ffn_down_exps.weight",mtp?39:v->moe.trunk_type[2],3,mtp?f:v->moe.down_physical,d,cold,f,QW4_EXPERTS);
         if (c->layers[layer].kind == QW4_LAYER_GDN) {
             ADD(QW4_GDN_QKV,"attn_qkv.weight",8,2,d,gc,1,d,QW4_GDN_TILED);
             ADD(QW4_GDN_GATE,"attn_gate.weight",8,2,d,c->inner,1,d,QW4_GDN_TILED);

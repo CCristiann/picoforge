@@ -1,0 +1,15 @@
+layer 4, 8192 captured tokens, tensors from runs: gate-up; relative to m1-l4-compat
+run                       routed |dy|^2/|y|^2    routed      gate        up      down
+m1-l4-compat                       5.3239e-02   +0.00%   +0.00%   +0.00%      n/a
+m1-l4-o1                           6.5640e-02  +23.29%   -3.17%   -4.32%      n/a
+real 13.84
+layer 28, 8192 captured tokens, tensors from runs: gate-up; relative to m1-l28-compat
+run                       routed |dy|^2/|y|^2    routed      gate        up      down
+m1-l28-compat                      1.3699e-01   +0.00%   +0.00%   +0.00%      n/a
+m1-l28-o1                          1.3026e-01   -4.91%   -2.45%   -4.79%      n/a
+real 13.77
+layer 44, 8192 captured tokens, tensors from runs: gate-up; relative to m1-l44-compat
+run                       routed |dy|^2/|y|^2    routed      gate        up      down
+m1-l44-compat                      1.5287e-01   +0.00%   +0.00%   +0.00%      n/a
+m1-l44-o1                          1.4377e-01   -5.95%   -3.84%   -5.09%      n/a
+real 13.26

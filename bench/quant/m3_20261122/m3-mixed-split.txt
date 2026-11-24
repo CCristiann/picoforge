@@ -1,0 +1,24 @@
+layer 4 [unsloth ranking, eval windows 2-3]: compat rel. err 0.1048; hot experts in Q4 -> routed error (gate mass routed to them in our captures):
+  top   5% ( 26 experts): -17.4%  (mass 12.9%)
+  top  10% ( 51 experts): -18.7%  (mass 15.5%)
+  top  20% (102 experts): -29.0%  (mass 30.6%)
+layer 4 [code ranking, eval windows 2-3]: compat rel. err 0.1048; hot experts in Q4 -> routed error (gate mass routed to them in our captures):
+  top   5% ( 26 experts): -50.8%  (mass 44.7%)
+  top  10% ( 51 experts): -68.2%  (mass 66.5%)
+  top  20% (102 experts): -76.1%  (mass 80.2%)
+layer 28 [unsloth ranking, eval windows 2-3]: compat rel. err 0.1985; hot experts in Q4 -> routed error (gate mass routed to them in our captures):
+  top   5% ( 26 experts): -3.0%  (mass 3.0%)
+  top  10% ( 51 experts): -7.2%  (mass 7.1%)
+  top  20% (102 experts): -12.1%  (mass 13.9%)
+layer 28 [code ranking, eval windows 2-3]: compat rel. err 0.1985; hot experts in Q4 -> routed error (gate mass routed to them in our captures):
+  top   5% ( 26 experts): -42.6%  (mass 41.4%)
+  top  10% ( 51 experts): -60.1%  (mass 61.4%)
+  top  20% (102 experts): -75.2%  (mass 79.9%)
+layer 44 [unsloth ranking, eval windows 2-3]: compat rel. err 0.2185; hot experts in Q4 -> routed error (gate mass routed to them in our captures):
+  top   5% ( 26 experts): -5.9%  (mass 4.9%)
+  top  10% ( 51 experts): -8.2%  (mass 9.5%)
+  top  20% (102 experts): -12.4%  (mass 17.2%)
+layer 44 [code ranking, eval windows 2-3]: compat rel. err 0.2185; hot experts in Q4 -> routed error (gate mass routed to them in our captures):
+  top   5% ( 26 experts): -48.1%  (mass 44.9%)
+  top  10% ( 51 experts): -59.3%  (mass 58.3%)
+  top  20% (102 experts): -67.0%  (mass 70.6%)

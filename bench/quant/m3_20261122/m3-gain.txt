@@ -1,0 +1,9 @@
+layer 4: eval tokens 4096, calib tokens 4096; routed error on eval relative to compat base
+  compat  base: +0.0%  row-ls: +19.3%  expert-out: -0.4%
+  o1      base: +22.2%  row-ls: +20.2%  expert-out: -0.4%
+layer 28: eval tokens 4096, calib tokens 4096; routed error on eval relative to compat base
+  compat  base: +0.0%  row-ls: -4.5%  expert-out: -6.2%
+  o1      base: -5.2%  row-ls: -3.5%  expert-out: -5.4%
+layer 44: eval tokens 4096, calib tokens 4096; routed error on eval relative to compat base
+  compat  base: +0.0%  row-ls: -2.5%  expert-out: -6.4%
+  o1      base: -5.8%  row-ls: -1.5%  expert-out: -6.2%

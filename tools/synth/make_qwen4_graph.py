@@ -108,7 +108,49 @@ def payload(rng, name, shape, fmt, domain, enable_mtp=False):
     raise ValueError(f"no generator for {fmt}")
 
 
-def write_graph(path, hf, seed, text_meta=None, enable_mtp=False):
+def mix_experts(tensors, hf, hot, seed):
+    """Picoforge-only mixed layout on every trunk layer: `hot` experts move to Q4 tensors
+    (Q4_K gate/up, MXFP4 down at the logical input), the rest stay in the profile's tensors,
+    and blk.L.ffn_exps_map.weight (F32 [E], exact integers) says where each one is:
+    v >= 0 cold slot v, v < 0 hot slot -1-v. Returns tensors and {map name: values}."""
+    c = hf["text_config"]
+    ne, e, f = c["num_experts"], c["hidden_size"], c["moe_intermediate_size"]
+    out, maps = dict(tensors), {}
+    for name, (shape, fmt, domain) in tensors.items():
+        if domain == "mtp" or not name.endswith("ffn_down_exps.weight"):
+            continue
+        layer = int(name.split(".")[1])
+        chosen = set(np.random.default_rng(seed + 1000 + layer).permutation(ne)[:hot].tolist())
+        cold_slot, hot_slot, values = 0, 0, []
+        for x in range(ne):
+            if x in chosen: values.append(-1 - hot_slot); hot_slot += 1
+            else: values.append(cold_slot); cold_slot += 1
+        p = f"blk.{layer}."
+        for part in ("gate", "up", "down"):
+            s0, f0, d0 = tensors[p + f"ffn_{part}_exps.weight"]
+            out[p + f"ffn_{part}_exps.weight"] = (s0[:2] + [ne - hot], f0, d0)
+        for part in ("gate", "up"):
+            out[p + f"ffn_{part}_exps_hot.weight"] = ([e, f, hot], "Q4_K", domain)
+        out[p + "ffn_down_exps_hot.weight"] = ([f, e, hot], "MXFP4", domain)
+        out[p + "ffn_exps_map.weight"] = ([ne], "F32", domain)
+        maps[p + "ffn_exps_map.weight"] = np.array(values, "<f4").tobytes()
+    return out, maps
+
+
+def q4_experts(tensors, hf):
+    """The published Q4 layout on every trunk layer: Q4_K gate/up and MXFP4 down at the logical
+    input (no padding), as in the real -Q4 file. A byte source for build_mixed tests."""
+    c = hf["text_config"]
+    ne, e, f = c["num_experts"], c["hidden_size"], c["moe_intermediate_size"]
+    out = dict(tensors)
+    for name, (shape, fmt, domain) in tensors.items():
+        if domain == "mtp" or not name.endswith("_exps.weight"):
+            continue
+        out[name] = ([f, e, ne], "MXFP4", domain) if "ffn_down_" in name else (shape, "Q4_K", domain)
+    return out
+
+
+def write_graph(path, hf, seed, text_meta=None, enable_mtp=False, mixed_hot=0, q4=False):
     meta = ref.reference_metadata(hf)
     ple = bool(hf["text_config"]["ple_layer_ids"])
     meta.update({"general.architecture": "qwen4exp", "general.alignment": ALIGN,
@@ -120,7 +162,12 @@ def write_graph(path, hf, seed, text_meta=None, enable_mtp=False):
                      ref.PREFIX + "ple.head_vocab_sizes": [7] * 4})
     ref.check_metadata(hf, meta)
     meta.update(text_meta or {})
-    tensors = ref.reference_tensors(hf, 128 if ple else 0)
+    tensors, maps = ref.reference_tensors(hf, 128 if ple else 0), {}
+    assert not (q4 and mixed_hot), "--q4-experts and --mixed-hot are exclusive"
+    if q4:
+        tensors = q4_experts(tensors, hf)
+    if mixed_hot:
+        meta["picoforge.experts.mixed"] = True
     header = bytearray(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta)))
     for key, value in meta.items():
         if isinstance(value, str): kind, data = 8, string(value)
@@ -134,10 +181,29 @@ def write_graph(path, hf, seed, text_meta=None, enable_mtp=False):
         elif key.endswith(("freq_base", "epsilon")): kind, data = 6, struct.pack("<f", value)
         else: kind, data = 4, struct.pack("<I", value)
         header += string(key) + struct.pack("<I", kind) + data
-    rng, offset, records, blobs = np.random.default_rng(seed), 0, [], []
+    # Every payload is drawn in the original order, so a mixed file shares all its other bytes
+    # (and its cold experts) with the plain one; the hot experts get their own generator.
+    rng = np.random.default_rng(seed)
+    drawn = {name: payload(rng, name, shape, fmt, domain, enable_mtp) for name, (shape, fmt, domain) in tensors.items()}
+    if mixed_hot:
+        mixed, maps = mix_experts(tensors, hf, mixed_hot, seed)
+        hot_rng = np.random.default_rng(seed + 7)
+        for name, (shape, fmt, domain) in mixed.items():
+            if name in maps:
+                drawn[name] = maps[name]
+            elif name.endswith("_exps_hot.weight"):
+                drawn[name] = payload(hot_rng, name, shape, fmt, domain, enable_mtp)
+            elif name.endswith("_exps.weight") and shape != tensors[name][0]:
+                p, ne = name.rsplit(".ffn_", 1)[0] + ".", tensors[name][0][2]
+                per = len(drawn[name]) // ne
+                cold = [x for x, v in enumerate(np.frombuffer(maps[p + "ffn_exps_map.weight"], "<f4")) if v >= 0]
+                drawn[name] = b"".join(drawn[name][x * per:(x + 1) * per] for x in cold)
+        tensors = mixed
+        header[8:16] = struct.pack("<Q", len(tensors))   # the count was written before the split
+    offset, records, blobs = 0, [], []
     for name, (shape, fmt, domain) in tensors.items():
         offset = (offset + ALIGN - 1) // ALIGN * ALIGN
-        blob = payload(rng, name, shape, fmt, domain, enable_mtp)
+        blob = drawn[name]
         header += string(name) + struct.pack("<I", len(shape)) + struct.pack("<" + "Q" * len(shape), *shape)
         header += struct.pack("<IQ", ref.FORMATS[fmt][0], offset)
         records.append(dict(name=name, shape=shape, format=fmt, type_id=ref.FORMATS[fmt][0],
@@ -162,6 +228,9 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, default=ROOT / "build/qwen4-g1/graph.gguf")
     parser.add_argument("--seed", type=int, default=3811)
     parser.add_argument("--variant", action="store_true", help="upstream defaults: no PLE, SiLU gate, QSA second")
+    parser.add_argument("--mixed-hot", type=int, default=0, help="picoforge mixed experts: this many Q4 experts per trunk layer")
+    parser.add_argument("--q4-experts", action="store_true", help="trunk experts in the published Q4 formats")
     args = parser.parse_args()
-    records = write_graph(args.output, variant_config() if args.variant else graph_config(), args.seed)
+    records = write_graph(args.output, variant_config() if args.variant else graph_config(), args.seed,
+                          mixed_hot=args.mixed_hot, q4=args.q4_experts)
     print(f"{args.output}: {len(records)} tensors, {args.output.stat().st_size} bytes")

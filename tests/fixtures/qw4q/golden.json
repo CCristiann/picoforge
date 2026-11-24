@@ -1,0 +1,23 @@
+{
+  "dwarfstar_commit": "b3f50180ec2c7324892be1f50bc83555ccb8d5e7",
+  "cases": [
+    {
+      "file": "iq2_xxs.bin",
+      "type": 16,
+      "seed": 1234,
+      "rows": 64,
+      "cols": 2560,
+      "zero_tail_cols": 0,
+      "sha256": "1539a2e4b1fc1036503686e46180a4c29e6e3e4da5e4ac3c6e1e2b921e06b764"
+    },
+    {
+      "file": "q2_k.bin",
+      "type": 10,
+      "seed": 99,
+      "rows": 64,
+      "cols": 768,
+      "zero_tail_cols": 128,
+      "sha256": "d4972bac978be0dc6dd2305a154b0435a7a9a2ef08c56dbee878045b007f1035"
+    }
+  ]
+}

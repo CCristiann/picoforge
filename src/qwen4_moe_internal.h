@@ -56,6 +56,14 @@ typedef struct {
      * done by the fused down when it can; *hc_added (non-NULL) reports it, else the caller adds. */
     Qwen4GpuF32 hc_residual, hc_inject;
     bool *hc_added;
+    /* picoforge mixed experts (expert_map.buffer NULL otherwise): weights[1..3] hold the cold experts,
+     * hot[] the hot ones; expert_map is int32 [E] (v >= 0 cold slot, v < 0 hot slot -1-v). Both
+     * formats run on every pair (the other format's slot 0 as filler); the cold pass writes act and
+     * down rows [0,P), the hot pass act_hot and down2 rows [P,2P); qw4f_reduce picks each pair's row.
+     * cold_ids/hot_ids: uint32 [P]; act_hot [P,I]; down2 [2P,H]. No streaming, no fused down. */
+    const GgufBinding *hot[3]; QW4PackedLayout hot_layout[3];
+    Qwen4GpuSpan expert_map, cold_ids, hot_ids;
+    Qwen4GpuF32 act_hot, down2;
 } QW4FRoutedWork;
 typedef struct QW4FRouted QW4FRouted;
 /* R1.5d parallel router (qw4_moe_route_fast): one threadgroup of this many

@@ -1,0 +1,12 @@
+layer 4: routed error relative to compat (all projections); rankings from calibration captures only
+  other-lang (12288 tok, compat rel.err 0.089): unsloth-5%: -1.7%  unsloth-10%: -3.9%  code-5%: -36.1%  code-10%: -54.0%
+  picoforge  (4096 tok, compat rel.err 0.105): unsloth-5%: -17.4%  unsloth-10%: -18.7%  code-5%: -54.5%  code-10%: -63.7%
+  prose      (8192 tok, compat rel.err 0.114): unsloth-5%: -30.5%  unsloth-10%: -34.6%  code-5%: -30.6%  code-10%: -37.9%
+layer 28: routed error relative to compat (all projections); rankings from calibration captures only
+  other-lang (12288 tok, compat rel.err 0.189): unsloth-5%: -4.1%  unsloth-10%: -7.0%  code-5%: -35.7%  code-10%: -52.3%
+  picoforge  (4096 tok, compat rel.err 0.199): unsloth-5%: -3.0%  unsloth-10%: -7.2%  code-5%: -35.9%  code-10%: -56.7%
+  prose      (8192 tok, compat rel.err 0.206): unsloth-5%: -7.0%  unsloth-10%: -13.8%  code-5%: -6.0%  code-10%: -18.1%
+layer 44: routed error relative to compat (all projections); rankings from calibration captures only
+  other-lang (12288 tok, compat rel.err 0.219): unsloth-5%: -7.9%  unsloth-10%: -15.0%  code-5%: -25.7%  code-10%: -45.5%
+  picoforge  (4096 tok, compat rel.err 0.219): unsloth-5%: -5.9%  unsloth-10%: -8.2%  code-5%: -46.5%  code-10%: -65.4%
+  prose      (8192 tok, compat rel.err 0.211): unsloth-5%: -2.8%  unsloth-10%: -3.9%  code-5%: -8.0%  code-10%: -16.5%

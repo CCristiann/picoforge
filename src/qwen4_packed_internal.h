@@ -123,6 +123,16 @@ _Static_assert(sizeof(QW4DownReduceArgs) == 104, "down+reduce Metal argument lay
 Qwen4Status qw4_packed_encode_down_reduce(QW4PackedGpu *, const Qwen4GpuCommand *,
     const GpuWeightStore *, const GgufBinding *down, const QW4PackedLayout *down_layout,
     Qwen4GpuSpan expert_ids, Qwen4GpuF32 act, const QW4DownReduceViews *, Qwen4GpuF32 y, Qwen4Error *);
+/* picoforge mixed experts: the same fused down+reduce over a cold tensor (Q2_K) and a hot one
+ * (MXFP4). Pair p uses cold slot cold_ids[p], or hot slot hot_ids[p] when cold_ids[p] is
+ * 0xFFFFFFFF (qw4f_mixed_remap); each pair's dot is the parallel-slot kernel's of its format, the
+ * reduction is unchanged. QW4_UNSUPPORTED, nothing encoded, unless qw4_packed_mixed_fast. */
+bool qw4_packed_mixed_fast(const QW4PackedGpu *, uint32_t gate_type, uint32_t hot_gate_type, uint32_t down_type,
+    uint32_t hot_down_type, size_t slots);
+Qwen4Status qw4_packed_encode_down_reduce_mixed(QW4PackedGpu *, const Qwen4GpuCommand *,
+    const GpuWeightStore *, const GgufBinding *cold, const QW4PackedLayout *cold_layout, Qwen4GpuSpan cold_ids,
+    const GgufBinding *hot, const QW4PackedLayout *hot_layout, Qwen4GpuSpan hot_ids, Qwen4GpuF32 act,
+    const QW4DownReduceViews *, Qwen4GpuF32 y, Qwen4Error *);
 /* R2.6 fused HC read tail (qwen4_matvec.metal): HC_LOW (silu(low/h)), the
  * F16 up projection, HC_READ and HC_INJECT (2 sigmoid(il/h)) of one HC site in
  * one dispatch, act, gate, mixed and inject bit-identical to that fast

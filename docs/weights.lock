@@ -9,3 +9,8 @@ b1b93fa69aca5f187b0fb813aca8f3ec1beb5cf8cf0bd38cf041b93e0b6ccac9  Qwen3.8-Flash-
 # Qwen3.8 Q4, same revision.
 # Verified 2026-11-08 (full shasum -a 256, matches the Hugging Face LFS oid); 177280286720 bytes.
 680944460a8cbe93ba8b6d7b6107213ffb7e22320bd913000e563ca0a0f25a8a  Qwen3.8-Flash-Next-Q4/Qwen3.8-Flash-Next-Q4.gguf
+# picoforge mixed experts (bench/quant/m4_20261123): the Q2 above with its code-ranked experts
+# from the Q4 above, rebuilt by tools/quant/build_mixed.py from the patch in
+# ccristiann/Qwen3.8-Flash-Next-picoforge-gguf. Only picoforge loads them.
+dfda107b7fd56ed089bdeb2f840e9a9a98932c78ea171658ad935d0e9c2cfbc2  Qwen3.8-Flash-Next-Q2-Code5/Qwen3.8-Flash-Next-Q2-Code5.gguf
+a2df6e8dccbca75edc28e6176106e07ac0cf212514ef9164cec6850adc2bebc3  Qwen3.8-Flash-Next-Q2-Code10/Qwen3.8-Flash-Next-Q2-Code10.gguf

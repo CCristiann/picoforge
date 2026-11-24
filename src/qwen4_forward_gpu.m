@@ -18,6 +18,8 @@ static double clock_s(void) {
     return (double)t.tv_sec+(double)t.tv_nsec*1e-9;
 }
 
+#define QW4_ACT_MAX_LAYERS 128u   /* QW4_ACT_LAYERS capacity ("all" needs every trunk layer) */
+
 typedef struct { const GgufBinding *binding; QW4PackedLayout layout; } G2Weight;
 typedef struct { G2Weight down,up,inject; Qwen4GpuF32 gain; } G2Hc;
 typedef struct {
@@ -34,6 +36,8 @@ typedef struct {
      * which the history after any kept row is a contiguous window. */
     Qwen4GpuF32 snap[QWEN4_VERIFY_ROWS-1],conv_ext,ple_ext; int32_t *ple_prev;
     bool streamed;   /* R5.1b: fb[1..3] are pool bindings, fl[1..3] count pool slots as experts */
+    /* picoforge mixed experts: hot gate/up/down bindings and the int32 [E] slot map (MTLBuffer) */
+    bool mixed; const GgufBinding *hb[3]; QW4PackedLayout hl[3]; void *emap;
 } G2Layer;
 typedef struct { uint32_t layer; Qwen4GraphStage stage; Qwen4GpuF32 view; } G2Trace;
 struct Qwen4GpuForward {
@@ -63,6 +67,12 @@ struct Qwen4GpuForward {
      * every trunk append, [layer][token][top_k], to count the experts a multi-row
      * verify reads beyond one row. Never read by the forward itself. */
     FILE *route_log; void *route_copy,*route_buf;
+    /* Quant M2 diagnostic, off unless QW4_ACT_LOG names a new file: for the trunk layers listed in
+     * QW4_ACT_LAYERS, the routed experts' input x [t,H], their ids [t,K] and gate weights [t,K] of
+     * every trunk append, to measure weight quantization on real inputs (tools/quant/layer_lab.py).
+     * Never read by the forward itself. QW4_ACT_LAYERS=all with QW4_ACT_X=0 keeps only ids and weights
+     * of every trunk layer (M4c expert ranking: ~4 KB per token instead of ~0.5 MB). */
+    FILE *act_log; void *act_buf; uint32_t act_layer[QW4_ACT_MAX_LAYERS],act_count,act_h;
     /* R4 pending verify: rows and start of the last qwen4_gpu_forward_verify,
      * valid until keep or any other append/reset. */
     uint32_t verify_rows; uint64_t verify_start,verify_epoch; int32_t verify_tokens[QWEN4_VERIFY_ROWS];
@@ -248,6 +258,12 @@ static Qwen4Status scratch(Qwen4GpuForward *f,Qwen4Error *e) {
     ALLOC(f->fw.sup,false,mt,m->shared_intermediate); ALLOC(f->fw.sact,false,mt,m->shared_intermediate);
     ALLOC(f->fw.shared,false,mt,d); ALLOC(f->fw.slogit,false,mt,1); ALLOC(f->fw.ssig,false,mt,1); ALLOC(f->fw.routed,false,mt,d);
     ALLOC(ids,false,p); ALLOC(keep,false,p); f->fw.ids=ids.span; f->fw.identity=keep.span;
+    bool any_mixed=false;
+    for (uint32_t i=0;i<f->c.trunk_blocks;i++) { const Qwen4Layer *k; TRY(qwen4_config_layer(f->config,i,&k,e)); any_mixed|=k->mixed_experts; }
+    if (any_mixed) {   /* picoforge mixed experts: the hot pass's act, both passes' down rows, per-format slots */
+        Qwen4GpuF32 cold,hot; ALLOC(f->fw.act_hot,false,p,m->intermediate); ALLOC(f->fw.down2,false,2*p,d);
+        ALLOC(cold,false,p); ALLOC(hot,false,p); f->fw.cold_ids=cold.span; f->fw.hot_ids=hot.span;
+    }
     const size_t groups=MAX((size_t)m->experts,(size_t)gpu_weights_stream_slots(f->store));   /* R5.1b: slots group like experts */
     Qwen4GpuF32 group; ALLOC(group,false,qw4_packed_group_bytes(groups,p)/4); f->fw.group=group.span;
     if (gpu_weights_stream_slots(f->store)) {
@@ -352,6 +368,65 @@ static Qwen4Status residency(Qwen4GpuForward *f,Qwen4GpuSession *session,void *l
     free(views);
     return rc==QW4_UNSUPPORTED ? QW4_OK : rc;
 }
+/* Quant M2 capture layout in act_buf, per captured layer j: x [max_tokens,act_h] f32 (act_h = H, or 0
+ * without x), ids [max_tokens,K] u32, g [max_tokens,K] f32, all dense. */
+static size_t act_stride(const Qwen4GpuForward *f) {
+    return (size_t)f->max_tokens*(f->act_h+2u*f->c.moe.top_k)*4;
+}
+static Qwen4GpuSpan act_span(const Qwen4GpuForward *f,uint32_t j,size_t word,size_t words) {
+    return (Qwen4GpuSpan){f->act_buf,j*act_stride(f)+word*4,words*4};
+}
+static Qwen4Status act_create(Qwen4GpuForward *f,const char *path,const char *layers,Qwen4Error *e) {
+    if (!layers || !*layers) return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LOG needs QW4_ACT_LAYERS (e.g. 28,40)");
+    const char *x=getenv("QW4_ACT_X");
+    f->act_h=x && !strcmp(x,"0") ? 0 : (uint32_t)f->c.moe.hidden_size;
+    if (!strcmp(layers,"all")) {
+        if (f->c.trunk_blocks>QW4_ACT_MAX_LAYERS) return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS=all: too many trunk layers");
+        for (uint32_t i=0;i<f->c.trunk_blocks;i++) f->act_layer[f->act_count++]=i;
+        layers="";
+    }
+    for (const char *c=layers;*c;) {
+        char *end; long v=strtol(c,&end,10);
+        if (end==c || v<0 || v>=(long)f->c.trunk_blocks || f->act_count==QW4_ACT_MAX_LAYERS)
+            return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS: trunk layer indices, comma separated, or all");
+        f->act_layer[f->act_count++]=(uint32_t)v;
+        c=*end==',' ? end+1 : end;
+        if (*end && *end!=',') return fail(e,QW4_INVALID_ARGUMENT,"QW4_ACT_LAYERS: trunk layer indices, comma separated, or all");
+    }
+    id<MTLBuffer> b=[(__bridge id<MTLDevice>)f->device newBufferWithLength:f->act_count*act_stride(f) options:MTLResourceStorageModeShared];
+    if (!b) return fail(e,QW4_OOM,"QW4_ACT_LOG buffer");
+    f->act_buf=(__bridge_retained void *)b;
+    if (!(f->act_log=fopen(path,"wbx"))) return fail(e,QW4_GPU_ERROR,"QW4_ACT_LOG must name a new file");
+    return QW4_OK;
+}
+/* picoforge mixed experts: hot tensors bound like the others, the F32 map checked (a bijection onto
+ * the cold and hot slots) and uploaded as int32 for qw4f_mixed_remap. Never streamed. */
+static Qwen4Status bind_mixed(Qwen4GpuForward *f,uint32_t i,Qwen4Error *e) {
+    G2Layer *l=&f->layer[i];
+    if (l->streamed) return fail(e,QW4_UNSUPPORTED,"mixed experts cannot be streamed");
+    const Qwen4Role roles[]={QW4_MOE_GATE_HOT,QW4_MOE_UP_HOT,QW4_MOE_DOWN_HOT};
+    for (size_t j=0;j<3;j++) { G2Weight w; TRY(bind_weight(f,i,roles[j],&w,e)); l->hb[j]=w.binding; l->hl[j]=w.layout; }
+    G2Weight mw; Qwen4CpuSpan span; TRY(bind_weight(f,i,QW4_MOE_MAP,&mw,e));
+    TRY(qwen4_weights_cpu_span(f->store,mw.binding,&span,e));
+    size_t ne=f->c.moe.experts,hot=l->hl[0].n_experts,cold=l->fl[1].n_experts;
+    if (mw.layout.gguf_type!=0 || span.bytes<ne*4 || hot+cold!=ne) return fail(e,QW4_FORMAT,"expert map");
+    int32_t *map=calloc(ne,sizeof *map); uint8_t *seen=calloc(ne,1);
+    if (!map || !seen) { free(map); free(seen); return fail(e,QW4_OOM,"expert map"); }
+    Qwen4Status st=QW4_OK;
+    for (size_t x=0;x<ne && !st;x++) {
+        float v; memcpy(&v,span.data+4*x,4); long iv=(long)v;
+        size_t idx=iv>=0 ? (size_t)iv : cold+(size_t)(-1-iv);
+        if ((float)iv!=v || (iv>=0 && (size_t)iv>=cold) || (iv<0 && (size_t)(-1-iv)>=hot) || seen[idx]++)
+            st=fail(e,QW4_FORMAT,"expert map is not a bijection");
+        map[x]=(int32_t)iv;
+    }
+    id<MTLBuffer> buf=st ? nil : [(__bridge id<MTLDevice>)f->device newBufferWithBytes:map length:ne*4 options:MTLResourceStorageModeShared];
+    free(map); free(seen);
+    if (st) return st;
+    if (!buf) return fail(e,QW4_OOM,"expert map buffer");
+    l->emap=(__bridge_retained void *)buf; l->mixed=true;
+    return QW4_OK;
+}
 static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
     TRY(qwen4_gpu_session_create(f->device,f->config,f->capacity,&f->session,e));
     TRY(residency(f,f->session,library,e));
@@ -374,6 +449,7 @@ static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
         if (rb) f->route_buf=(__bridge_retained void *)rb;
         if (!rb || !f->route_log) return fail(e,QW4_GPU_ERROR,"route log (QW4_ROUTE_LOG must name a new file)");
     }
+    { const char *ap=getenv("QW4_ACT_LOG"); if (ap && *ap) TRY(act_create(f,ap,getenv("QW4_ACT_LAYERS"),e)); }
     { const char *sp=getenv("PICOFORGE_CMD_SPLIT"); long n=sp ? strtol(sp,NULL,10) : 0; f->cmd_split=!sp ? 0 : n<1 ? 1 : n>8 ? 8 : (uint32_t)n; }
     f->gpu_argmax=!qw4_ref_kernels("argmax");  /* oracle mode builds no argmax pipeline (as 360acf0) */
     if (f->gpu_argmax && !(f->argmax=argmax_pipeline(f->device,library))) return fail(e,QW4_GPU_ERROR,"graph argmax pipeline");
@@ -396,6 +472,7 @@ static Qwen4Status create(Qwen4GpuForward *f,void *library,Qwen4Error *e) {
             G2Weight w; TRY(j>=1 && j<=3 ? bind_expert(f,i,roles[j],&w,&l->streamed,e) : bind_weight(f,i,roles[j],&w,e));
             l->fb[j]=w.binding; l->fl[j]=w.layout;
         }
+        if (kind->mixed_experts) TRY(bind_mixed(f,i,e));
         if (kind->has_ple) TRY(create_ple(f,i,e));
     }
     f->main_histories=[(__bridge NSArray *)f->histories count];
@@ -456,12 +533,14 @@ void qwen4_gpu_forward_destroy(Qwen4GpuForward *f) {
     if (f->route_copy) CFRelease(f->route_copy);
     if (f->route_buf) CFRelease(f->route_buf);
     if (f->route_log) fclose(f->route_log);
+    if (f->act_buf) CFRelease(f->act_buf);
+    if (f->act_log) fclose(f->act_log);
     if (f->argmax) CFRelease(f->argmax);
     free(f->host_row);
     if (f->buffers) CFRelease(f->buffers);
     if (f->histories) CFRelease(f->histories);
     if (f->device) CFRelease(f->device);
-    if (f->layer) for (uint32_t i=0;i<f->c.trunk_blocks;i++) free(f->layer[i].ple_prev);
+    if (f->layer) for (uint32_t i=0;i<f->c.trunk_blocks;i++) { free(f->layer[i].ple_prev); if (f->layer[i].emap) CFRelease(f->layer[i].emap); }
     free(f->pinned); free(f->pin_ids); free(f->jobs);
     free(f->snapshot); free(f->layer); free(f->traces); free(f);
 }
@@ -722,6 +801,11 @@ static Qwen4Status moe(Qwen4GpuForward *f,Qwen4GpuCommand *cmdp,uint32_t i,size_
         }
         bool added=false;
         if (n==t) { w.hc_residual=time_view(f->r,t); w.hc_inject=time_view(f->inject,t); w.hc_added=&added; }
+        if (l->mixed) {   /* picoforge mixed experts */
+            for (size_t j=0;j<3;j++) { w.hot[j]=l->hb[j]; w.hot_layout[j]=l->hl[j]; }
+            w.expert_map=(Qwen4GpuSpan){l->emap,0,(size_t)f->c.moe.experts*4};
+            w.act_hot=time_view(w.act_hot,p); w.down2=time_view(w.down2,2*p);
+        } else w.expert_map=(Qwen4GpuSpan){0};
         TRY(qw4f_routed_encode(f->moe,f->b,f->ops,*cmdp,&mc,f->store,l->fb,l->fl,
             slice(f->mixed,start,n),slice(f->block,start,n),&w,e));
         if (hc_added) *hc_added=added;
@@ -736,6 +820,14 @@ static Qwen4Status moe(Qwen4GpuForward *f,Qwen4GpuCommand *cmdp,uint32_t i,size_
             [enc setBytes:&np length:4 atIndex:2];
             [enc dispatchThreads:MTLSizeMake(np,1,1) threadsPerThreadgroup:MTLSizeMake(MIN(np,64u),1,1)];
             barrier(cmd);
+        }
+        for (uint32_t j=0;j<f->act_count;j++) if (f->act_layer[j]==i) {   /* Quant M2: rows [start,start+n) */
+            const size_t h=f->act_h,k=f->c.moe.top_k;
+            Qwen4GpuF32 x=slice(f->mixed,start,n);
+            if ((h && x.stride_bytes[0]!=h*4) || w.weights.stride_bytes[0]!=k*4) return fail(e,QW4_SHAPE,"QW4_ACT_LOG: strided view");
+            if (h) copy_u32(f,cmd,x.span,act_span(f,j,start*h,n*h),n*h);
+            copy_u32(f,cmd,w.ids,act_span(f,j,f->max_tokens*h+start*k,n*k),n*k);
+            copy_u32(f,cmd,w.weights.span,act_span(f,j,f->max_tokens*(h+k)+start*k,n*k),n*k);
         }
     }
     return QW4_OK;
@@ -898,6 +990,22 @@ static Qwen4Status forward(Qwen4GpuForward *f,const int32_t *tokens,size_t count
         for (uint32_t i=0;i<layers;i++)
             fwrite((uint32_t *)[(__bridge id<MTLBuffer>)f->route_buf contents]+(size_t)i*f->max_tokens*f->c.moe.top_k,4,count*f->c.moe.top_k,f->route_log);
         fflush(f->route_log);
+    }
+    if (!rc && f->act_log && layers==f->c.trunk_blocks) {
+        /* record: "QW4A", version 1, position, rows, layers, H, K; per layer: index, x[t,H], ids[t,K], g[t,K]
+         * (H = 0 when QW4_ACT_X=0: no x) */
+        const uint32_t h=f->act_h,k=f->c.moe.top_k;
+        uint32_t head[7]={0x41345751u,1,(uint32_t)before.next_pos,(uint32_t)count,f->act_count,h,k};
+        fwrite(head,4,7,f->act_log);
+        const char *base=[(__bridge id<MTLBuffer>)f->act_buf contents];
+        for (uint32_t j=0;j<f->act_count;j++) {
+            const char *p=base+j*act_stride(f);
+            fwrite(&f->act_layer[j],4,1,f->act_log);
+            fwrite(p,4,count*h,f->act_log);
+            fwrite(p+(size_t)f->max_tokens*h*4,4,count*k,f->act_log);
+            fwrite(p+(size_t)f->max_tokens*(h+k)*4,4,count*k,f->act_log);
+        }
+        fflush(f->act_log);
     }
     if (!rc) {
         if (want) *want=*(int32_t *)contents(f->argmax_id);
