@@ -45,7 +45,9 @@ The chat samples (temperature 0.6, top-k 20, top-p 0.95) and drafts with
 multi-token prediction, which never changes the output; benchmarks and oracles
 decode greedily. Context is 8K tokens, thinking is off (`--think`, `/think`). On a terminal the
 chat opens with a summary of the model, memory and settings (`/info` shows it again) and closes each
-reply with its speeds and a bar of the context used.
+reply with its speeds and a bar of the context used. A pasted block of several lines is one message.
+The three commands share their options: `-m`, `-c`, `-n`, `--think` / `--no-think`, `--no-mtp`,
+`--temp`, `--power` (thinking is on by default in `pf-agent` and `pf-server`).
 
 | Option | Effect |
 |---|---|

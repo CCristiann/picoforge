@@ -2,6 +2,23 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## pf-server on main, a coherence pass (2026-11-25)
+
+pf-server had stayed on its branch since 11-21, and its old binary broke when the Code5 file
+arrived: `-m q2` matched two models, and it could not read the mixed layout. Rebased onto main
+(`make all` builds it; its tests also run on the mixed synthetic checkpoint). Then one pass over the
+commands. Names: `qwen4_*` is the engine, `pf*` the commands (`pf.c`, which pf-bench now shares
+by its name, `pf_models.c`, `qwen4_run.m`, `common.c`; the unused `json.c` is gone), and the A-G
+parts of the engine are named in DESIGN.md. Options: `--think` / `--no-think` in every command,
+any option starts pf's short form, `pf -h` and `pf-bench --help` answer. Bugs fixed, each with a
+test that failed first: a saved state (pf-server checkpoints, pf-agent sessions) was matched to
+its model by file size only, so two same-size files loaded each other's state, and shared cache
+entries replaced each other (now a hash of the GGUF header, also in the file name); a prompt over
+4 MiB of text killed pf-server instead of returning `context_length_exceeded`; a multi-line paste
+in the chat sent one message per line (now bracketed paste).
+
+**Next:** a real-model session of pf-server with an agent client.
+
 ## Own quants, M1–M4 (2026-11-21..24): code-ranked Q4 experts inside the Q2
 
 Goal: a better file than the published Q2 for coding, still inside 64 GB. It took four steps, and
