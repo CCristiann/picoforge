@@ -321,6 +321,12 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
     const bool fast_mixed=mixed && !r->ref_moe && wl[1].gguf_type==wl[2].gguf_type &&
         w->hot_layout[0].gguf_type==w->hot_layout[1].gguf_type && !qw4_packed_grouped_rows(b,wl[1].gguf_type,p) &&
         qw4_packed_mixed_fast(b,wl[1].gguf_type,w->hot_layout[0].gguf_type,wl[3].gguf_type,w->hot_layout[2].gguf_type,k);
+    /* M4d prefill: grouped kernels per format; the other format's pairs join no group (sentinel), so
+     * both formats write disjoint rows of act and down and qw4f_reduce reads down directly. */
+    const bool grouped_mixed=mixed && !fast_mixed && !r->ref_moe && w->group.buffer &&
+        wl[1].gguf_type==wl[2].gguf_type && w->hot_layout[0].gguf_type==w->hot_layout[1].gguf_type &&
+        qw4_packed_grouped_rows(b,wl[1].gguf_type,p) && qw4_packed_grouped_rows(b,w->hot_layout[0].gguf_type,p) &&
+        qw4_packed_grouped_rows(b,wl[3].gguf_type,p) && qw4_packed_grouped_rows(b,w->hot_layout[2].gguf_type,p);
     if (!t) return qw4c_error(err,QW4_OK,NULL);
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
     if (w->hc_added) *w->hc_added=false;
@@ -380,7 +386,7 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
      * row dot. Then the unfused sequence. */
     MARK("moe.gate_up",QW4_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
     if (mixed) {   /* picoforge mixed experts: slots per format, then both formats on every pair */
-        struct { uint32_t pairs,experts,filler,pad; } ma={(uint32_t)p,(uint32_t)e,fast_mixed ? 0xFFFFFFFFu : 0u,0};
+        struct { uint32_t pairs,experts,filler,pad; } ma={(uint32_t)p,(uint32_t)e,fast_mixed || grouped_mixed ? 0xFFFFFFFFu : 0u,0};
         at(enc,w->ids,0); at(enc,w->expert_map,1); at(enc,w->cold_ids,2); at(enc,w->hot_ids,3); at(enc,w->identity,4);
         [enc setBytes:&ma length:sizeof ma atIndex:5]; at(enc,cmd.error_word,6); run(enc,r->mixed_remap,p);
         if (fast_mixed) {   /* disjoint pairs, one act: no barrier between the two formats */
@@ -391,7 +397,8 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
             [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
         } else {
             QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->cold_ids,k,p,i,x,w->act,w,err));
-            QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,w->hot[0],&w->hot_layout[0],w->hot[1],&w->hot_layout[1],w->hot_ids,k,p,i,x,w->act_hot,w,err));
+            QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,w->hot[0],&w->hot_layout[0],w->hot[1],&w->hot_layout[1],w->hot_ids,k,p,i,x,
+                                   grouped_mixed ? w->act : w->act_hot,w,err));
         }
         enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
     }
@@ -440,6 +447,15 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
                                                   w->hot_ids,w->act,&dv,y,err);
         if (fused) return fused==QW4_UNSUPPORTED ? qw4c_error(err,QW4_GPU_ERROR,"mixed down+reduce refused") : fused;
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    } else if (grouped_mixed) {   /* disjoint rows of down, then the identity reduce */
+        QW4C_TRY(mixed_down(r,b,&cmd,store,wb[3],&wl[3],w->cold_ids,p,w->act,w->down,w,err));
+        QW4C_TRY(mixed_down(r,b,&cmd,store,w->hot[2],&w->hot_layout[2],w->hot_ids,p,w->act,w->down,w,err));
+        enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
+        at(enc,w->identity,0); run(enc,r->iota,p);
+        FArgs fa={(uint32_t)t,(uint32_t)h,(uint32_t)k,(uint32_t)h,(uint32_t)(y.stride_bytes[0]/4)};
+        at(enc,w->down.span,0); at(enc,w->shared.span,1); at(enc,w->ssig.span,2); at(enc,w->weights.span,3);
+        at(enc,w->identity,4); at(enc,y.span,5); [enc setBytes:&fa length:sizeof fa atIndex:6];
+        at(enc,cmd.error_word,7); at(enc,w->routed.span,8); run(enc,r->reduce,t*h);
     } else if (mixed) {   /* cold rows [0,P), hot rows [P,2P); identity already holds each pair's row */
         Qwen4GpuF32 cold=w->down2,hot=w->down2;
         cold.dim[0]=hot.dim[0]=p; cold.span.bytes=hot.span.bytes=p*h*4; hot.span.offset_bytes+=p*h*4;

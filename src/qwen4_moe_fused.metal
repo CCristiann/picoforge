@@ -641,11 +641,13 @@ kernel void qw4_moe_group_clear(device uint *g [[buffer(0)]], constant GroupArgs
         uint e [[thread_position_in_grid]]) {
     if (e < a.experts) g[e] = 0;
 }
-/* An expert id past the tensor sets bit 2 and its pair joins no group. */
+/* An expert id past the tensor sets bit 2 and its pair joins no group; a mixed-experts pair of the
+ * other format (QW4_PAIR_ELSEWHERE) joins none either, silently (scatter skips both). */
 kernel void qw4_moe_group_count(device const uint *ids [[buffer(0)]], device atomic_uint *g [[buffer(1)]],
         device atomic_uint *error [[buffer(2)]], constant GroupArgs &a [[buffer(3)]], uint q [[thread_position_in_grid]]) {
     if (q >= a.pairs) return;
     const uint e = ids[q];
+    if (e == QW4_PAIR_ELSEWHERE) return;
     if (e >= a.experts) { atomic_fetch_or_explicit(error, 2u, memory_order_relaxed); return; }
     atomic_fetch_add_explicit(g + e, 1u, memory_order_relaxed);
 }

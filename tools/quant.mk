@@ -26,7 +26,8 @@ test-quant-engine: pf build/qwen4-g2/cli.gguf build/qwen4-g2/cli-mixed.gguf buil
 	@$(PYTHON) tests/test_act_log.py
 	$(QW4_LOCK) $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g1/test_forward --gguf build/qwen4-g1/graph-mixed.gguf -v
 	$(QW4_LOCK) env MTL_DEBUG_LAYER=1 $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g2/test_forward --gguf build/qwen4-g1/graph-mixed.gguf -v
-	$(QW4_LOCK) env MTL_DEBUG_LAYER=1 PICOFORGE_GROUPED_MIN_PAIRS=1 $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g2/test_forward --gguf build/qwen4-g1/graph-mixed.gguf -v
+	$(QW4_LOCK) $(QW4_ENV) MTL_DEBUG_LAYER=1 PICOFORGE_GROUPED_MIN_PAIRS=1 $(PYTHON) -B tools/qwen4_test.py tests/test_qwen4_forward.py --native build/qwen4-g2/test_forward --gguf build/qwen4-g1/graph-mixed.gguf -v
+	$(QW4_LOCK) $(QW4_ENV) MTL_DEBUG_LAYER=1 PICOFORGE_GROUPED_MIN_PAIRS=1 $(PYTHON) -B tools/qwen4_test.py tests/test_qwen4_forward.py --native build/qwen4-g2/test_forward --gguf build/qwen4-g1/graph-built-mixed.gguf -v
 	$(QW4_LOCK) env MTL_DEBUG_LAYER=1 QW4_REF_KERNELS=exact $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g2/test_forward --gguf build/qwen4-g1/graph-mixed.gguf -v
 	$(QW4_LOCK) $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g1/test_forward --gguf build/qwen4-g1/graph-built-mixed.gguf -v
 	$(QW4_LOCK) env MTL_DEBUG_LAYER=1 $(QW4_TEST) tests/test_qwen4_forward.py --native build/qwen4-g2/test_forward --gguf build/qwen4-g1/graph-built-mixed.gguf -v
