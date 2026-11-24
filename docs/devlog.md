@@ -2,6 +2,47 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## Own quants, M1–M4 (2026-11-21..24): code-ranked Q4 experts inside the Q2
+
+Goal: a better file than the published Q2 for coding, still inside 64 GB. It took four steps, and
+the first two failed.
+
+- **M1, our own quantizers.** An IQ2_XXS encoder and the Q2_K path, both byte-identical to
+  DwarfStar's on golden blocks and on all 512 experts of layers 4 and 44. Then an "O1" refinement
+  that fits the 2-bit codes to the real decoder levels.
+- **M2, measuring the right error (negative).** The engine can now log the inputs, routes and gate
+  weights of every expert (`QW4_ACT_LOG`). A "layer lab" uses them to measure the error on the
+  layer's real output (sum over k of g_k E_k(x)), not on the weights. O1 helped by 5–6% on two
+  layers but hurt layer 4 by 23%. Least squares shrinks the weights, and DwarfStar's slightly
+  mismatched constants were cancelling that shrinkage by accident. The weight-space proxy does not
+  predict the output error.
+- **M3, where the bits go.** Re-encoding at the same 2 bits buys a few percent at best. Moving bits
+  buys much more: routing is very uneven, so copying the 10% of experts with the most gate mass on
+  code from the Q4 file cut the routed error by 60–68%. Ranking by Unsloth's importance-matrix counts
+  gave 7–19%. On languages and repositories the ranking never saw, the cut was 45–54%. Prose
+  improved too. The idea is known (frequency-aware bit allocation: MC-MoE, MoPEQ, EAC-MoE); the
+  code ranking and the engine support are ours.
+- **M4, a picoforge-only layout.** In each trunk layer the cold experts stay in the Q2 tensors, the
+  hot ones move to `_exps_hot` tensors in Q4_K/Q4_K/MXFP4, and an F32 map sends each expert id to
+  its slot. On the CPU path and the Metal graph, exact and fast kernels both pass the oracle on
+  synthetic checkpoints. The first Metal path ran every pair in both formats: −30% decode. Then the
+  routed pairs of the other format are skipped (a sentinel id), the down projections of both
+  formats share one parallel-slot kernel, and grouped prefill runs per format: −5…−8% decode, −2%
+  prefill, and Q2 logits byte-identical before and after. `tools/quant/build_mixed.py` ranks the
+  experts (8 languages, 98K tokens, routes only), cuts a pool from the Q4 and assembles a file with
+  every byte checked against its source.
+
+Result (KL to Q4 on held-out text, Q2 → 5% → 10%): picoforge code 0.288 → 0.217 → 0.167, other
+repositories 0.083 → 0.034 → 0.024, prose 0.513 → 0.485 → 0.455. The 10% file fits a context of
+~74K tokens with MTP; the 5% file still fits pf-agent's 100K. Published as a 6.6 GB patch on
+Hugging Face (`ccristiann/Qwen3.8-Flash-Next-picoforge-gguf`). It rebuilds both files byte for byte
+from antirez's Q2. Two bugs worth remembering: the disk-only n-gram table must start on a 16 KiB
+page, so a writer that aligned to 32 bytes produced a file the loader refused; and a "grouped" test
+line that had never run grouped, because the shared test environment reset the threshold.
+
+**Next:** a coding-task benchmark (HumanEval+ needs a download and running generated code), then
+promoting experts to Q4 per session through SSD streaming.
+
 ## Qwen4 prep (2026-11-19): upstream variants, the engine named after the architecture
 
 Qwen4-Max is out (API only) and Transformers has `qwen4_exp`: the same blocks as Flash-Next, which

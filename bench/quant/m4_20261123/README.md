@@ -74,6 +74,16 @@ prefill on the real file; the fast paths (sentinel skip, one mixed parallel-slot
 grouped kernels per format) brought that to the numbers above. Q2 logits are byte-identical
 before and after those kernel changes (R7 code-0 sha256 `c8843481…`).
 
+## Published (2026-11-24)
+
+Hugging Face `ccristiann/Qwen3.8-Flash-Next-picoforge-gguf` holds a patch, not the files: the top 51
+experts per layer cut from the pool (`build_mixed.py pool`, 6 642 915 552 bytes, sha256 `92d731b5…`),
+`ranking.json`, the two recipes, the Qwen license and `SHA256SUMS`. A build's recipe names the
+pool's origin rather than the local file name, so both files come back byte for byte from that
+patch and antirez's Q2. Checked with `build --hash-only --expect`: 5% `dfda107b…` (equal to the file
+measured here, renamed Q2-Code5) and 10% `a2df6e8d…` (equal to `hot10-sha256.txt`). The full files
+are not uploaded: two ~148 GB files do not fit a free account's 100 GB of private storage.
+
 ## Not done here
 
 - G3 on the real file: the FP32 oracle on real weights is DwarfStar's, which does not read the

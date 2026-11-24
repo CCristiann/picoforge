@@ -61,6 +61,27 @@ files of the directory it starts in, runs commands and looks things up on the we
 anything that changes files or runs a command. A status line shows the context used and the speeds;
 sessions can be saved and resumed.
 
+## Code-tuned weights
+
+picoforge also loads its own variant of the Q2: in each of the 48 layers, the experts that code
+routes to most are kept at 4 bits (their bytes copied unchanged from the published Q4), and the
+rest stay at 2 bits. The ranking was measured on eight languages, and the evaluation uses text it
+never saw. Against the Q4 as the reference:
+
+| | Q2 | Q2-Code5 (5% of experts at Q4) | Q2-Code10 (10%) |
+|---|---|---|---|
+| KL to Q4, unseen picoforge code | 0.288 | 0.217 | 0.167 |
+| KL to Q4, unseen Rust/Go/Java repositories | 0.083 | 0.034 | 0.024 |
+| KL to Q4, English prose | 0.513 | 0.485 | 0.455 |
+| decode speed | 36–37 tok/s | about −4% | −5 to −8% |
+| largest context with MTP | 100K | 100K | ~74K |
+
+[ccristiann/Qwen3.8-Flash-Next-picoforge-gguf](https://huggingface.co/ccristiann/Qwen3.8-Flash-Next-picoforge-gguf)
+holds the 4-bit experts and the ranking (6.6 GB). `tools/quant/build_mixed.py` rebuilds either
+file from the Q2 in about two minutes, byte for byte (`--expect` checks the sha256; the hashes are
+in `docs/weights.lock`). Then `./pf -m code5` or `./pf-agent -m code5`. DwarfStar and llama.cpp do
+not read this layout. Method and data: [`bench/quant/m4_20261123`](bench/quant/m4_20261123/README.md).
+
 ## Results
 
 Qwen3.8-Flash-Next Q2 on a MacBook Pro 14" (M5 Pro, 64 GB, 307 GB/s), against

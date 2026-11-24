@@ -8,6 +8,7 @@ been run.
 | Folder | Contents |
 |---|---|
 | [`qwen38/`](qwen38/) | Qwen3.8-Flash-Next: one folder per run, named `<stage>_<YYYYMMDD>` |
+| [`quant/`](quant/) | Own quantizations: encoder checks, the layer lab, code-ranked mixed-precision experts (`m4_20261123`) |
 | [`microbench/`](microbench/) | Model-agnostic matmul, quantised-matmul and dispatch-cost sweeps (`tools/microbench`) |
 | [`archive-qwen3/`](archive-qwen3/) | Results of the removed Qwen3-0.6B / 30B-A3B engine, described in [`docs/history.md`](../docs/history.md) |
 
