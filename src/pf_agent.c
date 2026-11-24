@@ -13,7 +13,7 @@
  * pipe, and its questions (approvals) wait for the UI's answer. Without a
  * terminal (pipes, tests, --non-interactive) one thread reads lines.
  */
-#include "model_select.h"
+#include "pf_models.h"
 #include "pf_session.h"
 #include "pf_term.h"
 #include "pf_tools.h"
@@ -679,7 +679,7 @@ int main(int argc, char **argv) {
     }
     if (trace_path && !(a.trace = fopen(trace_path, "a"))) die("pf-agent: cannot open %s: %s", trace_path, strerror(errno));
     char lib[PATH_MAX]; metallib_path(lib);
-    char *chosen = model_select(model, argv[0]), *path = absolute(chosen); free(chosen);
+    char *chosen = pf_models_pick(model, argv[0]), *path = absolute(chosen); free(chosen);
     if (workspace && chdir(workspace)) die("pf-agent: cannot enter %s: %s", workspace, strerror(errno));
     if (!realpath(".", root)) die("pf-agent: cannot resolve the workspace");
     pthread_mutex_init(&a.mu, NULL); pthread_cond_init(&a.cond, NULL);

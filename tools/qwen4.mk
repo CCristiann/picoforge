@@ -14,7 +14,7 @@ QW4_REF := build/qwen4-b/reference/reference
 QW4_SLICES := $(foreach kind,0 1 8 10 16 30,--slices build/qwen4-b/slices-$(kind))
 QW4_RECURRENT = src/qwen4_base.c src/qwen4_conv.c src/qwen4_gdn.c src/qwen4_config.c src/qwen4_weights.c src/qwen4_packed.c src/gguf_plan.c $(QW4_READER)
 QW4_GPU = src/qwen4_recurrent_gpu.m src/qwen4_packed_gpu.m src/gpu_weights.m
-QW4_READER := src/gguf.c src/gguf_reader.c src/util.c
+QW4_READER := src/gguf.c src/gguf_reader.c src/common.c
 QW4_STORAGE := src/gpu_weights.m src/gguf_plan.c $(QW4_READER)
 
 $(filter src/qwen4%.o,$(OBJ)): CFLAGS += -ffp-contract=off -fno-fast-math

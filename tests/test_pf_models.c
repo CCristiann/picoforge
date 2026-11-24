@@ -1,6 +1,6 @@
-/* test_model_select.c — which model each -m name picks, on directories of empty .gguf files.
+/* test_pf_models.c — which model each -m name picks, on directories of empty .gguf files.
  * Every choice runs in a child process: a failed choice exits 2 with the list of models. */
-#include "model_select.h"
+#include "pf_models.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +31,7 @@ static void expect(const char *query, const char *want) {
     pid_t pid = fork();
     if (!pid) {
         close(fd[0]); freopen("/dev/null", "w", stderr);
-        char *path = model_select(query, "pf"), *base = strrchr(path, '/');
+        char *path = pf_models_pick(query, "pf"), *base = strrchr(path, '/');
         dprintf(fd[1], "%.*s", (int)strlen(base + 1) - 5, base + 1);
         exit(0);
     }
@@ -74,7 +74,7 @@ int main(void) {
     expect("q2", q2);
 
     char cmd[64]; snprintf(cmd, sizeof cmd, "rm -rf %s", root); system(cmd);
-    if (failures) { printf("%d model_select failures\n", failures); return 1; }
-    printf("model_select: ok\n");
+    if (failures) { printf("%d pf_models failures\n", failures); return 1; }
+    printf("pf_models: ok\n");
     return 0;
 }

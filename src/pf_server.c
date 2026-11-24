@@ -32,7 +32,7 @@
  *      end of a prompt that took a long prefill. A request then starts from
  *      the longest of: the live graph, a checkpoint, nothing.
  */
-#include "model_select.h"
+#include "pf_models.h"
 #include "pf_api.h"
 #include "pf_cache.h"
 #include "pf_http.h"
@@ -503,7 +503,7 @@ int main(int argc, char **argv) {
         else { usage(); return 2; }
     }
     char lib[PATH_MAX]; metallib_path(lib);
-    char *chosen = model_select(model, argv[0]), *path = absolute(chosen); free(chosen);
+    char *chosen = pf_models_pick(model, argv[0]), *path = absolute(chosen); free(chosen);
     const char *base = strrchr(path, '/') ? strrchr(path, '/')+1 : path;
     snprintf(sv.model_id, sizeof sv.model_id, "%s", alias ? alias : base);
     char *dot = alias ? NULL : strstr(sv.model_id, ".gguf");

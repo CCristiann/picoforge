@@ -90,7 +90,7 @@ typedef struct {
  * REPL: only on rollback). With MTP the predictor must already be caught up. */
 void qw4_turn(QW4Run *, const int32_t *tokens, size_t count, QW4TurnOptions,
               int32_t *generated, QW4Turn *);
-/* Load a model (src/qwen4_cli.m): open = GGUF, config, weights, tokenizer;
+/* Load a model (src/qwen4_run.m): open = GGUF, config, weights, tokenizer;
  * gpu = Metal device, kernels, weights (SSD streaming when needed); close frees all. */
 void qw4_run_open(QW4Run *, const char *path);
 void qw4_run_gpu(QW4Run *, const char *path, const char *metallib, uint32_t capacity);   /* capacity: sizes the expert pool */
@@ -121,7 +121,10 @@ size_t qw4_chat_continue(QW4Run *, const int32_t *ids, size_t held, size_t total
 size_t qw4_chat_prefill(QW4Run *, const int32_t *ids, size_t held, size_t upto,
                         void (*progress)(void *, size_t prefilled, size_t prompt, size_t generated), void *ctx,
                         QW4Turn *, bool *replayed);
-/* Metal memory now in use and the GPU working-set budget, in bytes (src/qwen4_cli.m). */
+/* `pf --qwen4 FILE [flags]`, the long form with every measurement flag; pf's short form and pf bench
+ * rewrite their arguments into it (src/pf.c). */
+int qw4_cli(int argc, char **argv);
+/* Metal memory now in use and the GPU working-set budget, in bytes. */
 void qw4_run_memory(const QW4Run *, uint64_t *in_use, uint64_t *budget);
 /* Interactive chat on stdin (src/qwen4_repl.c). max_new 0 = until stop or full context.
  * path and load_s feed the summary shown on a terminal. */

@@ -93,7 +93,8 @@ which is why checkpoints larger than that run quantised.
 
 | path | contents |
 |---|---|
-| `src/` | engine C sources, Objective-C Metal glue, `.metal` kernels (`qwen4_*`), GGUF reader |
+| `src/` | the engine: `qwen4_*` (the model: CPU ops, Metal glue and `.metal` kernels, the run driver `qwen4_run.m`), `gguf*` and `gpu_weights.m` (the file and its GPU mapping), `common.c` |
+| `src/pf*` | the commands around it: `pf.c` (pf, pf-bench), `pf_agent.c`, `pf_server.c`, and the modules they share (`pf_models`, `pf_session`, `pf_tools`, `pf_api`, ...) |
 | `tools/oracle/` | independent reference implementations of the Qwen3.8 operators |
 | `tools/synth/` | synthetic GGUF checkpoints for tests |
 | `tools/eval/` | benchmark runners, grading and reports |

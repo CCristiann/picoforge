@@ -1,6 +1,6 @@
-/* model_select.c — see model_select.h. Plain C: a directory scan, a name match, a terminal prompt. */
+/* pf_models.c — see pf_models.h. Plain C: a directory scan, a name match, a terminal prompt. */
 #define _DARWIN_C_SOURCE   /* strcasestr, realpath */
-#include "model_select.h"
+#include "pf_models.h"
 #include "common.h"
 
 #include <dirent.h>
@@ -143,7 +143,7 @@ static char *ask(Models *m) {
     }
 }
 
-char *model_select(const char *arg, const char *argv0) {
+char *pf_models_pick(const char *arg, const char *argv0) {
     if (!arg || !*arg) arg = getenv("PICOFORGE_MODEL");
     struct stat st;
     if (arg && *arg && !stat(arg, &st) && S_ISREG(st.st_mode)) {
@@ -161,7 +161,7 @@ char *model_select(const char *arg, const char *argv0) {
     return ask(&m);
 }
 
-int model_list(const char *argv0) {
+int pf_models_list(const char *argv0) {
     Models m = find(argv0);
     if (!m.n) fail(&m, "no models");
     printf("models in %s (-m takes the name shown, any part of the file name that is unique, or a path):\n", m.dir);

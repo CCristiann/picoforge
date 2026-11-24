@@ -1,10 +1,9 @@
-/* Ordinary greedy Qwen3.8 generation using A's tokenizer/template and G2. */
+/* qwen4_run.m — see qwen4_run.h: one loaded model (GGUF, weights on the GPU, the graph), one turn of
+ * prefill and decode with optional MTP, and the long form `pf --qwen4 FILE` with every measurement flag. */
 #import <Metal/Metal.h>
 #include "common.h"
-#include "qwen4_cli.h"
 #include "qwen4_run.h"
 #include "qwen4_expert_pool.h"
-#include "model_select.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -510,50 +509,8 @@ void qw4_run_graph(QW4Run *r,uint32_t capacity) {
     if (r->decoder) qwen4_decoder_reset(r->decoder);
     else qw4_check(qwen4_decoder_create(r->tok,true,&r->decoder,&e),&e);
 }
-/* ds4-style short form (`./ds4 -p ...`): -m MODEL, -p TEXT, -c N, -n N, the rest
- * as in the long form. MODEL is a path or a short name ("q4"); without -m the
- * model comes from $PICOFORGE_MODEL, the only model in models/, or a prompt
- * (model_select.c). A bare ./pf is the chat. */
-int qwen4_short(int argc,char **argv) {
-    const char *model=NULL; char **out=calloc((size_t)argc+3,sizeof *out); int n=3;
-    if (!out) die("argument allocation");
-    for (int i=1;i<argc;i++) {
-        const char *a=argv[i],*as=!strcmp(a,"-p") ? "--chat" : !strcmp(a,"-c") ? "--context" : !strcmp(a,"-n") ? "--max-new" : NULL;
-        if ((as || !strcmp(a,"-m")) && i+1==argc) die("missing value for %s",a);
-        if (!strcmp(a,"-m")) model=argv[++i];
-        else if (as) { out[n++]=(char *)as; out[n++]=argv[++i]; }
-        else out[n++]=argv[i];
-    }
-    char *path=model_select(model,argv[0]);
-    out[0]=argv[0]; out[1]="--qwen4"; out[2]=path;
-    int rc=qwen4_cli(n,out); free(path); free(out); return rc;
-}
-/* `pf bench` / `pf-bench` [short-form options]: protocol defaults (3 warm-up, 20
- * measured, 128 new tokens), a fixed prompt unless one is given; generated
- * text is discarded, the summary goes to stdout. Later options win. */
 static void discard(void *ctx,const uint8_t *s,size_t n) { (void)ctx; (void)s; (void)n; }
-int qwen4_bench(int argc,char **argv) {
-    for (int i=2;i<argc;i++) if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")) {
-        puts("usage: pf-bench [-m MODEL] [-p TEXT] [-n N] [options]   (also: pf bench ...)\n"
-             "  3 warm-up and 20 measured runs of one answer (128 new tokens, a fixed prompt unless -p),\n"
-             "  greedy, no MTP unless --mtp; prints the median and p10/p90 of prefill and decode tok/s and TTFT.\n"
-             "  --warmup N --repeat N   other counts      --bench-csv FILE   every run as a CSV row\n"
-             "  --tokens ID,... --teacher-forced N        decode fixed tokens; the rest as pf --qwen4 FILE --help");
-        return 0;
-    }
-    static const char *const prompts[]={"-p","--chat","--chat-file","--complete","--complete-file","--tokens",NULL};
-    bool has_prompt=false;
-    for (int i=2;i<argc;i++) for (size_t j=0;prompts[j];j++) if (!strcmp(argv[i],prompts[j])) has_prompt=true;
-    char **out=calloc((size_t)argc+12,sizeof *out); int n=0; if (!out) die("argument allocation");
-    bool forced=false; for (int i=2;i<argc;i++) if (!strcmp(argv[i],"--teacher-forced")) forced=true;
-    const char *defaults[]={"--bench","--warmup","3","--repeat","20","-n","128"};
-    out[n++]=argv[0];   /* teacher forcing fixes its own length: no default -n */
-    for (size_t i=0;i<sizeof defaults/sizeof *defaults-(forced ? 2 : 0);i++) out[n++]=(char *)defaults[i];
-    if (!has_prompt) { out[n++]="-p"; out[n++]="Write a long story about a lighthouse keeper."; }
-    for (int i=2;i<argc;i++) out[n++]=argv[i];
-    int rc=qwen4_short(n,out); free(out); return rc;
-}
-int qwen4_cli(int argc,char **argv) {
+int qw4_cli(int argc,char **argv) {
     double entered=qw4_now();
     if (argc==3 && !strcmp(argv[2],"--help")) { usage(); return 0; }
     if (argc<3) { usage(); return 2; }

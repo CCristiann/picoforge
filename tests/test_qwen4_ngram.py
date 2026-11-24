@@ -32,7 +32,7 @@ class NativeTests(unittest.TestCase):
                         "-ffp-contract=off", "-fno-fast-math", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer", "-Isrc", "src/qwen4_ngram.c",
                         "src/qwen4_ple.c", "src/qwen4_conv.c", "src/qwen4_base.c",
                         "src/qwen4_gdn.c", "src/gguf_plan.c",
-                        "src/qwen4_packed.c", "src/qwen4_config.c", "src/qwen4_weights.c", "src/gguf.c", "src/gguf_reader.c", "src/util.c",
+                        "src/qwen4_packed.c", "src/qwen4_config.c", "src/qwen4_weights.c", "src/gguf.c", "src/gguf_reader.c", "src/common.c",
                         "tests/test_qwen4_ngram.c", "-o", str(BINARY)], cwd=ROOT, check=True)
 
     def test_native_errors(self):
