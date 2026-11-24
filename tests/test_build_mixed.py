@@ -5,6 +5,7 @@ template (cold) or of the Q4 source (hot), every other tensor is copied, a pool 
   python tests/test_build_mixed.py --fixture OUT   write the engine fixture (make target)
 """
 
+import hashlib
 import json
 import struct
 import sys
@@ -56,6 +57,21 @@ class BuildMixedTests(unittest.TestCase):
 
     def test_pool_is_transparent(self):
         self.assertEqual(self.direct.read_bytes(), self.pooled.read_bytes())
+
+    def test_pool_cut_from_a_pool_is_transparent(self):
+        """The published patch is a small pool cut from a larger one: same experts, same origin."""
+        d = Path(self.tmp.name)
+        small, again = d / "small.gguf", d / "again.gguf"
+        bm.pool(self.pool, self.ranking, 2, small)
+        self.assertEqual(bm.Gguf(small).meta["picoforge.pool.origin"], SOURCE.name)
+        self.assertEqual(bm.origin(small), bm.origin(self.pool))
+        sha = bm.build(TEMPLATE, small, self.ranking, {l: 2 for l in self.layers}, again, {"test": True})["sha256"]
+        self.assertEqual(again.read_bytes(), self.direct.read_bytes())
+        self.assertEqual(sha, hashlib.sha256(self.direct.read_bytes()).hexdigest())
+
+    def test_hash_only_writes_nothing_and_matches(self):
+        info = bm.build(TEMPLATE, SOURCE, self.ranking, {l: 2 for l in self.layers}, None, {"test": True})
+        self.assertEqual(info["sha256"], hashlib.sha256(self.direct.read_bytes()).hexdigest())
 
     def test_every_expert_comes_from_template_or_source(self):
         tpl, src, out = bm.Gguf(TEMPLATE), bm.Gguf(SOURCE), bm.Gguf(self.direct)

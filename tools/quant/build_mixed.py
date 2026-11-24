@@ -14,10 +14,15 @@ lists follow increasing expert id. Metadata: picoforge.experts.mixed = true
 and picoforge.experts.recipe (JSON). Every other tensor and key is copied.
 
   rank   --experts E OUT.json ACT.bin...          gate mass per expert, from QW4_ACT_X=0 captures
-  pool   Q4.gguf RANKING.json COUNT OUT.gguf      the COUNT best experts per layer, in rank order
+  pool   SOURCE.gguf RANKING.json COUNT OUT.gguf  the COUNT best experts per layer, in rank order
   build  TEMPLATE.gguf SOURCE.gguf RANKING.json (--fraction F | --count N) OUT.gguf
+         [--expect SHA256] [--hash-only]
 
-SOURCE is the Q4 file or a pool (a pool names its experts in picoforge.pool.blk.L).
+SOURCE is the Q4 file or a pool (a pool names its experts in picoforge.pool.blk.L), so a
+small pool can be cut from a larger one. The recipe in the output names the pool's origin
+(picoforge.pool.origin: the file the first pool was cut from), not the local file name, so
+the same template, pool content and ranking give the same bytes wherever they are built.
+--hash-only computes the output's sha256 without writing it; --expect fails on a mismatch.
 """
 
 import argparse
@@ -71,7 +76,10 @@ class Gguf:
         block, size = BLOCK[t]
         return int(np.prod(dims)) // block * size
 
-    def trunk_layers(self) -> range:
+    def trunk_layers(self):
+        """The trunk layers of a model; for a pool, the layers it holds experts of."""
+        if "general.architecture" not in self.meta:
+            return sorted(int(k.split(".blk.")[1]) for k in self.meta if k.startswith("picoforge.pool.blk."))
         a = self.meta["general.architecture"]
         return range(int(self.meta[f"{a}.block_count"]) - int(self.meta.get(f"{a}.nextn_predict_layers", 0)))
 
@@ -97,10 +105,23 @@ def _kv(key: str, value) -> bytes:
     return _string(key) + struct.pack("<IIQ", 9, 5, a.size) + a.tobytes()
 
 
-def _write(out: Path, kv: bytes, n_kv: int, align: int, tensors: list) -> None:
+class _Hashing:
+    """A write-only stream that hashes what it gets and passes it on to `f` (None: nowhere)."""
+    def __init__(self, f=None):
+        self.f, self.h, self.n = f, hashlib.sha256(), 0
+
+    def write(self, b) -> int:
+        self.h.update(b); self.n += len(b)
+        return self.f.write(b) if self.f else len(b)
+
+    def tell(self) -> int:
+        return self.n
+
+
+def _write(out, kv: bytes, n_kv: int, align: int, tensors: list) -> str:
     """tensors: (name, type, dims, writer, size, page) with writer(f) writing exactly `size` bytes;
     page = start on a PAGE boundary of the file (the data base is known before any offset, since
-    every table entry has a fixed width)."""
+    every table entry has a fixed width). out None: nothing is written. Returns the sha256."""
     head = 24 + len(kv) + sum(len(_string(n)) + 4 + 8 * len(d) + 12 for n, _, d, _, _, _ in tensors)
     base = (head + align - 1) // align * align
     table, offset, placed = b"", 0, []
@@ -114,16 +135,21 @@ def _write(out: Path, kv: bytes, n_kv: int, align: int, tensors: list) -> None:
         offset += size
     header = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), n_kv) + kv + table
     assert len(header) == head
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(out.suffix + ".part")
-    with open(tmp, "wb") as f:
+    tmp = None
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(out.suffix + ".part")
+    with (open(tmp, "wb") if tmp else open("/dev/null", "wb")) as raw:
+        f = _Hashing(raw if tmp else None)
         f.write(header + bytes(base - len(header)))
         for offset, writer, size in placed:
             f.write(bytes(base + offset - f.tell()))
             start = f.tell()
             writer(f)
             assert f.tell() - start == size, "tensor writer wrote the wrong size"
-    tmp.rename(out)
+    if tmp:
+        tmp.rename(out)
+    return f.h.hexdigest()
 
 
 def _copier(src: Gguf, name: str):
@@ -173,9 +199,15 @@ def rank(out: Path, logs: list, e: int) -> dict:
     return result
 
 
-def pool(q4: Path, ranking: dict, count: int, out: Path) -> None:
+def origin(source: Path) -> str:
+    """What a build's recipe calls its source: the file the first pool was cut from."""
+    return Gguf(source).meta.get("picoforge.pool.origin", source.name)
+
+
+def pool(q4: Path, ranking: dict, count: int, out: Path) -> str:
     src = Gguf(q4)
-    kv, n_kv, tensors = _kv("general.alignment", src.align), 1, []
+    kv = _kv("general.alignment", src.align) + _kv("picoforge.pool.origin", origin(q4))
+    n_kv, tensors = 2, []
     for layer in src.trunk_layers():
         chosen = ranking["layers"][str(layer)]["order"][:count]
         kv += _kv(f"picoforge.pool.blk.{layer}", chosen); n_kv += 1
@@ -183,8 +215,9 @@ def pool(q4: Path, ranking: dict, count: int, out: Path) -> None:
             name = f"blk.{layer}.ffn_{part}_exps.weight"
             t, dims, _ = src.tensors[name]
             per = src.nbytes(name) // dims[-1]
-            tensors.append((name, t, dims[:-1] + [count], _experts(src, chosen, name), per * count, False))
-    _write(out, kv, n_kv, src.align, tensors)
+            slots = [_slot(src, layer, x) for x in chosen]
+            tensors.append((name, t, dims[:-1] + [count], _experts(src, slots, name), per * count, False))
+    return _write(out, kv, n_kv, src.align, tensors)
 
 
 def build(template: Path, source: Path, ranking: dict, counts: dict, out: Path, recipe: dict) -> dict:
@@ -216,8 +249,8 @@ def build(template: Path, source: Path, ranking: dict, counts: dict, out: Path, 
             maps[layer] = values
             blob = values.tobytes()
             tensors.append((f"blk.{layer}.ffn_exps_map.weight", 0, [ne], lambda f, b=blob: f.write(b), len(blob), False))
-    _write(out, kv, tpl.n_kv + 2, tpl.align, tensors)
-    return {"hot": {str(l): sorted(np.nonzero(v < 0)[0].tolist()) for l, v in maps.items()}}
+    sha = _write(out, kv, tpl.n_kv + 2, tpl.align, tensors)
+    return {"hot": {str(l): sorted(np.nonzero(v < 0)[0].tolist()) for l, v in maps.items()}, "sha256": sha}
 
 
 def counts_for(ranking: dict, layers, fraction=None, count=None) -> dict:
@@ -236,21 +269,26 @@ def main() -> None:
     b.add_argument("ranking", type=Path); b.add_argument("out", type=Path)
     g = b.add_mutually_exclusive_group(required=True)
     g.add_argument("--fraction", type=float); g.add_argument("--count", type=int)
+    b.add_argument("--expect", help="sha256 the output must have"); b.add_argument("--hash-only", action="store_true")
     a = ap.parse_args()
     if a.cmd == "rank":
         res = rank(a.out, a.logs, a.experts)
         print(f"{a.out}: {res['rows']} rows, {len(res['layers'])} layers, {res['experts']} experts")
     elif a.cmd == "pool":
-        pool(a.q4, json.loads(a.ranking.read_text()), a.count, a.out)
-        print(f"{a.out}: {a.out.stat().st_size} bytes")
+        sha = pool(a.q4, json.loads(a.ranking.read_text()), a.count, a.out)
+        print(f"{a.out}: {a.out.stat().st_size} bytes, sha256 {sha}")
     else:
         ranking = json.loads(a.ranking.read_text())
         counts = counts_for(ranking, Gguf(a.template).trunk_layers(), a.fraction, a.count)
         recipe = {"fraction": a.fraction, "count": a.count, "ranking_sha256": hashlib.sha256(a.ranking.read_bytes()).hexdigest(),
-                  "ranking_rows": ranking["rows"], "template": a.template.name, "source": a.source.name}
-        info = build(a.template, a.source, ranking, counts, a.out, recipe)
-        a.out.with_suffix(".json").write_text(json.dumps({"recipe": recipe, **info}, indent=1) + "\n")
-        print(f"{a.out}: {a.out.stat().st_size} bytes")
+                  "ranking_rows": ranking["rows"], "template": a.template.name, "source": origin(a.source)}
+        info = build(a.template, a.source, ranking, counts, None if a.hash_only else a.out, recipe)
+        ok = a.expect is None or info["sha256"] == a.expect.lower()
+        if not a.hash_only:
+            a.out.with_suffix(".json").write_text(json.dumps({"recipe": recipe, **info}, indent=1) + "\n")
+            print(f"{a.out}: {a.out.stat().st_size} bytes")
+        print(f"sha256 {info['sha256']}" + ("" if a.expect is None else " (as expected)" if ok else f" != expected {a.expect}"))
+        sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
