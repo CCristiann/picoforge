@@ -6,6 +6,7 @@ speak the OpenAI or Anthropic formats (opencode, Claude Code, Pi, scripts) can u
 ```sh
 make pf-server
 ./pf-server -m q2                       # http://127.0.0.1:8080/v1, context 100000 tokens
+./pf-server -m code5                    # the code-tuned file (README: Code-tuned weights)
 ```
 
 The model loads once (a minute or so for Q2); the server prints `serving <id> on ...` when ready.

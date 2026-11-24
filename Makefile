@@ -152,9 +152,11 @@ test-pf-agent-model: pf-agent build/qwen4-g2/cli.gguf
 	$(QW4_LOCK) env PF_AGENT_GGUF=build/qwen4-g2/cli.gguf $(QW4_TEST) tests/test_pf_agent.py -v
 .PHONY: test-pf-agent test-pf-agent-model
 
-# pf-server: both APIs and the prompt cache on the synthetic checkpoint (GPU, under the lock).
-test-pf-server-model: pf-server build/qwen4-g2/cli.gguf
+# pf-server: both APIs and the prompt cache on the synthetic checkpoint (GPU, under the lock),
+# then on its mixed-expert copy (the layout of the Code5/Code10 files).
+test-pf-server-model: pf-server build/qwen4-g2/cli.gguf build/qwen4-g2/cli-mixed.gguf
 	$(QW4_LOCK) env PF_SERVER_GGUF=build/qwen4-g2/cli.gguf $(QW4_TEST) tests/test_pf_server.py -v
+	$(QW4_LOCK) env PF_SERVER_GGUF=build/qwen4-g2/cli-mixed.gguf $(QW4_TEST) tests/test_pf_server.py -v
 .PHONY: test-pf-server-model
 
 clean:
