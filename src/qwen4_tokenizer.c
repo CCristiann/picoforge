@@ -1,4 +1,4 @@
-/* Binary-safe Qwen3.8 facade over tokenizer.c's shared BPE. */
+/* The Qwen3.8 tokenizer, binary-safe, over the byte-level BPE of qwen4_bpe.c. */
 #include "qwen4_text_internal.h"
 
 static Qwen4Status strings(const Gguf *g, const char *key, Qwen4Bytes **out,

@@ -458,7 +458,7 @@ static void close_block(PfOut *o, Buf *b) {
 void pf_out_delta(PfOut *o, PfPart part, const char *p, size_t n) {
     if (!o->stream || o->gone || !n) return;
     char *text = strndup(p, n); Buf b = {0};
-    if (!text) die("pf-server: out of memory");
+    if (!text) die("out of memory");
     if (o->protocol == PF_OPENAI) {
         openai_chunk_head(o, &b);
         buf_fmt(&b, "{\"index\":0,\"delta\":{\"%s\":\"", part == PF_REASONING ? "reasoning_content" : "content");

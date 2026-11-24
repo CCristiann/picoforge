@@ -213,10 +213,10 @@ static void tool_list(PfTools *a, const PfCall *c, Buf *out) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         if (n == cap) {
             cap = cap ? cap*2 : 64; char **grown = realloc(names, cap*sizeof *names);
-            if (!grown) die("pf-agent: out of memory");
+            if (!grown) die("out of memory");
             names = grown;
         }
-        if (!(names[n++] = strdup(e->d_name))) die("pf-agent: out of memory");
+        if (!(names[n++] = strdup(e->d_name))) die("out of memory");
     }
     closedir(d);
     qsort(names, n, sizeof *names, by_name);
@@ -273,7 +273,7 @@ static void search_file(Search *s, const char *path) {
     s->files++;
     size_t n = 0, cap = 0; char **line = NULL;
     for (char *p = text.p; p && *p;) {                  /* split into NUL-terminated lines */
-        if (n == cap) { cap = cap ? cap*2 : 256; char **grown = realloc(line, cap*sizeof *line); if (!grown) die("pf-agent: out of memory"); line = grown; }
+        if (n == cap) { cap = cap ? cap*2 : 256; char **grown = realloc(line, cap*sizeof *line); if (!grown) die("out of memory"); line = grown; }
         line[n++] = p;
         char *nl = strchr(p, '\n');
         if (!nl) break;
@@ -524,10 +524,10 @@ static void tool_bash(PfTools *a, const PfCall *c, Buf *out) {
     j->pid = fd < 0 ? -1 : pf_spawn(argv, fd, fd);
     if (fd >= 0) close(fd);
     if (j->pid < 0) { buf_fmt(out, "Tool error: cannot start bash: %s\n", strerror(errno)); *j = (Job){0}; return; }
-    if (!(j->command = strdup(command))) die("pf-agent: out of memory");
+    if (!(j->command = strdup(command))) die("out of memory");
     pthread_mutex_init(&j->mu, NULL);
     j->monitoring = !pthread_create(&j->monitor, NULL, job_monitor, j);
-    if (!j->monitoring) die("pf-agent: cannot start a job monitor");
+    if (!j->monitoring) die("cannot start a job monitor");
     bool ended = job_wait(j, (double)refresh);
     if (!ended && qw4_stopped) { job_stop(j); ended = true; buf_str(out, "[interrupted by the user]\n"); }
     job_report(j, out);
@@ -580,7 +580,7 @@ static void jobs_cleanup(PfTools *a) {
  * when the next parameter or </function> follows it. */
 static char *dup_range(const char *s, const char *e) {
     char *p = strndup(s, (size_t)(e-s));
-    if (!p) die("pf-agent: out of memory");
+    if (!p) die("out of memory");
     return p;
 }
 static const char *param_end(const char *p) {
@@ -691,7 +691,7 @@ void pf_tools_run(PfTools *a, const PfCall *c, Buf *out) {
 
 PfTools *pf_tools_create(const char *root, bool yes, PfAsk ask, void *ask_ctx) {
     PfTools *a = calloc(1, sizeof *a);
-    if (!a) die("pf-agent: out of memory");
+    if (!a) die("out of memory");
     snprintf(a->root, sizeof a->root, "%s", root);
     a->yes = yes; a->ask = ask; a->ask_ctx = ask_ctx;
     return a;

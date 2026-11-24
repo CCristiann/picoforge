@@ -23,7 +23,7 @@ void buf_add(Buf *b, const void *s, size_t n) {
         size_t cap = b->cap ? b->cap : 256;
         while (cap < b->n+n+1) cap *= 2;
         char *p = realloc(b->p, cap);
-        if (!p) die("pf-agent: out of memory");
+        if (!p) die("out of memory");
         b->p = p; b->cap = cap;
     }
     if (n) memcpy(b->p+b->n, s, n);
@@ -36,7 +36,7 @@ void buf_fmt(Buf *b, const char *fmt, ...) {
     if (len < 0) return;
     if ((size_t)len < sizeof small) { buf_add(b, small, (size_t)len); return; }
     char *big = malloc((size_t)len+1);
-    if (!big) die("pf-agent: out of memory");
+    if (!big) die("out of memory");
     va_start(ap, fmt); vsnprintf(big, (size_t)len+1, fmt, ap); va_end(ap);
     buf_add(b, big, (size_t)len); free(big);
 }

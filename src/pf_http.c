@@ -88,7 +88,7 @@ bool pf_http_read(int fd, PfHttpRequest *r, size_t max_body, int *status) {
     size_t head = (size_t)(end+4-b.p), have = b.n-head;
     if (have > want) have = want;
     r->body = malloc(want+1);
-    if (!r->body) die("pf-server: out of memory");
+    if (!r->body) die("out of memory");
     memcpy(r->body, end+4, have);
     buf_free(&b);
     while (have < want) {

@@ -17,7 +17,7 @@ void *pf_alloc(PfArena *a, size_t n) {
     if (!b || b->cap-b->used < n) {
         size_t cap = n > 65536 ? n : 65536;
         b = calloc(1, sizeof *b+cap);
-        if (!b) die("pf-server: out of memory");
+        if (!b) die("out of memory");
         b->cap = cap; b->next = a->head; a->head = b;
     }
     void *p = b->data+b->used; b->used += n;
@@ -106,14 +106,14 @@ static bool value(Parser *ps, Qwen4Json *v);
 static bool list(Parser *ps, Qwen4Json *v, bool object) {
     if (++ps->depth > 128) return bad(ps, "nesting too deep");
     size_t n = 0, cap = 8; Qwen4Json *items = malloc(cap*sizeof *items); Qwen4Bytes *keys = malloc(cap*sizeof *keys);
-    if (!items || !keys) die("pf-server: out of memory");
+    if (!items || !keys) die("out of memory");
     bool ok = true; char close = object ? '}' : ']';
     space(ps);
     if (ps->p < ps->end && *ps->p == close) ps->p++;
     else for (;;) {
         if (n == cap) {
             cap *= 2; items = realloc(items, cap*sizeof *items); keys = realloc(keys, cap*sizeof *keys);
-            if (!items || !keys) die("pf-server: out of memory");
+            if (!items || !keys) die("out of memory");
         }
         space(ps);
         if (object) {
@@ -167,7 +167,7 @@ Qwen4Json *pf_json_parse(PfArena *a, const char *text, size_t n, char *err, size
 /* ------------------------------------------------------------ writer */
 static void write_string(Buf *b, Qwen4Bytes s) {
     char *tmp = strndup((const char *)s.data ? (const char *)s.data : "", s.len);
-    if (!tmp) die("pf-server: out of memory");
+    if (!tmp) die("out of memory");
     buf_str(b, "\"");
     if (strlen(tmp) == s.len) json_escape(b, tmp);
     else for (size_t i = 0; i < s.len; i++) {        /* an embedded NUL: escape byte by byte */

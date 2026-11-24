@@ -43,7 +43,7 @@ static FILE *entry_open(const PfSession *s, const char *path, Header *h, int32_t
     if (fread(h, sizeof *h, 1, f) != 1 || memcmp(h->magic, "PFKVC01", 8) || h->capacity != s->run.capacity ||
         h->mtp != (uint32_t)s->run.mtp || h->model_id != s->model_id || !h->n || h->n > h->capacity) { fclose(f); return NULL; }
     *ids = malloc(h->n*sizeof **ids);
-    if (!*ids) die("pf-server: out of memory");
+    if (!*ids) die("out of memory");
     if (fread(*ids, sizeof **ids, h->n, f) != h->n) { free(*ids); *ids = NULL; fclose(f); return NULL; }
     return f;
 }
@@ -62,7 +62,7 @@ static void evict(const PfCache *c) {
         snprintf(path, sizeof path, "%s/%s", c->dir, e->d_name);
         if (stat(path, &st)) continue;
         Item *grown = realloc(all, (n+1)*sizeof *all);
-        if (!grown) die("pf-server: out of memory");
+        if (!grown) die("out of memory");
         all = grown; snprintf(all[n].name, sizeof all[n].name, "%s", e->d_name);
         all[n].size = st.st_size; all[n].when = st.st_mtime; total += (uint64_t)st.st_size; n++;
     }

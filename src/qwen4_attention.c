@@ -1,4 +1,4 @@
-/* QSA CPU core, FP32 and no fast-math. See integration.md and spec D. */
+/* Sparse attention (QSA, part D in docs/DESIGN.md) on the CPU: FP32, no fast-math, the reference for the GPU. */
 #include "qwen4_attention_internal.h"
 #include "qwen4_ops.h"
 #include <math.h>

@@ -1,4 +1,4 @@
-/* pf_util.h — small pieces shared by pf-agent and, later, pf-server: growable
+/* pf_util.h — small pieces shared by pf-agent and pf-server: growable
  * text, UTF-8 and prompt hygiene, JSON string escapes, child processes. */
 #ifndef PICOFORGE_PF_UTIL_H
 #define PICOFORGE_PF_UTIL_H

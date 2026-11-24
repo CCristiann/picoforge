@@ -1,5 +1,4 @@
-/* pf_session.h — one model and one conversation, for pf-agent and, later,
- * pf-server.
+/* pf_session.h — one model and one conversation, for pf-agent and pf-server.
  *
  * The conversation is a token transcript that only grows: each turn renders
  * through the chat template and appends only its own suffix, so the model

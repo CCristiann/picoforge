@@ -93,7 +93,7 @@ which is why checkpoints larger than that run quantised.
 
 | path | contents |
 |---|---|
-| `src/` | the engine: `qwen4_*` (the model: CPU ops, Metal glue and `.metal` kernels, the run driver `qwen4_run.m`), `gguf*` and `gpu_weights.m` (the file and its GPU mapping), `common.c` |
+| `src/` | the engine: `qwen4_*` (the model: CPU ops, Metal glue and `.metal` kernels, the run driver `qwen4_run.m` and its terminal chat `qwen4_repl.c`), `gguf*` and `gpu_weights.m` (the file and its GPU mapping), `common.c` |
 | `src/pf*` | the commands around it: `pf.c` (pf, pf-bench), `pf_agent.c`, `pf_server.c`, and the modules they share (`pf_models`, `pf_session`, `pf_tools`, `pf_api`, ...) |
 | `tools/oracle/` | independent reference implementations of the Qwen3.8 operators |
 | `tools/synth/` | synthetic GGUF checkpoints for tests |
@@ -104,6 +104,23 @@ which is why checkpoints larger than that run quantised.
 | `tests/` | correctness harnesses (`make test-all`, `make test-qwen4`) |
 | `bench/` | measured data by stage (`qwen38/`), microbenchmark CSVs, the Qwen3 archive |
 | `docs/` | this file, the benchmark protocol, the development log, the project history, weight and corpus locks |
+
+### Engine components
+
+Comments in `src/` name the parts of the engine by letter. Each part has one owner; the graphs
+compose them and never re-implement an operator.
+
+| letter | part | files |
+|---|---|---|
+| A | text: tokenizer, chat template, GGUF config and weight roles | `qwen4_text.h`, `qwen4_tokenizer.c`, `qwen4_bpe.c`, `qwen4_chat.c`, `qwen4_config.c`, `qwen4_weights.c` |
+| B | packed (quantized) matrix products, CPU and GPU | `qwen4_packed.h`, `qwen4_packed*.c/.m/.metal`, `qwen4_matvec.metal` |
+| C | CPU primitives: norms, activations, conv, Gated DeltaNet, hyper-connections | `qwen4_ops.h`, `qwen4_base.c`, `qwen4_conv.c`, `qwen4_gdn.c`, `qwen4_recurrent*` |
+| D | sparse attention with its indexer and K/V cache | `qwen4_attention*` |
+| E | the n-gram (PLE) table read from the SSD | `qwen4_ngram*`, `qwen4_ple*` |
+| F | MoE: routing, routed and shared experts | `qwen4_moe*` |
+| G0 | the GPU session: one command, one completion, the ledger | `qwen4_gpu.h`, `qwen4_gpu.m` |
+| G1 | the whole graph on the CPU (the reference path) | `qwen4_forward.h`, `qwen4_forward.c` |
+| G2 | the whole graph on the GPU | `qwen4_forward_gpu.h`, `qwen4_forward_gpu.m` |
 
 ## Conventions
 

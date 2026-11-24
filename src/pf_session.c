@@ -20,7 +20,7 @@ static void note(const PfSession *s, const char *fmt, ...) {
     char text[1024]; va_list ap;
     va_start(ap, fmt); vsnprintf(text, sizeof text, fmt, ap); va_end(ap);
     if (s && s->note) s->note(s->note_ctx, text);
-    else fprintf(stderr, "pf-agent: %s", text);
+    else fprintf(stderr, "picoforge: %s", text);
 }
 
 /* ------------------------------------------------------------ JSON for the template
@@ -31,12 +31,12 @@ static Qwen4Json jstr(const char *s) {
 }
 static Qwen4Json jobject(size_t cap) {
     Qwen4JsonMember *m = calloc(cap, sizeof *m);
-    if (!m) die("pf-agent: out of memory");
+    if (!m) die("out of memory");
     return (Qwen4Json){.kind = QW4_JSON_OBJECT, .as.object = {m, 0}};
 }
 static void jset(Qwen4Json *object, const char *key, Qwen4Json value) {
     Qwen4Json *boxed = malloc(sizeof *boxed);
-    if (!boxed) die("pf-agent: out of memory");
+    if (!boxed) die("out of memory");
     *boxed = value;
     Qwen4JsonMember *m = (Qwen4JsonMember *)object->as.object.items;   /* ours: built here */
     m[object->as.object.count++] = (Qwen4JsonMember){{(const uint8_t *)key, strlen(key)}, boxed};
@@ -45,12 +45,12 @@ static void jset(Qwen4Json *object, const char *key, Qwen4Json value) {
 /* [{"type":"function","function":{"name","description","parameters":{JSON schema}}}, ...] */
 void pf_session_set_tools(PfSession *s, const PfToolSpec *(*spec)(size_t), size_t count) {
     Qwen4Json *list = calloc(count ? count : 1, sizeof *list);
-    if (!list) die("pf-agent: out of memory");
+    if (!list) die("out of memory");
     for (size_t i = 0; i < count; i++) {
         const PfToolSpec *t = spec(i);
         Qwen4Json props = jobject(6), *required = calloc(6, sizeof *required);
         size_t nreq = 0;
-        if (!required) die("pf-agent: out of memory");
+        if (!required) die("out of memory");
         for (const PfParam *p = t->params; p < t->params+6 && p->name; p++) {
             Qwen4Json prop = jobject(2);
             jset(&prop, "type", jstr(p->type)); jset(&prop, "description", jstr(p->description));
@@ -80,7 +80,7 @@ static uint8_t *render(const PfSession *s, const Qwen4Json *list, size_t n, bool
         note(s, "%s\n", e.detail); return NULL;
     }
     uint8_t *out = malloc(*len+1);
-    if (!out) die("pf-agent: out of memory");
+    if (!out) die("out of memory");
     qw4_check(qwen4_chat_render(s->run.tok, &messages, with_tools && s->has_tools ? &s->tools : NULL, o, out, *len, len, &e), &e);
     return out;
 }
@@ -106,11 +106,11 @@ size_t pf_session_append(PfSession *s, const PfMsg *msgs, size_t n) {
     if (!text) return 0;
     if (!first) {
         uint8_t *prefix = render(s, list, 1, false, false, &skip);
-        if (!prefix || skip > len || memcmp(prefix, text, skip)) die("pf-agent: placeholder turn is not a prefix");
+        if (!prefix || skip > len || memcmp(prefix, text, skip)) die("placeholder turn is not a prefix");
         free(prefix);
     } else if (s->primed_n) {
         skip = s->prefix.n;
-        if (skip > len || memcmp(s->prefix.p, text, skip)) die("pf-agent: the system block is not a prefix of the first turn");
+        if (skip > len || memcmp(s->prefix.p, text, skip)) die("the system block is not a prefix of the first turn");
     }
     /* Close the previous turn: a reply ends with <|im_end|> unless it was cut;
      * a rendered turn (compaction) already ends with <|im_end|> and a newline. */
@@ -133,18 +133,18 @@ size_t pf_session_append(PfSession *s, const PfMsg *msgs, size_t n) {
 void pf_session_dump(const PfSession *s) {
     if (!s->ids_path) return;
     FILE *f = fopen(s->ids_path, "w");
-    if (!f) die("pf-agent: cannot open %s", s->ids_path);
+    if (!f) die("cannot open %s", s->ids_path);
     size_t len = 0; Qwen4Error e; Buf json = {0};
     qw4_check(qwen4_decode_utf8(s->run.tok, s->ids, s->n, false, NULL, 0, &len, &e), &e);
     char *text = malloc(len+1);
-    if (!text) die("pf-agent: out of memory");
+    if (!text) die("out of memory");
     qw4_check(qwen4_decode_utf8(s->run.tok, s->ids, s->n, false, (uint8_t *)text, len, &len, &e), &e);
     text[len] = 0; json_escape(&json, text); free(text);
     fputs("{\"ids\":[", f);
     for (size_t i = 0; i < s->n; i++) fprintf(f, "%s%d", i ? "," : "", s->ids[i]);
     fprintf(f, "],\"kv\":%llu,\"text\":\"%s\"}\n", (unsigned long long)qwen4_gpu_forward_info(s->run.graph).next_pos, json.p);
     buf_free(&json);
-    if (fclose(f)) die("pf-agent: writing %s failed", s->ids_path);
+    if (fclose(f)) die("writing %s failed", s->ids_path);
 }
 /* --script (tests): the next canned reply, up to a line "=====", encoded and
  * appended as if the model had generated it. NULL when the script is used up. */
@@ -195,7 +195,7 @@ char *pf_session_reply(PfSession *s, size_t added, const PfStream *stream, PfRep
     size_t len = 0; Qwen4Error e;
     qw4_check(qwen4_decode_utf8(s->run.tok, s->generated, t.got, true, NULL, 0, &len, &e), &e);
     char *text = malloc(len+1);
-    if (!text) die("pf-agent: out of memory");
+    if (!text) die("out of memory");
     qw4_check(qwen4_decode_utf8(s->run.tok, s->generated, t.got, true, (uint8_t *)text, len, &len, &e), &e);
     text[len] = 0;
     return text;
@@ -271,7 +271,7 @@ static bool read_file(PfSession *s, FILE *f, const SessionHeader *h, const char 
     if (h->capacity != s->run.capacity) {
         qw4_run_graph(&s->run, h->capacity);
         int32_t *ids = realloc(s->ids, h->capacity*sizeof *ids), *gen = realloc(s->generated, h->capacity*sizeof *gen);
-        if (!ids || !gen) die("pf-agent: out of memory");
+        if (!ids || !gen) die("out of memory");
         s->ids = ids; s->generated = gen;
     }
     setvbuf(f, NULL, _IOFBF, 8u << 20);
@@ -345,7 +345,7 @@ bool pf_session_strip(const PfSession *s, const char *name) {
     FILE *f = session_open(s, name, &h);
     if (!f || !session_path(s, name, "pfs", path)) { if (f) fclose(f); return false; }
     int32_t *ids = malloc((h.n ? h.n : 1)*sizeof *ids);
-    if (!ids) die("pf-agent: out of memory");
+    if (!ids) die("out of memory");
     bool ok = fread(ids, sizeof *ids, h.n, f) == h.n;
     fclose(f);
     snprintf(tmp, sizeof tmp, "%s.XXXXXX", path);
@@ -375,7 +375,7 @@ void pf_session_list(Buf *out) {
         if (!(f = session_open(NULL, item.name, &item.h))) continue;
         fclose(f);
         Listed *grown = realloc(all, (n+1)*sizeof *all);
-        if (!grown) die("pf-agent: out of memory");
+        if (!grown) die("out of memory");
         all = grown; all[n++] = item;
     }
     if (d) closedir(d);
@@ -478,14 +478,14 @@ void pf_session_history(const PfSession *s, size_t count, Buf *out) {
     size_t len = 0; Qwen4Error e;
     if (qwen4_decode_utf8(s->run.tok, s->ids, s->n, false, NULL, 0, &len, &e)) return;
     char *text = malloc(len+1);
-    if (!text) die("pf-agent: out of memory");
+    if (!text) die("out of memory");
     qw4_check(qwen4_decode_utf8(s->run.tok, s->ids, s->n, false, (uint8_t *)text, len, &len, &e), &e);
     text[len] = 0;
     const char **turn = NULL; size_t n = 0;
     for (const char *p = text; (p = strstr(p, "<|im_start|>user\n")); p += 17) {
         if (!strncmp(p+17, "\n<tool_response>", 16) || !strncmp(p+17, "<tool_response>", 15)) continue;
         const char **grown = realloc(turn, (n+1)*sizeof *turn);
-        if (!grown) die("pf-agent: out of memory");
+        if (!grown) die("out of memory");
         turn = grown; turn[n++] = p+17;
     }
     if (!n) buf_str(out, "No requests yet.\n");
@@ -562,7 +562,7 @@ bool pf_session_compact(PfSession *s, const PfStream *stream) {
     size_t budget = s->run.capacity/COMPACT_TAIL_DIVISOR < COMPACT_TAIL_CAP ? s->run.capacity/COMPACT_TAIL_DIVISOR : COMPACT_TAIL_CAP;
     size_t from = tail_start(s, base, bottom, budget), tail_n = bottom-from;
     int32_t *tail = malloc((tail_n ? tail_n : 1)*sizeof *tail);
-    if (!tail) die("pf-agent: out of memory");
+    if (!tail) die("out of memory");
     memcpy(tail, s->ids+from, tail_n*sizeof *tail);
     /* 3. system block + [summary as a user turn, a short assistant ack] + tail */
     Buf content = {0};
@@ -606,17 +606,17 @@ void pf_session_open(PfSession *s, const PfSessionOptions *o) {
     /* The header holds the metadata and the tensor table: two files of the same size (Code5
      * built from two rankings) differ there, so a state saved with one never loads into the other. */
     s->model_id = fnv1a(r->g.header, r->g.data_offset < r->g.header_size ? r->g.data_offset : r->g.header_size);
-    if (o->context > r->c->max_positions) die("pf-agent: a context of %u exceeds the model's %u positions", o->context, r->c->max_positions);
+    if (o->context > r->c->max_positions) die("a context of %u exceeds the model's %u positions", o->context, r->c->max_positions);
     if (qwen4_encode(r->tok, (Qwen4Bytes){(const uint8_t *)"<|im_end|>", 10}, probe, 2, &one, &e) || one != 1)
-        die("pf-agent: the model needs <|im_end|> as a single token");
+        die("the model needs <|im_end|> as a single token");
     s->im_end = probe[0];
     if (qwen4_encode(r->tok, (Qwen4Bytes){(const uint8_t *)"\n", 1}, probe, 2, &one, &e) || one != 1)
-        die("pf-agent: the model needs a newline as a single token");
+        die("the model needs a newline as a single token");
     s->newline = probe[0];
     qw4_run_gpu(r, o->model, o->metallib, o->context);
     qw4_run_graph(r, o->context);
     s->ids = malloc((size_t)o->context*sizeof *s->ids); s->generated = malloc((size_t)o->context*sizeof *s->generated);
-    if (!s->ids || !s->generated || !s->model_path) die("pf-agent: out of memory");
+    if (!s->ids || !s->generated || !s->model_path) die("out of memory");
 }
 void pf_session_close(PfSession *s) {
     qw4_run_close(&s->run);
@@ -626,7 +626,7 @@ void pf_session_close(PfSession *s) {
 void pf_session_set_system(PfSession *s, const char *text) {
     if (s->primed_n && s->n == s->primed_n) pf_session_reset(s);   /* the primed block is the old one */
     free(s->system); s->system = strdup(text ? text : "");
-    if (!s->system) die("pf-agent: out of memory");
+    if (!s->system) die("out of memory");
 }
 void pf_session_reset(PfSession *s) {
     Qwen4Error e; qw4_check(qwen4_gpu_forward_reset(s->run.graph, &e), &e);
