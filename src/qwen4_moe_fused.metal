@@ -14,6 +14,9 @@ struct PackedArgs {
     ulong row_bytes, weight_offset, weight_end, x_stride, y_stride, x_bytes, y_bytes;
 };
 struct IndexedArgs { PackedArgs base; ulong expert_bytes; uint experts, x_divisor; };
+/* picoforge mixed experts: the id a pair gets in the format that does not hold its expert
+ * (qw4f_mixed_remap, qwen4_moe.metal); the fused kernels skip it. */
+#define QW4_PAIR_ELSEWHERE 0xFFFFFFFFu
 struct GateUpArgs { IndexedArgs gate, up; };
 static_assert(sizeof(GateUpArgs) == 192, "gate/up wire record size");
 
@@ -78,6 +81,7 @@ static inline void gate_up(device const uchar *gw, device const uchar *uw, devic
     const uint m = group.y;
     if (n >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
     const uint expert = ids[m];
+    if (expert == QW4_PAIR_ELSEWHERE) return; /* mixed experts: the other format computes this pair */
     const ulong grow = p.weight_offset + ulong(expert) * a.gate.expert_bytes + n * p.row_bytes;
     const ulong urow = q.weight_offset + ulong(expert) * a.up.expert_bytes + n * q.row_bytes;
     const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4), yi = ulong(m) * (p.y_stride / 4) + n;
@@ -165,6 +169,7 @@ kernel void qw4_moe_gate_up8_iq2_xxs(device const uchar *gw [[buffer(0)]], devic
     const uint m = group.y;
     if (n0 >= p.n_out || m >= p.rows) return; /* uniform over the simdgroup, as every return below */
     const uint expert = ids[m];
+    if (expert == QW4_PAIR_ELSEWHERE) return; /* mixed experts: the other format computes this pair */
     const ulong xi = ulong(m / a.gate.x_divisor) * (p.x_stride / 4);
     if (expert >= a.gate.experts || expert >= a.up.experts || (p.k_logical & 255u) || (xi & 3) ||
         xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi) {
@@ -340,40 +345,31 @@ inline float qw4_quant_chunk<QW4Q2KDot>(device const uchar *row, device const fl
     return fma(dl, sq, -(ml * sx));
 }
 struct SpAddArgs { uint h, width; ulong res_stride, inj_stride; }; /* h 0: no HC_ADD */
+/* One slot of the parallel-slot down: simdgroup s's DOWN_ROWS dots, left in part[s] (bad[s] if
+ * the slot falls outside its tensor). Shared by down_reduce_sp and the mixed-experts variant. */
 template <typename F>
-static inline void down_reduce_sp(device const uchar *w, device const float *act, device const float *shared,
-        device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
-        device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
-        uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad,
+static inline void sp_slot(device const uchar *w, constant IndexedArgs &dn, uint expert, uint pair, device const float *act,
+        ulong n0, uint nr, uint s, uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad) {
+    constant PackedArgs &p = dn.base;
+    const ulong row = p.weight_offset + ulong(expert) * dn.expert_bytes + n0 * p.row_bytes;
+    const ulong last = row + (nr - 1) * p.row_bytes, xi = ulong(pair) * (p.x_stride / 4);
+    const bool ok = !(expert >= dn.experts || last > p.weight_end || p.row_bytes > p.weight_end - last ||
+                      xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi);
+    float d[DOWN_ROWS];
+    if (ok) qw4_quant_rows<F, DOWN_ROWS>(w + row, p.row_bytes, nr, act + xi, p.k_logical, lane, d);
+    if (!lane) {
+        bad[s] = !ok;
+        for (uint r = 0; r < DOWN_ROWS; r++) part[s][r] = ok ? d[r] : 0.0f;
+    }
+}
+/* Decode VII: lane r of simdgroup 0 reduces row r (lane 0 did all DOWN_ROWS
+ * rows, then their HC_ADD, one after the other), each row in the same slot
+ * order with the same expressions: y, routed and res keep their bits
+ * (dbench Q2_K 2560x640, 10 slots: 51 -> 44 us). */
+static inline void sp_reduce(device const float *shared, device const float *sigmoid, device const float *scores,
+        device float *routed, device float *y, device atomic_uint *error, constant DownReduceArgs &a, ulong n0, uint nr,
+        uint t, ulong yi, ulong ri, uint sg, uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad,
         device float *res, device const float *inj, constant SpAddArgs &e) {
-    constant PackedArgs &p = a.down.base;
-    const ulong n0 = ulong(group.x) * DOWN_ROWS;
-    const uint t = group.y;
-    if (n0 >= p.n_out || t >= a.tokens) return; /* uniform over the threadgroup */
-    const uint nr = uint(min(ulong(DOWN_ROWS), p.n_out - n0));
-    const ulong yi = ulong(t) * (p.y_stride / 4) + n0, ri = ulong(t) * p.n_out + n0;
-    if (yi + nr > p.y_bytes / 4 || sgs != a.slots || a.slots > DOWN_SP_MAX_SLOTS) {
-        if (!lane && !sg) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
-        return;
-    }
-    {
-        const uint s = sg, pair = t * a.slots + s, expert = ids[pair];
-        const ulong row = p.weight_offset + ulong(expert) * a.down.expert_bytes + n0 * p.row_bytes;
-        const ulong last = row + (nr - 1) * p.row_bytes, xi = ulong(pair) * (p.x_stride / 4);
-        const bool ok = !(expert >= a.down.experts || last > p.weight_end || p.row_bytes > p.weight_end - last ||
-                          xi > p.x_bytes / 4 || p.k_logical > p.x_bytes / 4 - xi);
-        float d[DOWN_ROWS];
-        if (ok) qw4_quant_rows<F, DOWN_ROWS>(w + row, p.row_bytes, nr, act + xi, p.k_logical, lane, d);
-        if (!lane) {
-            bad[s] = !ok;
-            for (uint r = 0; r < DOWN_ROWS; r++) part[s][r] = ok ? d[r] : 0.0f;
-        }
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    /* Decode VII: lane r of simdgroup 0 reduces row r (lane 0 did all DOWN_ROWS
-     * rows, then their HC_ADD, one after the other), each row in the same slot
-     * order with the same expressions: y, routed and res keep their bits
-     * (dbench Q2_K 2560x640, 10 slots: 51 -> 44 us). */
     if (sg || lane >= nr) return;
     const uint r = lane;
     float sum = 0.0f;
@@ -399,6 +395,33 @@ static inline void down_reduce_sp(device const uchar *w, device const float *act
         res[i] = out;
     }
 }
+/* The output rows and token of one parallel-slot threadgroup; false: nothing to do (or bit 2 set). */
+static inline bool sp_begin(constant DownReduceArgs &a, uint2 group, uint sg, uint sgs, uint lane, device atomic_uint *error,
+        thread ulong &n0, thread uint &nr, thread ulong &yi, thread ulong &ri) {
+    constant PackedArgs &p = a.down.base;
+    n0 = ulong(group.x) * DOWN_ROWS;
+    if (n0 >= p.n_out || group.y >= a.tokens) return false; /* uniform over the threadgroup */
+    nr = uint(min(ulong(DOWN_ROWS), p.n_out - n0));
+    yi = ulong(group.y) * (p.y_stride / 4) + n0; ri = ulong(group.y) * p.n_out + n0;
+    if (yi + nr > p.y_bytes / 4 || sgs != a.slots || a.slots > DOWN_SP_MAX_SLOTS) {
+        if (!lane && !sg) atomic_fetch_or_explicit(error, 2u, memory_order_relaxed);
+        return false;
+    }
+    return true;
+}
+template <typename F>
+static inline void down_reduce_sp(device const uchar *w, device const float *act, device const float *shared,
+        device const float *sigmoid, device const float *scores, device const uint *ids, device float *routed,
+        device float *y, device atomic_uint *error, constant DownReduceArgs &a, uint2 group, uint sg, uint sgs,
+        uint lane, threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad,
+        device float *res, device const float *inj, constant SpAddArgs &e) {
+    ulong n0, yi, ri; uint nr;
+    if (!sp_begin(a, group, sg, sgs, lane, error, n0, nr, yi, ri)) return;
+    const uint pair = group.y * a.slots + sg;
+    sp_slot<F>(w, a.down, ids[pair], pair, act, n0, nr, sg, lane, part, bad);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    sp_reduce(shared, sigmoid, scores, routed, y, error, a, n0, nr, group.y, yi, ri, sg, lane, part, bad, res, inj, e);
+}
 #define DOWN_REDUCE_SP_KERNEL(name, F) \
 kernel void name(device const uchar *w [[buffer(0)]], device const float *act [[buffer(1)]], \
         device const float *shared [[buffer(2)]], device const float *sigmoid [[buffer(3)]], \
@@ -415,6 +438,39 @@ DOWN_REDUCE_SP_KERNEL(qw4_moe_down_reduce_sp_iq2_xxs, QW4Iq2Xxs)
 DOWN_REDUCE_SP_KERNEL(qw4_moe_down_reduce_sp_q2_k, QW4Q2KDot)
 DOWN_REDUCE_SP_KERNEL(qw4_moe_down_reduce_sp_q4_k, QW4Q4K)
 DOWN_REDUCE_SP_KERNEL(qw4_moe_down_reduce_sp_mxfp4, QW4Mxfp4)
+
+/* picoforge mixed experts: down_reduce_sp over two tensors. Each pair is cold (cold[pair] a slot of
+ * w, hot[pair] = QW4_PAIR_ELSEWHERE) or hot (the reverse, a slot of hw); its simdgroup runs that
+ * format's sp_slot, so every dot and the reduction are those of the format's own parallel-slot
+ * kernel. One dispatch instead of two unfused downs, a select and qw4f_reduce. */
+template <typename FC, typename FH>
+static inline void down_reduce_sp_mixed(device const uchar *w, device const uchar *hw, device const float *act,
+        device const float *shared, device const float *sigmoid, device const float *scores, device const uint *cold,
+        device const uint *hot, device float *routed, device float *y, device atomic_uint *error,
+        constant DownReduceArgs &a, constant IndexedArgs &ha, uint2 group, uint sg, uint sgs, uint lane,
+        threadgroup float (*part)[DOWN_ROWS], threadgroup uint *bad,
+        device float *res, device const float *inj, constant SpAddArgs &e) {
+    ulong n0, yi, ri; uint nr;
+    if (!sp_begin(a, group, sg, sgs, lane, error, n0, nr, yi, ri)) return;
+    const uint pair = group.y * a.slots + sg, c = cold[pair];
+    if (c != QW4_PAIR_ELSEWHERE) sp_slot<FC>(w, a.down, c, pair, act, n0, nr, sg, lane, part, bad);
+    else sp_slot<FH>(hw, ha, hot[pair], pair, act, n0, nr, sg, lane, part, bad);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    sp_reduce(shared, sigmoid, scores, routed, y, error, a, n0, nr, group.y, yi, ri, sg, lane, part, bad, res, inj, e);
+}
+kernel void qw4_moe_down_reduce_sp_mixed_q2_k_mxfp4(device const uchar *w [[buffer(0)]], device const float *act [[buffer(1)]],
+        device const float *shared [[buffer(2)]], device const float *sigmoid [[buffer(3)]],
+        device const float *scores [[buffer(4)]], device const uint *cold [[buffer(5)]],
+        device float *routed [[buffer(6)]], device float *y [[buffer(7)]], device atomic_uint *error [[buffer(8)]],
+        constant DownReduceArgs &a [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]],
+        uint sg [[simdgroup_index_in_threadgroup]], uint sgs [[simdgroups_per_threadgroup]],
+        uint lane [[thread_index_in_simdgroup]], device float *res [[buffer(10)]],
+        device const float *inj [[buffer(11)]], constant SpAddArgs &e [[buffer(12)]],
+        device const uchar *hw [[buffer(13)]], constant IndexedArgs &ha [[buffer(14)]], device const uint *hot [[buffer(15)]]) {
+    threadgroup float part[DOWN_SP_MAX_SLOTS][DOWN_ROWS]; threadgroup uint bad[DOWN_SP_MAX_SLOTS];
+    down_reduce_sp_mixed<QW4Q2KDot, QW4Mxfp4>(w, hw, act, shared, sigmoid, scores, cold, hot, routed, y, error, a, ha,
+        group, sg, sgs, lane, part, bad, res, inj, e);
+}
 
 /* R1.5d router softmax + top-k, one threadgroup per token: bit-identical to
  * qw4f_route (qwen4_moe.metal) in ids, weights and probs, which ran ONE thread

@@ -315,6 +315,12 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
                   w->expert_map.bytes<e*4 || !w->hot[0] || !w->hot[1] || !w->hot[2]))
         return qw4c_error(err,QW4_SHAPE,"routed MoE mixed-expert views");
     if (mixed && w->remap) return qw4c_error(err,QW4_UNSUPPORTED,"mixed experts cannot be streamed");
+    /* M4d: decode-sized mixed layers skip the other format's pairs in the fused kernels and fold
+     * both downs into one parallel-slot down+reduce; prefill (grouped) and the exact kernels keep
+     * the M4b path (both formats on every pair, then qw4f_mixed_select). */
+    const bool fast_mixed=mixed && !r->ref_moe && wl[1].gguf_type==wl[2].gguf_type &&
+        w->hot_layout[0].gguf_type==w->hot_layout[1].gguf_type && !qw4_packed_grouped_rows(b,wl[1].gguf_type,p) &&
+        qw4_packed_mixed_fast(b,wl[1].gguf_type,w->hot_layout[0].gguf_type,wl[3].gguf_type,w->hot_layout[2].gguf_type,k);
     if (!t) return qw4c_error(err,QW4_OK,NULL);
     id<MTLComputeCommandEncoder> enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
     if (w->hc_added) *w->hc_added=false;
@@ -345,7 +351,7 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
     /* Decode III: the shared expert's activation runs beside the router and its down matvec beside
      * gate+up, without the two barriers of their own (same kernels, same bits); `barrier` keeps the
      * old order. */
-    bool early_shared=r->shared_act && !w->mark && !mixed && !qw4_ref_kernels("barrier") && !qw4_ref_kernels("exact"); /* profile: own group */
+    bool early_shared=r->shared_act && !w->mark && (!mixed || fast_mixed) && !qw4_ref_kernels("barrier") && !qw4_ref_kernels("exact"); /* profile: own group */
     if (qw4f_routed_fast_route(r,e,k)) { /* R1.5d: one threadgroup per token, same ids, weights and probs */
         const bool simd=r->route_simd!=NULL; /* Decode III: one simdgroup per token */
         [enc setComputePipelineState:(__bridge id<MTLComputePipelineState>)(simd ? r->route_simd : r->route_fast)];
@@ -374,11 +380,19 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
      * row dot. Then the unfused sequence. */
     MARK("moe.gate_up",QW4_PROFILE_MIXED,p*(wl[1].expert_bytes+wl[2].expert_bytes));
     if (mixed) {   /* picoforge mixed experts: slots per format, then both formats on every pair */
-        struct { uint32_t pairs,experts; } ma={(uint32_t)p,(uint32_t)e};
+        struct { uint32_t pairs,experts,filler,pad; } ma={(uint32_t)p,(uint32_t)e,fast_mixed ? 0xFFFFFFFFu : 0u,0};
         at(enc,w->ids,0); at(enc,w->expert_map,1); at(enc,w->cold_ids,2); at(enc,w->hot_ids,3); at(enc,w->identity,4);
         [enc setBytes:&ma length:sizeof ma atIndex:5]; at(enc,cmd.error_word,6); run(enc,r->mixed_remap,p);
-        QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->cold_ids,k,p,i,x,w->act,w,err));
-        QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,w->hot[0],&w->hot_layout[0],w->hot[1],&w->hot_layout[1],w->hot_ids,k,p,i,x,w->act_hot,w,err));
+        if (fast_mixed) {   /* disjoint pairs, one act: no barrier between the two formats */
+            Qwen4Status st=qw4_packed_encode_gate_up(b,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->cold_ids,k,x,w->act,err);
+            if (!st) st=qw4_packed_encode_gate_up(b,&cmd,store,w->hot[0],&w->hot_layout[0],w->hot[1],&w->hot_layout[1],w->hot_ids,k,x,w->act,err);
+            if (st) return st==QW4_UNSUPPORTED ? qw4c_error(err,QW4_GPU_ERROR,"mixed fused gate+up refused") : st;
+            if (early_shared) QW4C_TRY(qw4_packed_encode(b,&cmd,store,wb[6],&wl[6],0,w->sact,w->shared,err));
+            [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        } else {
+            QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,wb[1],&wl[1],wb[2],&wl[2],w->cold_ids,k,p,i,x,w->act,w,err));
+            QW4C_TRY(mixed_gate_up(r,b,ops,&cmd,store,w->hot[0],&w->hot_layout[0],w->hot[1],&w->hot_layout[1],w->hot_ids,k,p,i,x,w->act_hot,w,err));
+        }
         enc=(__bridge id<MTLComputeCommandEncoder>)cmd.compute_encoder;
     }
     /* R3.2: a prefill-sized group of pairs runs one GEMM per expert instead
@@ -421,7 +435,12 @@ Qwen4Status qw4f_routed_encode(QW4FRouted *r,QW4PackedGpu *b,QW4CGpu *ops,Qwen4G
     MARK("moe.down",QW4_PROFILE_MIXED,p*wl[3].expert_bytes);
     const QW4DownReduceViews dv={w->weights,w->shared,w->ssig,w->routed,w->hc_residual,w->hc_inject,w->hc_added};
     fused=r->ref_moe || grouped || mixed ? QW4_UNSUPPORTED : qw4_packed_encode_down_reduce(b,&cmd,store,wb[3],&wl[3],xids,w->act,&dv,y,err);
-    if (mixed) {   /* cold rows [0,P), hot rows [P,2P); identity already holds each pair's row */
+    if (fast_mixed) {
+        fused=qw4_packed_encode_down_reduce_mixed(b,&cmd,store,wb[3],&wl[3],w->cold_ids,w->hot[2],&w->hot_layout[2],
+                                                  w->hot_ids,w->act,&dv,y,err);
+        if (fused) return fused==QW4_UNSUPPORTED ? qw4c_error(err,QW4_GPU_ERROR,"mixed down+reduce refused") : fused;
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    } else if (mixed) {   /* cold rows [0,P), hot rows [P,2P); identity already holds each pair's row */
         Qwen4GpuF32 cold=w->down2,hot=w->down2;
         cold.dim[0]=hot.dim[0]=p; cold.span.bytes=hot.span.bytes=p*h*4; hot.span.offset_bytes+=p*h*4;
         QW4C_TRY(mixed_down(r,b,&cmd,store,wb[3],&wl[3],w->cold_ids,p,w->act,cold,w,err));

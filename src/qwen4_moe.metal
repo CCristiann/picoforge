@@ -79,13 +79,15 @@ kernel void qw4f_iota(device uint *map [[buffer(0)]],uint i [[thread_position_in
  * writes rows [0,P), the hot pass rows [P,2P). map: int32 [E], v >= 0 cold slot, v < 0 hot -1-v. */
 kernel void qw4f_mixed_remap(device const uint *ids [[buffer(0)]],device const int *map [[buffer(1)]],
     device uint *cold [[buffer(2)]],device uint *hot [[buffer(3)]],device uint *rows [[buffer(4)]],
-    constant uint2 &a [[buffer(5)]],device atomic_uint *error [[buffer(6)]],uint p [[thread_position_in_grid]]) {
+    constant uint3 &a [[buffer(5)]],device atomic_uint *error [[buffer(6)]],uint p [[thread_position_in_grid]]) {
     if (p>=a.x) return;
     uint e=ids[p];
     int v=e<a.y ? map[e] : 0;
     if (e>=a.y) atomic_fetch_or_explicit(error,2u,memory_order_relaxed);
-    cold[p]=v>=0 ? uint(v) : 0u;
-    hot[p]=v<0 ? uint(-1-v) : 0u;
+    /* a.z: what the other format gets, slot 0 (computed, then dropped by qw4f_mixed_select) or
+     * 0xFFFFFFFF (skipped by the fused kernels of qwen4_moe_fused.metal) */
+    cold[p]=v>=0 ? uint(v) : a.z;
+    hot[p]=v<0 ? uint(-1-v) : a.z;
     rows[p]=v<0 ? a.x+p : p;
 }
 /* picoforge mixed experts: each pair's down row from its format's pass, back into [P,H] for qw4f_reduce. */
