@@ -30,7 +30,7 @@ static void help(void) {
     puts("Commands:\n"
          "  /help          Show this help.\n"
          "  /info          Model, memory and session settings.\n"
-         "  /read FILE     Send a text file as your message.\n"
+         "  /read FILE     Send a text file as your message (a paste of several lines is one message too).\n"
          "  /ctx N         New context size (clears the conversation).\n"
          "  /reset         Start a new conversation.\n"
          "  /think, /nothink  Reasoning on or off for the next turns.\n"
@@ -115,9 +115,6 @@ void qw4_print_text(void *ctx, const uint8_t *s, size_t len) {
     }
 }
 void qw4_print_end(Printer *p) { fwrite(p->pending,1,p->n,stdout); p->n=0; qw4_printer_shade(p,false); fflush(stdout); }
-/* Prefill what the graph does not hold yet, then decode the reply. Shared
- * with pf-agent (qwen4_run.h). The graph holds ids[0..pos); everything up
- * to `held` is the transcript, so a graph past it (a cancelled turn) replays. */
 /* Make the graph hold a prefix of ids[0..held) that the next append can extend:
  * a graph past `held`, or an MTP predictor older than the last append, starts
  * over; otherwise the predictor's pending rows (the last append's) are paired
@@ -135,6 +132,9 @@ static size_t chat_catch_up(QW4Run *r, const int32_t *ids, size_t held, bool *re
     }
     return pos;
 }
+/* Prefill what the graph does not hold yet, then decode the reply. Shared
+ * with pf-agent and pf-server (qwen4_run.h). The graph holds ids[0..pos); everything up
+ * to `held` is the transcript, so a graph past it (a cancelled turn) replays. */
 size_t qw4_chat_continue(QW4Run *r, const int32_t *ids, size_t held, size_t total, uint32_t max_new,
                          void (*print)(void *, const uint8_t *, size_t), void *print_ctx,
                          void (*progress)(void *, size_t, size_t, size_t),
@@ -186,6 +186,30 @@ static char *read_file(const char *path) {
     if (bad) { fprintf(stderr,"picoforge: %s must be NUL-free text <= 4 MiB\n",path); free(text); return NULL; }
     text[n]=0; return text;
 }
+/* A paste arrives as one message. A terminal in bracketed-paste mode (turned on below) wraps
+ * it in ESC[200~ ... ESC[201~; the lines up to the end marker join the first one, and the
+ * markers go. Returns the text (owned), or NULL past 4 MiB. */
+static const char paste_open[]="\x1b[200~",paste_close[]="\x1b[201~";
+static void drop_all(char *s, const char *what) {
+    size_t n=strlen(what);
+    for (char *at; (at=strstr(s,what));) memmove(at,at+n,strlen(at+n)+1);
+}
+static char *read_paste(const char *first, FILE *in) {
+    size_t n=strlen(first),cap=n+1; char *all=malloc(cap),*line=NULL; size_t line_cap=0;
+    if (!all) die("paste allocation");
+    memcpy(all,first,n+1);
+    while (!strstr(all,paste_close)) {
+        ssize_t got=getline(&line,&line_cap,in);
+        if (got<0) break;
+        if (n+(size_t)got>(4u<<20)) { fprintf(stderr,"picoforge: paste longer than 4 MiB\n"); free(all); free(line); return NULL; }
+        if (n+(size_t)got+1>cap) { cap=2*(n+(size_t)got+1); char *grown=realloc(all,cap); if (!grown) die("paste allocation"); all=grown; }
+        memcpy(all+n,line,(size_t)got+1); n+=(size_t)got;
+    }
+    free(line);
+    drop_all(all,paste_open); drop_all(all,paste_close);
+    return all;
+}
+static void paste_off(void) { fputs("\x1b[?2004l",stdout); fflush(stdout); }
 static void forget(Chat *ch) {
     Qwen4Error e; qw4_check(qwen4_gpu_forward_reset(ch->r->graph,&e),&e);
     ch->n=0; ch->r->last_count=0; dump_ids(ch);
@@ -216,6 +240,7 @@ int qw4_repl(QW4Run *r, const char *path, double load_s, bool thinking, uint32_t
     bool tty=isatty(STDIN_FILENO),color=tty && isatty(STDOUT_FILENO); char *line=NULL; size_t cap=0;
     if (color) prompt="\x1b[1;38;5;81m\xe2\x80\xba\x1b[0m ";   /* "› " */
     if (tty) qw4_ui_summary(stdout,r,path,ch.thinking,load_s,color);
+    if (color) { fputs("\x1b[?2004h",stdout); atexit(paste_off); }   /* bracketed paste, off again at any exit */
     for (;;) {
         if (tty) { fputs(prompt,stdout); fflush(stdout); }
         at_prompt=tty; errno=0;
@@ -224,6 +249,13 @@ int qw4_repl(QW4Run *r, const char *path, double load_s, bool thinking, uint32_t
         if (got<0 && errno==EINTR) { clearerr(stdin); continue; }
         if (got<0) break;
         if (got>(4<<20)) { fprintf(stderr,"picoforge: line longer than 4 MiB\n"); continue; }
+        if (!strncmp(line,paste_open,strlen(paste_open))) {   /* a paste is text, even if it starts with '/' */
+            char *text=read_paste(line,stdin),*msg=text ? trim(text) : NULL;
+            size_t added=msg && *msg ? user_turn(&ch,msg) : 0;
+            if (added) reply(&ch,added);
+            free(text); fflush(stdout);
+            continue;
+        }
         char *cmd=trim(line);
         if (!*cmd) continue;
         if (!strcmp(cmd,"/help")) help();

@@ -134,6 +134,16 @@ class ReplTests(unittest.TestCase):
         self.assertEqual(prompts[1][:2], [280, 10]); self.assertNotEqual(prompts[1], closed)
         self.assertEqual(ids[:4], [257, 117, 115, 101])
 
+    def test_a_paste_is_one_message(self):
+        """A terminal in bracketed-paste mode wraps a paste in ESC[200~ ... ESC[201~: the lines
+        inside are one message (as /read of the same text), and a pasted '/' is text, not a command."""
+        with tempfile.NamedTemporaryFile('w', dir=ROOT / 'build/qwen4-g2', suffix='.txt') as f:
+            f.write('/help me\nline two'); f.flush()
+            _, typed = self.repl([f'/read {f.name}'])
+        done, pasted = self.repl(['\x1b[200~/help me', 'line two\x1b[201~'])
+        self.assertEqual(pasted['ids'], typed['ids'])
+        self.assertNotIn(b'Commands:', done.stdout)
+
     def test_short_form(self):
         long = subprocess.run([ENGINE, '--qwen4', str(GGUF), '--temp', '0', '--chat', 'hi', '--context', '64', '--max-new', '4'],
                               cwd=ROOT, capture_output=True, check=True)
