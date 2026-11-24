@@ -2,7 +2,8 @@
  *
  * Models live in one directory: $PICOFORGE_MODELS, else models/ next to the pf binary. A model
  * is any .gguf file in it or one level below (models/NAME/NAME.gguf), named by its file stem. -m takes a
- * real path, or a short name that matches exactly one model's stem (case-insensitive substring: "q4").
+ * real path or a name, case-insensitive: the full stem, the handle `pf models` shows (the stem without
+ * the words all models share: "q2", "q2-code5"), whole words of the stem ("code5"), or any unique part.
  */
 #ifndef PICOFORGE_MODEL_SELECT_H
 #define PICOFORGE_MODEL_SELECT_H

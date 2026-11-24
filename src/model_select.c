@@ -12,7 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-typedef struct { char *name, *path; double gib; } Model;
+typedef struct { char *name, *path; const char *handle; double gib; } Model;
 typedef struct { Model *at; size_t n, cap; char dir[PATH_MAX]; } Models;
 
 /* $PICOFORGE_MODELS, else models/ beside the real binary (so it works from any working directory). */
@@ -51,25 +51,35 @@ static void scan(Models *m, const char *dir, int depth) {
     closedir(d);
 }
 static int by_name(const void *a, const void *b) { return strcasecmp(((const Model *)a)->name, ((const Model *)b)->name); }
+/* The handle of a model is its name without the words every model shares, keeping at least one
+ * word of each: Qwen3.8-Flash-Next-Q2 and Qwen3.8-Flash-Next-Q2-Code5 are "q2" and "q2-code5". A
+ * lone model keeps its last word. Words are the parts between '-'. */
+static void handles(Models *m) {
+    size_t cut = 0;
+    if (m->n == 1) { const char *dash = strrchr(m->at[0].name, '-'); cut = dash ? (size_t)(dash - m->at[0].name + 1) : 0; }
+    for (size_t p = 1; m->n > 1; p++) {
+        int shared = 1;
+        for (size_t i = 0; i < m->n && shared; i++)
+            shared = strlen(m->at[i].name) > p && !strncasecmp(m->at[i].name, m->at[0].name, p);
+        if (!shared) break;
+        if (m->at[0].name[p - 1] == '-') cut = p;
+    }
+    for (size_t i = 0; i < m->n; i++) m->at[i].handle = m->at[i].name + cut;
+}
 static Models find(const char *argv0) {
     Models m = {0};
     models_dir(argv0, m.dir);
     scan(&m, m.dir, 1);
-    if (m.n) qsort(m.at, m.n, sizeof *m.at, by_name);
+    if (m.n) { qsort(m.at, m.n, sizeof *m.at, by_name); handles(&m); }
     return m;
 }
-/* The shortest handle worth typing: the last '-' part of the name ("q4") when it picks this model alone. */
-static void short_name(const Models *m, size_t i, char *out, size_t cap) {
-    const char *dash = strrchr(m->at[i].name, '-'), *tail = dash ? dash + 1 : m->at[i].name;
-    size_t hits = 0;
-    for (size_t j = 0; j < m->n; j++) hits += strcasestr(m->at[j].name, tail) != NULL;
-    snprintf(out, cap, "%s", hits == 1 ? tail : m->at[i].name);
-    for (char *c = out; hits == 1 && *c; c++) if (*c >= 'A' && *c <= 'Z') *c = (char)(*c - 'A' + 'a');
-}
 static void print(FILE *f, const Models *m) {
+    int width = 0;
+    for (size_t i = 0; i < m->n; i++) if ((int)strlen(m->at[i].handle) > width) width = (int)strlen(m->at[i].handle);
     for (size_t i = 0; i < m->n; i++) {
-        char handle[64]; short_name(m, i, handle, sizeof handle);
-        fprintf(f, "  %zu) -m %-8s %-26s %7.1f GiB  %s\n", i + 1, handle, m->at[i].name, m->at[i].gib, m->at[i].path);
+        char handle[PATH_MAX]; snprintf(handle, sizeof handle, "%s", m->at[i].handle);
+        for (char *c = handle; *c; c++) if (*c >= 'A' && *c <= 'Z') *c = (char)(*c - 'A' + 'a');
+        fprintf(f, "  %zu) -m %-*s %7.1f GiB  %s\n", i + 1, width, handle, m->at[i].gib, m->at[i].path);
     }
 }
 static char *pick(Models *m, size_t i) {
@@ -85,14 +95,37 @@ static _Noreturn void fail(const Models *m, const char *why) {
     exit(2);
 }
 
-/* An exact stem wins over substrings, so "Qwen3.8-Flash-Next-Q2" never collides with a longer name. */
-static char *by_short_name(Models *m, const char *name) {
-    size_t found = SIZE_MAX, hits = 0;
-    for (size_t i = 0; i < m->n; i++) if (!strcasecmp(m->at[i].name, name)) return pick(m, i);
-    for (size_t i = 0; i < m->n; i++) if (strcasestr(m->at[i].name, name)) { found = i; hits++; }
-    if (hits == 1) return pick(m, found);
+/* `query` is one or more whole words of `name`: "q4" is in ...-Q2-Code5-Q4 but "4" and "q" are not. */
+static int has_words(const char *name, const char *query) {
+    size_t n = strlen(query);
+    for (const char *at = name; (at = strcasestr(at, query)); at++)
+        if ((at == name || at[-1] == '-') && (at[n] == 0 || at[n] == '-')) return 1;
+    return 0;
+}
+/* Four rules, from strict to loose; the first that matches anything decides, and it must match one
+ * model only: the full name, the handle, whole words of the name, any part of the name. So "q2"
+ * is the Q2 even beside Q2-Code5, and "code" picks Q2-Code5 while it is the only coding model. */
+static char *by_short_name(Models *m, const char *query) {
+    for (int rule = 0; rule < 4; rule++) {
+        size_t found = 0, hits = 0;
+        for (size_t i = 0; i < m->n; i++) {
+            const char *name = m->at[i].name;
+            int match = rule == 0 ? !strcasecmp(name, query) : rule == 1 ? !strcasecmp(m->at[i].handle, query)
+                      : rule == 2 ? has_words(name, query) : strcasestr(name, query) != NULL;
+            if (match) { found = i; hits++; }
+        }
+        if (hits == 1) {
+            if (rule >= 2) fprintf(stderr, "picoforge: -m %s is %s\n", query, m->at[found].name);
+            return pick(m, found);
+        }
+        if (hits) {
+            char why[PATH_MAX + 64];
+            snprintf(why, sizeof why, "\"%s\" matches %zu models: use more of the name", query, hits);
+            fail(m, why);
+        }
+    }
     char why[PATH_MAX + 64];
-    snprintf(why, sizeof why, hits ? "\"%s\" matches more than one model" : "no model matches \"%s\"", name);
+    snprintf(why, sizeof why, "no model matches \"%s\"", query);
     fail(m, why);
 }
 /* Several models and nobody said which: ask, but only when a person is at the terminal. */
@@ -131,7 +164,7 @@ char *model_select(const char *arg, const char *argv0) {
 int model_list(const char *argv0) {
     Models m = find(argv0);
     if (!m.n) fail(&m, "no models");
-    printf("models in %s (-m takes the short name, any unique part of the name, or a path):\n", m.dir);
+    printf("models in %s (-m takes the name shown, any part of the file name that is unique, or a path):\n", m.dir);
     print(stdout, &m);
     free(pick(&m, 0));
     return 0;

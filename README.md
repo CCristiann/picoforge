@@ -36,7 +36,7 @@ make                                   # builds pf, pf-bench and pf-agent
 ./pf                                   # interactive chat (/help for commands)
 ./pf -m q2 -p "What is 2 + 2?" -n 32   # one answer, then exit
 ./pf-bench -m q2                       # 3 warm-up + 20 runs, median and p10/p90
-./pf models                            # models found and their short names
+./pf models                            # models found and the name -m takes
 ./pf-agent -m q2                       # coding agent in the current directory (/help)
 ```
 
