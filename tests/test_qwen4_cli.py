@@ -140,7 +140,7 @@ class CliTests(unittest.TestCase):
         base = [str(ROOT/'pf'), '--qwen4', str(GGUF)]
         for args in (['--tokens', '5,', '--max-new', '0'], ['--tokens', '512'],
                      ['--tokens', '5,17,300', '--context', '2'], ['--chunk', '2049', '--tokens', '5'],
-                     ['--tokens', '5', '--thinking']):
+                     ['--tokens', '5', '--think']):
             with self.subTest(args=args):
                 done = subprocess.run(base+args, cwd=ROOT, capture_output=True)
                 self.assertNotEqual(done.returncode, 0)

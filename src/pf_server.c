@@ -425,7 +425,7 @@ static void usage(void) {
         "  --port N          (default 8080)\n"
         "  --api-key KEY     require 'Authorization: Bearer KEY' (or x-api-key)\n"
         "  --alias NAME      the model id clients see (default: the file name)\n"
-        "  --no-think        no reasoning unless a request asks for it\n"
+        "  --no-think        no reasoning unless a request asks for it (--think: the default)\n"
         "  --effort E        default reasoning effort: low, medium (default) or high\n"
         "  --temp T --top-p P --top-k K --min-p M   default sampling (0.6, 0.95, 20, 0)\n"
         "  -n N              tokens per reply when the request sets no limit (default %u)\n"
@@ -470,7 +470,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *opt = argv[i];
         if (!strcmp(opt, "-h") || !strcmp(opt, "--help")) { usage(); return 0; }
-        else if (!strcmp(opt, "--no-think")) sv.thinking = false;
+        else if (!strcmp(opt, "--no-think") || !strcmp(opt, "--think")) sv.thinking = !strcmp(opt, "--think");
         else if (!strcmp(opt, "--no-mtp")) o.mtp = false;
         else if (!strcmp(opt, "--cors")) pf_http_cors = true;
         else if (!strcmp(opt, "--no-cache")) cache = false;

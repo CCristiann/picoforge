@@ -43,7 +43,7 @@ make                                   # builds pf, pf-bench, pf-agent and pf-se
 
 The chat samples (temperature 0.6, top-k 20, top-p 0.95) and drafts with
 multi-token prediction, which never changes the output; benchmarks and oracles
-decode greedily. Context is 8K tokens, thinking is off (`--thinking`, `/think`). On a terminal the
+decode greedily. Context is 8K tokens, thinking is off (`--think`, `/think`). On a terminal the
 chat opens with a summary of the model, memory and settings (`/info` shows it again) and closes each
 reply with its speeds and a bar of the context used.
 

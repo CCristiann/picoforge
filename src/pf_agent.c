@@ -650,7 +650,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         const char *opt = argv[i];
         if (!strcmp(opt, "--yes")) yes = true;
-        else if (!strcmp(opt, "--no-think")) a.s.thinking = false;
+        else if (!strcmp(opt, "--no-think") || !strcmp(opt, "--think")) a.s.thinking = !strcmp(opt, "--think");
         else if (!strcmp(opt, "--no-mtp")) o.mtp = false;
         else if (!strcmp(opt, "--non-interactive")) plain = true;
         else if (!strcmp(opt, "-h") || !strcmp(opt, "--help")) { usage(); return 0; }

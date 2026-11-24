@@ -38,9 +38,8 @@ static uint32_t number(const char *s,uint32_t low,uint32_t high,const char *what
 static void usage(void) {
     fprintf(stderr,"usage: pf --qwen4 FILE [--chat TEXT | --complete TEXT | --tokens ID,ID,...]\n"
         "       (no prompt: interactive chat; /help inside)\n"
-        "   or: picoforge [-m FILE] [-p TEXT] [-c CONTEXT] [-n MAX_NEW] [--mtp] [--thinking] ...\n"
-        "       (MODEL: a path or a short name such as q4, see `pf models`; -p is --chat, no -p is the chat)\n"
-        "       [--max-new N] [--context N] [--chunk N] [--thinking]\n"
+        "       (the short form, pf [-m MODEL] [-p TEXT] [-c N] [-n N], is --chat, --context, --max-new)\n"
+        "       [--max-new N] [--context N] [--chunk N] [--think | --no-think]\n"
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
         "       [--repeat N] [--warmup N] [--replay-chunk N] [--runs-jsonl FILE]\n"
@@ -515,12 +514,6 @@ void qw4_run_graph(QW4Run *r,uint32_t capacity) {
  * as in the long form. MODEL is a path or a short name ("q4"); without -m the
  * model comes from $PICOFORGE_MODEL, the only model in models/, or a prompt
  * (model_select.c). A bare ./pf is the chat. */
-bool qwen4_short_form(int argc,char **argv) {
-    static const char *const starts[]={"-m","-p","-c","-n","--mtp","--mtp-draft","--thinking","--prefill-precision","--power",NULL};
-    if (argc==1) return true;
-    for (size_t i=0;starts[i];i++) if (!strcmp(argv[1],starts[i])) return true;
-    return false;
-}
 int qwen4_short(int argc,char **argv) {
     const char *model=NULL; char **out=calloc((size_t)argc+3,sizeof *out); int n=3;
     if (!out) die("argument allocation");
@@ -540,6 +533,14 @@ int qwen4_short(int argc,char **argv) {
  * text is discarded, the summary goes to stdout. Later options win. */
 static void discard(void *ctx,const uint8_t *s,size_t n) { (void)ctx; (void)s; (void)n; }
 int qwen4_bench(int argc,char **argv) {
+    for (int i=2;i<argc;i++) if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")) {
+        puts("usage: pf-bench [-m MODEL] [-p TEXT] [-n N] [options]   (also: pf bench ...)\n"
+             "  3 warm-up and 20 measured runs of one answer (128 new tokens, a fixed prompt unless -p),\n"
+             "  greedy, no MTP unless --mtp; prints the median and p10/p90 of prefill and decode tok/s and TTFT.\n"
+             "  --warmup N --repeat N   other counts      --bench-csv FILE   every run as a CSV row\n"
+             "  --tokens ID,... --teacher-forced N        decode fixed tokens; the rest as pf --qwen4 FILE --help");
+        return 0;
+    }
     static const char *const prompts[]={"-p","--chat","--chat-file","--complete","--complete-file","--tokens",NULL};
     bool has_prompt=false;
     for (int i=2;i<argc;i++) for (size_t j=0;prompts[j];j++) if (!strcmp(argv[i],prompts[j])) has_prompt=true;
@@ -572,7 +573,8 @@ int qwen4_cli(int argc,char **argv) {
         if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
         if (!strcmp(opt,"--no-mtp")) { no_mtp=true; continue; }
         if (!strcmp(opt,"--mtp-draft")) { if (i+1==argc) die("missing value for %s",opt); mtp=true; mtp_draft=argv[++i]; continue; }
-        if (!strcmp(opt,"--thinking")) { thinking=true; continue; }
+        if (!strcmp(opt,"--think")) { thinking=true; continue; }
+        if (!strcmp(opt,"--no-think")) { thinking=false; continue; }
         if (!strcmp(opt,"--encode-only")) { encode_only=true; continue; }
         if (!strcmp(opt,"--bench")) { bench=true; continue; }
         if (i+1==argc) die("missing value for %s",opt);
@@ -622,7 +624,7 @@ int qwen4_cli(int argc,char **argv) {
     if (temp<0) temp=chat_use ? 0.6f : 0.0f;
     if (no_mtp) mtp=false; else if (chat_use && !getenv("PICOFORGE_NO_MTP")) mtp=true;
     if (repl && (runs_path || profile_path || logits_path || encode_only || repeat!=1 || warmup || replay_chunk ||
-                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --no-mtp, --thinking, --power, --token-ids and the sampling options");
+                 stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --no-mtp, --think, --power, --token-ids and the sampling options");
     if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
         die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
     if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
@@ -634,7 +636,7 @@ int qwen4_cli(int argc,char **argv) {
         owned_input=read_prompt(input); input=owned_input;
         mode=!strcmp(mode,"--chat-file") ? "--chat" : "--complete";
     }
-    if (thinking && strcmp(mode,"--chat") && !repl) die("--thinking requires --chat or the interactive chat");
+    if (thinking && strcmp(mode,"--chat") && !repl) die("--think requires --chat or the interactive chat");
     const uint32_t chunk_request=chunk; chunk=MIN(chunk,capacity);
     if (mtp && capacity<2) die("MTP requires context >=2");
     if (replay_chunk>chunk) die("replay chunk exceeds allocated chunk");
