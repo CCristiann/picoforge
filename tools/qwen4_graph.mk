@@ -103,22 +103,9 @@ qwen4-g3: pf build/qwen4-g2/forward_real build/qwen4-g2/test_parts build/qwen4-g
 	$(QW4_LOCK) $(QW4_ENV) $(PYTHON) -B tools/qwen4_g3.py --checkpoint "$(QW4_CHECKPOINT)" --dwarfstar "$(QW4_DWARFSTAR)" --output "$(G3_OUTPUT)"
 .PHONY: qwen4-g3
 
-# Persistent engine tests take the existing cross-worktree lock once.
-test-qwen4-session: pf build/qwen4-g2/cli.gguf
-	$(QW4_LOCK) $(QW4_TEST) tests/test_qwen4_session.py -v
-
-ui-qwen4: pf
-	$(PYTHON) tools/ui/qwen4/server.py --checkpoint "$(QW4_CHECKPOINT)"
-
-# The server's resident worker acquires the lock; do not wrap this target again.
-test-qwen4-server: pf build/qwen4-g2/cli.gguf build/qwen4-mtp/cli.gguf
-	$(QW4_ENV) $(PYTHON) -B tests/test_qwen4_server.py -v
-
 build/qwen4-attention-bench: tools/probe/qwen4_attention_bench.m src/qwen4_attention_internal.h
 	@mkdir -p $(@D)
 	$(CC) $(QW4_FLAGS) -fobjc-arc $< $(FRAMEWORKS) -lm -o $@
-
-.PHONY: test-qwen4-session test-qwen4-server ui-qwen4
 
 test-qwen4-native-tools: build/process_memory
 	$(QW4_ENV) $(PYTHON) -B tests/test_qwen4_native_suite.py -v

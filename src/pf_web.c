@@ -350,7 +350,7 @@ static bool ws_send(Ws *ws, int opcode, const char *data, size_t n) {
     else { head[h++] = 0x80 | 127; for (int i = 7; i >= 0; i--) head[h++] = (unsigned char)((uint64_t)n >> (8*i)); }
     memcpy(head+h, mask, 4); h += 4;
     char *masked = malloc(n ? n : 1);
-    if (!masked) die("pf-agent: out of memory");
+    if (!masked) die("out of memory");
     for (size_t i = 0; i < n; i++) masked[i] = (char)(data[i] ^ mask[i & 3]);
     bool ok = send_all(ws->fd, head, h) && send_all(ws->fd, masked, n);
     free(masked);
@@ -481,7 +481,7 @@ static bool chrome_ready(PfWeb *w) {
 
 PfWeb *pf_web_create(PfWebAsk ask, void *ask_ctx) {
     PfWeb *w = calloc(1, sizeof *w);
-    if (!w) die("pf-agent: out of memory");
+    if (!w) die("out of memory");
     const char *port = getenv("PF_AGENT_CDP_PORT");
     w->ask = ask; w->ask_ctx = ask_ctx; w->port = port && *port ? atoi(port) : 9334;
     return w;

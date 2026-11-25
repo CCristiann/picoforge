@@ -134,6 +134,16 @@ class ReplTests(unittest.TestCase):
         self.assertEqual(prompts[1][:2], [280, 10]); self.assertNotEqual(prompts[1], closed)
         self.assertEqual(ids[:4], [257, 117, 115, 101])
 
+    def test_a_paste_is_one_message(self):
+        """A terminal in bracketed-paste mode wraps a paste in ESC[200~ ... ESC[201~: the lines
+        inside are one message (as /read of the same text), and a pasted '/' is text, not a command."""
+        with tempfile.NamedTemporaryFile('w', dir=ROOT / 'build/qwen4-g2', suffix='.txt') as f:
+            f.write('/help me\nline two'); f.flush()
+            _, typed = self.repl([f'/read {f.name}'])
+        done, pasted = self.repl(['\x1b[200~/help me', 'line two\x1b[201~'])
+        self.assertEqual(pasted['ids'], typed['ids'])
+        self.assertNotIn(b'Commands:', done.stdout)
+
     def test_short_form(self):
         long = subprocess.run([ENGINE, '--qwen4', str(GGUF), '--temp', '0', '--chat', 'hi', '--context', '64', '--max-new', '4'],
                               cwd=ROOT, capture_output=True, check=True)
@@ -179,7 +189,7 @@ class BenchTests(unittest.TestCase):
     def test_admission(self):
         for args in (['--qwen4', str(GGUF), '--chat', 'x', '--weight-mb', '1'],
                      ['--qwen4', str(GGUF), '--bench'],
-                     ['bench', '-m', str(GGUF), '--weight-mb', '-3'], ['bench', '-m', str(GGUF), '--mtp', '--weight-mb', '6000'], ['bench', '-m', str(GGUF), '--session']):
+                     ['bench', '-m', str(GGUF), '--weight-mb', '-3'], ['bench', '-m', str(GGUF), '--mtp', '--weight-mb', '6000']):
             done = subprocess.run([ENGINE, *args], cwd=ROOT, capture_output=True)
             self.assertNotEqual(done.returncode, 0, args)
         forced = subprocess.run([ENGINE, 'bench', '-m', str(GGUF), '--tokens', '5,17,300,9', '--teacher-forced', '2',

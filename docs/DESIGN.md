@@ -62,10 +62,11 @@ is DwarfStar `fc80bd6` on the same file and machine.
 | R7 Quality | Q2 against Q4 on a frozen corpus | Done: KL 0.40, top-1 77%, PPL +8% |
 | R6 Next generation | Qwen4 open weights (a 27B dense and smaller MoE models announced) | Prepared: the engine is named after the architecture (`qwen4_*`); no PLE, SiLU GDN gate and any layer order pass the oracle on synthetic checkpoints (CPU, GPU, CLI) and G3 on Q2 is unchanged. Waiting for the weights; dense FFN not started |
 | Prefill gap | GDN prefill kernels restored, vector staging, FP32 GEMMs and attention on the Neural Accelerators (FP32 operands), grouped MoE occupancy, `--power` | Done: 8K prompt FP32 46.2 -> 26.9 s; decode 0.969x short, 0.935x at 8K |
+| Agent and server | `pf-agent` in the terminal; `pf-server` with the OpenAI and Anthropic APIs for opencode, Claude Code, Pi ([SERVER.md](SERVER.md)) | Done on synthetic checkpoints: exact replay of the model's reply, graph checkpoints on disk; a real-model session pending |
 | M1-M4 Own quants | Byte-identical IQ2_XXS/Q2_K encoders, an output-error lab, then code-ranked Q4 experts inside the Q2 (picoforge-only mixed layout, fast decode and grouped prefill paths, `tools/quant/build_mixed.py`) | Done: KL to Q4 on unseen code 0.288 -> 0.217 (5% of experts) / 0.167 (10%); decode -4% / -5..-8%; published as a patch on Hugging Face |
 | R8 Closure | Final protocol benchmarks, the per-technique ladder, writeup | Next |
 
-**Not goals:** an API server or coding agent, vision, batched sessions, other
+**Not goals:** vision, batched sessions, other
 GPU backends. **Failures even if fast:** output outside the correctness gate,
 unexplained drift, kernels copied from DwarfStar (it is the speed reference;
 an adapted idea is cited with its pinned commit), numbers without the
@@ -92,16 +93,33 @@ which is why checkpoints larger than that run quantised.
 
 | path | contents |
 |---|---|
-| `src/` | engine C sources, Objective-C Metal glue, `.metal` kernels (`qwen4_*`), GGUF reader |
+| `src/` | the engine: `qwen4_*` (the model: CPU ops, Metal glue and `.metal` kernels, the run driver `qwen4_run.m` and its terminal chat `qwen4_repl.c`), `gguf*` and `gpu_weights.m` (the file and its GPU mapping), `common.c` |
+| `src/pf*` | the commands around it: `pf.c` (pf, pf-bench), `pf_agent.c`, `pf_server.c`, and the modules they share (`pf_models`, `pf_session`, `pf_tools`, `pf_api`, ...) |
 | `tools/oracle/` | independent reference implementations of the Qwen3.8 operators |
 | `tools/synth/` | synthetic GGUF checkpoints for tests |
 | `tools/eval/` | benchmark runners, grading and reports |
 | `tools/probe/` | standalone Metal 4 API probes |
 | `tools/microbench/` | the model-agnostic matmul and dispatch-cost benchmark |
-| `tools/ui/qwen4/` | a local web chat in front of the engine (secondary to the terminal) |
 | `tests/` | correctness harnesses (`make test-all`, `make test-qwen4`) |
 | `bench/` | measured data by stage (`qwen38/`), microbenchmark CSVs, the Qwen3 archive |
 | `docs/` | this file, the benchmark protocol, the development log, the project history, weight and corpus locks |
+
+### Engine components
+
+Comments in `src/` name the parts of the engine by letter. Each part has one owner; the graphs
+compose them and never re-implement an operator.
+
+| letter | part | files |
+|---|---|---|
+| A | text: tokenizer, chat template, GGUF config and weight roles | `qwen4_text.h`, `qwen4_tokenizer.c`, `qwen4_bpe.c`, `qwen4_chat.c`, `qwen4_config.c`, `qwen4_weights.c` |
+| B | packed (quantized) matrix products, CPU and GPU | `qwen4_packed.h`, `qwen4_packed*.c/.m/.metal`, `qwen4_matvec.metal` |
+| C | CPU primitives: norms, activations, conv, Gated DeltaNet, hyper-connections | `qwen4_ops.h`, `qwen4_base.c`, `qwen4_conv.c`, `qwen4_gdn.c`, `qwen4_recurrent*` |
+| D | sparse attention with its indexer and K/V cache | `qwen4_attention*` |
+| E | the n-gram (PLE) table read from the SSD | `qwen4_ngram*`, `qwen4_ple*` |
+| F | MoE: routing, routed and shared experts | `qwen4_moe*` |
+| G0 | the GPU session: one command, one completion, the ledger | `qwen4_gpu.h`, `qwen4_gpu.m` |
+| G1 | the whole graph on the CPU (the reference path) | `qwen4_forward.h`, `qwen4_forward.c` |
+| G2 | the whole graph on the GPU | `qwen4_forward_gpu.h`, `qwen4_forward_gpu.m` |
 
 ## Conventions
 

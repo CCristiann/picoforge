@@ -1,9 +1,4 @@
-/* util.c — the two things every translation unit needs.
- *
- * These lived in config.c out of convenience. They are not config's
- * business, and the test binaries need them without dragging the JSON
- * scanner along, so they move here.
- */
+/* common.c — see common.h: fail loudly, read a whole file. */
 #include "common.h"
 
 #include <stdarg.h>

@@ -93,7 +93,7 @@ static void draw(PfTerm *t) {
 PfTerm *pf_term_open(void) {
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return NULL;
     PfTerm *t = calloc(1, sizeof *t);
-    if (!t) die("pf-agent: out of memory");
+    if (!t) die("out of memory");
     if (tcgetattr(STDIN_FILENO, &t->saved)) { free(t); return NULL; }
     struct termios raw = t->saved;
     raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO | ISIG | IEXTEN);
@@ -164,7 +164,7 @@ static void browse(PfTerm *t, int step) {
 }
 static char *submit(PfTerm *t) {
     char *line = strdup(t->input.p ? t->input.p : "");
-    if (!line) die("pf-agent: out of memory");
+    if (!line) die("out of memory");
     if (*line && (!t->nhistory || strcmp(t->history[t->nhistory-1], line))) {
         if (t->nhistory == HISTORY) { free(t->history[0]); memmove(t->history, t->history+1, (HISTORY-1)*sizeof *t->history); t->nhistory--; }
         t->history[t->nhistory++] = strdup(line);

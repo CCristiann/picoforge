@@ -93,8 +93,8 @@ static Qwen4Status activate_scaled(Qwen4Activation kind, Qwen4F32 x, Qwen4F32Mut
 Qwen4Status qwen4_activate(Qwen4Activation kind, Qwen4F32 x, Qwen4F32Mut out, Qwen4Error *e) {
     if (kind!=QW4_SIGMOID && kind!=QW4_SILU && kind!=QW4_SOFTPLUS)
         return qw4c_error(e,QW4_UNSUPPORTED,"unknown activation");
-    /* Generic activation has disjoint views; HC's explicit in-place APIs below
-     * opt in separately, as required by integration.md's alias contract. */
+    /* Generic activation has disjoint views (x and out never overlap); only HC's explicit
+     * in-place APIs below may alias, and they say so. */
     return activate_scaled(kind,x,out,1.0f,1.0f,false,e);
 }
 Qwen4Status qwen4_rmsnorm_groups(Qwen4F32 x, Qwen4F32 gain, Qwen4F32Mut out, float eps, Qwen4Error *e) {

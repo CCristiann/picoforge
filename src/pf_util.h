@@ -1,4 +1,4 @@
-/* pf_util.h — small pieces shared by pf-agent and, later, pf-server: growable
+/* pf_util.h — small pieces shared by pf-agent and pf-server: growable
  * text, UTF-8 and prompt hygiene, JSON string escapes, child processes. */
 #ifndef PICOFORGE_PF_UTIL_H
 #define PICOFORGE_PF_UTIL_H
@@ -21,6 +21,7 @@ void clean_text(Buf *);
 void json_escape(Buf *, const char *);           /* a JSON string body */
 char *trim_line(char *);                         /* spaces off both ends, in place */
 long count_lines(const char *, size_t);
+uint64_t fnv1a(const void *, size_t);           /* a 64-bit FNV-1a hash */
 
 void pause_ms(long ms);
 /* argv[0] (absolute) in its own process group, stdin /dev/null, stdout to

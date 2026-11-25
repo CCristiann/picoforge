@@ -2,6 +2,24 @@
 
 Two lines per session: what was done, what comes next. Newest entry first.
 
+## pf-server on main, a coherence pass (2026-11-25)
+
+pf-server had stayed on its branch since 11-21, and its old binary broke when the Code5 file
+arrived: `-m q2` matched two models, and it could not read the mixed layout. Rebased onto main
+(`make all` builds it; its tests also run on the mixed synthetic checkpoint). Then one pass over the
+commands. Names: `qwen4_*` is the engine, `pf*` the commands (`pf.c`, which pf-bench now shares
+by its name, `pf_models.c`, `qwen4_run.m`, `common.c`; the unused `json.c` is gone), and the A-G
+parts of the engine are named in DESIGN.md. Options: `--think` / `--no-think` in every command,
+any option starts pf's short form, `pf -h` and `pf-bench --help` answer. Bugs fixed, each with a
+test that failed first: a saved state (pf-server checkpoints, pf-agent sessions) was matched to
+its model by file size only, so two same-size files loaded each other's state, and shared cache
+entries replaced each other (now a hash of the GGUF header, also in the file name); a prompt over
+4 MiB of text killed pf-server instead of returning `context_length_exceeded`; a multi-line paste
+in the chat sent one message per line (now bracketed paste). Removed: the Python web chat
+(`tools/ui/qwen4`) and the `pf --session` worker protocol behind it, both replaced by pf-server.
+
+**Next:** a real-model session of pf-server with an agent client.
+
 ## Own quants, M1–M4 (2026-11-21..24): code-ranked Q4 experts inside the Q2
 
 Goal: a better file than the published Q2 for coding, still inside 64 GB. It took four steps, and
@@ -42,6 +60,27 @@ line that had never run grouped, because the shared test environment reset the t
 
 **Next:** a coding-task benchmark (HumanEval+ needs a download and running generated code), then
 promoting experts to Q4 per session through SSD streaming.
+
+## pf-server (2026-11-21): the engine behind an HTTP API
+
+`pf-server` serves OpenAI Chat Completions and Anthropic Messages (streaming, tools, reasoning as
+`reasoning_content` / thinking blocks, `count_tokens`, `/v1/models`) for opencode, Claude Code and Pi.
+New modules: `pf_json` (JSON text to the `Qwen4Json` trees the template takes), `pf_http` (one
+connection at a time, SSE, a hung-up client stops the generation), `pf_api` (both formats normalized
+to the template's schema; a streaming splitter for reasoning / text / tool calls; arguments typed by
+the tool schema), `pf_cache`. After reading how ds4-server handles the same problem, two choices of
+our own. Exact replay without a tool-id map: a client's copy of our reply is compared with ours as a
+canonical render (reasoning aside), and if it says the same thing our sampled tokens are kept and only
+the new messages are rendered after them; the last 8 exchanges are remembered, not just the last. And
+checkpoints driven by when the graph would be lost (an unrelated request, shutdown) plus two cheap
+boundaries (the end of the system block of a cold prompt, the end of a long prefill), because the GDN
+state cannot be rewound. Found on the way: `/new` in pf-agent died ("decoder: already finished")
+when no system checkpoint was usable; fixed, with a test. Tests on the synthetic checkpoint
+(`make test-pf-server-model`): both formats, the replay equal to a full render with reasoning, and a
+restored checkpoint decoding the same greedy tokens.
+
+**Next:** a real-model session with opencode (measure the first-prefill and checkpoint costs on Q2);
+exchanges persisted with their checkpoints, so the exact replay also survives a restart.
 
 ## Qwen4 prep (2026-11-19): upstream variants, the engine named after the architecture
 

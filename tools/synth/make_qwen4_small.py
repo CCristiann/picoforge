@@ -159,12 +159,12 @@ def verify(args):
     build = ROOT / "build/qwen4-a"
     flags = ["clang","-std=c11","-O1","-g","-Wall","-Wextra","-Wpedantic","-Wshadow",
              "-Wconversion","-Werror","-ffp-contract=off","-fsanitize=address,undefined","-fno-sanitize-recover=all","-Isrc"]
-    common = ["src/qwen4_config.c","src/gguf.c","src/gguf_reader.c","src/util.c"]
+    common = ["src/qwen4_config.c","src/gguf.c","src/gguf_reader.c","src/common.c"]
     groups = {
         "config": ["tests/test_qwen4_config.c"]+common,
         "bindings": ["tests/test_qwen4_bindings.c","src/qwen4_weights.c","src/gguf_plan.c"]+common,
         "text": ["tests/test_qwen4_text.c","src/qwen4_tokenizer.c","src/qwen4_unicode.c","src/qwen4_chat.c",
-                 "src/qwen4_bpe.c","src/json.c"]+common}
+                 "src/qwen4_bpe.c"]+common}
     for name, sources in groups.items():
         subprocess.run(flags+["-Ibuild/qwen4-a"]+sources+["-lm","-o",str(build/f"test_{name}")],cwd=ROOT,check=True)
         paths = [] if name == "text" else [build/f"{variant}.gguf" for variant in ("small","no-mtp","last-gdn","silu","no-ple","irregular")]

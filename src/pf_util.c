@@ -23,7 +23,7 @@ void buf_add(Buf *b, const void *s, size_t n) {
         size_t cap = b->cap ? b->cap : 256;
         while (cap < b->n+n+1) cap *= 2;
         char *p = realloc(b->p, cap);
-        if (!p) die("pf-agent: out of memory");
+        if (!p) die("out of memory");
         b->p = p; b->cap = cap;
     }
     if (n) memcpy(b->p+b->n, s, n);
@@ -36,7 +36,7 @@ void buf_fmt(Buf *b, const char *fmt, ...) {
     if (len < 0) return;
     if ((size_t)len < sizeof small) { buf_add(b, small, (size_t)len); return; }
     char *big = malloc((size_t)len+1);
-    if (!big) die("pf-agent: out of memory");
+    if (!big) die("out of memory");
     va_start(ap, fmt); vsnprintf(big, (size_t)len+1, fmt, ap); va_end(ap);
     buf_add(b, big, (size_t)len); free(big);
 }
@@ -94,6 +94,11 @@ char *trim_line(char *s) {
     size_t n = strlen(s);
     while (n && isspace((unsigned char)s[n-1])) s[--n] = 0;
     return s;
+}
+uint64_t fnv1a(const void *data, size_t n) {
+    uint64_t h = 1469598103934665603ull; const uint8_t *p = data;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
 }
 long count_lines(const char *s, size_t n) {
     long lines = 1;

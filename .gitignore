@@ -24,6 +24,7 @@ tools/probe/metal4_probe
 /pf
 /pf-bench
 /pf-agent
+/pf-server
 /tests/test_ops
 /picoforge.metallib
 build/

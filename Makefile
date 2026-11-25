@@ -17,22 +17,26 @@ METALLIB := picoforge.metallib
 # Objective-C contains Metal glue and links the platform frameworks.
 FRAMEWORKS := -framework Metal -framework Foundation
 
-# The commands are pf (chat, one answer, models), pf-bench and pf-agent; the
+# The commands are pf (chat, one answer, models), pf-bench, pf-agent and pf-server; the
 # kernels stay in picoforge.metallib.
-all: pf pf-bench pf-agent
+all: pf pf-bench pf-agent pf-server
 
-pf: $(OBJ) $(METALLIB)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(FRAMEWORKS)
+# src/qwen4_* and the gguf/gpu files are the engine; src/pf_* the commands around it. pf-bench is
+# pf itself under another name (src/pf.c looks at argv[0]).
+pf pf-bench: $(OBJ) src/pf_models.o $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ $(OBJ) src/pf_models.o $(LDFLAGS) $(FRAMEWORKS)
 
 # pf-agent: the coding agent, linked with the same engine objects minus
-# pf's main. pf_session/pf_tools/pf_web/pf_util are meant for a future
-# pf-server too; pf_agent.c is only the terminal interface.
-ENGINE_OBJ := $(filter-out src/main.o,$(OBJ))
-PF_OBJ     := src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o src/pf_term.o
+# pf's main. pf_session/pf_tools/pf_web/pf_util are shared with pf-server;
+# pf_agent.c is only the terminal interface.
+ENGINE_OBJ := $(filter-out src/pf.o,$(OBJ))
+PF_OBJ     := src/pf_models.o src/pf_util.o src/pf_web.o src/pf_tools.o src/pf_session.o src/pf_term.o
 pf-agent: src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
 	$(CC) $(CFLAGS) -o $@ src/pf_agent.o $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
-pf-bench: src/pf_bench.o $(ENGINE_OBJ) $(METALLIB)
-	$(CC) $(CFLAGS) -o $@ src/pf_bench.o $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
+# pf-server: the HTTP API (OpenAI and Anthropic formats) for coding agents.
+SERVER_OBJ := src/pf_json.o src/pf_http.o src/pf_api.o src/pf_cache.o
+pf-server: src/pf_server.o $(SERVER_OBJ) $(PF_OBJ) $(ENGINE_OBJ) $(METALLIB)
+	$(CC) $(CFLAGS) -o $@ src/pf_server.o $(SERVER_OBJ) $(PF_OBJ) $(ENGINE_OBJ) $(LDFLAGS) $(FRAMEWORKS)
 
 # Every object depends on every header: a constant changed only in a header (a
 # Metal wire struct, a tile size) must rebuild the host code that mirrors it.
@@ -68,7 +72,7 @@ build/microbench.metallib: tools/microbench/kernels.metal
 	xcrun -sdk macosx metal -std=metal4.0 -c $< -o build/microbench.air
 	xcrun -sdk macosx metallib build/microbench.air -o $@
 
-build/microbench: tools/microbench/main.c tools/microbench/microbench.c tools/microbench/metal.m tools/microbench/microbench.h src/util.c src/common.h build/microbench.metallib
+build/microbench: tools/microbench/main.c tools/microbench/microbench.c tools/microbench/metal.m tools/microbench/microbench.h src/common.c src/common.h build/microbench.metallib
 	$(CC) $(CFLAGS) -fobjc-arc -Isrc -Itools/microbench -o $@ $(filter %.c %.m,$^) $(LDFLAGS) $(FRAMEWORKS)
 
 microbench: build/microbench
@@ -76,7 +80,7 @@ microbench: build/microbench
 # ------------------------------------------------------------------- tests
 # Offline checks: no checkpoint, no long GPU workload. The full Qwen3.8 gate
 # is `make test-qwen4` (tools/qwen4.mk).
-test-all: test-quant test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-model-select test-pf-agent
+test-all: test-quant test-qwen4-tools test-gguf test-gpu-weights test-qwen4-contracts test-qwen4-expert-pool test-qwen4-sample test-pf-models test-pf-agent
 
 # Phase 0 tools for the Qwen3.8 target do not link DwarfStar into our engine.
 build/process_memory: tools/probe/process_memory.c
@@ -93,25 +97,24 @@ test-qwen4-tools: build/process_memory build/memory_budget
 	@$(PYTHON) tests/test_qwen4_grading.py
 	@$(PYTHON) tests/test_qwen4_evidence.py
 
-src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.m.o src/main.o: src/gguf.h
-src/main.o: src/qwen4_cli.h
-src/qwen4_cli.m.o src/qwen4_repl.o src/qwen4_bench.o: src/qwen4_run.h src/qwen4_cli.h src/qwen4_forward_gpu.h src/qwen4_graph_internal.h src/qwen4_text.h
+src/gguf.o src/gguf_reader.o src/gguf_plan.o src/gpu_weights.m.o src/pf.o: src/gguf.h
+src/pf.o src/qwen4_run.m.o src/qwen4_repl.o src/qwen4_bench.o: src/qwen4_run.h src/qwen4_forward_gpu.h src/qwen4_graph_internal.h src/qwen4_text.h
 
-build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/util.c src/gguf.h src/common.h
+build/test_gguf_reader: tests/test_gguf_reader.c src/gguf_reader.c src/common.c src/gguf.h src/common.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/test_gguf_reader.c src/gguf_reader.c src/util.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/test_gguf_reader.c src/gguf_reader.c src/common.c $(LDFLAGS)
 
-build/test_gguf_inspect: tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/util.c src/gguf.h src/common.h
+build/test_gguf_inspect: tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/common.c src/gguf.h src/common.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/util.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/gguf_inspect.c src/gguf.c src/gguf_reader.c src/common.c $(LDFLAGS)
 
-build/test_gguf_plan: tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/util.c src/gguf.h src/common.h
+build/test_gguf_plan: tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/common.c src/gguf.h src/common.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/util.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -fsanitize=address,undefined -Isrc -o $@ tests/test_gguf_plan.c src/gguf_plan.c src/gguf_reader.c src/common.c $(LDFLAGS)
 
-build/test_gpu_weights: tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/util.c src/gguf.h src/common.h
+build/test_gpu_weights: tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/common.c src/gguf.h src/common.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -fobjc-arc -Isrc -o $@ tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/util.c $(LDFLAGS) $(FRAMEWORKS)
+	$(CC) $(CFLAGS) -fobjc-arc -Isrc -o $@ tests/test_gpu_weights.m src/gpu_weights.m src/gguf.c src/gguf_reader.c src/gguf_plan.c src/common.c $(LDFLAGS) $(FRAMEWORKS)
 
 test-gguf: build/test_gguf_reader build/test_gguf_inspect build/test_gguf_plan
 	@$(PYTHON) tests/test_gguf.py
@@ -133,11 +136,11 @@ build/test_sample: tests/test_qwen4_sample.c src/qwen4_sample.c src/qwen4_sample
 test-qwen4-sample: build/test_sample
 	@./build/test_sample
 
-build/test_model_select: tests/test_model_select.c src/model_select.c src/model_select.h src/util.c src/common.h
+build/test_pf_models: tests/test_pf_models.c src/pf_models.c src/pf_models.h src/common.c src/common.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_model_select.c src/model_select.c src/util.c $(LDFLAGS)
-test-model-select: build/test_model_select
-	@./build/test_model_select
+	$(CC) $(CFLAGS) -Werror -g -fsanitize=address,undefined -fno-sanitize-recover=all -Isrc -o $@ tests/test_pf_models.c src/pf_models.c src/common.c $(LDFLAGS)
+test-pf-models: build/test_pf_models
+	@./build/test_pf_models
 
 # pf-agent tools and parser, offline (no model); the loop on the synthetic
 # checkpoint (GPU, under the lock) is test-pf-agent-model.
@@ -148,10 +151,17 @@ test-pf-agent-model: pf-agent build/qwen4-g2/cli.gguf
 	$(QW4_LOCK) env PF_AGENT_GGUF=build/qwen4-g2/cli.gguf $(QW4_TEST) tests/test_pf_agent.py -v
 .PHONY: test-pf-agent test-pf-agent-model
 
-clean:
-	rm -f src/*.o pf pf-bench pf-agent $(METALLIB) build/*.air
+# pf-server: both APIs and the prompt cache on the synthetic checkpoint (GPU, under the lock),
+# then on its mixed-expert copy (the layout of the Code5/Code10 files).
+test-pf-server-model: pf-server build/qwen4-g2/cli.gguf build/qwen4-g2/cli-mixed.gguf
+	$(QW4_LOCK) env PF_SERVER_GGUF=build/qwen4-g2/cli.gguf $(QW4_TEST) tests/test_pf_server.py -v
+	$(QW4_LOCK) env PF_SERVER_GGUF=build/qwen4-g2/cli-mixed.gguf $(QW4_TEST) tests/test_pf_server.py -v
+.PHONY: test-pf-server-model
 
-.PHONY: clean microbench test-qwen4-expert-pool test-qwen4-sample test-model-select test-all test-qwen4-tools test-gguf test-gpu-weights
+clean:
+	rm -f src/*.o pf pf-bench pf-agent pf-server $(METALLIB) build/*.air
+
+.PHONY: clean microbench test-qwen4-expert-pool test-qwen4-sample test-pf-models test-all test-qwen4-tools test-gguf test-gpu-weights
 
 # Contract declarations and CPU-only lock checks; no model or GPU workload.
 # Metal-only headers (ruling R3: decode helpers of the fast kernels) are not C
