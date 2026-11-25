@@ -250,7 +250,7 @@ class CliTests(unittest.TestCase):
     def test_teacher_forced_admission(self):
         base = [str(ROOT/'pf'), '--qwen4', str(GGUF), '--context', '32']
         for args in (['--complete', 'abc', '--teacher-forced', '1'], ['--tokens', '5,17', '--teacher-forced', '0'],
-                     ['--tokens', '5,17', '--teacher-forced', '2'], ['--session', '--teacher-forced', '1'],
+                     ['--tokens', '5,17', '--teacher-forced', '2'],
                      ['--tokens', '5,17', '--teacher-forced', '1', '--mtp'],
                      ['--tokens', '5,17', '--teacher-forced', '1', '--stop-after', '1'],
                      ['--tokens', '5,17', '--teacher-forced', '1', '--max-new', '1']):

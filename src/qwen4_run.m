@@ -42,7 +42,6 @@ static void usage(void) {
         "       [--logits FILE.f32] [--token-ids FILE.json] [--metallib FILE]\n"
         "       [--chat-file FILE | --complete-file FILE] [--encode-only]\n"
         "       [--repeat N] [--warmup N] [--replay-chunk N] [--runs-jsonl FILE]\n"
-        "       [--session] (resident local worker protocol)\n"
         "       [--stop-after N] (SIGUSR1 also stops cooperatively)\n"
         "       [--mtp] [--mtp-draft auto|0..3] (or $PICOFORGE_MTP_DRAFT; drafts per cycle, auto = cost model,\n"
         "        $PICOFORGE_MTP_COST=c2,c3,c4,delta[,mu]; exact greedy verification of up to 1+3 rows)\n"
@@ -93,60 +92,6 @@ static uint8_t *chat(Qwen4Tokenizer *tok,const char *text,bool thinking,size_t *
     uint8_t *out=malloc(*n ? *n : 1); if (!out) die("chat allocation");
     qw4_check(qwen4_chat_render(tok,&messages,NULL,options,out,*n,n,&e),&e); return out;
 }
-/* Local worker protocol: G <max-new> <messages> followed by U/A + hex lines.
- * The parent owns the conversation. We render the complete typed message tree
- * exactly once, then reset/replay it; no token-prefix reuse is claimed. */
-static void hex(FILE *f,const uint8_t *p,size_t n) {
-    for (size_t i=0;i<n;i++) fprintf(f,"%02x",p[i]);
-}
-static int nibble(char c) { return c>='0' && c<='9' ? c-'0' : c>='a' && c<='f' ? c-'a'+10 : -1; }
-static int session_request(Qwen4Tokenizer *tok,int32_t *tokens,uint32_t capacity,size_t *count,uint32_t *max_new) {
-    char header[128];
-    if (!fgets(header,sizeof header,stdin)) return 0;
-    if (!strcmp(header,"Q\n")) return 0;
-    if (!strcmp(header,"R\n")) return 2;
-    unsigned messages; char extra;
-    if (sscanf(header,"G %u %u %c",max_new,&messages,&extra)!=2 || !messages || messages>128 || !*max_new || *max_new>capacity)
-        die("invalid session header");
-    Qwen4Json items[128],roles[128],contents[128]; Qwen4JsonMember fields[128][2];
-    uint8_t *owned[128]={0}; size_t total=0; char *line=malloc((8u<<20)+4);
-    if (!line) die("session input allocation");
-    for (unsigned i=0;i<messages;i++) {
-        if (!fgets(line,(8u<<20)+4,stdin)) die("incomplete session request");
-        size_t n=strlen(line);
-        if (n<3 || line[n-1]!='\n' || line[1]!=' ' || (line[0]!='U' && line[0]!='A') || (n-3)%2)
-            die("invalid session message");
-        size_t bytes_n=(n-3)/2; total+=bytes_n;
-        if (total>(4u<<20)) die("session messages exceed 4 MiB");
-        owned[i]=malloc(bytes_n ? bytes_n : 1); if (!owned[i]) die("message allocation");
-        for (size_t j=0;j<bytes_n;j++) {
-            int hi=nibble(line[2+2*j]),lo=nibble(line[3+2*j]);
-            if (hi<0 || lo<0) die("invalid message hex"); owned[i][j]=(uint8_t)(hi*16+lo);
-        }
-        roles[i]=(Qwen4Json){.kind=QW4_JSON_STRING,.as.string=bytes(line[0]=='U' ? "user":"assistant")};
-        contents[i]=(Qwen4Json){.kind=QW4_JSON_STRING,.as.string={owned[i],bytes_n}};
-        fields[i][0]=(Qwen4JsonMember){bytes("role"),roles+i};
-        fields[i][1]=(Qwen4JsonMember){bytes("content"),contents+i};
-        items[i]=(Qwen4Json){.kind=QW4_JSON_OBJECT,.as.object={fields[i],2}};
-    }
-    free(line);
-    Qwen4Json tree={.kind=QW4_JSON_ARRAY,.as.array={items,messages}};
-    Qwen4ChatOptions options={.enable_thinking=QW4_FALSE,.add_generation_prompt=true};
-    Qwen4Error e; size_t needed=0; uint8_t *rendered=NULL;
-    Qwen4Status rc=qwen4_chat_render(tok,&tree,NULL,options,NULL,0,&needed,&e);
-    if (!rc) {
-        rendered=malloc(needed ? needed : 1); if (!rendered) die("render allocation");
-        rc=qwen4_chat_render(tok,&tree,NULL,options,rendered,needed,&needed,&e);
-    }
-    if (!rc) rc=qwen4_encode(tok,(Qwen4Bytes){rendered,needed},tokens,capacity,count,&e);
-    free(rendered); for (unsigned i=0;i<messages;i++) free(owned[i]);
-    if (rc || !*count || *max_new>capacity-*count) {
-        fputs("{\"event\":\"error\",\"code\":\"context_or_message\",\"message\":\"Conversazione troppo lunga o messaggi non validi. Riduci il limite di risposta o avvia una nuova conversazione.\"}\n",stdout);
-        fflush(stdout); return -1;
-    }
-    return 1;
-}
-
 static void ids_json(FILE *file,const int32_t *ids,size_t n) {
     fputc('[',file);
     for (size_t i=0;i<n;i++) fprintf(file,"%s%d",i ? "," : "",ids[i]);
@@ -170,10 +115,8 @@ static void emit(Qwen4Decoder *d,const int32_t *id,const QW4TurnOptions *o) {
     uint8_t *out=malloc(n ? n : 1); if (!out) die("decoder allocation");
     if (id) qw4_check(qwen4_decoder_append(d,id,1,out,n,&n,&e),&e);
     else qw4_check(qwen4_decoder_finish(d,out,n,&n,&e),&e);
-    if (o->session && n) {
-        fputs("{\"event\":\"token\",\"hex\":\"",stdout); hex(stdout,out,n); fputs("\"}\n",stdout);
-    } else if (n && o->print) o->print(o->print_ctx,out,n);
-    else if (!o->session && n && fwrite(out,1,n,stdout)!=n) die("stdout write failed");
+    if (n && o->print) o->print(o->print_ctx,out,n);
+    else if (n && fwrite(out,1,n,stdout)!=n) die("stdout write failed");
     fflush(stdout); free(out);
 }
 /* Every trunk append goes through here: profile row, stats, and the count
@@ -244,10 +187,6 @@ static void turn(QW4Run *r,const int32_t *tokens,size_t count,QW4TurnOptions o,i
             if (pairs) accumulate(&t->mtp,graph);
         }
         if (o.progress) o.progress(o.print_ctx,start+n,count,0);
-        if (o.session) {
-            fprintf(stdout,"{\"event\":\"prefill\",\"completed\":%zu,\"prompt_tokens\":%zu}\n",start+n,count);
-            fflush(stdout);
-        }
         if (start+n<count) qw4_power_pause(r,&r->power_prefill_avg,qw4_now()-chunk_start);
     }
     t->prefill_end=qw4_now(); y->dim[0]=1;
@@ -366,7 +305,7 @@ static void turn(QW4Run *r,const int32_t *tokens,size_t count,QW4TurnOptions o,i
         qw4_check(qwen4_gpu_mtp_rewind(graph,mtp_done,&e),&e);
     }
     t->end=qw4_now(); if (qw4_stopped) t->reason="cancelled";
-    emit(r->decoder,NULL,&o); if (!o.session && !o.print) fputc('\n',stdout);
+    emit(r->decoder,NULL,&o); if (!o.print) fputc('\n',stdout);
     t->got=got;
 }
 /* R5.1b: PICOFORGE_STREAM_EXPERTS=N keeps the trunk's routed experts on the SSD and N of them in a
@@ -517,7 +456,7 @@ int qw4_cli(int argc,char **argv) {
     const char *input=NULL,*mode=NULL,*logits_path=NULL,*ids_path=NULL,*metallib="picoforge.metallib";
     const char *runs_path=NULL,*profile_path=NULL,*bench_csv=NULL; char *owned_input=NULL; double weight_mb=0;
     uint32_t capacity=8192,chunk=1024,max_new=32,repeat=1,warmup=0,replay_chunk=0,stop_after=UINT32_MAX,forced=0;
-    bool thinking=false,encode_only=false,session=false,mtp=false,max_new_given=false,bench=false,no_mtp=false;
+    bool thinking=false,encode_only=false,mtp=false,max_new_given=false,bench=false,no_mtp=false;
     float temp=-1,top_p=0.95f,min_p=0; uint32_t top_k=20; uint64_t seed=(uint64_t)time(NULL);
     uint32_t power=100;
     { const char *p=getenv("PICOFORGE_POWER"); if (p && *p) power=number(p,1,100,"PICOFORGE_POWER"); }
@@ -526,7 +465,6 @@ int qw4_cli(int argc,char **argv) {
       if (p && *p && strcmp(p,"fp32") && strcmp(p,"half")) die("PICOFORGE_PREFILL_PRECISION must be fp32 or half"); }
     for (int i=3;i<argc;i++) {
         const char *opt=argv[i];
-        if (!strcmp(opt,"--session")) { if (mode) die("choose one mode"); session=true; mode="session"; continue; }
         if (!strcmp(opt,"--mtp")) { mtp=true; continue; }
         if (!strcmp(opt,"--no-mtp")) { no_mtp=true; continue; }
         if (!strcmp(opt,"--mtp-draft")) { if (i+1==argc) die("missing value for %s",opt); mtp=true; mtp_draft=argv[++i]; continue; }
@@ -575,20 +513,19 @@ int qw4_cli(int argc,char **argv) {
      * and replay options of a one-shot run do not apply. */
     const bool repl=!mode; if (repl) mode="repl";
     /* Perf III: the chat (REPL or one --chat answer) samples and drafts with MTP by
-     * default; measurements and oracles (bench, --logits, --tokens, session) stay
+     * default; measurements and oracles (bench, --logits, --tokens) stay
      * greedy and plain unless asked. --temp 0 / --no-mtp restore the old chat. */
     const bool chat_use=(repl || !strcmp(mode,"--chat")) && !bench && !logits_path && !forced;
     if (temp<0) temp=chat_use ? 0.6f : 0.0f;
     if (no_mtp) mtp=false; else if (chat_use && !getenv("PICOFORGE_NO_MTP")) mtp=true;
     if (repl && (runs_path || profile_path || logits_path || encode_only || repeat!=1 || warmup || replay_chunk ||
                  stop_after!=UINT32_MAX || forced)) die("the interactive chat takes only --context, --chunk, --max-new, --mtp, --no-mtp, --think, --power, --token-ids and the sampling options");
-    if (forced && (strcmp(mode,"--tokens") || mtp || session || stop_after!=UINT32_MAX || max_new_given))
-        die("--teacher-forced needs --tokens and excludes --mtp, --session, --stop-after and --max-new");
+    if (forced && (strcmp(mode,"--tokens") || mtp || stop_after!=UINT32_MAX || max_new_given))
+        die("--teacher-forced needs --tokens and excludes --mtp, --stop-after and --max-new");
     if ((bench_csv || weight_mb>0) && !bench) die("--bench-csv and --weight-mb belong to bench");
     if (power<100 && (bench || forced)) die("--power below 100 would slow the measurement: bench and --teacher-forced run at 100");
     if (weight_mb>0 && mtp) die("--weight-mb assumes one weight read per token; MTP verifies two rows per read");
-    if (bench && (session || repl || encode_only)) die("bench needs a prompt and measures a one-shot run");
-    if (session && (runs_path || profile_path || logits_path || ids_path || encode_only || repeat!=1 || warmup || replay_chunk)) die("session owns its outputs and repetitions");
+    if (bench && (repl || encode_only)) die("bench needs a prompt and measures a one-shot run");
     if (!strcmp(mode,"--chat-file") || !strcmp(mode,"--complete-file")) {
         owned_input=read_prompt(input); input=owned_input;
         mode=!strcmp(mode,"--chat-file") ? "--chat" : "--complete";
@@ -619,7 +556,7 @@ int qw4_cli(int argc,char **argv) {
         int32_t *tokens=malloc((size_t)capacity*4),*generated=malloc((size_t)capacity*4);
         if (!tokens || !generated) die("token allocation");
         size_t count=0;
-        if (session || repl) { /* Requests arrive after the model is ready. */ }
+        if (repl) { /* the chat's messages arrive after the model is ready */ }
         else if (!strcmp(mode,"--tokens")) {
             const char *p=input;
             while (*p) {
@@ -640,7 +577,7 @@ int qw4_cli(int argc,char **argv) {
             if (forced>=count) die("--teacher-forced N must leave at least one prompt token");
             count-=forced; max_new=forced;
         }
-        if (!session && !repl && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
+        if (!repl && (!count || max_new>capacity-count)) die("prompt and requested generation exceed context, or prompt is empty");
         if (encode_only) {
             fputs("{\"prompt_ids\":",stdout); ids_json(stdout,tokens,count);
             fprintf(stdout,",\"prompt_tokens\":%zu,\"context\":%u}\n",count,capacity);
@@ -654,31 +591,20 @@ int qw4_cli(int argc,char **argv) {
             c->trunk_blocks,count,capacity,chunk,(double)qwen4_gpu_forward_bytes(graph)/1048576.0);
         double load_s=qw4_now()-entered;
         if (repl) qw4_repl(r,argv[2],load_s,thinking,max_new_given ? max_new : 0,ids_path);
-        if (session) { runs=stdout; fprintf(stdout,"{\"event\":\"ready\",\"load_s\":%.9f,\"context\":%u}\n",load_s,capacity); fflush(stdout); }
-        for (uint32_t repetition=0;!repl && (session || repetition<repeat+warmup);repetition++) {
-        if (session) {
-            int request=session_request(tok,tokens,capacity,&count,&max_new);
-            if (!request) break;
-            if (request<0) continue;
-            if (request==2) {
-                qw4_check(qwen4_gpu_forward_reset(graph,&e),&e); qwen4_decoder_reset(r->decoder);
-                fputs("{\"event\":\"reset\"}\n",stdout); fflush(stdout); continue;
-            }
-        }
+        for (uint32_t repetition=0;!repl && repetition<repeat+warmup;repetition++) {
         /* Warm-up repetitions write no profile rows: detached, the graph never splits. */
         if (r->profile) qw4_check(qw4g_forward_set_profile(graph,repetition<warmup ? NULL : r->profile,&e),&e);
         double request_start=qw4_now(),reset_s=0;
-        if (session || repetition) {
+        if (repetition) {
             qw4_check(qwen4_gpu_forward_reset(graph,&e),&e); qwen4_decoder_reset(r->decoder);
             reset_s=qw4_now()-request_start;
         }
         qw4_stopped=0;
-        if (session) { fprintf(stdout,"{\"event\":\"started\",\"prompt_tokens\":%zu}\n",count); fflush(stdout); }
         uint32_t current_chunk=repetition && replay_chunk ? replay_chunk : chunk;
         FILE *logfile=logits_path ? fopen(logits_path,"wb") : NULL;
         if (logits_path && !logfile) die("cannot open logits output");
         QW4Turn t; qw4_turn(r,tokens,count,(QW4TurnOptions){.chunk=current_chunk,.max_new=max_new,
-            .stop_after=stop_after,.forced=forced,.logfile=logfile,.session=session,.print=bench ? discard : NULL},generated,&t);
+            .stop_after=stop_after,.forced=forced,.logfile=logfile,.print=bench ? discard : NULL},generated,&t);
         size_t got=t.got;
         if (logfile && fclose(logfile)) die("logits close failed");
         if (ids_path) {

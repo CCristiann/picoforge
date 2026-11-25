@@ -100,7 +100,6 @@ which is why checkpoints larger than that run quantised.
 | `tools/eval/` | benchmark runners, grading and reports |
 | `tools/probe/` | standalone Metal 4 API probes |
 | `tools/microbench/` | the model-agnostic matmul and dispatch-cost benchmark |
-| `tools/ui/qwen4/` | a local web chat in front of the engine (secondary to the terminal) |
 | `tests/` | correctness harnesses (`make test-all`, `make test-qwen4`) |
 | `bench/` | measured data by stage (`qwen38/`), microbenchmark CSVs, the Qwen3 archive |
 | `docs/` | this file, the benchmark protocol, the development log, the project history, weight and corpus locks |

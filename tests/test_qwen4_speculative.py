@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import tempfile
 import unittest
@@ -118,25 +117,5 @@ class Speculative(unittest.TestCase):
                 rows,_=self.run_cli(GGUF,tokens=(12,45,19,71,83),n=12,chunk=3,extra=('--repeat','2','--replay-chunk','1'),draft=draft)
                 for row in rows: self.assertEqual(row['generated_ids'],reference[0]['generated_ids'])
                 if draft!='auto': self.assertGreater(rows[0]['mtp']['rollback_count'],0)
-    def test_streaming_signal_stop_and_reset(self):
-        p=subprocess.Popen([str(ROOT/'pf'),'--qwen4',str(GGUF),'--session','--mtp','--context','512','--chunk','3'],
-                           cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
-        try:
-            self.assertEqual(json.loads(p.stdout.readline())['event'],'ready')
-            def request(stop_at):
-                p.stdin.write('G 64 1\nU 6369616f\n');p.stdin.flush();sent=False
-                while True:
-                    raw=p.stdout.readline();self.assertTrue(raw);event=json.loads(raw)
-                    if not sent and event['event']==stop_at: p.send_signal(signal.SIGUSR1);sent=True
-                    if event['event']=='done':return event
-            for where in ('started','token'):
-                done=request(where); self.assertEqual(done['stop_reason'],'cancelled')
-                if where=='started':self.assertEqual(done['generated_tokens'],0)
-                else:self.assertGreater(done['generated_tokens'],0)
-                p.stdin.write('R\n');p.stdin.flush();self.assertEqual(json.loads(p.stdout.readline())['event'],'reset')
-            p.stdin.write('Q\n');p.stdin.flush();self.assertEqual(p.wait(timeout=10),0)
-        finally:
-            if p.poll() is None:p.kill();p.wait()
-            p.stdin.close();p.stdout.close()
 
 if __name__=='__main__':unittest.main()

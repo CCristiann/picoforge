@@ -63,7 +63,6 @@ void qw4_power_pause(const QW4Run *, double *avg, double work);
 typedef struct {
     uint32_t chunk, max_new, stop_after, forced;
     FILE *logfile;                          /* --logits rows; forces the logits path */
-    bool session;                           /* JSON events instead of raw text */
     /* REPL only: before a plain decode append, pair the MTP predictor's pending
      * rows (no logits read back), so the next turn can reuse the cache. The
      * one-shot path leaves it off and stays call-for-call as before. */

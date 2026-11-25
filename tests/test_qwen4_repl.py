@@ -189,7 +189,7 @@ class BenchTests(unittest.TestCase):
     def test_admission(self):
         for args in (['--qwen4', str(GGUF), '--chat', 'x', '--weight-mb', '1'],
                      ['--qwen4', str(GGUF), '--bench'],
-                     ['bench', '-m', str(GGUF), '--weight-mb', '-3'], ['bench', '-m', str(GGUF), '--mtp', '--weight-mb', '6000'], ['bench', '-m', str(GGUF), '--session']):
+                     ['bench', '-m', str(GGUF), '--weight-mb', '-3'], ['bench', '-m', str(GGUF), '--mtp', '--weight-mb', '6000']):
             done = subprocess.run([ENGINE, *args], cwd=ROOT, capture_output=True)
             self.assertNotEqual(done.returncode, 0, args)
         forced = subprocess.run([ENGINE, 'bench', '-m', str(GGUF), '--tokens', '5,17,300,9', '--teacher-forced', '2',

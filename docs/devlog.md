@@ -15,7 +15,8 @@ test that failed first: a saved state (pf-server checkpoints, pf-agent sessions)
 its model by file size only, so two same-size files loaded each other's state, and shared cache
 entries replaced each other (now a hash of the GGUF header, also in the file name); a prompt over
 4 MiB of text killed pf-server instead of returning `context_length_exceeded`; a multi-line paste
-in the chat sent one message per line (now bracketed paste).
+in the chat sent one message per line (now bracketed paste). Removed: the Python web chat
+(`tools/ui/qwen4`) and the `pf --session` worker protocol behind it, both replaced by pf-server.
 
 **Next:** a real-model session of pf-server with an agent client.
 
